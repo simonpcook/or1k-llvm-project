@@ -39,14 +39,11 @@ extern "C" void* _DYNAMIC;
 
 namespace __asan {
 
+const size_t kMaxThreadStackSize = 256 * (1 << 20);  // 256M
+
 void *AsanDoesNotSupportStaticLinkage() {
   // This will fail to link with -static.
   return &_DYNAMIC;  // defined in link.h
-}
-
-bool AsanShadowRangeIsAvailable() {
-  // FIXME: shall we need anything here on Linux?
-  return true;
 }
 
 void GetPcSpBp(void *context, uintptr_t *pc, uintptr_t *sp, uintptr_t *bp) {
@@ -189,6 +186,10 @@ bool AsanProcMaps::Next(uintptr_t *start, uintptr_t *end,
   char flags[10];
   int major, minor;
   uintptr_t inode;
+  uintptr_t dummy;
+  if (!start) start = &dummy;
+  if (!end) end = &dummy;
+  if (!offset) offset = &dummy;
   char *next_line = (char*)internal_memchr(current_, '\n', last - current_);
   if (next_line == NULL)
     next_line = last;
@@ -214,63 +215,12 @@ bool AsanProcMaps::Next(uintptr_t *start, uintptr_t *end,
   return true;
 }
 
-#if 1
-
 // Gets the object name and the offset by walking AsanProcMaps.
 bool AsanProcMaps::GetObjectNameAndOffset(uintptr_t addr, uintptr_t *offset,
                                           char filename[],
                                           size_t filename_size) {
   return IterateForObjectNameAndOffset(addr, offset, filename, filename_size);
 }
-
-#else
-// dl_iterate_phdr machinery is not working well for us.
-// We either need to fix it or get rid of it.
-struct DlIterateData {
-  int count;
-  uintptr_t addr;
-  uintptr_t offset;
-  char *filename;
-  size_t filename_size;
-};
-
-static int dl_iterate_phdr_callback(struct dl_phdr_info *info,
-                                    size_t size, void *raw_data) {
-  DlIterateData *data = (DlIterateData*)raw_data;
-  int count = data->count++;
-  if (info->dlpi_addr > data->addr)
-    return 0;
-  if (count == 0) {
-    // The first item (the main executable) does not have a so name,
-    // but we can just read it from /proc/self/exe.
-    size_t path_len = readlink("/proc/self/exe",
-                               data->filename, data->filename_size - 1);
-    data->filename[path_len] = 0;
-  } else {
-    CHECK(info->dlpi_name);
-    REAL(strncpy)(data->filename, info->dlpi_name, data->filename_size);
-  }
-  data->offset = data->addr - info->dlpi_addr;
-  return 1;
-}
-
-// Gets the object name and the offset using dl_iterate_phdr.
-bool AsanProcMaps::GetObjectNameAndOffset(uintptr_t addr, uintptr_t *offset,
-                                          char filename[],
-                                          size_t filename_size) {
-  DlIterateData data;
-  data.count = 0;
-  data.addr = addr;
-  data.filename = filename;
-  data.filename_size = filename_size;
-  if (dl_iterate_phdr(dl_iterate_phdr_callback, &data)) {
-    *offset = data.offset;
-    return true;
-  }
-  return false;
-}
-
-#endif  // __arm__
 
 void AsanThread::SetThreadStackTopAndBottom() {
   if (tid() == 0) {
@@ -294,6 +244,9 @@ void AsanThread::SetThreadStackTopAndBottom() {
     size_t stacksize = rl.rlim_cur;
     if (stacksize > end - prev_end)
       stacksize = end - prev_end;
+    // When running with unlimited stack size, we still want to set some limit.
+    // The unlimited stack size is caused by 'ulimit -s unlimited'.
+    // Also, for some reason, GNU make spawns subprocesses with unlimited stack.
     if (stacksize > kMaxThreadStackSize)
       stacksize = kMaxThreadStackSize;
     stack_top_ = end;
@@ -310,12 +263,7 @@ void AsanThread::SetThreadStackTopAndBottom() {
 
   stack_top_ = (uintptr_t)stackaddr + stacksize;
   stack_bottom_ = (uintptr_t)stackaddr;
-  // When running with unlimited stack size, we still want to set some limit.
-  // The unlimited stack size is caused by 'ulimit -s unlimited'.
-  // Also, for some reason, GNU make spawns subrocesses with unlimited stack.
-  if (stacksize > kMaxThreadStackSize) {
-    stack_bottom_ = stack_top_ - kMaxThreadStackSize;
-  }
+  CHECK(stacksize < kMaxThreadStackSize);  // Sanity check.
   CHECK(AddrIsInStack((uintptr_t)&attr));
 }
 

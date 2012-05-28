@@ -51,6 +51,7 @@ bool   FLAG_allow_user_poisoning;
 int    FLAG_sleep_before_dying;
 bool   FLAG_unmap_shadow_on_exit;
 bool   FLAG_disable_core;
+bool   FLAG_check_malloc_usable_size;
 
 // -------------------------- Globals --------------------- {{{1
 int asan_inited;
@@ -86,7 +87,7 @@ size_t ReadFileToBuffer(const char *file_name, char **buff,
   // The files we usually open are not seekable, so try different buffer sizes.
   for (size_t size = kMinFileLen; size <= max_len; size *= 2) {
     int fd = AsanOpenReadonly(file_name);
-    if (fd < 0) return -1;
+    if (fd < 0) return 0;
     AsanUnmapOrDie(*buff, *buff_size);
     *buff = (char*)AsanMmapSomewhereOrDie(size, __FUNCTION__);
     *buff_size = size;
@@ -321,7 +322,7 @@ void NOINLINE __asan_set_death_callback(void (*callback)(void)) {
 void NOINLINE __asan_set_error_report_callback(void (*callback)(const char*)) {
   error_report_callback = callback;
   if (callback) {
-    error_message_buffer_size = 1 << 14;
+    error_message_buffer_size = 1 << 16;
     error_message_buffer =
         (char*)AsanMmapSomewhereOrDie(error_message_buffer_size, __FUNCTION__);
     error_message_buffer_pos = 0;
@@ -423,15 +424,7 @@ void __asan_report_error(uintptr_t pc, uintptr_t bp, uintptr_t sp,
   AsanDie();
 }
 
-void __asan_init() {
-  if (asan_inited) return;
-  asan_init_is_running = true;
-
-  // Make sure we are not statically linked.
-  AsanDoesNotSupportStaticLinkage();
-
-  // flags
-  const char *options = AsanGetEnv("ASAN_OPTIONS");
+static void ParseAsanOptions(const char *options) {
   FLAG_malloc_context_size =
       IntFlagValue(options, "malloc_context_size=", kMallocContextSize);
   CHECK(FLAG_malloc_context_size <= kMallocContextSize);
@@ -469,8 +462,24 @@ void __asan_init() {
   // it makes little sense to dump 16T+ core.
   FLAG_disable_core = IntFlagValue(options, "disable_core=", __WORDSIZE == 64);
 
+  // Allow the users to work around the bug in Nvidia drivers prior to 295.*.
+  FLAG_check_malloc_usable_size =
+      IntFlagValue(options, "check_malloc_usable_size=", 1);
+
   FLAG_quarantine_size = IntFlagValue(options, "quarantine_size=",
       (ASAN_LOW_MEMORY) ? 1UL << 24 : 1UL << 28);
+}
+
+void __asan_init() {
+  if (asan_inited) return;
+  asan_init_is_running = true;
+
+  // Make sure we are not statically linked.
+  AsanDoesNotSupportStaticLinkage();
+
+  // flags
+  const char *options = AsanGetEnv("ASAN_OPTIONS");
+  ParseAsanOptions(options);
 
   if (FLAG_v) {
     Report("Parsed ASAN_OPTIONS: %s\n", options);

@@ -38,6 +38,7 @@ GDBRemoteCommunicationClient::GDBRemoteCommunicationClient(bool is_platform) :
     GDBRemoteCommunication("gdb-remote.client", "gdb-remote.client.rx_packet", is_platform),
     m_supports_not_sending_acks (eLazyBoolCalculate),
     m_supports_thread_suffix (eLazyBoolCalculate),
+    m_supports_threads_in_stop_reply (eLazyBoolCalculate),
     m_supports_vCont_all (eLazyBoolCalculate),
     m_supports_vCont_any (eLazyBoolCalculate),
     m_supports_vCont_c (eLazyBoolCalculate),
@@ -47,6 +48,7 @@ GDBRemoteCommunicationClient::GDBRemoteCommunicationClient(bool is_platform) :
     m_qHostInfo_is_valid (eLazyBoolCalculate),
     m_supports_alloc_dealloc_memory (eLazyBoolCalculate),
     m_supports_memory_region_info  (eLazyBoolCalculate),
+    m_supports_watchpoint_support_info  (eLazyBoolCalculate),
     m_supports_qProcessInfoPID (true),
     m_supports_qfProcessInfo (true),
     m_supports_qUserName (true),
@@ -59,6 +61,7 @@ GDBRemoteCommunicationClient::GDBRemoteCommunicationClient(bool is_platform) :
     m_supports_z4 (true),
     m_curr_tid (LLDB_INVALID_THREAD_ID),
     m_curr_tid_run (LLDB_INVALID_THREAD_ID),
+    m_num_supported_hardware_watchpoints (0),
     m_async_mutex (Mutex::eMutexTypeRecursive),
     m_async_packet_predicate (false),
     m_async_packet (),
@@ -114,10 +117,28 @@ GDBRemoteCommunicationClient::QueryNoAckModeSupported ()
 }
 
 void
+GDBRemoteCommunicationClient::GetListThreadsInStopReplySupported ()
+{
+    if (m_supports_threads_in_stop_reply == eLazyBoolCalculate)
+    {
+        m_supports_threads_in_stop_reply = eLazyBoolNo;
+        
+        StringExtractorGDBRemote response;
+        if (SendPacketAndWaitForResponse("QListThreadsInStopReply", response, false))
+        {
+            if (response.IsOKResponse())
+                m_supports_threads_in_stop_reply = eLazyBoolYes;
+        }
+    }
+}
+
+
+void
 GDBRemoteCommunicationClient::ResetDiscoverableSettings()
 {
     m_supports_not_sending_acks = eLazyBoolCalculate;
     m_supports_thread_suffix = eLazyBoolCalculate;
+    m_supports_threads_in_stop_reply = eLazyBoolCalculate;
     m_supports_vCont_c = eLazyBoolCalculate;
     m_supports_vCont_C = eLazyBoolCalculate;
     m_supports_vCont_s = eLazyBoolCalculate;
@@ -331,7 +352,7 @@ GDBRemoteCommunicationClient::SendPacketAndWaitForResponse
         else
         {
             if (log) 
-                log->Printf("error: packet mutex taken and send_async == false, not sending packet '%*s'", (int) payload_length, payload);
+                log->Printf("error: failed to get packet sequence mutex, not sending packet '%*s'", (int) payload_length, payload);
         }
     }
     if (response_len == 0)
@@ -341,30 +362,6 @@ GDBRemoteCommunicationClient::SendPacketAndWaitForResponse
     }        
     return response_len;
 }
-
-//template<typename _Tp>
-//class ScopedValueChanger
-//{
-//public:
-//    // Take a value reference and the value to assign it to when this class
-//    // instance goes out of scope.
-//    ScopedValueChanger (_Tp &value_ref, _Tp value) :
-//        m_value_ref (value_ref),
-//        m_value (value)
-//    {
-//    }
-//
-//    // This object is going out of scope, change the value pointed to by
-//    // m_value_ref to the value we got during construction which was stored in
-//    // m_value;
-//    ~ScopedValueChanger ()
-//    {
-//        m_value_ref = m_value;
-//    }
-//protected:
-//    _Tp &m_value_ref;   // A reference to the value we will change when this object destructs
-//    _Tp m_value;        // The value to assign to m_value_ref when this goes out of scope.
-//};
 
 StateType
 GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
@@ -396,7 +393,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
         {
             if (log)
                 log->Printf ("GDBRemoteCommunicationClient::%s () sending continue packet: %s", __FUNCTION__, continue_packet.c_str());
-            if (SendPacket(continue_packet.c_str(), continue_packet.size()) == 0)
+            if (SendPacketNoLock(continue_packet.c_str(), continue_packet.size()) == 0)
                 state = eStateInvalid;
         
             m_private_is_running.SetValue (true, eBroadcastAlways);
@@ -407,7 +404,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
         if (log)
             log->Printf ("GDBRemoteCommunicationClient::%s () WaitForPacket(%s)", __FUNCTION__, continue_packet.c_str());
 
-        if (WaitForPacketWithTimeoutMicroSeconds (response, UINT32_MAX))
+        if (WaitForPacketWithTimeoutMicroSecondsNoLock(response, UINT32_MAX))
         {
             if (response.Empty())
                 state = eStateInvalid;
@@ -440,10 +437,10 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
 
                         const uint8_t signo = response.GetHexU8 (UINT8_MAX);
 
-                        bool continue_after_aync = false;
+                        bool continue_after_async = false;
                         if (m_async_signal != -1 || m_async_packet_predicate.GetValue())
                         {
-                            continue_after_aync = true;
+                            continue_after_async = true;
                             // We sent an interrupt packet to stop the inferior process
                             // for an async signal or to send an async packet while running
                             // but we might have been single stepping and received the
@@ -458,7 +455,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
                             // a lot of trouble for us!
                             if (signo != SIGINT && signo != SIGSTOP)
                             {
-                                continue_after_aync = false;
+                                continue_after_async = false;
 
                                 // We didn't get a a SIGINT or SIGSTOP, so try for a
                                 // very brief time (1 ms) to get another stop reply
@@ -475,7 +472,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
                                         // our interrupt didn't stop the target so we
                                         // shouldn't continue after the async signal
                                         // or packet is sent...
-                                        continue_after_aync = false;
+                                        continue_after_async = false;
                                         break;
                                     }
                                 }
@@ -519,7 +516,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
                                                        Host::GetSignalAsCString (async_signal));
 
                                 // Set the continue packet to resume even if the
-                                // interrupt didn't cause our stop (ignore continue_after_aync)
+                                // interrupt didn't cause our stop (ignore continue_after_async)
                                 continue_packet.assign(signal_packet, signal_packet_len);
                                 continue;
                             }
@@ -553,12 +550,21 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
                             m_async_packet_predicate.SetValue(false, eBroadcastAlways);
 
                             if (packet_log) 
-                                packet_log->Printf ("async: sent packet, continue_after_aync = %i", continue_after_aync);
+                                packet_log->Printf ("async: sent packet, continue_after_async = %i", continue_after_async);
 
                             // Set the continue packet to resume if our interrupt
                             // for the async packet did cause the stop
-                            if (continue_after_aync)
+                            if (continue_after_async)
                             {
+                                // Reverting this for now as it is causing deadlocks
+                                // in programs (<rdar://problem/11529853>). In the future
+                                // we should check our thread list and "do the right thing"
+                                // for new threads that show up while we stop and run async
+                                // packets. Setting the packet to 'c' to continue all threads
+                                // is the right thing to do 99.99% of the time because if a
+                                // thread was single stepping, and we sent an interrupt, we
+                                // will notice above that we didn't stop due to an interrupt
+                                // but stopped due to stepping and we would _not_ continue.
                                 continue_packet.assign (1, 'c');
                                 continue;
                             }
@@ -653,7 +659,12 @@ GDBRemoteCommunicationClient::SendInterrupt
     if (IsRunning())
     {
         // Only send an interrupt if our debugserver is running...
-        if (GetSequenceMutex (locker) == false)
+        if (GetSequenceMutex (locker))
+        {
+            if (log)
+                log->Printf ("SendInterrupt () - got sequence mutex without having to interrupt");
+        }
+        else
         {
             // Someone has the mutex locked waiting for a response or for the
             // inferior to stop, so send the interrupt on the down low...
@@ -698,11 +709,6 @@ GDBRemoteCommunicationClient::SendInterrupt
                     log->Printf ("SendInterrupt () - failed to write interrupt");
             }
             return false;
-        }
-        else
-        {
-            if (log)
-                log->Printf ("SendInterrupt () - got sequence mutex without having to interrupt");
         }
     }
     else
@@ -1025,6 +1031,20 @@ GDBRemoteCommunicationClient::GetHostInfo (bool force)
                             {
                                 assert (byte_order == m_host_arch.GetByteOrder());
                             }
+
+                            if (!os_name.empty() && vendor_name.compare("apple") == 0 && os_name.find("darwin") == 0)
+                            {
+                                switch (m_host_arch.GetMachine())
+                                {
+                                case llvm::Triple::arm:
+                                case llvm::Triple::thumb:
+                                    os_name = "ios";
+                                    break;
+                                default:
+                                    os_name = "macosx";
+                                    break;
+                                }
+                            }
                             if (!vendor_name.empty())
                                 m_host_arch.GetTriple().setVendorName (llvm::StringRef (vendor_name));
                             if (!os_name.empty())
@@ -1036,17 +1056,35 @@ GDBRemoteCommunicationClient::GetHostInfo (bool force)
                     {
                         std::string triple;
                         triple += arch_name;
-                        triple += '-';
-                        if (vendor_name.empty())
-                            triple += "unknown";
-                        else
-                            triple += vendor_name;
-                        triple += '-';
-                        if (os_name.empty())
-                            triple += "unknown";
-                        else
-                            triple += os_name;
-                        m_host_arch.SetTriple (triple.c_str(), NULL);
+                        if (!vendor_name.empty() || !os_name.empty())
+                        {
+                            triple += '-';
+                            if (vendor_name.empty())
+                                triple += "unknown";
+                            else
+                                triple += vendor_name;
+                            triple += '-';
+                            if (os_name.empty())
+                                triple += "unknown";
+                            else
+                                triple += os_name;
+                        }
+                        m_host_arch.SetTriple (triple.c_str());
+                        
+                        llvm::Triple &host_triple = m_host_arch.GetTriple();
+                        if (host_triple.getVendor() == llvm::Triple::Apple && host_triple.getOS() == llvm::Triple::Darwin)
+                        {
+                            switch (m_host_arch.GetMachine())
+                            {
+                                case llvm::Triple::arm:
+                                case llvm::Triple::thumb:
+                                    host_triple.setOS(llvm::Triple::IOS);
+                                    break;
+                                default:
+                                    host_triple.setOS(llvm::Triple::MacOSX);
+                                    break;
+                            }
+                        }
                         if (pointer_byte_size)
                         {
                             assert (pointer_byte_size == m_host_arch.GetAddressByteSize());
@@ -1060,7 +1098,7 @@ GDBRemoteCommunicationClient::GetHostInfo (bool force)
                 }
                 else
                 {
-                    m_host_arch.SetTriple (triple.c_str(), NULL);
+                    m_host_arch.SetTriple (triple.c_str());
                     if (pointer_byte_size)
                     {
                         assert (pointer_byte_size == m_host_arch.GetAddressByteSize());
@@ -1153,6 +1191,12 @@ GDBRemoteCommunicationClient::DeallocateMemory (addr_t addr)
         }
     }
     return false;
+}
+
+bool
+GDBRemoteCommunicationClient::Detach ()
+{
+    return SendPacket ("D", 1) > 0;
 }
 
 Error
@@ -1253,6 +1297,52 @@ GDBRemoteCommunicationClient::GetMemoryRegionInfo (lldb::addr_t addr,
 
 }
 
+Error
+GDBRemoteCommunicationClient::GetWatchpointSupportInfo (uint32_t &num)
+{
+    Error error;
+
+    if (m_supports_watchpoint_support_info == eLazyBoolYes)
+    {
+        num = m_num_supported_hardware_watchpoints;
+        return error;
+    }
+
+    // Set num to 0 first.
+    num = 0;
+    if (m_supports_watchpoint_support_info != eLazyBoolNo)
+    {
+        char packet[64];
+        const int packet_len = ::snprintf(packet, sizeof(packet), "qWatchpointSupportInfo:");
+        assert (packet_len < sizeof(packet));
+        StringExtractorGDBRemote response;
+        if (SendPacketAndWaitForResponse (packet, packet_len, response, false))
+        {
+            m_supports_watchpoint_support_info = eLazyBoolYes;        
+            std::string name;
+            std::string value;
+            while (response.GetNameColonValue(name, value))
+            {
+                if (name.compare ("num") == 0)
+                {
+                    num = Args::StringToUInt32(value.c_str(), 0, 0);
+                    m_num_supported_hardware_watchpoints = num;
+                }
+            }
+        }
+        else
+        {
+            m_supports_watchpoint_support_info = eLazyBoolNo;
+        }
+    }
+
+    if (m_supports_watchpoint_support_info == eLazyBoolNo)
+    {
+        error.SetErrorString("qWatchpointSupportInfo is not supported");
+    }
+    return error;
+
+}
 
 int
 GDBRemoteCommunicationClient::SetSTDIN (char const *path)
@@ -1401,12 +1491,12 @@ GDBRemoteCommunicationClient::DecodeProcessInfoResponse (StringExtractorGDBRemot
                 extractor.GetStringRef().swap(value);
                 extractor.SetFilePos(0);
                 extractor.GetHexByteString (value);
-                process_info.GetArchitecture ().SetTriple (value.c_str(), NULL);
+                process_info.GetArchitecture ().SetTriple (value.c_str());
             }
             else if (name.compare("name") == 0)
             {
                 StringExtractor extractor;
-                // The the process name from ASCII hex bytes since we can't 
+                // The process name from ASCII hex bytes since we can't 
                 // control the characters in a process name
                 extractor.GetStringRef().swap(value);
                 extractor.SetFilePos(0);
@@ -1871,7 +1961,26 @@ GDBRemoteCommunicationClient::GetCurrentThreadIDs (std::vector<lldb::tid_t> &thr
     }
     else
     {
+        LogSP log (ProcessGDBRemoteLog::GetLogIfAnyCategoryIsSet (GDBR_LOG_PROCESS | GDBR_LOG_PACKETS));
+        if (log)
+            log->Printf("error: failed to get packet sequence mutex, not sending packet 'qfThreadInfo'");
         sequence_mutex_unavailable = true;
     }
     return thread_ids.size();
 }
+
+lldb::addr_t
+GDBRemoteCommunicationClient::GetShlibInfoAddr()
+{
+    if (!IsRunning())
+    {
+        StringExtractorGDBRemote response;
+        if (SendPacketAndWaitForResponse("qShlibInfoAddr", ::strlen ("qShlibInfoAddr"), response, false))
+        {
+            if (response.IsNormalResponse())
+                return response.GetHexMaxU64(false, LLDB_INVALID_ADDRESS);
+        }
+    }
+    return LLDB_INVALID_ADDRESS;
+}
+

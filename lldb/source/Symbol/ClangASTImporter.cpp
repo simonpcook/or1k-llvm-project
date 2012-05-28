@@ -14,6 +14,7 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Symbol/ClangASTImporter.h"
+#include "lldb/Symbol/ClangExternalASTSourceCommon.h"
 #include "lldb/Symbol/ClangNamespaceDecl.h"
 
 using namespace lldb_private;
@@ -60,9 +61,14 @@ ClangASTImporter::CopyDecl (clang::ASTContext *dst_ast,
             if (log)
             {
                 if (NamedDecl *named_decl = dyn_cast<NamedDecl>(decl))
-                    log->Printf("  [ClangASTImporter] WARNING: Failed to import a %s '%s'", decl->getDeclKindName(), named_decl->getNameAsString().c_str());
+                    log->Printf("  [ClangASTImporter] WARNING: Failed to import a %s '%s', metadata 0x%llx",
+                                decl->getDeclKindName(),
+                                named_decl->getNameAsString().c_str(),
+                                GetDeclMetadata(decl));
                 else
-                    log->Printf("  [ClangASTImporter] WARNING: Failed to import a %s", decl->getDeclKindName());
+                    log->Printf("  [ClangASTImporter] WARNING: Failed to import a %s, metadata 0x%llx",
+                                decl->getDeclKindName(),
+                                GetDeclMetadata(decl));
             }
         }
         
@@ -235,6 +241,17 @@ ClangASTImporter::CompleteObjCInterfaceDecl (clang::ObjCInterfaceDecl *interface
         minion_sp->ImportDefinitionTo(interface_decl, decl_origin.decl);
         
     return true;
+}
+
+uint64_t
+ClangASTImporter::GetDeclMetadata (const clang::Decl *decl)
+{
+    DeclOrigin decl_origin = GetDeclOrigin(decl);
+    
+    if (decl_origin.Valid())
+        return ClangASTContext::GetMetadata(decl_origin.ctx, (uintptr_t)decl_origin.decl);
+    else
+        return ClangASTContext::GetMetadata(&decl->getASTContext(), (uintptr_t)decl);
 }
 
 ClangASTImporter::DeclOrigin
@@ -414,18 +431,25 @@ clang::Decl
     {
         if (NamedDecl *from_named_decl = dyn_cast<clang::NamedDecl>(from))
         {
-            log->Printf("    [ClangASTImporter] Imported (%sDecl*)%p, named %s (from (Decl*)%p)",
+            std::string name_string;
+            llvm::raw_string_ostream name_stream(name_string);
+            from_named_decl->printName(name_stream);
+            name_stream.flush();
+            
+            log->Printf("    [ClangASTImporter] Imported (%sDecl*)%p, named %s (from (Decl*)%p), metadata 0x%llx",
                         from->getDeclKindName(),
                         to,
-                        from_named_decl->getName().str().c_str(),
-                        from);
+                        name_string.c_str(),
+                        from,
+                        m_master.GetDeclMetadata(from));
         }
         else
         {
-            log->Printf("    [ClangASTImporter] Imported (%sDecl*)%p (from (Decl*)%p)",
+            log->Printf("    [ClangASTImporter] Imported (%sDecl*)%p (from (Decl*)%p), metadata 0x%llx",
                         from->getDeclKindName(),
                         to,
-                        from);
+                        from,
+                        m_master.GetDeclMetadata(from));
         }
     }
 

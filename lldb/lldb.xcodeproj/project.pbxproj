@@ -347,7 +347,6 @@
 		2689010613353E6F00698AC0 /* ThreadPlanRunToAddress.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4CAFCE031101218900CA63DB /* ThreadPlanRunToAddress.cpp */; };
 		2689010713353E6F00698AC0 /* ThreadPlanStepThrough.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 260C847510F50EFC00BB2B04 /* ThreadPlanStepThrough.cpp */; };
 		2689010813353E6F00698AC0 /* ThreadPlanStepUntil.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2660D9FE11922A7F00958FBD /* ThreadPlanStepUntil.cpp */; };
-		2689010913353E6F00698AC0 /* ThreadPlanTestCondition.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C1AB23A1263E5F400D0F04A /* ThreadPlanTestCondition.cpp */; };
 		2689010A13353E6F00698AC0 /* ThreadPlanTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4CC2A148128C73ED001531C4 /* ThreadPlanTracer.cpp */; };
 		2689010B13353E6F00698AC0 /* ThreadSpec.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C08CDE711C81EF8001610A8 /* ThreadSpec.cpp */; };
 		2689010C13353E6F00698AC0 /* UnixSignals.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C00987011500B4300F316B0 /* UnixSignals.cpp */; };
@@ -386,6 +385,8 @@
 		26A527C414E24F5F00F3A14A /* ThreadMachCore.h in Headers */ = {isa = PBXBuildFile; fileRef = 26A527C014E24F5F00F3A14A /* ThreadMachCore.h */; };
 		26A69C5F137A17A500262477 /* RegisterValue.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 26C6886E137880C400407EDF /* RegisterValue.cpp */; };
 		26A7A035135E6E4200FB369E /* NamedOptionValue.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 26A7A034135E6E4200FB369E /* NamedOptionValue.cpp */; };
+		26B1EFAE154638AF00E2DAC7 /* DWARFDeclContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 26B1EFAC154638AF00E2DAC7 /* DWARFDeclContext.cpp */; };
+		26B1EFAF154638AF00E2DAC7 /* DWARFDeclContext.h in Headers */ = {isa = PBXBuildFile; fileRef = 26B1EFAD154638AF00E2DAC7 /* DWARFDeclContext.h */; };
 		26B1FCB813381071002886E2 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 26F5C39010F3FA26009D5894 /* CoreFoundation.framework */; };
 		26B1FCBC13381071002886E2 /* libobjc.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = 26F5C37410F3F61B009D5894 /* libobjc.dylib */; };
 		26B1FCC21338115F002886E2 /* Host.mm in Sources */ = {isa = PBXBuildFile; fileRef = 26BC7EE810F1B88F00F91463 /* Host.mm */; };
@@ -923,6 +924,8 @@
 		26A7A034135E6E4200FB369E /* NamedOptionValue.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = NamedOptionValue.cpp; path = source/Interpreter/NamedOptionValue.cpp; sourceTree = "<group>"; };
 		26A7A036135E6E5300FB369E /* NamedOptionValue.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = NamedOptionValue.h; path = include/lldb/Interpreter/NamedOptionValue.h; sourceTree = "<group>"; };
 		26B167A41123BF5500DC7B4F /* ThreadSafeValue.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ThreadSafeValue.h; path = include/lldb/Core/ThreadSafeValue.h; sourceTree = "<group>"; };
+		26B1EFAC154638AF00E2DAC7 /* DWARFDeclContext.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = DWARFDeclContext.cpp; sourceTree = "<group>"; };
+		26B1EFAD154638AF00E2DAC7 /* DWARFDeclContext.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = DWARFDeclContext.h; sourceTree = "<group>"; };
 		26B42C4C1187ABA50079C8C8 /* LLDB.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = LLDB.h; path = include/lldb/API/LLDB.h; sourceTree = "<group>"; };
 		26B4E26E112F35F700AB3F64 /* TimeValue.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = TimeValue.h; path = include/lldb/Host/TimeValue.h; sourceTree = "<group>"; };
 		26B7564C14F89356008D9CB3 /* PlatformiOSSimulator.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = PlatformiOSSimulator.cpp; sourceTree = "<group>"; };
@@ -1333,8 +1336,6 @@
 		4C08CDEB11C81F1E001610A8 /* ThreadSpec.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ThreadSpec.h; path = include/lldb/Target/ThreadSpec.h; sourceTree = "<group>"; };
 		4C09CB73116BD98B00C7A725 /* CommandCompletions.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = CommandCompletions.h; path = include/lldb/Interpreter/CommandCompletions.h; sourceTree = "<group>"; };
 		4C09CB74116BD98B00C7A725 /* CommandCompletions.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = CommandCompletions.cpp; path = source/Commands/CommandCompletions.cpp; sourceTree = "<group>"; };
-		4C1AB23A1263E5F400D0F04A /* ThreadPlanTestCondition.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ThreadPlanTestCondition.cpp; path = source/Target/ThreadPlanTestCondition.cpp; sourceTree = "<group>"; };
-		4C1AB23E1263E61100D0F04A /* ThreadPlanTestCondition.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ThreadPlanTestCondition.h; path = include/lldb/Target/ThreadPlanTestCondition.h; sourceTree = "<group>"; };
 		4C2FAE2E135E3A70001EDE44 /* SharedCluster.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = SharedCluster.h; path = include/lldb/Utility/SharedCluster.h; sourceTree = "<group>"; };
 		4C43DEF9110641F300E55CBF /* ThreadPlanShouldStopHere.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = ThreadPlanShouldStopHere.h; path = include/lldb/Target/ThreadPlanShouldStopHere.h; sourceTree = "<group>"; };
 		4C43DEFA110641F300E55CBF /* ThreadPlanShouldStopHere.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; name = ThreadPlanShouldStopHere.cpp; path = source/Target/ThreadPlanShouldStopHere.cpp; sourceTree = "<group>"; };
@@ -1832,6 +1833,8 @@
 				260C89CC10F57C5600BB2B04 /* DWARFDebugPubnamesSet.h */,
 				260C89CD10F57C5600BB2B04 /* DWARFDebugRanges.cpp */,
 				260C89CE10F57C5600BB2B04 /* DWARFDebugRanges.h */,
+				26B1EFAC154638AF00E2DAC7 /* DWARFDeclContext.cpp */,
+				26B1EFAD154638AF00E2DAC7 /* DWARFDeclContext.h */,
 				260C89CF10F57C5600BB2B04 /* DWARFDefines.cpp */,
 				260C89D010F57C5600BB2B04 /* DWARFDefines.h */,
 				260C89D110F57C5600BB2B04 /* DWARFDIECollection.cpp */,
@@ -2161,22 +2164,22 @@
 			isa = PBXGroup;
 			children = (
 				26CF992414428766001E4138 /* AnsiTerminal.h */,
+				26F996A7119B79C300412154 /* ARM_DWARF_Registers.h */,
+				26ECA04213665FED008D1F18 /* ARM_DWARF_Registers.cpp */,
+				26F996A8119B79C300412154 /* ARM_GCC_Registers.h */,
 				264723A511FA076E00DE380C /* CleanUp.h */,
+				94031A9F13CF5B3D00DCFF3C /* PriorityPointerPair.h */,
+				2682F16B115EDA0D00CCFF99 /* PseudoTerminal.h */,
+				2682F16A115EDA0D00CCFF99 /* PseudoTerminal.cpp */,
 				94611EAF13CCA363003A22AF /* RefCounter.h */,
 				94611EB113CCA4A4003A22AF /* RefCounter.cpp */,
 				261B5A5211C3F2AD00AABD0A /* SharingPtr.cpp */,
 				4C2FAE2E135E3A70001EDE44 /* SharedCluster.h */,
 				261B5A5311C3F2AD00AABD0A /* SharingPtr.h */,
-				26F996A7119B79C300412154 /* ARM_DWARF_Registers.h */,
-				26ECA04213665FED008D1F18 /* ARM_DWARF_Registers.cpp */,
-				26F996A8119B79C300412154 /* ARM_GCC_Registers.h */,
 				2660D9F711922A1300958FBD /* StringExtractor.h */,
 				2660D9F611922A1300958FBD /* StringExtractor.cpp */,
 				2676A094119C93C8008A98EF /* StringExtractorGDBRemote.h */,
 				2676A093119C93C8008A98EF /* StringExtractorGDBRemote.cpp */,
-				2682F16B115EDA0D00CCFF99 /* PseudoTerminal.h */,
-				2682F16A115EDA0D00CCFF99 /* PseudoTerminal.cpp */,
-				94031A9F13CF5B3D00DCFF3C /* PriorityPointerPair.h */,
 				94EBAC8313D9EE26009BA64E /* PythonPointer.h */,
 				B2462249141AE62200F3D409 /* Utils.h */,
 			);
@@ -2821,8 +2824,6 @@
 				260C847510F50EFC00BB2B04 /* ThreadPlanStepThrough.cpp */,
 				4CEDAED311754F5E00E875A6 /* ThreadPlanStepUntil.h */,
 				2660D9FE11922A7F00958FBD /* ThreadPlanStepUntil.cpp */,
-				4C1AB23E1263E61100D0F04A /* ThreadPlanTestCondition.h */,
-				4C1AB23A1263E5F400D0F04A /* ThreadPlanTestCondition.cpp */,
 				4CC2A14C128C7409001531C4 /* ThreadPlanTracer.h */,
 				4CC2A148128C73ED001531C4 /* ThreadPlanTracer.cpp */,
 				4C08CDEB11C81F1E001610A8 /* ThreadSpec.h */,
@@ -3195,6 +3196,7 @@
 				2694E99E14FC0BB30076DE67 /* PlatformFreeBSD.h in Headers */,
 				2694E9A514FC0BBD0076DE67 /* PlatformLinux.h in Headers */,
 				2663E379152BD1890091EC22 /* ReadWriteLock.h in Headers */,
+				26B1EFAF154638AF00E2DAC7 /* DWARFDeclContext.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -3808,7 +3810,6 @@
 				2689010613353E6F00698AC0 /* ThreadPlanRunToAddress.cpp in Sources */,
 				2689010713353E6F00698AC0 /* ThreadPlanStepThrough.cpp in Sources */,
 				2689010813353E6F00698AC0 /* ThreadPlanStepUntil.cpp in Sources */,
-				2689010913353E6F00698AC0 /* ThreadPlanTestCondition.cpp in Sources */,
 				2689010A13353E6F00698AC0 /* ThreadPlanTracer.cpp in Sources */,
 				2689010B13353E6F00698AC0 /* ThreadSpec.cpp in Sources */,
 				2689010C13353E6F00698AC0 /* UnixSignals.cpp in Sources */,
@@ -3907,6 +3908,7 @@
 				26FFC19D14FC072100087D58 /* DynamicLoaderPOSIXDYLD.cpp in Sources */,
 				2694E99D14FC0BB30076DE67 /* PlatformFreeBSD.cpp in Sources */,
 				2694E9A414FC0BBD0076DE67 /* PlatformLinux.cpp in Sources */,
+				26B1EFAE154638AF00E2DAC7 /* DWARFDeclContext.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -4056,6 +4058,8 @@
 				GCC_WARN_UNUSED_LABEL = YES;
 				GCC_WARN_UNUSED_VALUE = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				LLDB_DISABLE_PYTHON = 0;
+				"LLDB_DISABLE_PYTHON[sdk=iphoneos*]" = 1;
 				LLDB_FRAMEWORK_INSTALL_DIR = /Applications/Xcode.app/Contents/SharedFrameworks;
 				LLDB_TOOLS_INSTALL_DIR = /usr/bin;
 				LLVM_BUILD_DIR = "$(SRCROOT)/llvm-build/$(LLVM_CONFIGURATION)";
@@ -4067,9 +4071,10 @@
 					"-flimit-debug-info",
 					"-Wparentheses",
 				);
+				SDKROOT = macosx;
 				STRIP_INSTALLED_PRODUCT = NO;
 				STRIP_STYLE = debugging;
-				VALID_ARCHS = "armv4t armv5 armv6 armv7 i386 ppc ppc64 ppc7400 ppc970 x86_64";
+				VALID_ARCHS = "armv4t armv5 armv6 armv7 armv7s i386 ppc ppc64 ppc7400 ppc970 x86_64";
 				WARNING_CFLAGS = "-Wreorder";
 			};
 			name = Debug;
@@ -4080,10 +4085,7 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARCHS = "$(NATIVE_ARCH)";
 				"ARCHS[sdk=iphoneos*]" = armv7;
-				"ARCHS[sdk=macosx*]" = (
-					x86_64,
-					i386,
-				);
+				"ARCHS[sdk=macosx*]" = "$(ARCHS_STANDARD_64_BIT)";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GCC_C_LANGUAGE_STANDARD = gnu99;
@@ -4112,6 +4114,8 @@
 				GCC_WARN_UNUSED_LABEL = YES;
 				GCC_WARN_UNUSED_VALUE = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				LLDB_DISABLE_PYTHON = 0;
+				"LLDB_DISABLE_PYTHON[sdk=iphoneos*]" = 1;
 				LLDB_FRAMEWORK_INSTALL_DIR = /Applications/Xcode.app/Contents/SharedFrameworks;
 				LLDB_TOOLS_INSTALL_DIR = /usr/bin;
 				LLVM_BUILD_DIR = "$(SRCROOT)/llvm-build/$(LLVM_CONFIGURATION)";
@@ -4124,7 +4128,7 @@
 				);
 				STRIP_INSTALLED_PRODUCT = NO;
 				STRIP_STYLE = debugging;
-				VALID_ARCHS = "armv4t armv5 armv6 armv7 i386 ppc ppc64 ppc7400 ppc970 x86_64";
+				VALID_ARCHS = "armv4t armv5 armv6 armv7 armv7s i386 ppc ppc64 ppc7400 ppc970 x86_64";
 				WARNING_CFLAGS = "-Wreorder";
 			};
 			name = Release;
@@ -4174,9 +4178,9 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_LINK_OBJC_RUNTIME = NO;
 				CLANG_OBJC_RUNTIME = NO;
-				CURRENT_PROJECT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
 				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 138;
+				DYLIB_CURRENT_VERSION = 152;
 				EXPORTED_SYMBOLS_FILE = "resources/lldb-framework-exports";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4236,10 +4240,10 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_LINK_OBJC_RUNTIME = NO;
 				CLANG_OBJC_RUNTIME = NO;
-				CURRENT_PROJECT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
 				DEAD_CODE_STRIPPING = YES;
 				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 138;
+				DYLIB_CURRENT_VERSION = 152;
 				EXPORTED_SYMBOLS_FILE = "resources/lldb-framework-exports";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4297,6 +4301,7 @@
 			buildSettings = {
 				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CURRENT_PROJECT_VERSION = 152;
 				DEBUGGING_SYMBOLS = YES;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_ENABLE_OBJC_EXCEPTIONS = YES;
@@ -4322,6 +4327,7 @@
 				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = YES;
+				CURRENT_PROJECT_VERSION = 152;
 				GCC_ENABLE_OBJC_EXCEPTIONS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				MACOSX_DEPLOYMENT_TARGET = 10.7;
@@ -4338,6 +4344,7 @@
 				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = YES;
+				CURRENT_PROJECT_VERSION = 152;
 				GCC_ENABLE_OBJC_EXCEPTIONS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				MACOSX_DEPLOYMENT_TARGET = 10.7;
@@ -4351,8 +4358,8 @@
 		2689FFD513353D7A00698AC0 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 138;
-				DYLIB_CURRENT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
+				DYLIB_CURRENT_VERSION = 152;
 				EXECUTABLE_EXTENSION = a;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4380,8 +4387,8 @@
 		2689FFD613353D7A00698AC0 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 138;
-				DYLIB_CURRENT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
+				DYLIB_CURRENT_VERSION = 152;
 				EXECUTABLE_EXTENSION = a;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4409,8 +4416,8 @@
 		2689FFD713353D7A00698AC0 /* BuildAndIntegration */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 138;
-				DYLIB_CURRENT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
+				DYLIB_CURRENT_VERSION = 152;
 				EXECUTABLE_EXTENSION = a;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4473,6 +4480,8 @@
 				GCC_WARN_UNUSED_LABEL = YES;
 				GCC_WARN_UNUSED_VALUE = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				LLDB_DISABLE_PYTHON = 0;
+				"LLDB_DISABLE_PYTHON[sdk=iphoneos*]" = 1;
 				LLDB_FRAMEWORK_INSTALL_DIR = /Applications/Xcode.app/Contents/SharedFrameworks;
 				"LLDB_FRAMEWORK_INSTALL_DIR[sdk=iphoneos*]" = /System/Library/PrivateFrameworks;
 				LLDB_TOOLS_INSTALL_DIR = /Applications/Xcode.app/Contents/Developer/usr/bin;
@@ -4487,7 +4496,7 @@
 				);
 				STRIP_INSTALLED_PRODUCT = NO;
 				STRIP_STYLE = debugging;
-				VALID_ARCHS = "armv4t armv5 armv6 armv7 i386 ppc ppc64 ppc7400 ppc970 x86_64";
+				VALID_ARCHS = "armv4t armv5 armv6 armv7 armv7s i386 ppc ppc64 ppc7400 ppc970 x86_64";
 				WARNING_CFLAGS = "-Wreorder";
 			};
 			name = BuildAndIntegration;
@@ -4496,7 +4505,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COPY_PHASE_STRIP = YES;
-				CURRENT_PROJECT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks\"",
@@ -4536,10 +4545,10 @@
 				CLANG_LINK_OBJC_RUNTIME = NO;
 				CLANG_OBJC_RUNTIME = NO;
 				COPY_PHASE_STRIP = YES;
-				CURRENT_PROJECT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
 				DEAD_CODE_STRIPPING = YES;
 				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 138;
+				DYLIB_CURRENT_VERSION = 152;
 				EXPORTED_SYMBOLS_FILE = "resources/lldb-framework-exports";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -4840,7 +4849,7 @@
 		26F5C26C10F3D9A5009D5894 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks\"",
@@ -4870,7 +4879,7 @@
 		26F5C26D10F3D9A5009D5894 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 138;
+				CURRENT_PROJECT_VERSION = 152;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"$(SYSTEM_LIBRARY_DIR)/PrivateFrameworks\"",

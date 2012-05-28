@@ -251,7 +251,7 @@ bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
   AccessFunction = SE->getMinusSCEV(AccessFunction, BasePointer);
 
   if (!isAffineExpr(&Context.CurRegion, AccessFunction, *SE, BaseValue) && !AllowNonAffine)
-    INVALID(AffFunc, "Bad memory address " << *AccessFunction);
+    INVALID(AffFunc, "Non affine access function" << *AccessFunction);
 
   // FIXME: Alias Analysis thinks IntToPtrInst aliases with alloca instructions
   // created by IndependentBlocks Pass.
@@ -482,7 +482,7 @@ bool ScopDetection::allBlocksValid(DetectionContext &Context) const {
 
   for (Region::block_iterator I = R.block_begin(), E = R.block_end(); I != E;
        ++I)
-    if (!isValidBasicBlock(*(I->getNodeAs<BasicBlock>()), Context))
+    if (!isValidBasicBlock(**I, Context))
       return false;
 
   return true;
@@ -513,7 +513,7 @@ bool ScopDetection::isValidRegion(DetectionContext &Context) const {
     return false;
   }
 
-  // SCoP can not contains the entry block of the function, because we need
+  // SCoP cannot contain the entry block of the function, because we need
   // to insert alloca instruction there when translate scalar to array.
   if (R.getEntry() == &(R.getEntry()->getParent()->getEntryBlock()))
     INVALID(Other, "Region containing entry block of function is invalid!");

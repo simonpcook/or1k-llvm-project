@@ -8,7 +8,7 @@ export PATH_TO_POLLY_LIB="~/polly/build/lib/"
 alias opt="opt -load ${PATH_TO_POLLY_LIB}/LLVMPolly.so"
 
 echo "--> 3. Prepare the LLVM-IR for Polly"
-opt -S -mem2reg -loop-simplify -indvars matmul.s > matmul.preopt.ll
+opt -S -mem2reg -loop-simplify -polly-indvars matmul.s > matmul.preopt.ll
 
 echo "--> 4. Show the SCoPs detected by Polly"
 opt -basicaa -polly-cloog -analyze -q matmul.preopt.ll
@@ -56,11 +56,11 @@ opt -basicaa -polly-import-jscop \
     matmul.preopt.ll | opt -O3 > matmul.polly.interchanged+tiled.ll
 opt -basicaa -polly-import-jscop \
     -polly-import-jscop-postfix=interchanged+tiled+vector -polly-codegen \
-    matmul.preopt.ll -enable-polly-vector\
+    matmul.preopt.ll -polly-vectorizer=polly\
     | opt -O3 > matmul.polly.interchanged+tiled+vector.ll
 opt -basicaa -polly-import-jscop \
     -polly-import-jscop-postfix=interchanged+tiled+vector -polly-codegen \
-    matmul.preopt.ll -enable-polly-vector -enable-polly-openmp\
+    matmul.preopt.ll -polly-vectorizer=polly -enable-polly-openmp\
     | opt -O3 > matmul.polly.interchanged+tiled+vector+openmp.ll
 opt matmul.preopt.ll | opt -O3 > matmul.normalopt.ll
 

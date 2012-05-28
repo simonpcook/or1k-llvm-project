@@ -55,9 +55,9 @@ also need to add <b>-mllvm -enable-polly-openmp -lgomp</b> to your CFLAGS.
 <h2>Automatic Vector code generation</h2>
 
 Automatic vector code generation can be enabled by adding <b>-mllvm
--enable-polly-vector</b> to your CFLAGS.
+-polly-vectorizer=polly</b> to your CFLAGS.
 
-<pre class="code">pollycc -O3 -mllvm -polly -mllvm -enable-polly-vector file.c</pre>
+<pre class="code">pollycc -O3 -mllvm -polly -mllvm -polly-vectorizer=polly file.c</pre>
 
 <h2>Extract a preoptimized LLVM-IR file</h2>
 
@@ -96,18 +96,16 @@ function a dot file that highlights the detected SCoPs. If 'only' is appended at
 the end of the option, the basic blocks are shown without the statements the
 contain.
 
-<h3>Disable the polyhedral optimizer</h3>
-
-Polly automatically runs by default a polyhedral optimizer to optimize the
-schedules. <b>-polly-no-optimizer</b> disables this optimizer.
-
-<h3>Change the Polly optimizer</h3>
-Polly uses by default the isl scheduling optimizer, a new implementation of the
-well known Pluto algorithm. The main reason for the isl scheduler being the
-default is that it does not require any additional libraries or tools to be
-installed. As the new scheduler may still have some bugs and because being
-able to compare is good in general, it is possible to switch the used optimizer
-back to PoCC. For this add the option <b>-polly-optimizer=pocc</b>.
+<h3>Change/Disable the Optimizer</h3>
+Polly uses by default the isl scheduling optimizer. The isl optimizer optimizes
+for data-locality and parallelism using the <a
+href=http://pluto-compiler.sf.net">Pluto</a> algorithm. For research it is also
+possible to run <a
+href="http://www-rocq.inria.fr/~pouchet/software/pocc/">PoCC</a> as external
+optimizer. PoCC provides access to the original Pluto implementation. To use
+PoCC add <b>-polly-optimizer=pocc</b> to the command line (only available if
+Polly was compiled with scoplib support). To disable the
+optimizer entirely use the option <b>-polly-optimizer=none</b>.
 
 <h3>Disable tiling in the optimizer</h3>
 By default both optimizers perform tiling, if possible. In case this is not
@@ -122,10 +120,12 @@ no aliasing is possible. In case the user knows no aliasing can happen in the
 code the <b>-polly-ignore-aliasing</b> can be used to disable the check for
 possible aliasing.
 
-<h3>Importing and exporting JScop files</h3>
-The flags <b>-polly-run-import-jscop</b> and <b>-polly-run-export-jscop</b>
-allow the export and reimport of the polyhedral representation that Polly
-generates for the Scops.
+<h3>Import / Export</h3>
+The flags <b>-polly-import</b> and <b>-polly-export</b> allow the export and
+reimport of the polyhedral representation. By exporting, modifying and
+reimporting the polyhedral representation externally calculated transformations
+can be applied. This enables external optimizers or the manual optimization of
+specific SCoPs.
 </div>
 </body>
 </html>

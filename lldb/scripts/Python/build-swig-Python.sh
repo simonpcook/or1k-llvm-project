@@ -24,7 +24,15 @@ swig_python_extensions=${SRC_ROOT}/scripts/Python/python-extensions.swig
 swig_python_wrapper=${SRC_ROOT}/scripts/Python/python-wrapper.swig
 swig_python_typemaps=${SRC_ROOT}/scripts/Python/python-typemaps.swig
 
-if [ "x$SDKROOT" = "x" ] ; then
+if [ $LLDB_DISABLE_PYTHON = "1" ] ; then
+    # We don't want Python for this build, but touch the output file so we don't have to
+    # conditionalize the build on this as well.
+    # Note, at present iOS doesn't have Python, so if you're building for iOS be sure to
+    # set LLDB_DISABLE_PYTHON to 1.
+    rm -rf ${swig_output_file}
+    touch ${swig_output_file}
+
+else
 
 if [ -n "$debug_flag" -a "$debug_flag" == "-debug" ]
 then
@@ -303,8 +311,4 @@ then
     fi
 fi
 
-else
-    # SDKROOT was not empty, which currently means iOS cross build where python is disabled
-    rm -rf ${swig_output_file}
-    touch ${swig_output_file}
 fi

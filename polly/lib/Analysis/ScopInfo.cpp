@@ -31,11 +31,13 @@
 #include "llvm/Assembly/Writer.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
 
 #define DEBUG_TYPE "polly-scops"
 #include "llvm/Support/Debug.h"
 
+#include "isl/int.h"
 #include "isl/constraint.h"
 #include "isl/set.h"
 #include "isl/map.h"
@@ -52,23 +54,6 @@ using namespace polly;
 
 STATISTIC(ScopFound,  "Number of valid Scops");
 STATISTIC(RichScopFound,   "Number of Scops containing a loop");
-
-/// Convert an int into a string.
-static std::string convertInt(int number)
-{
-  if (number == 0)
-    return "0";
-  std::string temp = "";
-  std::string returnvalue = "";
-  while (number > 0)
-  {
-    temp += number % 10 + 48;
-    number /= 10;
-  }
-  for (unsigned i = 0; i < temp.length(); i++)
-    returnvalue+=temp[temp.length() - i - 1];
-  return returnvalue;
-}
 
 /// Translate a SCEVExpression into an isl_pw_aff object.
 struct SCEVAffinator : public SCEVVisitor<SCEVAffinator, isl_pw_aff*> {
@@ -142,11 +127,11 @@ public:
   }
 
   __isl_give isl_pw_aff *visitTruncateExpr(const SCEVTruncateExpr *Expr) {
-    assert(0 && "Not yet supported");
+    llvm_unreachable("SCEVTruncateExpr not yet supported");
   }
 
   __isl_give isl_pw_aff *visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
-    assert(0 && "Not yet supported");
+    llvm_unreachable("SCEVZeroExtendExpr not yet supported");
   }
 
   __isl_give isl_pw_aff *visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
@@ -188,7 +173,7 @@ public:
   }
 
   __isl_give isl_pw_aff *visitUDivExpr(const SCEVUDivExpr *Expr) {
-    assert(0 && "Not yet supported");
+    llvm_unreachable("SCEVUDivExpr not yet supported");
   }
 
   int getLoopDepth(const Loop *L) {
@@ -230,25 +215,11 @@ public:
   }
 
   __isl_give isl_pw_aff *visitUMaxExpr(const SCEVUMaxExpr *Expr) {
-    assert(0 && "Not yet supported");
+    llvm_unreachable("SCEVUMaxExpr not yet supported");
   }
 
   __isl_give isl_pw_aff *visitUnknown(const SCEVUnknown *Expr) {
-    Value *Value = Expr->getValue();
-
-    isl_space *Space;
-
-    std::string ValueName = Value->getName();
-    isl_id *ID = isl_id_alloc(ctx, ValueName.c_str(), Value);
-    Space = isl_space_set_alloc(ctx, 1, NbLoopSpaces);
-    Space = isl_space_set_dim_id(Space, isl_dim_param, 0, ID);
-
-    isl_set *Domain = isl_set_universe(isl_space_copy(Space));
-    isl_aff *Affine = isl_aff_zero_on_domain(isl_local_space_from_space(Space));
-
-    Affine = isl_aff_add_coefficient_si(Affine, isl_dim_param, 0, 1);
-
-    return isl_pw_aff_alloc(Domain, Affine);
+    llvm_unreachable("Unknowns are always parameters");
   }
 };
 
@@ -324,12 +295,12 @@ MemoryAccess::MemoryAccess(const IRAccess &Access, ScopStmt *Statement) {
 
   setBaseName();
 
-  // Devide the access function by the size of the elements in the array.
+  // Divide the access function by the size of the elements in the array.
   //
   // A stride one array access in C expressed as A[i] is expressed in LLVM-IR
   // as something like A[i * elementsize]. This hides the fact that two
   // subsequent values of 'i' index two values that are stored next to each
-  // other in memory. By this devision we make this characteristic obvious
+  // other in memory. By this division we make this characteristic obvious
   // again.
   isl_int v;
   isl_int_init(v);
@@ -775,7 +746,7 @@ __isl_give isl_id *Scop::getIdForParam(const SCEV *Parameter) const {
   }
 
   if (ParameterName == "" || ParameterName.substr(0, 2) == "p_")
-    ParameterName = "p_" + convertInt(IdIter->second);
+    ParameterName = "p_" + utostr_32(IdIter->second);
 
   return isl_id_alloc(getIslCtx(), ParameterName.c_str(), (void *) Parameter);
 }
@@ -784,6 +755,38 @@ void Scop::buildContext() {
   isl_space *Space = isl_space_params_alloc(IslCtx, 0);
   Context = isl_set_universe (Space);
 }
+
+void Scop::addParameterBounds() {
+  for (unsigned i = 0; i < isl_set_dim(Context, isl_dim_param); ++i) {
+    isl_int V;
+    isl_id *Id;
+    const SCEV *Scev;
+    const IntegerType *T;
+
+    Id = isl_set_get_dim_id(Context, isl_dim_param, i);
+    Scev = (const SCEV*) isl_id_get_user(Id);
+    T = dyn_cast<IntegerType>(Scev->getType());
+    isl_id_free(Id);
+
+    assert(T && "Not an integer type");
+    int Width = T->getBitWidth();
+
+    isl_int_init(V);
+
+    isl_int_set_si(V, 1);
+    isl_int_mul_2exp(V, V, Width-1);
+    isl_int_neg(V, V);
+    isl_set_lower_bound(Context, isl_dim_param, i, V);
+
+    isl_int_set_si(V, 1);
+    isl_int_mul_2exp(V, V, Width-1);
+    isl_int_sub_ui(V, V, 1);
+    isl_set_upper_bound(Context, isl_dim_param, i, V);
+
+    isl_int_clear(V);
+  }
+}
+
 
 void Scop::realignParams() {
   // Add all parameters into a common model.
@@ -820,6 +823,7 @@ Scop::Scop(TempScop &tempScop, LoopInfo &LI, ScalarEvolution &ScalarEvolution,
   buildScop(tempScop, getRegion(), NestLoops, Scatter, LI);
 
   realignParams();
+  addParameterBounds();
 
   assert(NestLoops.empty() && "NestLoops not empty at top level!");
 }

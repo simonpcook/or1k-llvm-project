@@ -1,4 +1,4 @@
-//===- Core/YamlReader.cpp - Reads YAML -----------------------------------===//
+//===- Core/YamlReader.cpp - Reads YAML encode object files ---------------===//
 //
 //                             The LLVM Linker
 //
@@ -13,6 +13,7 @@
 #include "lld/Core/AbsoluteAtom.h"
 #include "lld/Core/Error.h"
 #include "lld/Core/File.h"
+#include "lld/Core/ArchiveLibraryFile.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Platform.h"
 #include "lld/Core/Reference.h"
@@ -23,243 +24,36 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/system_error.h"
+#include "llvm/Support/YAMLParser.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Debug.h"
 
 #include <cstring>
 #include <vector>
 
 
-
 namespace lld {
 namespace yaml {
 
-namespace {
 
-class YAML {
-public:
-  struct Entry {
-    Entry(const char *k, const char *v, std::vector<uint8_t>* vs,
-          int d, bool bd, bool bs)
-      : key(strdup(k))
-      , value(v ? strdup(v) : nullptr)
-      , valueSequenceBytes(vs)
-      , depth(d)
-      , beginSequence(bs)
-      , beginDocument(bd) {}
-
-    const char *          key;
-    const char *          value;
-    std::vector<uint8_t>* valueSequenceBytes;
-    int                   depth;
-    bool                  beginSequence;
-    bool                  beginDocument;
-  };
-
-  static void parse(llvm::MemoryBuffer *mb, std::vector<const Entry *>&);
-
-private:
-  enum State {
-    start,
-    inHeaderComment,
-    inTripleDash,
-    inTriplePeriod,
-    inDocument,
-    inKey,
-    inSpaceBeforeValue,
-    inValue,
-    inValueSequence,
-    inValueSequenceEnd
-  };
-};
-
-
-void YAML::parse(llvm::MemoryBuffer *mb, std::vector<const Entry *> &entries) {
-  State state = start;
-  char key[64];
-  char value[64];
-  char *p = nullptr;
-  unsigned int lineNumber = 1;
-  int depth = 0;
-  bool nextKeyIsStartOfDocument = false;
-  bool nextKeyIsStartOfSequence = false;
-  std::vector<uint8_t>* sequenceBytes = nullptr;
-  unsigned contentByte = 0;
-  for (const char *s = mb->getBufferStart(); s < mb->getBufferEnd(); ++s) {
-    char c = *s;
-    if (c == '\n')
-      ++lineNumber;
-    switch (state) {
-    case start:
-      if (c == '#')
-        state = inHeaderComment;
-      else if (c == '-') {
-        p = &key[0];
-        *p++ = c;
-        state = inTripleDash;
-      }
-      break;
-    case inHeaderComment:
-      if (c == '\n') {
-        state = start;
-      }
-      break;
-    case inTripleDash:
-      if (c == '-') {
-        *p++ = c;
-      } else if (c == '\n') {
-        *p = '\0';
-        if (strcmp(key, "---") != 0)
-          return;
-        depth = 0;
-        state = inDocument;
-        nextKeyIsStartOfDocument = true;
-      } else {
-        return;
-      }
-      break;
-    case inTriplePeriod:
-      if (c == '.') {
-        *p++ = c;
-      } else if (c == '\n') {
-        *p = '\0';
-        if (strcmp(key, "...") != 0)
-          return;
-        depth = 0;
-        state = inHeaderComment;
-      } else {
-        return;
-      }
-      break;
-    case inDocument:
-      if (isalnum(c)) {
-        state = inKey;
-        p = &key[0];
-        *p++ = c;
-      } else if (c == '-') {
-        if (depth == 0) {
-          p = &key[0];
-          *p++ = c;
-          state = inTripleDash;
-        } else {
-          nextKeyIsStartOfSequence = true;
-          ++depth;
-        }
-      } else if (c == ' ') {
-        ++depth;
-      } else if (c == '.') {
-        p = &key[0];
-        *p++ = c;
-        state = inTriplePeriod;
-      } else if (c == '\n') {
-        // ignore empty lines
-        depth = 0;
-      } else if (c == '\t') {
-        llvm::report_fatal_error("TAB character found in yaml file");
-      } else {
-        return;
-      }
-      break;
-    case inKey:
-      if (isalnum(c) || (c == '-')) {
-        *p++ = c;
-      } else if (c == ':') {
-        *p = '\0';
-        state = inSpaceBeforeValue;
-      } else if (c == '\n') {
-        *p = '\0';
-        if (strcmp(key, "---") == 0)
-          state = inDocument;
-        else
-          return;
-      } else {
-        return;
-      }
-      break;
-    case inSpaceBeforeValue:
-      if (isalnum(c) || (c == '-') || (c == '_') || (c == '/')) {
-        p = &value[0];
-        *p++ = c;
-        state = inValue;
-      } else if (c == '\n') {
-        entries.push_back(new Entry(key, "", nullptr, depth,
-                                    nextKeyIsStartOfDocument,
-                                    nextKeyIsStartOfSequence));
-        nextKeyIsStartOfSequence = false;
-        nextKeyIsStartOfDocument = false;
-        state = inDocument;
-        depth = 0;
-      } else if (c == '[') {
-        contentByte = 0;
-        sequenceBytes = new std::vector<uint8_t>();
-        state = inValueSequence;
-      } else if (c == ' ') {
-        // eat space
-      } else if (c == '\t') {
-        llvm::report_fatal_error("TAB character found in yaml file");
-      } else {
-        return;
-      }
-      break;
-    case inValue:
-      if (c == '\n') {
-        *p = '\0';
-        entries.push_back(new Entry(key, value, nullptr, depth,
-                                    nextKeyIsStartOfDocument,
-                                    nextKeyIsStartOfSequence));
-        nextKeyIsStartOfSequence = false;
-        nextKeyIsStartOfDocument = false;
-        state = inDocument;
-        depth = 0;
-      }
-      else {
-        *p++ = c;
-      }
-      break;
-    case inValueSequence:
-      if (c == ']') {
-        sequenceBytes->push_back(contentByte);
-        state = inValueSequenceEnd;
-      }
-      else if ( (c == ' ') || (c == '\n') ) {
-        // eat white space
-      }
-      else if (c == ',') {
-        sequenceBytes->push_back(contentByte);
-      }
-      else if ( isdigit(c) ) {
-        contentByte = (contentByte << 4) | (c-'0');
-      }
-      else if ( ('a' <= tolower(c)) && (tolower(c) <= 'f') ) {
-        contentByte = (contentByte << 4) | (tolower(c)-'a'+10);
-      }
-      else {
-        llvm::report_fatal_error("non-hex digit found in content [ ]");
-      }
-      break;
-    case inValueSequenceEnd:
-      if (c == '\n') {
-        entries.push_back(new Entry(key, nullptr, sequenceBytes, depth,
-                                    nextKeyIsStartOfDocument,
-                                    nextKeyIsStartOfSequence));
-        nextKeyIsStartOfSequence = false;
-        nextKeyIsStartOfDocument = false;
-        state = inDocument;
-        depth = 0;
-      }
-      break;
-    }
-  }
-}
-
-
-
+///
+/// Concrete instance of lld::Reference created parsing YAML object files
+///
 class YAMLReference : public Reference {
 public:
-                YAMLReference() : _target(nullptr), _targetName(nullptr),
-                                   _offsetInAtom(0), _addend(0), _kind(0) { }
+  YAMLReference()
+    : _target(nullptr)
+    , _targetNameNode(nullptr)
+    , _offsetInAtom(0)
+    , _addend(0)
+    , _kind(0)
+  {}
 
   virtual uint64_t offsetInAtom() const {
     return _offsetInAtom;
@@ -273,84 +67,110 @@ public:
     _kind = k;
   }
 
-  virtual const Atom* target() const {
+  virtual const Atom *target() const {
     return _target;
   }
 
   virtual Addend addend() const {
     return _addend;
   }
-  
+
   virtual void setAddend(Addend a) {
     _addend = a;
   }
 
-  virtual void setTarget(const Atom* newAtom) {
+  virtual void setTarget(const Atom *newAtom) {
     _target = newAtom;
   }
 
-  const Atom*  _target;
-  const char*  _targetName;
-  uint64_t     _offsetInAtom;
-  Addend       _addend;
-  Kind         _kind;
+  typedef llvm::yaml::ScalarNode ScalarNode;
+  
+  const Atom *_target;
+  ScalarNode * _targetNameNode;
+  uint64_t    _offsetInAtom;
+  Addend      _addend;
+  Kind        _kind;
 };
 
 
-
-class YAMLDefinedAtom;
-
-class YAMLFile : public File {
+///
+/// Concrete instance of lld::File created parsing YAML object files.
+///
+class YAMLFile : public ArchiveLibraryFile {
 public:
   YAMLFile()
-    : File("path")
-    , _lastRefIndex(0) {}
+    : ArchiveLibraryFile("<anonymous>")
+    , _lastRefIndex(0)
+    , _kind(File::kindObject) {
+  }
 
-  virtual const atom_collection<DefinedAtom>& defined() const {
+  ~YAMLFile();
+  
+  // Depending on the YAML description, this file can be either an
+  // lld::ArchiveLibraryFile or lld::File.
+  virtual File::Kind kind() const {
+    return _kind;
+  }
+
+  virtual const atom_collection<DefinedAtom> &defined() const {
     return _definedAtoms;
   }
-  virtual const atom_collection<UndefinedAtom>& undefined() const {
-      return _undefinedAtoms;
+  virtual const atom_collection<UndefinedAtom> &undefined() const {
+    return _undefinedAtoms;
   }
-  virtual const atom_collection<SharedLibraryAtom>& sharedLibrary() const {
-      return _sharedLibraryAtoms;
+  virtual const atom_collection<SharedLibraryAtom> &sharedLibrary() const {
+    return _sharedLibraryAtoms;
   }
-  virtual const atom_collection<AbsoluteAtom>& absolute() const {
-      return _absoluteAtoms;
+  virtual const atom_collection<AbsoluteAtom> &absolute() const {
+    return _absoluteAtoms;
   }
 
   virtual void addAtom(const Atom&) {
     assert(0 && "cannot add atoms to YAML files");
   }
 
-  void bindTargetReferences();
-  void addDefinedAtom(YAMLDefinedAtom* atom, const char* refName);
-  void addUndefinedAtom(UndefinedAtom* atom);
-  void addSharedLibraryAtom(SharedLibraryAtom* atom);
-  void addAbsoluteAtom(AbsoluteAtom* atom);
-  Atom* findAtom(const char* name);
+  // Standard way that archives are searched.
+  virtual const File *find(StringRef name, bool dataSymbolOnly) const;
 
+  error_code bindTargetReferences(llvm::yaml::Stream &stream);
+  
+  void addDefinedAtom(class YAMLDefinedAtom *atom, StringRef refName);
+  void addUndefinedAtom(UndefinedAtom *atom);
+  void addSharedLibraryAtom(SharedLibraryAtom *atom);
+  void addAbsoluteAtom(AbsoluteAtom *atom);
+  Atom *findAtom(StringRef name);
+  void addMember(StringRef);
+  void setName(StringRef);
+
+  StringRef copyString(StringRef);
+  
   struct NameAtomPair {
-                 NameAtomPair(const char* n, Atom* a) : name(n), atom(a) {}
-    const char*  name;
-    Atom*        atom;
+                 NameAtomPair(StringRef n, Atom *a) : name(n), atom(a) {}
+    StringRef name;
+    Atom     *atom;
   };
 
-  atom_collection_vector<DefinedAtom>         _definedAtoms;
-  atom_collection_vector<UndefinedAtom>       _undefinedAtoms;
-  atom_collection_vector<SharedLibraryAtom>   _sharedLibraryAtoms;
-  atom_collection_vector<AbsoluteAtom>        _absoluteAtoms;
-  std::vector<YAMLReference>                  _references;
-  std::vector<NameAtomPair>                   _nameToAtomMapping;
-  unsigned int                                _lastRefIndex;
+  atom_collection_vector<DefinedAtom>       _definedAtoms;
+  atom_collection_vector<UndefinedAtom>     _undefinedAtoms;
+  atom_collection_vector<SharedLibraryAtom> _sharedLibraryAtoms;
+  atom_collection_vector<AbsoluteAtom>      _absoluteAtoms;
+  std::vector<YAMLReference>                _references;
+  std::vector<NameAtomPair>                 _nameToAtomMapping;
+  std::vector<std::unique_ptr<YAMLFile>>    _memberFiles;
+  std::vector<char*>                        _stringCopies;
+  unsigned int                              _lastRefIndex;
+  File::Kind                                _kind;
 };
 
 
 
+///
+/// Concrete instance of lld::DefinedAtom created parsing YAML object files.
+///
 class YAMLDefinedAtom : public DefinedAtom {
 public:
   YAMLDefinedAtom( uint32_t ord
-          , YAMLFile& file
+          , YAMLFile &file
           , DefinedAtom::Scope scope
           , DefinedAtom::ContentType type
           , DefinedAtom::SectionChoice sectionChoice
@@ -361,10 +181,10 @@ public:
           , bool isThumb
           , bool isAlias
           , DefinedAtom::Alignment alignment
-          , const char* name
-          , const char* sectionName
+          , StringRef name
+          , StringRef sectionName
           , uint64_t size
-          , std::vector<uint8_t>* content)
+          , std::vector<uint8_t>& content)
     : _file(file)
     , _name(name)
     , _sectionName(sectionName)
@@ -386,19 +206,16 @@ public:
     file._lastRefIndex = _refEndIndex;
   }
 
-  virtual const class File& file() const {
+  virtual const class File &file() const {
     return _file;
   }
 
   virtual StringRef name() const {
-    if (_name == nullptr)
-      return StringRef();
-    else
-      return _name;
+    return _name;
   }
 
- virtual uint64_t size() const {
-    return (_content ? _content->size() : _size);
+  virtual uint64_t size() const {
+    return _content.empty() ? _size : _content.size();
   }
 
   virtual DefinedAtom::Scope scope() const {
@@ -445,11 +262,8 @@ public:
     return _isAlias;
   }
 
- ArrayRef<uint8_t> rawContent() const {
-    if (_content != nullptr)
-      return ArrayRef<uint8_t>(*_content);
-    else
-      return ArrayRef<uint8_t>();
+  ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>(_content);
   }
 
   virtual uint64_t ordinal() const {
@@ -482,23 +296,32 @@ public:
     it = reinterpret_cast<const void*>(index);
   }
 
-
-
-  void bindTargetReferences() const {
+  // Convert each target name to a pointer to an atom object
+  error_code bindTargetReferences(llvm::yaml::Stream &stream) const {
     for (unsigned int i=_refStartIndex; i < _refEndIndex; ++i) {
-      const char* targetName = _file._references[i]._targetName;
-      Atom* targetAtom = _file.findAtom(targetName);
-      _file._references[i]._target = targetAtom;
+      llvm::SmallString<32> storage;
+      llvm::yaml::ScalarNode *node = _file._references[i]._targetNameNode;
+      StringRef name = node->getValue(storage);
+      Atom *targetAtom = _file.findAtom(name);
+      if ( targetAtom ) {
+        _file._references[i]._target = targetAtom;
+      }
+      else {
+        stream.printError(node, "Fixup has target '" + name 
+                            + "' which does not exist");
+        return make_error_code(yaml_reader_error::illegal_value);
+      }
     }
+    return make_error_code(yaml_reader_error::success);
   }
 
 private:
-  YAMLFile&                   _file;
-  const char *                _name;
-  const char *                _sectionName;
+  YAMLFile                   &_file;
+  StringRef                   _name;
+  StringRef                   _sectionName;
   unsigned long               _size;
   uint32_t                    _ord;
-  std::vector<uint8_t>*       _content;
+  std::vector<uint8_t>        _content;
   DefinedAtom::Alignment      _alignment;
   DefinedAtom::Scope          _scope;
   DefinedAtom::ContentType    _type;
@@ -514,13 +337,23 @@ private:
 };
 
 
+
+///
+/// Concrete instance of lld::UndefinedAtom created parsing YAML object files.
+///
 class YAMLUndefinedAtom : public UndefinedAtom {
 public:
-        YAMLUndefinedAtom(YAMLFile& f, int32_t ord, const char* nm,
-                          UndefinedAtom::CanBeNull cbn)
-            : _file(f), _name(nm), _ordinal(ord), _canBeNull(cbn) { }
+  YAMLUndefinedAtom( YAMLFile &f
+                   , int32_t ord
+                   , StringRef name
+                   , UndefinedAtom::CanBeNull cbn)
+    : _file(f)
+    , _name(name)
+    , _ordinal(ord)
+    , _canBeNull(cbn) {
+  }
 
-  virtual const class File& file() const {
+  virtual const class File &file() const {
     return _file;
   }
 
@@ -532,24 +365,33 @@ public:
     return _canBeNull;
   }
 
-
 private:
-  YAMLFile&                   _file;
-  const char *                _name;
-  uint32_t                    _ordinal;
-  UndefinedAtom::CanBeNull     _canBeNull;
+  YAMLFile                &_file;
+  StringRef                _name;
+  uint32_t                 _ordinal;
+  UndefinedAtom::CanBeNull _canBeNull;
 };
 
 
 
+///
+/// Concrete instance of lld::SharedLibraryAtom created parsing YAML files.
+///
 class YAMLSharedLibraryAtom : public SharedLibraryAtom {
 public:
-        YAMLSharedLibraryAtom(YAMLFile& f, int32_t ord, const char* nm,
-                                const char* ldnm, bool cbn)
-            : _file(f), _name(nm), _ordinal(ord),
-              _loadName(ldnm), _canBeNull(cbn) { }
+  YAMLSharedLibraryAtom( YAMLFile &f
+                       , int32_t ord
+                       , StringRef name
+                       , StringRef loadName
+                       , bool cbn)
+    : _file(f)
+    , _name(name)
+    , _ordinal(ord)
+    , _loadName(loadName)
+    , _canBeNull(cbn) {
+  }
 
-  virtual const class File& file() const {
+  virtual const class File &file() const {
     return _file;
   }
 
@@ -558,33 +400,36 @@ public:
   }
 
   virtual StringRef loadName() const {
-    if ( _loadName == nullptr )
-      return StringRef();
-    else
-      return StringRef(_loadName);
+    return _loadName;
   }
 
   virtual bool canBeNullAtRuntime() const {
     return _canBeNull;
   }
 
-
 private:
-  YAMLFile&                   _file;
-  const char *                _name;
-  uint32_t                    _ordinal;
-  const char *                _loadName;
-  bool                        _canBeNull;
+  YAMLFile &_file;
+  StringRef _name;
+  uint32_t  _ordinal;
+  StringRef _loadName;
+  bool      _canBeNull;
 };
 
 
 
+///
+/// Concrete instance of lld::AbsoluteAtom created parsing YAML object files.
+///
 class YAMLAbsoluteAtom : public AbsoluteAtom {
 public:
-        YAMLAbsoluteAtom(YAMLFile& f, int32_t ord, const char* nm, uint64_t v)
-            : _file(f), _name(nm), _ordinal(ord), _value(v) { }
+  YAMLAbsoluteAtom(YAMLFile &f, int32_t ord, StringRef name, uint64_t v)
+    : _file(f)
+    , _name(name)
+    , _ordinal(ord)
+    , _value(v) {
+  }
 
-  virtual const class File& file() const {
+  virtual const class File &file() const {
     return _file;
   }
 
@@ -597,76 +442,184 @@ public:
   }
 
 private:
-  YAMLFile&        _file;
-  const char *     _name;
-  uint32_t         _ordinal;
-  uint64_t         _value;
+  YAMLFile &_file;
+  StringRef _name;
+  uint32_t  _ordinal;
+  uint64_t  _value;
 };
 
 
 
-void YAMLFile::bindTargetReferences() {
-    for (const DefinedAtom *defAtom : _definedAtoms) {
-      const YAMLDefinedAtom* atom = 
-                          reinterpret_cast<const YAMLDefinedAtom*>(defAtom);
-      atom->bindTargetReferences();
-    }
-}
 
-Atom* YAMLFile::findAtom(const char* name) {
-  for (std::vector<NameAtomPair>::const_iterator it = _nameToAtomMapping.begin();
-                                    it != _nameToAtomMapping.end(); ++it) {
-    if ( strcmp(name, it->name) == 0 )
-      return it->atom;
+//===----------------------------------------------------------------------===//
+//  YAMLFile methods
+//===----------------------------------------------------------------------===//
+
+YAMLFile::~YAMLFile() {
+  for (char *s : _stringCopies) {
+    delete [] s;
   }
-  llvm::report_fatal_error("reference to atom that does not exist");
 }
 
-void YAMLFile::addDefinedAtom(YAMLDefinedAtom* atom, const char* refName) {
+
+error_code YAMLFile::bindTargetReferences(llvm::yaml::Stream &stream) {
+  error_code ec;
+  for (const DefinedAtom *defAtom : _definedAtoms) {
+    const YAMLDefinedAtom *atom =
+      reinterpret_cast<const YAMLDefinedAtom*>(defAtom);
+    ec = atom->bindTargetReferences(stream);
+    if ( ec )
+      return ec;
+  }
+  return ec;
+}
+
+Atom *YAMLFile::findAtom(StringRef name) {
+  for (auto &ci : _nameToAtomMapping) {
+    if (ci.name == name)
+      return ci.atom;
+  }
+  return nullptr;
+}
+
+void YAMLFile::addDefinedAtom(YAMLDefinedAtom *atom, StringRef refName) {
   _definedAtoms._atoms.push_back(atom);
-  assert(refName != nullptr);
   _nameToAtomMapping.push_back(NameAtomPair(refName, atom));
 }
 
-void YAMLFile::addUndefinedAtom(UndefinedAtom* atom) {
+void YAMLFile::addUndefinedAtom(UndefinedAtom *atom) {
   _undefinedAtoms._atoms.push_back(atom);
-  _nameToAtomMapping.push_back(NameAtomPair(atom->name().data(), atom));
+  _nameToAtomMapping.push_back(NameAtomPair(atom->name(), atom));
 }
 
-void YAMLFile::addSharedLibraryAtom(SharedLibraryAtom* atom) {
+void YAMLFile::addSharedLibraryAtom(SharedLibraryAtom *atom) {
   _sharedLibraryAtoms._atoms.push_back(atom);
-  _nameToAtomMapping.push_back(NameAtomPair(atom->name().data(), atom));
+  _nameToAtomMapping.push_back(NameAtomPair(atom->name(), atom));
 }
 
-void YAMLFile::addAbsoluteAtom(AbsoluteAtom* atom) {
+void YAMLFile::addAbsoluteAtom(AbsoluteAtom *atom) {
   _absoluteAtoms._atoms.push_back(atom);
-  _nameToAtomMapping.push_back(NameAtomPair(atom->name().data(), atom));
+  _nameToAtomMapping.push_back(NameAtomPair(atom->name(), atom));
+}
+
+void YAMLFile::setName(StringRef name) {
+  _path = StringRef(name);
 }
 
 
-class YAMLAtomState {
+// Allocate a new copy of this string and keep track of allocations
+// in _stringCopies, so they can be freed when YAMLFile is destroyed.
+StringRef YAMLFile::copyString(StringRef str) {
+  char* s = new char[str.size()];
+  memcpy(s, str.data(), str.size());
+  _stringCopies.push_back(s);
+  return StringRef(s, str.size());
+}
+
+const File *YAMLFile::find(StringRef name, bool dataSymbolOnly) const {
+  for (auto &file : _memberFiles) {
+    for (const DefinedAtom *atom : file->defined() ) {
+      if (name == atom->name())
+        return file.get();
+    }
+  }
+  return nullptr;
+}
+
+
+
+///
+/// The state machine that drives the YAMLParser stream and instantiates
+/// Files and Atoms.  This class also buffers all the attribures for the 
+/// current atom and current fixup.  Once all attributes are accumulated,  
+/// a new atom or fixup instance is instantiated.
+///
+class YAMLState {
 public:
-  YAMLAtomState(Platform& platform);
+  YAMLState(Platform &platform, llvm::yaml::Stream *s, YAMLFile *f);
 
-  void setName(const char *n);
-  void setRefName(const char *n);
-  void setAlign2(const char *n);
+  void        parse(llvm::yaml::Node *node, StringRef keyword, 
+                                        llvm::yaml::Node *keywordNode=nullptr);
+  error_code  error() { return _error; }
+  
+private:
+  typedef llvm::yaml::Node Node;
+  typedef llvm::yaml::ScalarNode ScalarNode;
+  typedef llvm::yaml::SequenceNode SequenceNode;
+  typedef llvm::yaml::MappingNode MappingNode;
+  typedef llvm::yaml::Stream Stream;
 
-  void setFixupKind(const char *n);
-  void setFixupTarget(const char *n);
-  void addFixup(YAMLFile *f);
+  void resetState();
+  void setAlign2(StringRef n);
 
-  void makeAtom(YAMLFile&);
+  void makeReference();
+  void makeAtom(Node *node);
+  void makeDefinedAtom(Node *node);
+  void makeUndefinedAtom(Node *node);
+  void makeSharedLibraryAtom(Node *node);
+  void makeAbsoluteAtom(Node *node);
+ 
+  void parseMemberName(ScalarNode *node);
+  void parseAtomName(ScalarNode *node);
+  void parseAtomRefName(ScalarNode *node);
+  void parseAtomType(ScalarNode *node);
+  void parseAtomScope(ScalarNode *node);
+  void parseAtomDefinition(ScalarNode *node);
+  void parseAtomDeadStrip(ScalarNode *node);
+  void parseAtomSectionChoice(ScalarNode *node);
+  void parseAtomInterposable(ScalarNode *node);
+  void parseAtomMerge(ScalarNode *node);
+  void parseAtomIsThumb(ScalarNode *node);
+  void parseAtomIsAlias(ScalarNode *node);
+  void parseAtomSectionName(ScalarNode *node);
+  void parseAtomSize(ScalarNode *node);
+  void parseAtomPermissions(ScalarNode *node);
+  void parseAtomCanBeNull(ScalarNode *node);
+  void parseFixUpOffset(ScalarNode *node);
+  void parseFixUpKind(ScalarNode *node);
+  void parseFixUpTarget(ScalarNode *node);
+  void parseFixUpAddend(ScalarNode *node);
+  void parseAtomContentByte(ScalarNode *node);
+  void parseAtomLoadName(ScalarNode *node);
+  void parseAtomValue(ScalarNode *node);
 
-  Platform&                   _platform;
-  const char *                _name;
-  const char *                _refName;
-  const char *                _sectionName;
-  const char*                 _loadName;
+  StringRef extractString(ScalarNode *node);
+
+  typedef void (YAMLState:: *ParseScalar)(ScalarNode *node);
+  typedef void (YAMLState:: *ParseSeq)(SequenceNode *node);
+  typedef void (YAMLState:: *ParseMap)(MappingNode *node);
+
+  enum State { inError, inTop, inDoc, inArch, inMemb, 
+              inAtoms, inAtom, inFixUps, inFixUp, inBytes };
+  struct Transistion {
+    State         state;
+    const char*   keyword;
+    State         newState;
+    ParseScalar   customAction;
+  };
+
+  static const char* stateName(State);
+
+  void moveToState(State s);
+  void returnToState(State s, Node *node);
+  
+  static const Transistion _s_transistions[];
+
+  Platform                   &_platform;
+  error_code                  _error;
+  llvm::yaml::Stream         *_stream;
+  YAMLFile                   *_file;
+  YAMLFile                   *_archiveFile;
+  State                       _state;
+  StringRef                   _name;
+  StringRef                   _refName;
+  StringRef                   _sectionName;
+  StringRef                   _loadName;
+  StringRef                   _memberName;
   unsigned long long          _size;
   uint64_t                    _value;
   uint32_t                    _ordinal;
-  std::vector<uint8_t>*       _content;
+  std::vector<uint8_t>        _content;
   DefinedAtom::Alignment      _alignment;
   Atom::Definition            _definition;
   DefinedAtom::Scope          _scope;
@@ -680,330 +633,610 @@ public:
   bool                        _isAlias;
   UndefinedAtom::CanBeNull    _canBeNull;
   YAMLReference               _ref;
+  bool                        _hasDefinedAtomAttributes;
+  bool                        _hasUndefinedAtomAttributes;
+  bool                        _hasSharedLibraryAtomAttributes;
+  bool                        _hasAbsoluteAtomAttributes;
 };
 
 
-YAMLAtomState::YAMLAtomState(Platform& platform)
+//
+// This transition table is the heart of the state machine.  
+// The table is read left-to-right columns A,B,C,D as:  
+//    If the state is A and key B is seen switch to state C then
+//    if D is not nullptr call that method with the key's value,
+//    if D is nullptr, recursively parse in the new state.
+//
+const YAMLState::Transistion YAMLState::_s_transistions[] = {
+  { inTop,   "<root>",         inDoc,   nullptr                            },
+  { inDoc,   "archive",        inArch,  nullptr                            },
+  { inArch,  "<any-seq-item>", inMemb,  nullptr                            },
+  { inMemb,  "atoms",          inAtoms, nullptr                            },
+  { inMemb,  "name",           inMemb,  &YAMLState::parseMemberName        },
+  { inDoc,   "atoms",          inAtoms, nullptr                            },
+  { inAtoms, "<any-seq-item>", inAtom,  nullptr                            },
+  { inAtom,  "name",           inAtom,  &YAMLState::parseAtomName          },
+  { inAtom,  "ref-name",       inAtom,  &YAMLState::parseAtomRefName       },
+  { inAtom,  "type",           inAtom,  &YAMLState::parseAtomType          },
+  { inAtom,  "scope",          inAtom,  &YAMLState::parseAtomScope         },
+  { inAtom,  "definition",     inAtom,  &YAMLState::parseAtomDefinition    },
+  { inAtom,  "dead-strip",     inAtom,  &YAMLState::parseAtomDeadStrip     },
+  { inAtom,  "section-choice", inAtom,  &YAMLState::parseAtomSectionChoice },
+  { inAtom,  "interposable",   inAtom,  &YAMLState::parseAtomInterposable  },
+  { inAtom,  "merge",          inAtom,  &YAMLState::parseAtomMerge         },
+  { inAtom,  "is-thumb",       inAtom,  &YAMLState::parseAtomIsThumb       },
+  { inAtom,  "is-alias",       inAtom,  &YAMLState::parseAtomIsAlias       },
+  { inAtom,  "section-name",   inAtom,  &YAMLState::parseAtomSectionName   },
+  { inAtom,  "size",           inAtom,  &YAMLState::parseAtomSize          },
+  { inAtom,  "permissions",    inAtom,  &YAMLState::parseAtomPermissions   },
+  { inAtom,  "can-be-null",    inAtom,  &YAMLState::parseAtomCanBeNull     },
+  { inAtom,  "content",        inBytes, nullptr                            },
+  { inAtom,  "fixups",         inFixUps,nullptr                            },
+  { inBytes, "<any-seq-item>", inBytes, &YAMLState::parseAtomContentByte   },
+  { inFixUps,"<any-seq-item>", inFixUp, nullptr                            },
+  { inFixUp, "offset",         inFixUp, &YAMLState::parseFixUpOffset       },
+  { inFixUp, "kind",           inFixUp, &YAMLState::parseFixUpKind         },
+  { inFixUp, "target",         inFixUp, &YAMLState::parseFixUpTarget       },
+  { inFixUp, "addend",         inFixUp, &YAMLState::parseFixUpAddend       },
+  { inAtom,  "load-name",      inAtom,  &YAMLState::parseAtomLoadName      },
+  { inAtom,  "value",          inAtom,  &YAMLState::parseAtomValue         },
+  { inError,  nullptr,         inAtom,  nullptr                            },
+};
+
+
+
+YAMLState::YAMLState(Platform &platform, Stream *stream, YAMLFile *file)
   : _platform(platform)
-  , _name(nullptr)
-  , _refName(nullptr)
-  , _sectionName(nullptr)
-  , _loadName(nullptr)
-  , _size(0)
-  , _value(0)
-  , _ordinal(0)
-  , _content(nullptr)
-  , _alignment(0, 0)
-  , _definition(KeyValues::definitionDefault)
-  , _scope(KeyValues::scopeDefault)
-  , _type(KeyValues::contentTypeDefault)
-  , _sectionChoice(KeyValues::sectionChoiceDefault)
-  , _interpose(KeyValues::interposableDefault)
-  , _merge(KeyValues::mergeDefault)
-  , _deadStrip(KeyValues::deadStripKindDefault)
-  , _permissions(KeyValues::permissionsDefault)
-  , _isThumb(KeyValues::isThumbDefault)
-  , _isAlias(KeyValues::isAliasDefault)
-  , _canBeNull(KeyValues::canBeNullDefault)
-  {
-  }
+  , _error(make_error_code(yaml_reader_error::success))
+  , _stream(stream)
+  , _file(file)
+  , _archiveFile(nullptr)
+  , _state(inTop) 
+  , _alignment(0, 0) {
+  this->resetState();
+}
 
-
-void YAMLAtomState::makeAtom(YAMLFile& f) {
-  if ( _definition == Atom::definitionRegular ) {
-    YAMLDefinedAtom *a = new YAMLDefinedAtom(_ordinal, f, _scope, _type,
-                          _sectionChoice, _interpose, _merge, _deadStrip,
-                          _permissions, _isThumb, _isAlias,
-                          _alignment, _name, _sectionName, _size, _content);
-    f.addDefinedAtom(a, _refName ? _refName : _name);
-    ++_ordinal;
+void YAMLState::makeAtom(Node *node) {
+  switch (_definition ) {
+    case Atom::definitionRegular:
+      this->makeDefinedAtom(node);
+      break;
+    case Atom::definitionUndefined:
+      this->makeUndefinedAtom(node);
+      break;
+    case Atom::definitionSharedLibrary:
+      this->makeSharedLibraryAtom(node);
+      break;
+    case Atom::definitionAbsolute:
+      this->makeAbsoluteAtom(node);
+      break;
   }
-  else if ( _definition == Atom::definitionUndefined ) {
-    UndefinedAtom *a = new YAMLUndefinedAtom(f, _ordinal, _name, _canBeNull);
-    f.addUndefinedAtom(a);
-    ++_ordinal;
-  }
-  else if ( _definition == Atom::definitionSharedLibrary ) {
-    bool nullable = (_canBeNull == UndefinedAtom::canBeNullAtRuntime);
-    SharedLibraryAtom *a = new YAMLSharedLibraryAtom(f, _ordinal, _name,
-                                                      _loadName, nullable);
-    f.addSharedLibraryAtom(a);
-    ++_ordinal;
-  }
-   else if ( _definition == Atom::definitionAbsolute ) {
-    AbsoluteAtom *a = new YAMLAbsoluteAtom(f, _ordinal, _name, _value);
-    f.addAbsoluteAtom(a);
-    ++_ordinal;
-  }
-
+  ++_ordinal;
+  
   // reset state for next atom
-  _name             = nullptr;
-  _refName          = nullptr;
-  _sectionName      = nullptr;
-  _loadName         = nullptr;
-  _size             = 0;
-  _value            = 0;
-  _ordinal          = 0;
-  _content          = nullptr;
-  _alignment.powerOf2= 0;
-  _alignment.modulus = 0;
-  _definition       = KeyValues::definitionDefault;
-  _scope            = KeyValues::scopeDefault;
-  _type             = KeyValues::contentTypeDefault;
-  _sectionChoice    = KeyValues::sectionChoiceDefault;
-  _interpose        = KeyValues::interposableDefault;
-  _merge            = KeyValues::mergeDefault;
-  _deadStrip        = KeyValues::deadStripKindDefault;
-  _permissions      = KeyValues::permissionsDefault;
-  _isThumb          = KeyValues::isThumbDefault;
-  _isAlias          = KeyValues::isAliasDefault;
-  _canBeNull        = KeyValues::canBeNullDefault;
-  _ref._target       = nullptr;
-  _ref._targetName   = nullptr;
-  _ref._addend       = 0;
-  _ref._offsetInAtom = 0;
-  _ref._kind         = 0;
+  this->resetState();
 }
 
-void YAMLAtomState::setName(const char *n) {
-  _name = n;
+void YAMLState::makeDefinedAtom(Node *node) {
+  if ( _hasAbsoluteAtomAttributes ) {
+    _stream->printError(node, "Defined atom '" + _name 
+                          + "' has attributes only allowed on absolute atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  if ( _hasSharedLibraryAtomAttributes ) {
+    _stream->printError(node, "Defined atom '" + _name 
+                    + "' has attributes only allowed on shared library atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+
+  YAMLDefinedAtom *a = new YAMLDefinedAtom(_ordinal, *_file, _scope, _type
+                         , _sectionChoice, _interpose, _merge, _deadStrip
+                         , _permissions, _isThumb, _isAlias, _alignment
+                         , _name, _sectionName, _size, _content);
+    _file->addDefinedAtom(a, !_refName.empty() ? _refName : _name);
 }
 
-void YAMLAtomState::setRefName(const char *n) {
-  _refName = n;
+void YAMLState::makeUndefinedAtom(Node *node) {
+  if ( _hasDefinedAtomAttributes ) {
+    _stream->printError(node, "Undefined atom '" + _name 
+                          + "' has attributes only allowed on defined atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  if ( _hasAbsoluteAtomAttributes ) {
+    _stream->printError(node, "Defined atom '" + _name 
+                          + "' has attributes only allowed on absolute atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  UndefinedAtom *a = new YAMLUndefinedAtom(*_file, _ordinal, _name, _canBeNull);
+  _file->addUndefinedAtom(a);
 }
 
-void YAMLAtomState::setAlign2(const char *s) {
+void YAMLState::makeSharedLibraryAtom(Node *node) {
+  if ( _hasDefinedAtomAttributes ) {
+    _stream->printError(node, "SharedLibrary atom '" + _name 
+                          + "' has attributes only allowed on defined atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  if ( _hasAbsoluteAtomAttributes ) {
+    _stream->printError(node, "Defined atom '" + _name 
+                          + "' has attributes only allowed on absolute atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  bool nullable = (_canBeNull == UndefinedAtom::canBeNullAtRuntime);
+  SharedLibraryAtom *a = new YAMLSharedLibraryAtom(*_file, _ordinal, _name,
+                                                    _loadName, nullable);
+  _file->addSharedLibraryAtom(a);
+}
+
+void YAMLState::makeAbsoluteAtom(Node *node) {
+  if ( _hasDefinedAtomAttributes ) {
+    _stream->printError(node, "Absolute atom '" + _name 
+                          + "' has attributes only allowed on defined atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  if ( _hasSharedLibraryAtomAttributes ) {
+    _stream->printError(node, "Absolute atom '" + _name 
+                    + "' has attributes only allowed on shared library atoms");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  AbsoluteAtom *a = new YAMLAbsoluteAtom(*_file, _ordinal, _name, _value);
+  _file->addAbsoluteAtom(a);
+}
+
+
+
+void YAMLState::resetState() {
+  _name               = StringRef();
+  _refName            = StringRef();
+  _sectionName        = StringRef();
+  _loadName           = StringRef();
+  _memberName         = StringRef();
+  _size               = 0;
+  _value              = 0;
+  _ordinal            = 0;
+  _content.clear();
+  _alignment.powerOf2 = 0;
+  _alignment.modulus  = 0;
+  _definition         = KeyValues::definitionDefault;
+  _scope              = KeyValues::scopeDefault;
+  _type               = KeyValues::contentTypeDefault;
+  _sectionChoice      = KeyValues::sectionChoiceDefault;
+  _interpose          = KeyValues::interposableDefault;
+  _merge              = KeyValues::mergeDefault;
+  _deadStrip          = KeyValues::deadStripKindDefault;
+  _permissions        = KeyValues::permissionsDefault;
+  _isThumb            = KeyValues::isThumbDefault;
+  _isAlias            = KeyValues::isAliasDefault;
+  _canBeNull          = KeyValues::canBeNullDefault;
+  _ref._target        = nullptr;
+  _ref._targetNameNode= nullptr;
+  _ref._addend        = 0;
+  _ref._offsetInAtom  = 0;
+  _ref._kind          = 0;
+  
+  _hasDefinedAtomAttributes = false;
+  _hasUndefinedAtomAttributes = false;
+  _hasSharedLibraryAtomAttributes = false;
+  _hasAbsoluteAtomAttributes = false;
+}
+
+
+void YAMLState::makeReference() {
+  _file->_references.push_back(_ref);
+  // clear for next ref
+  _ref._target        = nullptr;
+  _ref._targetNameNode= nullptr;
+  _ref._addend        = 0;
+  _ref._offsetInAtom  = 0;
+  _ref._kind          = 0;
+}
+
+
+
+void YAMLState::setAlign2(StringRef s) {
   if (StringRef(s).getAsInteger(10, _alignment.powerOf2))
     _alignment.powerOf2 = 1;
 }
 
-void YAMLAtomState::setFixupKind(const char *s) {
-  _ref._kind = _platform.kindFromString(StringRef(s));
+
+// For debug logging
+const char* YAMLState::stateName(State s) {
+  switch ( s ) {
+    case inError:
+      return "inError";
+    case inTop:
+      return "inTop";
+    case inDoc:
+      return "inDoc";
+    case inArch:
+      return "inArch";
+    case inMemb:
+      return "inMemb";
+    case inAtoms:
+      return "inAtoms";
+    case inAtom:
+      return "inAtom";
+    case inFixUps:
+      return "inFixUps";
+    case inFixUp:
+      return "inFixUp";
+    case inBytes:
+      return "inBytes";
+  }
+  return "unknown case";
 }
 
-void YAMLAtomState::setFixupTarget(const char *s) {
-  _ref._targetName = s;
+// Called by parse() when recursing and switching to a new state.
+void YAMLState::moveToState(State newState) {
+  if ( newState == _state )
+    return;
+  DEBUG(llvm::dbgs() << "moveToState(" << stateName(newState) 
+                     << "), _state=" << stateName(_state) << "\n");
+  
+  if ( newState == inArch ) {
+    // Seen "archive:", repurpose existing YAMLFile to be archive file
+    _file->_kind = File::kindArchiveLibrary;
+    _archiveFile = _file;
+    _file = nullptr;
+  }
+  
+  if ( newState == inMemb ) {
+    assert(_state == inArch);
+    // Make new YAMLFile for this member
+    std::unique_ptr<YAMLFile> memberFile(new YAMLFile);
+    _file = memberFile.get();
+    assert(_archiveFile != nullptr);
+    _archiveFile->_memberFiles.emplace_back(memberFile.release());
+  }
+
+  _state = newState;
+}
+
+// Called by parse() when returning from recursion and restoring the old state.
+void YAMLState::returnToState(State prevState, Node *node) {
+  if ( prevState == _state )
+    return;
+  DEBUG(llvm::dbgs() << "returnToState(" << stateName(prevState) 
+                     << "), _state=" << stateName(_state) << "\n");
+  // If done with an atom, instantiate an object for it.
+  if ( (_state == inAtom) && (prevState == inAtoms) )
+    this->makeAtom(node);
+  // If done wit a fixup, instantiate an object for it.
+  if ( (_state == inFixUp) && (prevState == inFixUps) )
+    this->makeReference();
+  _state = prevState;
+}
+
+// If a string in the yaml document is quoted in a way that there is no
+// contiguous range of bytes that a StringRef can point to, then we make
+// a copy of the string and have the StringRef point to that.
+StringRef YAMLState::extractString(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  StringRef str = node->getValue(storage);
+  if ( str.data() == storage.begin() ) {
+    str = _file->copyString(str);
+  }
+  return str;
 }
 
 
-void YAMLAtomState::addFixup(YAMLFile *f) {
-  f->_references.push_back(_ref);
-  // clear for next ref
-  _ref._target       = nullptr;
-  _ref._targetName   = nullptr;
-  _ref._addend       = 0;
-  _ref._offsetInAtom = 0;
-  _ref._kind         = 0;
+void YAMLState::parseMemberName(ScalarNode *node) {
+   _memberName = extractString(node);
+}
+
+void YAMLState::parseAtomName(ScalarNode *node) {
+   _name = extractString(node);
+}
+
+void YAMLState::parseAtomRefName(ScalarNode *node) {
+   _refName = extractString(node);
+}
+
+void YAMLState::parseAtomScope(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::scope(node->getValue(storage), _scope) ) {
+    _stream->printError(node, "Invalid value for 'scope:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomDefinition(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::definition(node->getValue(storage), _definition) ) {
+    _stream->printError(node, "Invalid value for 'definition:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+}
+
+void YAMLState::parseAtomType(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::contentType(node->getValue(storage), _type) ) {
+    _stream->printError(node, "Invalid value for 'type:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomDeadStrip(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::deadStripKind(node->getValue(storage), _deadStrip) ) {
+    _stream->printError(node, "Invalid value for 'dead-strip:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomSectionChoice(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::sectionChoice(node->getValue(storage), _sectionChoice) ) {
+    _stream->printError(node, "Invalid value for 'section-choice:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomInterposable(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::interposable(node->getValue(storage), _interpose) ) {
+    _stream->printError(node, "Invalid value for 'interposable:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomMerge(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::merge(node->getValue(storage), _merge) ) {
+    _stream->printError(node, "Invalid value for 'merge:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomIsThumb(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::isThumb(node->getValue(storage), _isThumb) ) {
+    _stream->printError(node, "Invalid value for 'thumb:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomIsAlias(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::isAlias(node->getValue(storage), _isAlias) ) {
+    _stream->printError(node, "Invalid value for 'is-alias:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomSectionName(ScalarNode *node) {
+  _sectionName = extractString(node);
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomSize(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  StringRef offsetStr = node->getValue(storage);
+  if ( offsetStr.getAsInteger(0, _size) ) {
+    _stream->printError(node, "Invalid value for atom 'size:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomPermissions(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::permissions(node->getValue(storage), _permissions) ) {
+    _stream->printError(node, "Invalid value for 'permissions:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomCanBeNull(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  if ( KeyValues::canBeNull(node->getValue(storage), _canBeNull) ) {
+    _stream->printError(node, "Invalid value for 'can-be-null:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+}
+
+void YAMLState::parseFixUpOffset(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  StringRef offsetStr = node->getValue(storage);
+  if ( offsetStr.getAsInteger(0, _ref._offsetInAtom) ) {
+    _stream->printError(node, "Invalid value for fixup 'offset:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseFixUpKind(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  _ref._kind = _platform.kindFromString(node->getValue(storage));
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseFixUpTarget(ScalarNode *node) {
+  _ref._targetNameNode = node;
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseFixUpAddend(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  StringRef offsetStr = node->getValue(storage);
+  if ( offsetStr.getAsInteger(0, _ref._addend) ) {
+    _stream->printError(node, "Invalid value for fixup 'addend:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomContentByte(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  StringRef str = node->getValue(storage);
+  unsigned int contentByte;
+  if ( str.getAsInteger(16, contentByte) ) {
+    _stream->printError(node, "Invalid content hex byte '0x" + str + "'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+    return;
+  }
+  if (contentByte > 0xFF) {
+    _stream->printError(node, "Content hex byte out of range (0x" 
+                                                       + str + " > 0xFF)");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+    return;
+  }
+  _content.push_back(contentByte & 0xFF);
+  _hasDefinedAtomAttributes = true;
+}
+
+void YAMLState::parseAtomLoadName(ScalarNode *node) {
+  _loadName = extractString(node);
+  _hasSharedLibraryAtomAttributes = true;
 }
 
 
-} // anonymous namespace
+void YAMLState::parseAtomValue(ScalarNode *node) {
+  llvm::SmallString<32> storage;
+  StringRef offsetStr = node->getValue(storage);
+  if ( offsetStr.getAsInteger(0, _value) ) {
+    _stream->printError(node, "Invalid value for fixup 'addend:'");
+    _error = make_error_code(yaml_reader_error::illegal_value);
+  }
+  _hasAbsoluteAtomAttributes = true;
+}
 
-
-
+//
+// This is the parsing engine that walks the nodes in the yaml document
+// stream.  It is table driven.  See _s_transistions.
+//
+void YAMLState::parse(Node *node, StringRef keyword, Node *keywordNode) {
+  using namespace llvm::yaml;
+  DEBUG(llvm::dbgs() << "parse(" << keyword << "), _state=" 
+                     << stateName(_state) << "\n");
+  if ( _error )
+    return;
+  State savedState = _state;
+  for(const Transistion* t=_s_transistions; t->state != inError; ++t) {
+    if ( t->state != _state )
+      continue;
+    if ( ! keyword.equals(t->keyword) )
+      continue;    
+    ParseScalar action = t->customAction;
+    this->moveToState(t->newState);
+    if ( ScalarNode *sc = llvm::dyn_cast<ScalarNode>(node) ) {
+      if ( action ) {
+        (*this.*action)(sc);
+      }
+      else {
+        _stream->printError(node, "unexpected scalar");
+        _error = make_error_code(yaml_reader_error::illegal_value);
+      }
+    }
+    else if ( SequenceNode *seq = llvm::dyn_cast<SequenceNode>(node) ) {
+      if ( action ) {
+        _stream->printError(node, "unexpected sequence");
+        _error = make_error_code(yaml_reader_error::illegal_value);
+      }
+      else {
+        for (Node &seqEntry : *seq ) {
+          this->parse(&seqEntry, StringRef("<any-seq-item>"));
+          if ( _error )
+            break;
+        }
+      }
+    }
+    else if ( MappingNode *map = llvm::dyn_cast<MappingNode>(node) ) {
+      if ( action ) {
+        _stream->printError(node, "unexpected map");
+        _error = make_error_code(yaml_reader_error::illegal_value);
+      }
+      else {
+        llvm::SmallString<32> storage;
+        for (auto &keyVal : *map) {
+          ScalarNode *keyScalar = llvm::dyn_cast<ScalarNode>(keyVal.getKey());
+          llvm::StringRef keyStr = keyScalar->getValue(storage);
+          this->parse(keyVal.getValue(), keyStr, keyScalar);
+          if ( _error )
+            break;
+        }
+      }
+    }
+    else {
+      _stream->printError(node, "unexpected node type");
+      _error = make_error_code(yaml_reader_error::illegal_value);
+    }
+    this->returnToState(savedState, node);
+    return;
+  }
+  switch (_state) {
+    case inAtom:
+      _stream->printError(keywordNode, "Unknown atom attribute '" 
+                                        + keyword + ":'");
+      break;
+    case inFixUp:
+      _stream->printError(keywordNode, "Unknown fixup attribute '" 
+                                        + keyword + ":'");
+      break;
+    case inDoc:
+      _stream->printError(keywordNode, "Unknown file attribute '" 
+                                        + keyword + ":'");
+      break;
+    default:
+      _stream->printError(keywordNode, "Unknown keyword '" 
+                                        + keyword + ":'");
+  }
+  _error = make_error_code(yaml_reader_error::illegal_value);
+}
 
 
 /// parseObjectText - Parse the specified YAML formatted MemoryBuffer
 /// into lld::File object(s) and append each to the specified vector<File*>.
 error_code parseObjectText( llvm::MemoryBuffer *mb
-                          , Platform& platform
-                          , std::vector<const File *> &result) {
-  std::vector<const YAML::Entry *> entries;
-  YAML::parse(mb, entries);
+                    , Platform& platform
+                    , std::vector<std::unique_ptr<const File>> &result) {
+  llvm::SourceMgr       srcMgr;
+  llvm::yaml::Stream    stream(mb->getBuffer(), srcMgr);
 
-  YAMLFile *file = nullptr;
-  YAMLAtomState atomState(platform);
-  bool inAtoms       = false;
-  bool inFixups      = false;
-  int depthForAtoms  = -1;
-  int depthForFixups = -1;
-  int lastDepth      = -1;
-  bool haveAtom      = false;
-  bool haveFixup     = false;
+  for (llvm::yaml::Document &d : stream) {
+    std::unique_ptr<YAMLFile> curFile(new YAMLFile);
+    if (llvm::isa<llvm::yaml::NullNode>(d.getRoot()))
+      continue; // Empty files are allowed.
+    YAMLState yamlState(platform, &stream, curFile.get());
+    yamlState.parse(d.getRoot(), StringRef("<root>"));
 
-  for (std::vector<const YAML::Entry *>::iterator it = entries.begin();
-       it != entries.end(); ++it) {
-    const YAML::Entry *entry = *it;
-
-    if (entry->beginDocument) {
-      if (file != nullptr) {
-        if (haveAtom) {
-          atomState.makeAtom(*file);
-          haveAtom = false;
-        }
-        file->bindTargetReferences();
-        result.push_back(file);
-      }
-      file = new YAMLFile();
-      inAtoms = false;
-      depthForAtoms = -1;
-    }
-    if (lastDepth > entry->depth) {
-      // end of fixup sequence
-      if (haveFixup) {
-        atomState.addFixup(file);
-        haveFixup = false;
-      }
-    }
-
-    if (inAtoms && (depthForAtoms == -1)) {
-      depthForAtoms = entry->depth;
-    }
-    if (inFixups && (depthForFixups == -1)) {
-      depthForFixups = entry->depth;
-    }
-    if (strcmp(entry->key, "atoms") == 0) {
-      inAtoms = true;
-    }
-    if (inAtoms) {
-      if (depthForAtoms == entry->depth) {
-        if (entry->beginSequence) {
-          if (haveAtom) {
-            atomState.makeAtom(*file);
-            haveAtom = false;
-          }
-        }
-        if (strcmp(entry->key, KeyValues::nameKeyword) == 0) {
-          atomState.setName(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::refNameKeyword) == 0) {
-          atomState.setRefName(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::definitionKeyword) == 0) {
-          atomState._definition = KeyValues::definition(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::scopeKeyword) == 0) {
-          atomState._scope = KeyValues::scope(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::contentTypeKeyword) == 0) {
-          atomState._type = KeyValues::contentType(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::deadStripKindKeyword) == 0) {
-          atomState._deadStrip = KeyValues::deadStripKind(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::sectionChoiceKeyword) == 0) {
-          atomState._sectionChoice = KeyValues::sectionChoice(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::mergeKeyword) == 0) {
-          atomState._merge = KeyValues::merge(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::interposableKeyword) == 0) {
-          atomState._interpose = KeyValues::interposable(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::isThumbKeyword) == 0) {
-          atomState._isThumb = KeyValues::isThumb(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::isAliasKeyword) == 0) {
-          atomState._isAlias = KeyValues::isAlias(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::canBeNullKeyword) == 0) {
-          atomState._canBeNull = KeyValues::canBeNull(entry->value);
-          if ( atomState._definition == Atom::definitionSharedLibrary ) {
-            if ( atomState._canBeNull == UndefinedAtom::canBeNullAtBuildtime )
-              return make_error_code(yaml_reader_error::illegal_value);
-          }
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::sectionNameKeyword) == 0) {
-          atomState._sectionName = entry->value;
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::sizeKeyword) == 0) {
-          StringRef val = entry->value;
-          if (val.getAsInteger(0, atomState._size))
-            return make_error_code(yaml_reader_error::illegal_value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::contentKeyword) == 0) {
-          atomState._content = entry->valueSequenceBytes;
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, "align2") == 0) {
-          atomState.setAlign2(entry->value);
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::fixupsKeyword) == 0) {
-          inFixups = true;
-        }
-        else if (strcmp(entry->key, KeyValues::loadNameKeyword) == 0) {
-          atomState._loadName = entry->value;
-          haveAtom = true;
-        }
-        else if (strcmp(entry->key, KeyValues::valueKeyword) == 0) {
-          llvm::APInt Val;
-          StringRef(entry->value).getAsInteger(0, Val);
-          atomState._value = Val.getZExtValue();
-          haveAtom = true;
-        }
-        else {
-          return make_error_code(yaml_reader_error::unknown_keyword);
-        }
-      }
-      else if (depthForFixups == entry->depth) {
-        if (entry->beginSequence) {
-          if (haveFixup) {
-            atomState.addFixup(file);
-            haveFixup = false;
-          }
-        }
-        if (strcmp(entry->key, KeyValues::fixupsKindKeyword) == 0) {
-          atomState.setFixupKind(entry->value);
-          haveFixup = true;
-        }
-        else if (strcmp(entry->key, KeyValues::fixupsOffsetKeyword) == 0) {
-          if (StringRef(entry->value).getAsInteger(0,
-               atomState._ref._offsetInAtom))
-            return make_error_code(yaml_reader_error::illegal_value);
-          haveFixup = true;
-        }
-        else if (strcmp(entry->key, KeyValues::fixupsTargetKeyword) == 0) {
-          atomState.setFixupTarget(entry->value);
-          haveFixup = true;
-        }
-        else if (strcmp(entry->key, KeyValues::fixupsAddendKeyword) == 0) {
-          StringRef Addend(entry->value);
-          if (Addend.getAsInteger(0, atomState._ref._addend))
-            return make_error_code(yaml_reader_error::illegal_value);
-          haveFixup = true;
-        }
-      }
-    }
-    lastDepth = entry->depth;
+    if ( stream.failed() ) 
+      return make_error_code(yaml_reader_error::illegal_value);
+    if ( yamlState.error() ) 
+      return yamlState.error();
+    
+    error_code ec = curFile->bindTargetReferences(stream);
+    if ( ec )
+      return ec;
+    result.emplace_back(curFile.release());
   }
-  if (haveAtom) {
-    atomState.makeAtom(*file);
-  }
-  if (file != nullptr) {
-    file->bindTargetReferences();
-    result.push_back(file);
-  }
+
   return make_error_code(yaml_reader_error::success);
 }
+
 
 
 //
 // Fill in vector<File*> from path to input text file.
 //
-error_code parseObjectTextFileOrSTDIN( StringRef path
-                                     , Platform&  platform
-                                     , std::vector<const File*>& result) {
+error_code 
+parseObjectTextFileOrSTDIN( StringRef path
+                          , Platform&  platform
+                          , std::vector<std::unique_ptr<const File>>& result) {
   OwningPtr<llvm::MemoryBuffer> mb;
   if (error_code ec = llvm::MemoryBuffer::getFileOrSTDIN(path, mb))
     return ec;
 
-  return parseObjectText(mb.get(), platform, result);
+  return parseObjectText(mb.take(), platform, result);
 }
 
 } // namespace yaml

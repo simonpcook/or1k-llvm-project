@@ -71,6 +71,9 @@ public:
     void
     QueryNoAckModeSupported ();
 
+    void
+    GetListThreadsInStopReplySupported ();
+
     bool
     SendAsyncSignal (int signo);
 
@@ -196,9 +199,15 @@ public:
     bool
     DeallocateMemory (lldb::addr_t addr);
 
+    bool
+    Detach ();
+
     lldb_private::Error
     GetMemoryRegionInfo (lldb::addr_t addr, 
                         lldb_private::MemoryRegionInfo &range_info); 
+
+    lldb_private::Error
+    GetWatchpointSupportInfo (uint32_t &num); 
 
     const lldb_private::ArchSpec &
     GetHostArchitecture ();
@@ -228,6 +237,9 @@ public:
 
     bool
     GetHostname (std::string &s);
+
+    lldb::addr_t
+    GetShlibInfoAddr();
 
     bool
     GetSupportsThreadSuffix ();
@@ -335,6 +347,7 @@ protected:
     //------------------------------------------------------------------
     lldb_private::LazyBool m_supports_not_sending_acks;
     lldb_private::LazyBool m_supports_thread_suffix;
+    lldb_private::LazyBool m_supports_threads_in_stop_reply;
     lldb_private::LazyBool m_supports_vCont_all;
     lldb_private::LazyBool m_supports_vCont_any;
     lldb_private::LazyBool m_supports_vCont_c;
@@ -344,6 +357,7 @@ protected:
     lldb_private::LazyBool m_qHostInfo_is_valid;
     lldb_private::LazyBool m_supports_alloc_dealloc_memory;
     lldb_private::LazyBool m_supports_memory_region_info;
+    lldb_private::LazyBool m_supports_watchpoint_support_info;
 
     bool
         m_supports_qProcessInfoPID:1,
@@ -361,6 +375,8 @@ protected:
     lldb::tid_t m_curr_tid;         // Current gdb remote protocol thread index for all other operations
     lldb::tid_t m_curr_tid_run;     // Current gdb remote protocol thread index for continue, step, etc
 
+
+    uint32_t m_num_supported_hardware_watchpoints;
 
     // If we need to send a packet while the target is running, the m_async_XXX
     // member variables take care of making this happen.

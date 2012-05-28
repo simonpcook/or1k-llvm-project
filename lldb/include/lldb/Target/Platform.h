@@ -58,7 +58,8 @@ namespace lldb_private {
         GetDefaultPlatform ();
 
         static lldb::PlatformSP
-        GetPlatformForArchitecture (const ArchSpec &arch);
+        GetPlatformForArchitecture (const ArchSpec &arch,
+                                    ArchSpec *platform_arch_ptr);
 
         static const char *
         GetHostPlatformName ();
@@ -70,7 +71,7 @@ namespace lldb_private {
         Create (const char *platform_name, Error &error);
 
         static lldb::PlatformSP
-        Create (const ArchSpec &arch, Error &error);
+        Create (const ArchSpec &arch, ArchSpec *platform_arch_ptr, Error &error);
         
         static uint32_t
         GetNumConnectedRemotePlatforms ();
@@ -284,7 +285,7 @@ namespace lldb_private {
         /// architecture and the target triple contained within.
         //------------------------------------------------------------------
         virtual bool
-        IsCompatibleWithArchitecture (const ArchSpec &arch);
+        IsCompatibleArchitecture (const ArchSpec &arch, ArchSpec *compatible_arch_ptr = NULL);
 
         //------------------------------------------------------------------
         /// Not all platforms will support debugging a process by spawning
@@ -367,6 +368,15 @@ namespace lldb_private {
 
         virtual bool
         GetProcessInfo (lldb::pid_t pid, ProcessInstanceInfo &proc_info);
+        
+        //------------------------------------------------------------------
+        // Set a breakpoint on all functions that can end up creating a thread
+        // for this platform. This is needed when running expressions and
+        // also for process control.
+        //------------------------------------------------------------------
+        virtual lldb::BreakpointSP
+        SetThreadCreationBreakpoint (Target &target);
+        
 
         const std::string &
         GetRemoteURL () const

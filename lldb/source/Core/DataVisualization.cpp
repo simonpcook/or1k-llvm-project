@@ -103,12 +103,42 @@ DataVisualization::GetSummaryFormat (ValueObject& valobj,
     return GetFormatManager().GetSummaryFormat(valobj, use_dynamic);
 }
 
+lldb::TypeSummaryImplSP
+DataVisualization::GetSummaryForType (lldb::TypeNameSpecifierImplSP type_sp)
+{
+    return GetFormatManager().GetSummaryForType(type_sp);
+}
+
+#ifndef LLDB_DISABLE_PYTHON
 lldb::SyntheticChildrenSP
 DataVisualization::GetSyntheticChildren (ValueObject& valobj,
                                          lldb::DynamicValueType use_dynamic)
 {
     return GetFormatManager().GetSyntheticChildren(valobj, use_dynamic);
 }
+#endif
+
+#ifndef LLDB_DISABLE_PYTHON
+lldb::SyntheticChildrenSP
+DataVisualization::GetSyntheticChildrenForType (lldb::TypeNameSpecifierImplSP type_sp)
+{
+    return GetFormatManager().GetSyntheticChildrenForType(type_sp);
+}
+#endif
+
+lldb::TypeFilterImplSP
+DataVisualization::GetFilterForType (lldb::TypeNameSpecifierImplSP type_sp)
+{
+    return GetFormatManager().GetFilterForType(type_sp);
+}
+
+#ifndef LLDB_DISABLE_PYTHON
+lldb::TypeSyntheticImplSP
+DataVisualization::GetSyntheticForType (lldb::TypeNameSpecifierImplSP type_sp)
+{
+    return GetFormatManager().GetSyntheticForType(type_sp);
+}
+#endif
 
 bool
 DataVisualization::AnyMatches (ConstString type_name,

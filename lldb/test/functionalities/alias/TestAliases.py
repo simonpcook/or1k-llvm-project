@@ -28,6 +28,23 @@ class AliasTestCase(TestBase):
                     patterns = [ "Current executable set to .*a.out" ])
 
 
+        def cleanup():
+            self.runCmd('command unalias hello', check=False)
+            self.runCmd('command unalias python', check=False)
+            self.runCmd('command unalias pp', check=False)
+            self.runCmd('command unalias alias', check=False)
+            self.runCmd('command unalias unalias', check=False)
+            self.runCmd('command unalias myrun', check=False)
+            self.runCmd('command unalias bp', check=False)
+            self.runCmd('command unalias bpa', check=False)
+            self.runCmd('command unalias bpi', check=False)
+            self.runCmd('command unalias bfl', check=False)
+            self.runCmd('command unalias exprf', check=False)
+            self.runCmd('command unalias exprf2', check=False)
+
+        # Execute the cleanup function during test case tear down.
+        self.addTearDownHook(cleanup)
+
         self.runCmd (r'''command alias hello expr (int) printf ("\n\nHello, anybody!\n\n")''')
 
         self.runCmd ("command alias python script")
@@ -90,16 +107,16 @@ class AliasTestCase(TestBase):
 
 
         self.expect ("help run",
-                     substrs = [ "'run' is an abbreviation for 'process launch --'" ])
+                     substrs = [ "'run' is an abbreviation for 'process launch -c /bin/bash --'" ])
 
         self.expect ("help -a run",
-                     substrs = [ "'run' is an abbreviation for 'process launch --'" ])
+                     substrs = [ "'run' is an abbreviation for 'process launch -c /bin/bash --'" ])
 
         self.expect ("help -a",
-                     substrs = [ 'run', 'process launch' ])
+                     substrs = [ 'run', 'process launch -c /bin/bash' ])
 
         self.expect ("help", matching=False,
-                     substrs = [ "'run'", 'process launch' ])
+                     substrs = [ "'run'", 'process launch -c /bin/bash' ])
 
         self.expect ("run",
                      patterns = [ "Process .* launched: .*a.out" ])

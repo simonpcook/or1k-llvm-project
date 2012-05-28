@@ -21,7 +21,7 @@
                 <div class="post">
 
                     <p>Below is a table of LLDB commands with the GDB counterparts.
-                        The built in GDB compatability aliases in GDB are also
+                        The built in GDB-compatibility aliases in LLDB are also
                         listed.</p>
                 </div>
                 <div class="postfooter"></div>
@@ -694,7 +694,11 @@
                             <b>(lldb)</b> me r -o /tmp/mem.bin -b 0x1000 0x1200<br>
                         </td>
                     </tr>
-
+                    <tr>
+                        <td class="content" colspan="2">
+                            <b>(gdb)</b> dump memory /tmp/mem.bin 0x1000 0x2000
+                        </td>
+                    </tr>
                     <tr><td class="header" colspan="2">Disassemble the current function for the current frame.</td></tr>
                     <tr>
                         <td class="content">
@@ -871,6 +875,30 @@
                     </table>
                     <p>
                 </div>
+            <div class="postfooter"></div>
+            <h1 class ="postheader">Miscellaneous</h1>
+                <div class="post">
+                    <p>
+                    <table class="stats" width="620" cellspacing="0">
+                    <tr>
+                        <td class="hed" width="50%">LLDB</td>
+                        <td class="hed" width="50%">GDB</td>
+                    </tr>
+
+                    <tr><td class="header" colspan="2">Echo text to the screen.</td></tr>
+                    <tr>
+                        <td class="content">
+                            <b>(lldb)</b> script print &quot;Here is some text&quot;<br>
+                        </td>
+                        <td class="content">
+                            <b>(gdb)</b> echo Here is some text\n<br>
+                        </td>
+                    </tr>
+
+                    </table>
+                    <p>
+                </div>
+
                 <div class="postfooter"></div>
 
                 <p>

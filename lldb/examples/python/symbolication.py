@@ -206,7 +206,7 @@ class Image:
         print "%s%s" % (prefix, self)
     
     def __str__(self):
-        s = "%s %s" % (self.get_uuid(), self.get_resolved_path())
+        s = "%s %s %s" % (self.get_uuid(), self.version, self.get_resolved_path())
         for section_info in self.section_infos:
             s += ", %s" % (section_info)
         if self.slide != None:
@@ -282,17 +282,16 @@ class Image:
     def add_module(self, target):
         '''Add the Image described in this object to "target" and load the sections if "load" is True.'''
         if target:
-            resolved_path = self.get_resolved_path();
             # Try and find using UUID only first so that paths need not match up
-            if self.uuid:
-                self.module = target.AddModule (None, None, str(self.uuid))
+            uuid_str = self.get_normalized_uuid_string()
+            if uuid_str:
+                self.module = target.AddModule (None, None, uuid_str)
             if not self.module:
-                if self.locate_module_and_debug_symbols ():
-                    path_spec = lldb.SBFileSpec (resolved_path)
-                    #print 'target.AddModule (path="%s", arch="%s", uuid=%s)' % (resolved_path, self.arch, self.uuid)
-                    self.module = target.AddModule (resolved_path, self.arch, self.uuid)
+                self.locate_module_and_debug_symbols ()
+                resolved_path = self.get_resolved_path()
+                self.module = target.AddModule (resolved_path, self.arch, uuid_str, self.symfile)
             if not self.module:
-                return 'error: unable to get module for (%s) "%s"' % (self.arch, resolved_path)
+                return 'error: unable to get module for (%s) "%s"' % (self.arch, self.get_resolved_path())
             if self.has_section_load_info():
                 return self.load_module(target)
             else:
@@ -310,9 +309,14 @@ class Image:
         return True
     
     def get_uuid(self):
-        if not self.uuid:
+        if not self.uuid and self.module:
             self.uuid = uuid.UUID(self.module.GetUUIDString())
         return self.uuid
+
+    def get_normalized_uuid_string(self):
+        if self.uuid:
+            return str(self.uuid).upper()
+        return None
 
     def create_target(self):
         '''Create a target using the information in this Image object.'''

@@ -28,7 +28,7 @@ live atoms, and then delete the non-live atoms.
 Atom Model
 ----------
 
-An atom is an indivisible chuck of code or data.  Typically each user written
+An atom is an indivisible chunk of code or data.  Typically each user written
 function or global variable is an atom.  In addition, the compiler may emit
 other atoms, such as for literal c-strings or floating point constants, or for
 runtime data structures like dwarf unwind info or pointers to initializers.
@@ -40,7 +40,7 @@ A simple "hello world" object file would be modeled like this:
 There are three atoms: main, a proxy for printf, and an anonymous atom
 containing the c-string literal "hello world".  The Atom "main" has two
 references. One is the call site for the call to printf, and the other is a
-refernce for the instruction that loads the address of the c-string literal.
+reference for the instruction that loads the address of the c-string literal.
 
 File Model
 ----------
@@ -111,7 +111,7 @@ they have no notion of file formats such as mach-o or ELF.
 Resolving
 ~~~~~~~~~
 
-The resolving step takes all the atoms graphs from each object file and combines
+The resolving step takes all the atoms' graphs from each object file and combines
 them into one master object graph.  Unfortunately, it is not as simple as
 appending the atom list from each file into one big list.  There are many cases
 where atoms need to be coalesced.  That is, two or more atoms need to be
@@ -126,7 +126,7 @@ that can be merged.
 
 The resolving process maintains some global linking "state", including a "symbol
 table" which is a map from llvm::StringRef to lld::Atom*.  With these data
-structures, the linker iterates all atoms in all input files. F or each atom, it
+structures, the linker iterates all atoms in all input files. For each atom, it
 checks if the atom is named and has a global or hidden scope.  If so, the atom
 is added to the symbol table map.  If there already is a matching atom in that
 table, that means the current atom needs to be coalesced with the found atom, or
@@ -144,7 +144,7 @@ executable) and follows each references and marks each Atom that it visits as
 "live".  When done, all atoms not marked "live" are removed.
 
 The result of the Resolving phase is the creation of an lld::File object.  The
-goal is that the lld::File model is <b>the</b> internal representation
+goal is that the lld::File model is **the** internal representation
 throughout the linker. The file readers parse (mach-o, ELF, COFF) into an
 lld::File.  The file writers (mach-o, ELF, COFF) taken an lld::File and produce
 their file kind, and every Pass only operates on an lld::File.  This is not only
@@ -195,6 +195,19 @@ Generate Output File
 Once the passes are done, the output file writer is given current lld::File
 object.  The writer's job is to create the executable content file wrapper and
 place the content of the atoms into it.
+
+Sometimes the output generator needs access to particular atoms (for instance,
+it may need to know which atom is "main" in order to specifiy the entry 
+point in the executable.  The way to do this is to have the platform create
+an Atom with a Reference to the required atom(s) and provide this atom
+in the initialize set of atoms for the resolver.  If a particular symbol name
+is required, this arrangment will also cause core linking to fail if the
+symbol is not defined (e.g. "main" is undefined).
+
+Sometimes a platform supports lazily created symbols.  To support this, the
+platform can create a File object which vends no initial atoms, but does
+lazily supply atoms by name as needed.  
+
 
 lld::File representations
 -------------------------
@@ -247,7 +260,7 @@ data in existing native object files.
 
 With this model for the native file format, files can be read and turned
 into the in-memory graph of lld::Atoms with just a few memory allocations.  
-And the format can easily adapt over time to new features
+And the format can easily adapt over time to new features.
 
 
 Textual representations in YAML
@@ -380,7 +393,7 @@ File Attributes
 ~~~~~~~~~~~~~~~
 
 Currently, lld::File just has a path and a way to iterate its atoms. We will
-need to add mores attributes on a File.  For example, some equivalent to the
+need to add more attributes on a File.  For example, some equivalent to the
 target triple.  There is also a number of cached or computed attributes that
 could make various Passes more efficient.  For instance, on Darwin there are a
 number of Objective-C optimizations that can be done by a Pass.  But it would

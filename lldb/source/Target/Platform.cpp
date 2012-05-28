@@ -13,6 +13,7 @@
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
+#include "lldb/Breakpoint/BreakpointIDList.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/PluginManager.h"
@@ -130,22 +131,26 @@ Platform::Create (const char *platform_name, Error &error)
 
 
 PlatformSP
-Platform::Create (const ArchSpec &arch, Error &error)
+Platform::Create (const ArchSpec &arch, ArchSpec *platform_arch_ptr, Error &error)
 {
     lldb::PlatformSP platform_sp;
     if (arch.IsValid())
     {
+        uint32_t idx;
         PlatformCreateInstance create_callback;
-        for (uint32_t idx = 0; (create_callback = PluginManager::GetPlatformCreateCallbackAtIndex (idx)); ++idx)
+        for (idx = 0; (create_callback = PluginManager::GetPlatformCreateCallbackAtIndex (idx)); ++idx)
         {
             if (create_callback)
                 platform_sp.reset(create_callback(false, &arch));
-            if (platform_sp && platform_sp->IsCompatibleWithArchitecture(arch))
-                break;
+            if (platform_sp && platform_sp->IsCompatibleArchitecture(arch, platform_arch_ptr))
+                return platform_sp;
         }
     }
     else
         error.SetErrorString ("invalid platform name");
+    if (platform_arch_ptr)
+        platform_arch_ptr->Clear();
+    platform_sp.reset();
     return platform_sp;
 }
 
@@ -574,7 +579,12 @@ Platform::LaunchProcess (ProcessLaunchInfo &launch_info)
         if (launch_info.GetFlags().Test (eLaunchFlagLaunchInShell))
         {
             const bool is_localhost = true;
-            if (!launch_info.ConvertArgumentsForLaunchingInShell (error, is_localhost))
+            const bool will_debug = launch_info.GetFlags().Test(eLaunchFlagDebug);
+            const bool first_arg_is_full_shell_command = false;
+            if (!launch_info.ConvertArgumentsForLaunchingInShell (error,
+                                                                  is_localhost,
+                                                                  will_debug,
+                                                                  first_arg_is_full_shell_command))
                 return error;
         }
 
@@ -627,12 +637,12 @@ Platform::DebugProcess (ProcessLaunchInfo &launch_info,
 
 
 lldb::PlatformSP
-Platform::GetPlatformForArchitecture (const ArchSpec &arch)
+Platform::GetPlatformForArchitecture (const ArchSpec &arch, ArchSpec *platform_arch_ptr)
 {
     lldb::PlatformSP platform_sp;
     Error error;
     if (arch.IsValid())
-        platform_sp = Platform::Create (arch, error);
+        platform_sp = Platform::Create (arch, platform_arch_ptr, error);
     return platform_sp;
 }
 
@@ -642,20 +652,31 @@ Platform::GetPlatformForArchitecture (const ArchSpec &arch)
 /// architecture and the target triple contained within.
 //------------------------------------------------------------------
 bool
-Platform::IsCompatibleWithArchitecture (const ArchSpec &arch)
+Platform::IsCompatibleArchitecture (const ArchSpec &arch, ArchSpec *compatible_arch_ptr)
 {
     // If the architecture is invalid, we must answer true...
-    if (!arch.IsValid())
-        return true;
-    
-    ArchSpec platform_arch;
-    for (uint32_t arch_idx=0; GetSupportedArchitectureAtIndex (arch_idx, platform_arch); ++arch_idx)
+    if (arch.IsValid())
     {
-        if (arch == platform_arch)
-            return true;
+        ArchSpec platform_arch;
+        for (uint32_t arch_idx=0; GetSupportedArchitectureAtIndex (arch_idx, platform_arch); ++arch_idx)
+        {
+            if (arch == platform_arch)
+            {
+                if (compatible_arch_ptr)
+                    *compatible_arch_ptr = platform_arch;
+                return true;
+            }
+        }
     }
+    if (compatible_arch_ptr)
+        compatible_arch_ptr->Clear();
     return false;
     
 }
 
+lldb::BreakpointSP
+Platform::SetThreadCreationBreakpoint (lldb_private::Target &target)
+{
+    return lldb::BreakpointSP();
+}
 

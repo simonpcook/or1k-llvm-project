@@ -75,8 +75,8 @@ OperatingSystemDarwinKernel::CreateInstance (Process *process, bool force)
             }
         }
 
-        // We can limit the creation of this plug-in to "*-apple-darwin" triples
-        // if we command out the lines below...
+        // We can limit the creation of this plug-in to "*-apple-macosx" or "*-apple-ios" triples
+        // if we comment out the lines below...
 //        if (create)
 //        {
 //            const llvm::Triple &triple_ref = process->GetTarget().GetArchitecture().GetTriple();
@@ -223,7 +223,7 @@ OperatingSystemDarwinKernel::GetPluginVersion()
     return 1;
 }
 
-uint32_t
+bool
 OperatingSystemDarwinKernel::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_thread_list)
 {
     // Make any constant strings once and cache the uniqued C string values
@@ -263,7 +263,7 @@ OperatingSystemDarwinKernel::UpdateThreadList (ThreadList &old_thread_list, Thre
         }
         next_valobj_sp.swap(valobj_sp);
     }
-    return new_thread_list.GetSize(false);
+    return new_thread_list.GetSize(false) > 0;
 }
 
 void

@@ -143,6 +143,26 @@ public:
     static bool
     GetCompleteDecl (clang::ASTContext *ast,
                      clang::Decl *decl);
+
+    void SetMetadata (uintptr_t object,
+                      uint64_t metadata)
+    {
+        SetMetadata(getASTContext(), object, metadata);
+    }
+    
+    static void
+    SetMetadata (clang::ASTContext *ast,
+                 uintptr_t object,
+                 uint64_t metadata);
+    
+    uint64_t GetMetadata (uintptr_t object)
+    {
+        return GetMetadata(getASTContext(), object);
+    }
+    
+    static uint64_t
+    GetMetadata (clang::ASTContext *ast,
+                 uintptr_t object);
     
     //------------------------------------------------------------------
     // Basic Types
@@ -270,7 +290,8 @@ public:
                       lldb::AccessType access_type,
                       const char *name,
                       int kind,
-                      lldb::LanguageType language);
+                      lldb::LanguageType language,
+                      uint64_t metadata = 0);
 
     static clang::FieldDecl *
     AddFieldToRecordType (clang::ASTContext *ast,
@@ -428,7 +449,8 @@ public:
     CreateObjCClass (const char *name, 
                      clang::DeclContext *decl_ctx, 
                      bool isForwardDecl, 
-                     bool isInternal);
+                     bool isInternal,
+                     uint64_t metadata = 0);
     
     static clang::FieldDecl *
     AddObjCClassIVar (clang::ASTContext *ast,
@@ -466,7 +488,8 @@ public:
         clang::ObjCIvarDecl *ivar_decl,   
         const char *property_setter_name,
         const char *property_getter_name,
-        uint32_t property_attributes
+        uint32_t property_attributes,
+        uint64_t metadata = 0
     );
 
     bool
@@ -478,7 +501,8 @@ public:
         clang::ObjCIvarDecl *ivar_decl,   
         const char *property_setter_name,
         const char *property_getter_name,
-        uint32_t property_attributes
+        uint32_t property_attributes,
+        uint64_t metadata = 0
     )
     {
         return ClangASTContext::AddObjCClassProperty (getASTContext(),
@@ -488,7 +512,8 @@ public:
                                                       ivar_decl,
                                                       property_setter_name,
                                                       property_getter_name,
-                                                      property_attributes);
+                                                      property_attributes,
+                                                      metadata);
     }
     
     bool
@@ -929,15 +954,6 @@ public:
     //------------------------------------------------------------------
     static unsigned
     GetTypeQualifiers(lldb::clang_type_t clang_type);
-    
-    //------------------------------------------------------------------
-    // Flags
-    //------------------------------------------------------------------
-    static uint64_t
-    GetTypeFlags(clang::ASTContext *ast, lldb::clang_type_t clang_type);
-    
-    static void
-    SetTypeFlags(clang::ASTContext *ast, lldb::clang_type_t clang_type, uint64_t flags);
 protected:
     //------------------------------------------------------------------
     // Classes that inherit from ClangASTContext can see and modify these

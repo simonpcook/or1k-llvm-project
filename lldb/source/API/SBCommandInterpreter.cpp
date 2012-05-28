@@ -93,7 +93,7 @@ SBCommandInterpreter::HandleCommand (const char *command_line, SBCommandReturnOb
         TargetSP target_sp(m_opaque_ptr->GetDebugger().GetSelectedTarget());
         Mutex::Locker api_locker;
         if (target_sp)
-            api_locker.Reset(target_sp->GetAPIMutex().GetMutex());
+            api_locker.Lock(target_sp->GetAPIMutex());
         m_opaque_ptr->HandleCommand (command_line, add_to_history, result.ref());
     }
     else
@@ -238,7 +238,7 @@ SBCommandInterpreter::SourceInitFileInHomeDirectory (SBCommandReturnObject &resu
         TargetSP target_sp(m_opaque_ptr->GetDebugger().GetSelectedTarget());
         Mutex::Locker api_locker;
         if (target_sp)
-            api_locker.Reset(target_sp->GetAPIMutex().GetMutex());
+            api_locker.Lock(target_sp->GetAPIMutex());
         m_opaque_ptr->SourceInitFile (false, result.ref());
     }
     else
@@ -263,7 +263,7 @@ SBCommandInterpreter::SourceInitFileInCurrentWorkingDirectory (SBCommandReturnOb
         TargetSP target_sp(m_opaque_ptr->GetDebugger().GetSelectedTarget());
         Mutex::Locker api_locker;
         if (target_sp)
-            api_locker.Reset(target_sp->GetAPIMutex().GetMutex());
+            api_locker.Lock(target_sp->GetAPIMutex());
         m_opaque_ptr->SourceInitFile (true, result.ref());
     }
     else
@@ -317,9 +317,11 @@ SBCommandInterpreter::SetCommandOverrideCallback (const char *command_name,
 {
     if (command_name && command_name[0] && m_opaque_ptr)
     {
-        CommandObject *cmd_obj = m_opaque_ptr->GetCommandObject(command_name);
+        std::string command_name_str (command_name);
+        CommandObject *cmd_obj = m_opaque_ptr->GetCommandObjectForCommand(command_name_str);
         if (cmd_obj)
         {
+            assert(command_name_str.empty());
             cmd_obj->SetOverrideCallback (callback, baton);
             return true;
         }

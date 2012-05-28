@@ -733,7 +733,10 @@ public:
     }
 
     bool
-    ConvertArgumentsForLaunchingInShell (Error &error, bool localhost);
+    ConvertArgumentsForLaunchingInShell (Error &error,
+                                         bool localhost,
+                                         bool will_debug,
+                                         bool first_arg_is_full_shell_command);
     
     void
     SetMonitorProcessCallback (Host::MonitorChildProcessCallback callback, 
@@ -791,7 +794,8 @@ public:
         ProcessInstanceInfo(),
         m_plugin_name (),
         m_resume_count (0),
-        m_wait_for_launch (false)
+        m_wait_for_launch (false),
+        m_continue_once_attached (false)
     {
     }
 
@@ -799,7 +803,8 @@ public:
         ProcessInstanceInfo(),
         m_plugin_name (),
         m_resume_count (0),
-        m_wait_for_launch (false)
+        m_wait_for_launch (false),
+        m_continue_once_attached (false)
     {
         ProcessInfo::operator= (launch_info);
         SetProcessPluginName (launch_info.GetProcessPluginName());
@@ -816,6 +821,18 @@ public:
     SetWaitForLaunch (bool b)
     {
         m_wait_for_launch = b;
+    }
+
+    bool
+    GetContinueOnceAttached () const
+    {
+        return m_continue_once_attached;
+    }
+    
+    void
+    SetContinueOnceAttached (bool b)
+    {
+        m_continue_once_attached = b;
     }
 
     uint32_t
@@ -871,6 +888,7 @@ protected:
     std::string m_plugin_name;
     uint32_t m_resume_count; // How many times do we resume after launching
     bool m_wait_for_launch;
+    bool m_continue_once_attached; // Supports the use-case scenario of immediately continuing the process once attached.
 };
 
 class ProcessLaunchCommandOptions : public Options
@@ -1766,6 +1784,12 @@ public:
     /// re-enabling breakpoints, and enabling the basic flow control
     /// that the plug-in instances need not worry about.
     ///
+    /// N.B. This function also sets the Write side of the Run Lock,
+    /// which is unset when the corresponding stop event is pulled off
+    /// the Public Event Queue.  If you need to resume the process without
+    /// setting the Run Lock, use PrivateResume (though you should only do
+    /// that from inside the Process class.
+    ///
     /// @return
     ///     Returns an error object.
     ///
@@ -1774,8 +1798,8 @@ public:
     /// @see Thread:Suspend()
     //------------------------------------------------------------------
     Error
-    Resume ();
-
+    Resume();
+    
     //------------------------------------------------------------------
     /// Halts a running process.
     ///
@@ -2260,6 +2284,18 @@ public:
         return m_target;
     }
 
+    //------------------------------------------------------------------
+    /// Flush all data in the process.
+    ///
+    /// Flush the memory caches, all threads, and any other cached data
+    /// in the process.
+    ///
+    /// This function can be called after a world changing event like
+    /// adding a new symbol file, or after the process makes a large
+    /// context switch (from boot ROM to booted into an OS).
+    //------------------------------------------------------------------
+    void
+    Flush ();
 
     //------------------------------------------------------------------
     /// Get accessor for the current process state.
@@ -2301,6 +2337,16 @@ protected:
 
     lldb::StateType
     GetPrivateState ();
+
+    //------------------------------------------------------------------
+    /// The "private" side of resuming a process.  This doesn't alter the
+    /// state of m_run_lock, but just causes the process to resume.
+    ///
+    /// @return
+    ///     An Error object describing the success or failure of the resume.
+    //------------------------------------------------------------------
+    Error
+    PrivateResume ();
 
     //------------------------------------------------------------------
     // Called internally
@@ -2476,6 +2522,11 @@ public:
     ReadCStringFromMemory (lldb::addr_t vm_addr, 
                            char *cstr, 
                            size_t cstr_max_len,
+                           Error &error);
+
+    size_t
+    ReadCStringFromMemory (lldb::addr_t vm_addr,
+                           std::string &out_str,
                            Error &error);
 
     size_t
@@ -2683,6 +2734,14 @@ public:
     {
         Error error;
         error.SetErrorString ("Process::GetMemoryRegionInfo() not supported");
+        return error;
+    }
+
+    virtual Error
+    GetWatchpointSupportInfo (uint32_t &num)
+    {
+        Error error;
+        error.SetErrorString ("Process::GetWatchpointSupportInfo() not supported");
         return error;
     }
 
@@ -2937,7 +2996,7 @@ public:
     //------------------------------------------------------------------
     // Thread Queries
     //------------------------------------------------------------------
-    virtual uint32_t
+    virtual bool
     UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_thread_list) = 0;
 
     void
@@ -3050,6 +3109,9 @@ public:
 
     virtual ObjCLanguageRuntime *
     GetObjCLanguageRuntime (bool retry_if_null = true);
+    
+    bool
+    IsPossibleDynamicValue (ValueObject& in_value);
     
     bool
     IsRunning () const;
@@ -3200,7 +3262,7 @@ protected:
         }
         
         virtual EventActionResult PerformAction (lldb::EventSP &event_sp) = 0;
-        virtual void HandleBeingUnshipped () {};
+        virtual void HandleBeingUnshipped () {}
         virtual EventActionResult HandleBeingInterrupted () = 0;
         virtual const char *GetExitString() = 0;
     protected:
@@ -3255,6 +3317,17 @@ protected:
     //------------------------------------------------------------------
     typedef std::map<lldb::LanguageType, lldb::LanguageRuntimeSP> LanguageRuntimeCollection;
 
+    struct PreResumeCallbackAndBaton
+    {
+        bool (*callback) (void *);
+        void *baton;
+        PreResumeCallbackAndBaton (PreResumeActionCallback in_callback, void *in_baton) :
+            callback (in_callback),
+            baton (in_baton)
+        {
+        }
+    };
+    
     //------------------------------------------------------------------
     // Member variables
     //------------------------------------------------------------------
@@ -3290,18 +3363,6 @@ protected:
     bool                        m_should_detach;   /// Should we detach if the process object goes away with an explicit call to Kill or Detach?
     LanguageRuntimeCollection 	m_language_runtimes;
     std::auto_ptr<NextEventAction> m_next_event_action_ap;
-    
-    struct PreResumeCallbackAndBaton
-    {
-        bool (*callback) (void *);
-        void *baton;
-        PreResumeCallbackAndBaton (PreResumeActionCallback in_callback, void *in_baton) :
-            callback (in_callback),
-            baton (in_baton)
-        {
-        }
-    };
-    
     std::vector<PreResumeCallbackAndBaton> m_pre_resume_actions;
     ReadWriteLock               m_run_lock;
 

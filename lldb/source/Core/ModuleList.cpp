@@ -110,11 +110,45 @@ ModuleList::Remove (const ModuleSP &module_sp)
     return false;
 }
 
+bool
+ModuleList::RemoveIfOrphaned (const Module *module_ptr)
+{
+    if (module_ptr)
+    {
+        Mutex::Locker locker(m_modules_mutex);
+        collection::iterator pos, end = m_modules.end();
+        for (pos = m_modules.begin(); pos != end; ++pos)
+        {
+            if (pos->get() == module_ptr)
+            {
+                if (pos->unique())
+                {
+                    pos = m_modules.erase (pos);
+                    return true;
+                }
+                else
+                    return false;
+            }
+        }
+    }
+    return false;
+}
 
 size_t
-ModuleList::RemoveOrphans ()
+ModuleList::RemoveOrphans (bool mandatory)
 {
-    Mutex::Locker locker(m_modules_mutex);
+    Mutex::Locker locker;
+    
+    if (mandatory)
+    {
+        locker.Lock (m_modules_mutex);
+    }
+    else
+    {
+        // Not mandatory, remove orphans if we can get the mutex
+        if (!locker.TryLock(m_modules_mutex))
+            return 0;
+    }
     collection::iterator pos = m_modules.begin();
     size_t remove_count = 0;
     while (pos != m_modules.end())
@@ -587,9 +621,9 @@ ModuleList::FindSharedModules (const ModuleSpec &module_spec, ModuleList &matchi
 }
 
 uint32_t
-ModuleList::RemoveOrphanSharedModules ()
+ModuleList::RemoveOrphanSharedModules (bool mandatory)
 {
-    return GetSharedModuleList ().RemoveOrphans();    
+    return GetSharedModuleList ().RemoveOrphans(mandatory);
 }
 
 Error
@@ -804,6 +838,12 @@ bool
 ModuleList::RemoveSharedModule (lldb::ModuleSP &module_sp)
 {
     return GetSharedModuleList ().Remove (module_sp);
+}
+
+bool
+ModuleList::RemoveSharedModuleIfOrphaned (const Module *module_ptr)
+{
+    return GetSharedModuleList ().RemoveIfOrphaned (module_ptr);
 }
 
 

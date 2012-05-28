@@ -71,13 +71,22 @@ ProcessKDP::CanDebug(Target &target, bool plugin_specified_by_name)
     if (exe_module)
     {
         const llvm::Triple &triple_ref = target.GetArchitecture().GetTriple();
-        if (triple_ref.getOS() == llvm::Triple::Darwin && 
-            triple_ref.getVendor() == llvm::Triple::Apple)
+        switch (triple_ref.getOS())
         {
-            ObjectFile *exe_objfile = exe_module->GetObjectFile();
-            if (exe_objfile->GetType() == ObjectFile::eTypeExecutable && 
-                exe_objfile->GetStrata() == ObjectFile::eStrataKernel)
-                return true;
+            case llvm::Triple::Darwin:  // Should use "macosx" for desktop and "ios" for iOS, but accept darwin just in case
+            case llvm::Triple::MacOSX:  // For desktop targets
+            case llvm::Triple::IOS:     // For arm targets
+                if (triple_ref.getVendor() == llvm::Triple::Apple)
+                {
+                    ObjectFile *exe_objfile = exe_module->GetObjectFile();
+                    if (exe_objfile->GetType() == ObjectFile::eTypeExecutable && 
+                        exe_objfile->GetStrata() == ObjectFile::eStrataKernel)
+                        return true;
+                }
+                break;
+
+            default:
+                break;
         }
     }
     return false;
@@ -301,7 +310,7 @@ ProcessKDP::DoResume ()
     return error;
 }
 
-uint32_t
+bool
 ProcessKDP::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_thread_list)
 {
     // locker will keep a mutex locked until it goes out of scope
@@ -323,7 +332,7 @@ ProcessKDP::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_threa
             thread_sp.reset(new ThreadKDP (shared_from_this(), tid));
         new_thread_list.AddThread(thread_sp);
     }
-    return new_thread_list.GetSize(false);
+    return new_thread_list.GetSize(false) > 0;
 }
 
 

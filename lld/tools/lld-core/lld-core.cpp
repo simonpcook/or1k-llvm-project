@@ -15,6 +15,7 @@
 #include "lld/Core/Resolver.h"
 #include "lld/Core/YamlReader.h"
 #include "lld/Core/YamlWriter.h"
+#include "lld/Reader/Reader.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/CommandLine.h"
@@ -246,102 +247,8 @@ private:
 class TestingPlatform : public Platform {
 public:
 
-  virtual void initialize() { }
-
-  // tell platform object another file has been added
-  virtual void fileAdded(const File &file) { }
-
-  // tell platform object another atom has been added
-  virtual void atomAdded(const Atom &file) { }
-
-  // give platform a chance to change each atom's scope
-  virtual void adjustScope(const DefinedAtom &atom) { }
-
-  // if specified atom needs alternate names, return AliasAtom(s)
-  virtual bool getAliasAtoms(const Atom &atom,
-                             std::vector<const DefinedAtom *>&) {
-    return false;
+  virtual void addFiles(InputFiles&) {
   }
-
-  // give platform a chance to resolve platform-specific undefs
-  virtual bool getPlatformAtoms(StringRef undefined,
-                                std::vector<const DefinedAtom *>&) {
-    return false;
-  }
-
-  // resolver should remove unreferenced atoms
-  virtual bool deadCodeStripping() {
-    return false;
-  }
-
-  // atom must be kept so should be root of dead-strip graph
-  virtual bool isDeadStripRoot(const Atom &atom) {
-    return false;
-  }
-
-  // if target must have some atoms, denote here
-  virtual bool getImplicitDeadStripRoots(std::vector<const DefinedAtom *>&) {
-    return false;
-  }
-
-  // return entry point for output file (e.g. "main") or nullptr
-  virtual StringRef entryPointName() {
-    return StringRef();
-  }
-
-  // for iterating must-be-defined symbols ("main" or -u command line option)
-  typedef StringRef const *UndefinesIterator;
-  virtual UndefinesIterator initialUndefinesBegin() const {
-    return nullptr;
-  }
-  virtual UndefinesIterator initialUndefinesEnd() const {
-    return nullptr;
-  }
-
-  // if platform wants resolvers to search libraries for overrides
-  virtual bool searchArchivesToOverrideTentativeDefinitions() {
-    return false;
-  }
-
-  virtual bool searchSharedLibrariesToOverrideTentativeDefinitions() {
-    return false;
-  }
-
-  // if platform allows symbol to remain undefined (e.g. -r)
-  virtual bool allowUndefinedSymbol(StringRef name) {
-    return true;
-  }
-
-  // for debugging dead code stripping, -why_live
-  virtual bool printWhyLive(StringRef name) {
-    return false;
-  }
-
-  virtual const Atom& handleMultipleDefinitions(const Atom& def1,
-                                                const Atom& def2) {
-    llvm::report_fatal_error("symbol '" 
-                            + Twine(def1.name())
-                            + "' multiply defined");
-  }
-
-  // print out undefined symbol error messages in platform specific way
-  virtual void errorWithUndefines(const std::vector<const Atom *> &undefs,
-                                  const std::vector<const Atom *> &all) {}
-
-  // print out undefined can-be-null mismatches
-  virtual void undefineCanBeNullMismatch(const UndefinedAtom& undef1,
-                                         const UndefinedAtom& undef2,
-                                         bool& useUndef2) { }
-
-  // print out shared library mismatches
-  virtual void sharedLibrarylMismatch(const SharedLibraryAtom& shLib1,
-                                      const SharedLibraryAtom& shLib2,
-                                      bool& useShlib2) { }
-
-
-  // last chance for platform to tweak atoms
-  virtual void postResolveTweaks(std::vector<const Atom *> &all) {}
-  
 
   struct KindMapping {
     const char*           string;
@@ -439,67 +346,42 @@ const TestingPlatform::KindMapping TestingPlatform::_s_kindMappings[] = {
   };
 
 
-
-//
-// A simple input files wrapper for testing.
-//
-class TestingInputFiles : public InputFiles {
-public:
-  TestingInputFiles(std::vector<const File*>& f) : _files(f) { }
-
-  // InputFiles interface
-  virtual void forEachInitialAtom(InputFiles::Handler& handler) const {
-    for ( const File *file : _files ) {
-      handler.doFile(*file);
-      for( const DefinedAtom *atom : file->defined() ) {
-        handler.doDefinedAtom(*atom);
-      }
-      for( const UndefinedAtom *undefAtom : file->undefined() ) {
-        handler.doUndefinedAtom(*undefAtom);
-      }
-      for( const SharedLibraryAtom *shlibAtom : file->sharedLibrary() ) {
-        handler.doSharedLibraryAtom(*shlibAtom);
-      }
-      for( const AbsoluteAtom *absAtom : file->absolute() ) {
-        handler.doAbsoluteAtom(*absAtom);
-      }
-    }
-  }
-
-  virtual bool searchLibraries(StringRef name, bool searchDylibs,
-                               bool searchArchives, bool dataSymbolOnly,
-                               InputFiles::Handler &) const {
-    return false;
-  }
+} // anon namespace
 
 
-private:
-  std::vector<const File*>&        _files;
-};
-}
-
-
-
-
-
+llvm::cl::list<std::string>
+cmdLineInputFilePaths(llvm::cl::Positional,
+              llvm::cl::desc("<input file>"));
 
 llvm::cl::opt<std::string> 
-gInputFilePath(llvm::cl::Positional,
-              llvm::cl::desc("<input file>"),
-              llvm::cl::init("-"));
-
-llvm::cl::opt<std::string> 
-gOutputFilePath("o", 
+cmdLineOutputFilePath("o", 
               llvm::cl::desc("Specify output filename"), 
               llvm::cl::value_desc("filename"));
 
 llvm::cl::opt<bool> 
-gDoStubsPass("stubs_pass", 
+cmdLineDoStubsPass("stubs-pass", 
           llvm::cl::desc("Run pass to create stub atoms"));
 
 llvm::cl::opt<bool> 
-gDoGotPass("got_pass", 
+cmdLineDoGotPass("got-pass", 
           llvm::cl::desc("Run pass to create GOT atoms"));
+
+llvm::cl::opt<bool> 
+cmdLineUndefinesIsError("undefines-are-errors", 
+          llvm::cl::desc("Any undefined symbols at end is an error"));
+
+llvm::cl::opt<bool> 
+cmdLineCommonsSearchArchives("commons-search-archives", 
+          llvm::cl::desc("Tentative definitions trigger archive search"));
+
+llvm::cl::opt<bool> 
+cmdLineDeadStrip("dead-strip", 
+          llvm::cl::desc("Remove unreachable code and data"));
+
+llvm::cl::opt<bool> 
+cmdLineGlobalsNotDeadStrip("keep-globals", 
+          llvm::cl::desc("All global symbols are roots for dead-strip"));
+
 
 enum PlatformChoice {
   platformTesting, platformDarwin
@@ -513,7 +395,22 @@ platformSelected("platform",
     clEnumValN(platformDarwin, "darwin", "link as darwin would"),
     clEnumValEnd));
     
-    
+
+
+class TestingResolverOptions : public ResolverOptions {
+public:
+  TestingResolverOptions() {
+    _undefinesAreErrors = cmdLineUndefinesIsError;
+    _searchArchivesToOverrideTentativeDefinitions = cmdLineCommonsSearchArchives;
+    _deadCodeStrip = cmdLineDeadStrip;
+    _globalsAreDeadStripRoots = cmdLineGlobalsNotDeadStrip;
+  }
+
+};
+
+
+
+
     
 int main(int argc, char *argv[]) {
   // Print a stack trace if we signal out.
@@ -524,8 +421,11 @@ int main(int argc, char *argv[]) {
   // parse options
   llvm::cl::ParseCommandLineOptions(argc, argv);
 
+  if (cmdLineInputFilePaths.empty())
+    cmdLineInputFilePaths.emplace_back("-");
+
   // create platform for testing
-  Platform* platform = NULL;
+  Platform* platform = nullptr;
   switch ( platformSelected ) {
     case platformTesting:
       platform = new TestingPlatform();
@@ -536,35 +436,53 @@ int main(int argc, char *argv[]) {
   }
   
   // read input YAML doc into object file(s)
-  std::vector<const File *> files;
-  if (error(yaml::parseObjectTextFileOrSTDIN(gInputFilePath, 
-                                            *platform, files))) {
-    return 1;
+  std::vector<std::unique_ptr<const File>> files;
+  for (auto path : cmdLineInputFilePaths) {
+    OwningPtr<llvm::MemoryBuffer> ofile;
+    if (error(llvm::MemoryBuffer::getFileOrSTDIN(path, ofile)))
+      return 1;
+    std::unique_ptr<llvm::MemoryBuffer> file(ofile.take());
+    if (llvm::sys::fs::identify_magic(file->getBuffer())
+        == llvm::sys::fs::file_magic::coff_object) {
+      std::unique_ptr<File> f;
+      if (error(parseCOFFObjectFile(std::move(file), f)))
+        return 1;
+      files.push_back(std::move(f));
+    } else {
+      if (error(yaml::parseObjectText( file.release()
+                                     , *platform
+                                     , files)))
+        return 1;
+    }
+  }
+
+  // create options for resolving
+  TestingResolverOptions options;
+
+  // create object to mange input files
+  InputFiles inputFiles;
+  for (const auto &file : files) {
+    inputFiles.appendFile(*file);
   }
   
-  // create object to mange input files
-  TestingInputFiles inputFiles(files);
-  
+  platform->addFiles(inputFiles);
+
   // merge all atom graphs
-  Resolver resolver(*platform, inputFiles);
+  Resolver resolver(options, inputFiles);
   resolver.resolve();
 
   // run passes
-  if ( gDoGotPass ) {
+  if ( cmdLineDoGotPass ) {
     GOTPass  addGot(resolver.resultFile(), *platform);
     addGot.perform();
   }
-  if ( gDoStubsPass ) {
+  if ( cmdLineDoStubsPass ) {
     StubsPass  addStubs(resolver.resultFile(), *platform);
     addStubs.perform();
   }
 
   
-  // write new atom graph out as YAML doc
-  std::string errorInfo;
-  const char* outPath = gOutputFilePath.empty() ? "-" : gOutputFilePath.c_str();
-  llvm::raw_fd_ostream out(outPath, errorInfo);
-//  yaml::writeObjectText(resolver.resultFile(), out);
+//  yaml::writeObjectText(resolver.resultFile(), *platform, llvm::errs());
 
   // make unique temp .o file to put generated object file
   int fd;
@@ -583,11 +501,17 @@ int main(int argc, char *argv[]) {
   if ( error(parseNativeObjectFileOrSTDIN(tempPath, natFile)) ) 
     return 1;
 
+  // write new atom graph
+  std::string errorInfo;
+  const char* outPath = (cmdLineOutputFilePath.empty() ? "-" 
+                                              : cmdLineOutputFilePath.c_str());
+  llvm::raw_fd_ostream out(outPath, errorInfo);
   if ( platformSelected == platformTesting) {
-    // write new atom graph out as YAML doc
+    // write atom graph out as YAML doc
     yaml::writeObjectText(resolver.resultFile() /* *natFile */, *platform, out);
   }
   else {
+    // write atom graph as an executable
     platform->writeExecutable(resolver.resultFile() /* *natFile */, out);
     // HACK.  I don't see any way to set the 'executable' bit on files 
     // in raw_fd_ostream or in llvm/Support.

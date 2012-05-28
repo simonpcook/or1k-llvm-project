@@ -127,21 +127,17 @@ class ObjCDataFormatterTestCase(TestBase):
             self.runCmd('type format clear', check=False)
             self.runCmd('type summary clear', check=False)
             self.runCmd('type synth clear', check=False)
-            self.runCmd('type category disable CoreFoundation', check=False)
-            self.runCmd('type category disable CoreGraphics', check=False)
-            self.runCmd('type category disable CoreServices', check=False)
-            self.runCmd('type category disable AppKit', check=False)
 
 
         # Execute the cleanup function during test case tear down.
         self.addTearDownHook(cleanup)
 
-        self.runCmd("type category enable AppKit")
-
         self.expect('frame variable italian', substrs = ['L\'Italia è una Repubblica democratica, fondata sul lavoro. La sovranità appartiene al popolo, che la esercita nelle forme e nei limiti della Costituzione.'])
         self.expect('frame variable french', substrs = ['Que veut cette horde d\'esclaves, De traîtres, de rois conjurés?'])
         self.expect('frame variable german', substrs = ['Über-Ich und aus den Ansprüchen der sozialen Umwelt'])
         self.expect('frame variable japanese', substrs = ['色は匂へど散りぬるを'])
+        self.expect('frame variable hebrew', substrs = ['לילה טוב'])
+
 
     def plain_data_formatter_commands(self):
         """Test basic ObjC formatting behavior."""
@@ -165,11 +161,6 @@ class ObjCDataFormatterTestCase(TestBase):
             self.runCmd('type format clear', check=False)
             self.runCmd('type summary clear', check=False)
             self.runCmd('type synth clear', check=False)
-            self.runCmd('type category disable CoreFoundation', check=False)
-            self.runCmd('type category disable CoreGraphics', check=False)
-            self.runCmd('type category disable CoreServices', check=False)
-            self.runCmd('type category disable AppKit', check=False)
-
 
         # Execute the cleanup function during test case tear down.
         self.addTearDownHook(cleanup)
@@ -227,16 +218,11 @@ class ObjCDataFormatterTestCase(TestBase):
             self.runCmd('type format clear', check=False)
             self.runCmd('type summary clear', check=False)
             self.runCmd('type synth clear', check=False)
-            self.runCmd('type category disable CoreFoundation', check=False)
-            self.runCmd('type category disable CoreGraphics', check=False)
-            self.runCmd('type category disable CoreServices', check=False)
-            self.runCmd('type category disable AppKit', check=False)
 
         # Execute the cleanup function during test case tear down.
         self.addTearDownHook(cleanup)
 
         # Now enable AppKit and check we are displaying Cocoa classes correctly
-        self.runCmd("type category enable AppKit")
         self.expect('frame variable num1 num2 num3 num4 num5 num6 num7 num8_Y num8_N num9',
                     substrs = ['(NSNumber *) num1 = ',' (int)5',
                     '(NSNumber *) num2 = ',' (float)3.1',
@@ -359,8 +345,6 @@ class ObjCDataFormatterTestCase(TestBase):
                     '@"Europe/Rome"',
                     '@"Europe/Paris"'])
 
-
-        self.runCmd('type category list')
         self.runCmd('type summary list')
         self.expect('frame variable myclass',
                     substrs = ['(Class) myclass = NSValue'])
@@ -396,16 +380,9 @@ class ObjCDataFormatterTestCase(TestBase):
             self.runCmd('type format clear', check=False)
             self.runCmd('type summary clear', check=False)
             self.runCmd('type synth clear', check=False)
-            self.runCmd('type category disable CoreFoundation', check=False)
-            self.runCmd('type category disable CoreGraphics', check=False)
-            self.runCmd('type category disable CoreServices', check=False)
-            self.runCmd('type category disable AppKit', check=False)
 
         # Execute the cleanup function during test case tear down.
         self.addTearDownHook(cleanup)
-
-        # Now enable AppKit
-        self.runCmd("type category enable AppKit")
 
         # check that the formatters are able to deal safely and correctly
         # with ValueObjects that the expression parser returns
@@ -449,10 +426,6 @@ class ObjCDataFormatterTestCase(TestBase):
             self.runCmd('type format clear', check=False)
             self.runCmd('type summary clear', check=False)
             self.runCmd('type synth clear', check=False)
-            self.runCmd('type category disable CoreFoundation', check=False)
-            self.runCmd('type category disable CoreGraphics', check=False)
-            self.runCmd('type category disable CoreServices', check=False)
-            self.runCmd('type category disable AppKit', check=False)
             self.runCmd('log timers disable', check=False)
 
 
@@ -460,10 +433,6 @@ class ObjCDataFormatterTestCase(TestBase):
         self.addTearDownHook(cleanup)
 
         # check formatters for common Objective-C types
-        self.runCmd('type category enable CoreFoundation')
-        self.runCmd('type category enable CoreGraphics')
-        self.runCmd('type category enable CoreServices')
-        self.runCmd("type category enable AppKit")
         self.runCmd("log timers enable")
         self.expect("frame variable",
              substrs = ['(CFGregorianUnits) cf_greg_units = 1 years, 3 months, 5 days, 12 hours, 5 minutes 7 seconds',
@@ -514,17 +483,9 @@ class ObjCDataFormatterTestCase(TestBase):
             self.runCmd('type format clear', check=False)
             self.runCmd('type summary clear', check=False)
             self.runCmd('type synth clear', check=False)
-            self.runCmd('type category disable CoreFoundation', check=False)
-            self.runCmd('type category disable CoreGraphics', check=False)
-            self.runCmd('type category disable CoreServices', check=False)
-            self.runCmd('type category disable AppKit', check=False)
-
 
         # Execute the cleanup function during test case tear down.
         self.addTearDownHook(cleanup)
-
-        # check formatters for common Objective-C types
-        self.runCmd('type category enable AppKit')
 
         # as long as KVO is implemented by subclassing, this test should succeed
         # we should be able to dynamically figure out that the KVO implementor class

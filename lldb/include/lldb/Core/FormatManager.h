@@ -99,6 +99,56 @@ public:
         return RegexFilterNavigatorSP(m_regex_filter_nav);
     }
     
+    SummaryNavigator::MapValueType
+    GetSummaryForType (lldb::TypeNameSpecifierImplSP type_sp)
+    {
+        SummaryNavigator::MapValueType retval;
+        
+        if (type_sp)
+        {
+            if (type_sp->IsRegex())
+                m_regex_summary_nav->GetExact(ConstString(type_sp->GetName()),retval);
+            else
+                m_summary_nav->GetExact(ConstString(type_sp->GetName()),retval);
+        }
+
+        return retval;
+    }
+    
+    FilterNavigator::MapValueType
+    GetFilterForType (lldb::TypeNameSpecifierImplSP type_sp)
+    {
+        FilterNavigator::MapValueType retval;
+        
+        if (type_sp)
+        {
+            if (type_sp->IsRegex())
+                m_regex_filter_nav->GetExact(ConstString(type_sp->GetName()),retval);
+            else
+                m_filter_nav->GetExact(ConstString(type_sp->GetName()),retval);
+        }
+        
+        return retval;
+    }
+    
+#ifndef LLDB_DISABLE_PYTHON
+    SynthNavigator::MapValueType
+    GetSyntheticForType (lldb::TypeNameSpecifierImplSP type_sp)
+    {
+        SynthNavigator::MapValueType retval;
+        
+        if (type_sp)
+        {
+            if (type_sp->IsRegex())
+                m_regex_synth_nav->GetExact(ConstString(type_sp->GetName()),retval);
+            else
+                m_synth_nav->GetExact(ConstString(type_sp->GetName()),retval);
+        }
+        
+        return retval;
+    }
+#endif
+    
     lldb::TypeNameSpecifierImplSP
     GetTypeNameSpecifierForSummaryAtIndex (uint32_t index)
     {
@@ -357,7 +407,7 @@ public:
         if (category.get())
         {
             Position pos_w = pos;
-            if (pos == First)
+            if (pos == First || m_active_categories.size() == 0)
                 m_active_categories.push_front(category);
             else if (pos == Last || pos == m_active_categories.size())
                 m_active_categories.push_back(category);
@@ -455,9 +505,11 @@ public:
     GetSummaryFormat (ValueObject& valobj,
          lldb::DynamicValueType use_dynamic);
     
+#ifndef LLDB_DISABLE_PYTHON
     lldb::SyntheticChildrenSP
     GetSyntheticChildren (ValueObject& valobj,
                           lldb::DynamicValueType use_dynamic);
+#endif
     
 private:
     
@@ -601,12 +653,30 @@ public:
         return m_categories_map.GetSummaryFormat(valobj, use_dynamic);
     }
     
+    lldb::TypeSummaryImplSP
+    GetSummaryForType (lldb::TypeNameSpecifierImplSP type_sp);
+
+    lldb::TypeFilterImplSP
+    GetFilterForType (lldb::TypeNameSpecifierImplSP type_sp);
+
+#ifndef LLDB_DISABLE_PYTHON
+    lldb::TypeSyntheticImplSP
+    GetSyntheticForType (lldb::TypeNameSpecifierImplSP type_sp);
+#endif
+    
+#ifndef LLDB_DISABLE_PYTHON
+    lldb::SyntheticChildrenSP
+    GetSyntheticChildrenForType (lldb::TypeNameSpecifierImplSP type_sp);
+#endif
+    
+#ifndef LLDB_DISABLE_PYTHON
     lldb::SyntheticChildrenSP
     GetSyntheticChildren (ValueObject& valobj,
                           lldb::DynamicValueType use_dynamic)
     {
         return m_categories_map.GetSyntheticChildren(valobj, use_dynamic);
     }
+#endif
     
     bool
     AnyMatches (ConstString type_name,

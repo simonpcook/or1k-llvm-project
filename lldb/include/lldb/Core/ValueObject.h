@@ -28,7 +28,6 @@
 #include "lldb/Target/ExecutionContextScope.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/StackID.h"
-#include "lldb/Utility/PriorityPointerPair.h"
 #include "lldb/Utility/SharedCluster.h"
 
 namespace lldb_private {
@@ -601,9 +600,6 @@ public:
     IsPointerOrReferenceType ();
     
     virtual bool
-    IsPossibleCPlusPlusDynamicType ();
-    
-    virtual bool
     IsPossibleDynamicType ();
 
     virtual bool
@@ -657,15 +653,21 @@ public:
     }
 
     virtual uint32_t
-    GetBitfieldBitSize()
+    GetBitfieldBitSize ()
     {
         return 0;
     }
 
     virtual uint32_t
-    GetBitfieldBitOffset()
+    GetBitfieldBitOffset ()
     {
         return 0;
+    }
+    
+    bool
+    IsBitfield ()
+    {
+        return (GetBitfieldBitSize() != 0) || (GetBitfieldBitOffset() != 0);
     }
     
     virtual bool
@@ -691,8 +693,8 @@ public:
     GetValueAsUnsigned (uint64_t fail_value);
 
     virtual bool
-    SetValueFromCString (const char *value_str);
-
+    SetValueFromCString (const char *value_str, Error& error);
+    
     // Return the module associated with this value object in case the
     // value is from an executable file and might have its data in
     // sections of the file. This can be used for variables.
@@ -826,6 +828,9 @@ public:
     
     virtual lldb::ValueObjectSP
     GetStaticValue ();
+    
+    virtual lldb::ValueObjectSP
+    GetNonSyntheticValue ();
     
     lldb::ValueObjectSP
     GetSyntheticValue (bool use_synthetic = true);

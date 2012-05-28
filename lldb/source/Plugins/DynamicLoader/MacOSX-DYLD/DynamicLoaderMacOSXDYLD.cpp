@@ -105,7 +105,17 @@ DynamicLoaderMacOSXDYLD::CreateInstance (Process* process, bool force)
         if (create)
         {
             const llvm::Triple &triple_ref = process->GetTarget().GetArchitecture().GetTriple();
-            create = triple_ref.getOS() == llvm::Triple::Darwin && triple_ref.getVendor() == llvm::Triple::Apple;
+            switch (triple_ref.getOS())
+            {
+                case llvm::Triple::Darwin:
+                case llvm::Triple::MacOSX:
+                case llvm::Triple::IOS:
+                    create = triple_ref.getVendor() == llvm::Triple::Apple;
+                    break;
+                default:
+                    create = false;
+                    break;
+            }
         }
     }
     
@@ -279,7 +289,7 @@ DynamicLoaderMacOSXDYLD::FindTargetModuleForDYLDImageInfo (const DYLDImageInfo &
     module_spec.GetUUID() = image_info.uuid;
     ModuleSP module_sp (target_images.FindFirstModule (module_spec));
     
-    if (module_sp)
+    if (module_sp && !module_spec.GetUUID().IsValid() && !module_sp->GetUUID().IsValid())
     {
         // No UUID, we must rely upon the cached module modification 
         // time and the modification time of the file on disk
@@ -291,22 +301,19 @@ DynamicLoaderMacOSXDYLD::FindTargetModuleForDYLDImageInfo (const DYLDImageInfo &
     {
         if (can_create)
         {
-            if (!module_sp)
+            module_sp = m_process->GetTarget().GetSharedModule (module_spec);
+            if (!module_sp || module_sp->GetObjectFile() == NULL)
             {
-                module_sp = m_process->GetTarget().GetSharedModule (module_spec);
-                if (!module_sp || module_sp->GetObjectFile() == NULL)
-                {
-                    const bool add_image_to_target = true;
-                    const bool load_image_sections_in_target = false;
-                    module_sp = m_process->ReadModuleFromMemory (image_info.file_spec,
-                                                                 image_info.address,
-                                                                 add_image_to_target,
-                                                                 load_image_sections_in_target);
-                }
-
-                if (did_create_ptr)
-                    *did_create_ptr = module_sp;
+                const bool add_image_to_target = true;
+                const bool load_image_sections_in_target = false;
+                module_sp = m_process->ReadModuleFromMemory (image_info.file_spec,
+                                                             image_info.address,
+                                                             add_image_to_target,
+                                                             load_image_sections_in_target);
             }
+
+            if (did_create_ptr)
+                *did_create_ptr = module_sp;
         }
     }
     return module_sp;
@@ -440,18 +447,18 @@ DynamicLoaderMacOSXDYLD::UpdateImageLoadAddress (Module *module, DYLDImageInfo& 
 
                         if (section_sp)
                         {
-                            // Don't ever load any __LINKEDIT sections since the ones in the shared
-                            // cached will be coalesced into a single section and we will get warnings
-                            // about multiple sections mapping to the same address.
-                            if (section_sp->GetName() != g_section_name_LINKEDIT)
+                            // __LINKEDIT sections from files in the shared cache
+                            // can overlap so check to see what the segment name is
+                            // and pass "false" so we don't warn of overlapping
+                            // "Section" objects, and "true" for all other sections.
+                            const bool warn_multiple = section_sp->GetName() != g_section_name_LINKEDIT;
+
+                            const addr_t old_section_load_addr = m_process->GetTarget().GetSectionLoadList().GetSectionLoadAddress (section_sp.get());
+                            if (old_section_load_addr == LLDB_INVALID_ADDRESS ||
+                                old_section_load_addr != new_section_load_addr)
                             {
-                                const addr_t old_section_load_addr = m_process->GetTarget().GetSectionLoadList().GetSectionLoadAddress (section_sp.get());
-                                if (old_section_load_addr == LLDB_INVALID_ADDRESS ||
-                                    old_section_load_addr != new_section_load_addr)
-                                {
-                                    if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section_sp.get(), new_section_load_addr))
-                                        changed = true;
-                                }
+                                if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section_sp.get(), new_section_load_addr, warn_multiple))
+                                    changed = true;
                             }
                         }
                         else

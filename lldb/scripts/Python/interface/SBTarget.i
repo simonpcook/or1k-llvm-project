@@ -481,6 +481,12 @@ public:
                const char *triple,
                const char *uuid);
 
+    lldb::SBModule
+    AddModule (const char *path,
+               const char *triple,
+               const char *uuid_cstr,
+               const char *symfile);
+
     uint32_t
     GetNumModules () const;
 
@@ -685,7 +691,7 @@ public:
         
             def __len__(self):
                 if self.sbtarget:
-                    return self.sbtarget.GetNumModules()
+                    return int(self.sbtarget.GetNumModules())
                 return 0
         
             def __getitem__(self, key):

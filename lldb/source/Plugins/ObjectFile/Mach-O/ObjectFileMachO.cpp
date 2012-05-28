@@ -17,6 +17,7 @@
 #include "lldb/Core/FileSpecList.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
+#include "lldb/Core/RangeMap.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Core/StreamFile.h"
 #include "lldb/Core/StreamString.h"
@@ -26,7 +27,9 @@
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Symbol/ClangNamespaceDecl.h"
 #include "lldb/Symbol/ObjectFile.h"
+#include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
+#include "lldb/Target/Target.h"
 #include "Plugins/Process/Utility/RegisterContextDarwin_arm.h"
 #include "Plugins/Process/Utility/RegisterContextDarwin_i386.h"
 #include "Plugins/Process/Utility/RegisterContextDarwin_x86_64.h"
@@ -748,12 +751,40 @@ ObjectFileMachO::ParseSections ()
 {
     lldb::user_id_t segID = 0;
     lldb::user_id_t sectID = 0;
-    struct segment_command_64 load_cmd;
     uint32_t offset = MachHeaderSizeFromMagic(m_header.magic);
     uint32_t i;
     const bool is_core = GetType() == eTypeCoreFile;
     //bool dump_sections = false;
     ModuleSP module_sp (GetModule());
+    // First look up any LC_ENCRYPTION_INFO load commands
+    typedef RangeArray<uint32_t, uint32_t, 8> EncryptedFileRanges;
+    EncryptedFileRanges encrypted_file_ranges;
+    encryption_info_command encryption_cmd;
+    for (i=0; i<m_header.ncmds; ++i)
+    {
+        const uint32_t load_cmd_offset = offset;
+        if (m_data.GetU32(&offset, &encryption_cmd, 2) == NULL)
+            break;
+        
+        if (encryption_cmd.cmd == LoadCommandEncryptionInfo)
+        {
+            if (m_data.GetU32(&offset, &encryption_cmd.cryptoff, 3))
+            {
+                if (encryption_cmd.cryptid != 0)
+                {
+                    EncryptedFileRanges::Entry entry;
+                    entry.SetRangeBase(encryption_cmd.cryptoff);
+                    entry.SetByteSize(encryption_cmd.cryptsize);
+                    encrypted_file_ranges.Append(entry);
+                }
+            }
+        }
+        offset = load_cmd_offset + encryption_cmd.cmdsize;
+    }
+
+    offset = MachHeaderSizeFromMagic(m_header.magic);
+
+    struct segment_command_64 load_cmd;
     for (i=0; i<m_header.ncmds; ++i)
     {
         const uint32_t load_cmd_offset = offset;
@@ -783,7 +814,7 @@ ObjectFileMachO::ParseSections ()
                     SectionSP segment_sp;
                     if (segment_name || is_core)
                     {
-                        segment_sp.reset(new Section (module_sp,            // Module to which this section belongs
+                        segment_sp.reset(new Section (module_sp,              // Module to which this section belongs
                                                       ++segID << 8,           // Section ID is the 1 based segment index shifted right by 8 bits as not to collide with any of the 256 section IDs that are possible
                                                       segment_name,           // Name of this section
                                                       eSectionTypeContainer,  // This section is a container of other sections.
@@ -1018,8 +1049,12 @@ ObjectFileMachO::ParseSections ()
                                                           sect64.offset == 0 ? 0 : sect64.size,
                                                           sect64.flags));
                         // Set the section to be encrypted to match the segment
-                        section_sp->SetIsEncrypted (segment_is_encrypted);
+                        
+                        bool section_is_encrypted = false;
+                        if (!segment_is_encrypted && load_cmd.filesize != 0)
+                            section_is_encrypted = encrypted_file_ranges.FindEntryThatContains(sect64.offset) != NULL;
 
+                        section_sp->SetIsEncrypted (segment_is_encrypted || section_is_encrypted);
                         segment_sp->GetChildren().AddSection(section_sp);
 
                         if (segment_sp->IsFake())
@@ -1229,6 +1264,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             return 0;
 
         ProcessSP process_sp (m_process_wp.lock());
+        Process *process = process_sp.get();
 
         const size_t addr_byte_size = m_data.GetAddressByteSize();
         bool bit_width_32 = addr_byte_size == 4;
@@ -1240,9 +1276,10 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         
         const addr_t nlist_data_byte_size = symtab_load_command.nsyms * nlist_byte_size;
         const addr_t strtab_data_byte_size = symtab_load_command.strsize;
-        if (process_sp)
+        addr_t strtab_addr = LLDB_INVALID_ADDRESS;
+        if (process)
         {
-            Target &target = process_sp->GetTarget();
+            Target &target = process->GetTarget();
             SectionSP linkedit_section_sp(section_list->FindSectionByName(GetSegmentNameLINKEDIT()));
             // Reading mach file from memory in a process or core file...
 
@@ -1251,19 +1288,57 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 const addr_t linkedit_load_addr = linkedit_section_sp->GetLoadBaseAddress(&target);
                 const addr_t linkedit_file_offset = linkedit_section_sp->GetFileOffset();
                 const addr_t symoff_addr = linkedit_load_addr + symtab_load_command.symoff - linkedit_file_offset;
-                const addr_t stroff_addr = linkedit_load_addr + symtab_load_command.stroff - linkedit_file_offset;
-                DataBufferSP nlist_data_sp (ReadMemory (process_sp, symoff_addr, nlist_data_byte_size));
-                if (nlist_data_sp)
-                    nlist_data.SetData (nlist_data_sp, 0, nlist_data_sp->GetByteSize());
-                DataBufferSP strtab_data_sp (ReadMemory (process_sp, stroff_addr, strtab_data_byte_size));
-                if (strtab_data_sp)
-                    strtab_data.SetData (strtab_data_sp, 0, strtab_data_sp->GetByteSize());
-                if (function_starts_load_command.cmd)
+                strtab_addr = linkedit_load_addr + symtab_load_command.stroff - linkedit_file_offset;
+
+                bool data_was_read = false;
+
+#if defined (__APPLE__) && defined (__arm__)
+                if (m_header.flags & 0x80000000u)
                 {
-                    const addr_t func_start_addr = linkedit_load_addr + function_starts_load_command.dataoff - linkedit_file_offset;
-                    DataBufferSP func_start_data_sp (ReadMemory (process_sp, func_start_addr, function_starts_load_command.datasize));
-                    if (func_start_data_sp)
-                        function_starts_data.SetData (func_start_data_sp, 0, func_start_data_sp->GetByteSize());
+                    // This mach-o memory file is in the dyld shared cache. If this
+                    // program is not remote and this is iOS, then this process will
+                    // share the same shared cache as the process we are debugging and
+                    // we can read the entire __LINKEDIT from the address space in this
+                    // process. This is a needed optimization that is used for local iOS
+                    // debugging only since all shared libraries in the shared cache do
+                    // not have corresponding files that exist in the file system of the
+                    // device. They have been combined into a single file. This means we
+                    // always have to load these files from memory. All of the symbol and
+                    // string tables from all of the __LINKEDIT sections from the shared
+                    // libraries in the shared cache have been merged into a single large
+                    // symbol and string table. Reading all of this symbol and string table
+                    // data across can slow down debug launch times, so we optimize this by
+                    // reading the memory for the __LINKEDIT section from this process.
+                    PlatformSP platform_sp (target.GetPlatform());
+                    if (platform_sp && platform_sp->IsHost())
+                    {
+                        data_was_read = true;
+                        nlist_data.SetData((void *)symoff_addr, nlist_data_byte_size, eByteOrderLittle);
+                        strtab_data.SetData((void *)strtab_addr, strtab_data_byte_size, eByteOrderLittle);
+                        if (function_starts_load_command.cmd)
+                        {
+                            const addr_t func_start_addr = linkedit_load_addr + function_starts_load_command.dataoff - linkedit_file_offset;
+                            function_starts_data.SetData ((void *)func_start_addr, function_starts_load_command.datasize, eByteOrderLittle);
+                        }
+                    }
+                }
+#endif
+
+                if (!data_was_read)
+                {
+                    DataBufferSP nlist_data_sp (ReadMemory (process_sp, symoff_addr, nlist_data_byte_size));
+                    if (nlist_data_sp)
+                        nlist_data.SetData (nlist_data_sp, 0, nlist_data_sp->GetByteSize());
+                    //DataBufferSP strtab_data_sp (ReadMemory (process_sp, strtab_addr, strtab_data_byte_size));
+                    //if (strtab_data_sp)
+                    //    strtab_data.SetData (strtab_data_sp, 0, strtab_data_sp->GetByteSize());
+                    if (function_starts_load_command.cmd)
+                    {
+                        const addr_t func_start_addr = linkedit_load_addr + function_starts_load_command.dataoff - linkedit_file_offset;
+                        DataBufferSP func_start_data_sp (ReadMemory (process_sp, func_start_addr, function_starts_load_command.datasize));
+                        if (func_start_data_sp)
+                            function_starts_data.SetData (func_start_data_sp, 0, func_start_data_sp->GetByteSize());
+                    }
                 }
             }
         }
@@ -1291,13 +1366,26 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         }
 
 
-        if (strtab_data.GetByteSize() == 0)
+        const bool have_strtab_data = strtab_data.GetByteSize() > 0;
+        if (!have_strtab_data)
         {
-            if (log)
-                module_sp->LogMessage(log.get(), "failed to read strtab data");
-            return 0;
+            if (process)
+            {
+                if (strtab_addr == LLDB_INVALID_ADDRESS)
+                {
+                    if (log)
+                        module_sp->LogMessage(log.get(), "failed to locate the strtab in memory");
+                    return 0;
+                }
+            }
+            else
+            {
+                if (log)
+                    module_sp->LogMessage(log.get(), "failed to read strtab data");
+                return 0;
+            }
         }
-        
+
         const ConstString &g_segment_name_TEXT = GetSegmentNameTEXT();
         const ConstString &g_segment_name_DATA = GetSegmentNameDATA();
         const ConstString &g_segment_name_OBJC = GetSegmentNameOBJC();
@@ -1354,6 +1442,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         uint32_t sym_idx = 0;
         Symbol *sym = symtab->Resize (symtab_load_command.nsyms + m_dysymtab.nindirectsyms);
         uint32_t num_syms = symtab->GetNumSymbols();
+        std::string memory_symbol_name;
 
         //symtab->Reserve (symtab_load_command.nsyms + m_dysymtab.nindirectsyms);
         for (nlist_idx = 0; nlist_idx < symtab_load_command.nsyms; ++nlist_idx)
@@ -1369,24 +1458,37 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             nlist.n_value = nlist_data.GetAddress_unchecked (&nlist_data_offset);
 
             SymbolType type = eSymbolTypeInvalid;
-            const char *symbol_name = strtab_data.PeekCStr(nlist.n_strx);
-            if (symbol_name == NULL)
+            const char *symbol_name = NULL;
+            
+            if (have_strtab_data)
             {
-                // No symbol should be NULL, even the symbols with no
-                // string values should have an offset zero which points
-                // to an empty C-string
-                Host::SystemLog (Host::eSystemLogError,
-                                 "error: symbol[%u] has invalid string table offset 0x%x in %s/%s, ignoring symbol\n", 
-                                 nlist_idx,
-                                 nlist.n_strx,
-                                 module_sp->GetFileSpec().GetDirectory().GetCString(),
-                                 module_sp->GetFileSpec().GetFilename().GetCString());
-                continue;
+                symbol_name = strtab_data.PeekCStr(nlist.n_strx);
+                
+                if (symbol_name == NULL)
+                {
+                    // No symbol should be NULL, even the symbols with no
+                    // string values should have an offset zero which points
+                    // to an empty C-string
+                    Host::SystemLog (Host::eSystemLogError,
+                                     "error: symbol[%u] has invalid string table offset 0x%x in %s/%s, ignoring symbol\n", 
+                                     nlist_idx,
+                                     nlist.n_strx,
+                                     module_sp->GetFileSpec().GetDirectory().GetCString(),
+                                     module_sp->GetFileSpec().GetFilename().GetCString());
+                    continue;
+                }
+                if (symbol_name[0] == '\0')
+                    symbol_name = NULL;
+            }
+            else
+            {
+                const addr_t str_addr = strtab_addr + nlist.n_strx;
+                Error str_error;
+                if (process->ReadCStringFromMemory(str_addr, memory_symbol_name, str_error))
+                    symbol_name = memory_symbol_name.c_str();
             }
             const char *symbol_name_non_abi_mangled = NULL;
 
-            if (symbol_name[0] == '\0')
-                symbol_name = NULL;
             SectionSP symbol_section;
             uint32_t symbol_byte_size = 0;
             bool add_nlist = true;
@@ -2196,10 +2298,14 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                     else
                                     {
                                         // Make a synthetic symbol to describe the trampoline stub
+                                        Mangled stub_symbol_mangled_name(stub_symbol->GetMangled());
                                         if (sym_idx >= num_syms)
+                                        {
                                             sym = symtab->Resize (++num_syms);
+                                            stub_symbol = NULL;  // this pointer no longer valid
+                                        }
                                         sym[sym_idx].SetID (synthetic_sym_id++);
-                                        sym[sym_idx].GetMangled() = stub_symbol->GetMangled();
+                                        sym[sym_idx].GetMangled() = stub_symbol_mangled_name;
                                         sym[sym_idx].SetType (eSymbolTypeTrampoline);
                                         sym[sym_idx].SetIsSynthetic (true);
                                         sym[sym_idx].GetAddress() = so_addr;

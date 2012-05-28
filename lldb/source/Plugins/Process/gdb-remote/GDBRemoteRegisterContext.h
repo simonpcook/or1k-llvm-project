@@ -154,7 +154,10 @@ public:
     }
 
     void
-    HardcodeARMRegisters();
+    HardcodeARMRegisters(bool from_scratch);
+
+    void
+    Addx86_64ConvenienceRegisters();
 
 protected:
     //------------------------------------------------------------------

@@ -86,7 +86,8 @@ namespace lldb {
     void
     ClearModuleInfo (void)
     {
-        ModuleList::RemoveOrphanSharedModules();
+        const bool mandatory = true;
+        ModuleList::RemoveOrphanSharedModules(mandatory);
     }
     
     void
@@ -239,11 +240,6 @@ Module::GetMemoryObjectFile (const lldb::ProcessSP &process_sp, lldb::addr_t hea
         Mutex::Locker locker (m_mutex);
         if (process_sp)
         {
-            StreamString s;
-            if (m_file.GetFilename())
-                s << m_file.GetFilename();
-                s.Printf("[0x%16.16llx]", header_addr);
-                m_file.GetFilename().SetCString (s.GetData());
             m_did_load_objfile = true;
             std::auto_ptr<DataBufferHeap> data_ap (new DataBufferHeap (512, 0));
             Error readmem_error;
@@ -257,7 +253,11 @@ Module::GetMemoryObjectFile (const lldb::ProcessSP &process_sp, lldb::addr_t hea
                 m_objfile_sp = ObjectFile::FindPlugin(shared_from_this(), process_sp, header_addr, data_sp);
                 if (m_objfile_sp)
                 {
-                    // Once we get the object file, update our module with the object file's 
+                    StreamString s;
+                    s.Printf("0x%16.16llx", header_addr);
+                    m_object_name.SetCString (s.GetData());
+
+                    // Once we get the object file, update our module with the object file's
                     // architecture since it might differ in vendor/os if some parts were
                     // unknown.
                     m_objfile_sp->GetArchitecture (m_arch);
@@ -535,8 +535,11 @@ Module::FindCompileUnits (const FileSpec &path,
     for (uint32_t i=0; i<num_compile_units; ++i)
     {
         sc.comp_unit = GetCompileUnitAtIndex(i).get();
-        if (FileSpec::Equal (*sc.comp_unit, path, compare_directory))
-            sc_list.Append(sc);
+        if (sc.comp_unit)
+        {
+            if (FileSpec::Equal (*sc.comp_unit, path, compare_directory))
+                sc_list.Append(sc);
+        }
     }
     return sc_list.GetSize() - start_size;
 }
@@ -872,6 +875,24 @@ Module::LogMessage (Log *log, const char *format, ...)
         va_start (args, format);
         log_message.PrintfVarArg (format, args);
         va_end (args);
+        log->PutCString(log_message.GetString().c_str());
+    }
+}
+
+void
+Module::LogMessageVerboseBacktrace (Log *log, const char *format, ...)
+{
+    if (log)
+    {
+        StreamString log_message;
+        GetDescription(&log_message, lldb::eDescriptionLevelFull);
+        log_message.PutCString (": ");
+        va_list args;
+        va_start (args, format);
+        log_message.PrintfVarArg (format, args);
+        va_end (args);
+        if (log->GetVerbose())
+            Host::Backtrace (log_message, 1024);
         log->PutCString(log_message.GetString().c_str());
     }
 }

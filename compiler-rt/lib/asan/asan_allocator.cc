@@ -35,7 +35,7 @@
 #include "asan_thread.h"
 #include "asan_thread_registry.h"
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__clang__)
 #include <intrin.h>
 #endif
 
@@ -64,16 +64,16 @@ static inline bool IsAligned(uintptr_t a, uintptr_t alignment) {
 
 static inline size_t Log2(size_t x) {
   CHECK(IsPowerOfTwo(x));
-#if defined(_WIN64)
+#if !defined(_WIN32) || defined(__clang__)
+  return __builtin_ctzl(x);
+#elif defined(_WIN64)
   unsigned long ret;  // NOLINT
   _BitScanForward64(&ret, x);
   return ret;
-#elif defined(_WIN32)
+#else
   unsigned long ret;  // NOLINT
   _BitScanForward(&ret, x);
   return ret;
-#else
-  return __builtin_ctzl(x);
 #endif
 }
 
@@ -82,12 +82,12 @@ static inline size_t RoundUpToPowerOfTwo(size_t size) {
   if (IsPowerOfTwo(size)) return size;
 
   unsigned long up;  // NOLINT
-#if defined(_WIN64)
-  _BitScanReverse64(&up, size);
-#elif defined(_WIN32)
-  _BitScanReverse(&up, size);
-#else
+#if !defined(_WIN32) || defined(__clang__)
   up = __WORDSIZE - 1 - __builtin_clzl(size);
+#elif defined(_WIN64)
+  _BitScanReverse64(&up, size);
+#else
+  _BitScanReverse(&up, size);
 #endif
   CHECK(size < (1ULL << (up + 1)));
   CHECK(size > (1ULL << up));
@@ -498,6 +498,7 @@ class MallocInfo {
 
     CHECK(m->chunk_state == CHUNK_QUARANTINE);
     m->chunk_state = CHUNK_AVAILABLE;
+    PoisonShadow((uintptr_t)m, m->Size(), kAsanHeapLeftRedzoneMagic);
     CHECK(m->alloc_tid >= 0);
     CHECK(m->free_tid >= 0);
 
@@ -864,7 +865,7 @@ size_t asan_malloc_usable_size(void *ptr, AsanStackTrace *stack) {
   CHECK(stack);
   if (ptr == NULL) return 0;
   size_t usable_size = malloc_info.AllocationSize((uintptr_t)ptr);
-  if (usable_size == 0) {
+  if (FLAG_check_malloc_usable_size && (usable_size == 0)) {
     Report("ERROR: AddressSanitizer attempting to call malloc_usable_size() "
            "for pointer which is not owned: %p\n", ptr);
     stack->PrintStack();

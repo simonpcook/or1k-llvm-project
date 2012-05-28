@@ -51,8 +51,6 @@ ThreadPlanStepUntil::ThreadPlanStepUntil
     m_until_points (),
     m_stop_others (stop_others)
 {
-
-    SetOkayToDiscard(true);
     // Stash away our "until" addresses:
     TargetSP target_sp (m_thread.CalculateTarget());
 

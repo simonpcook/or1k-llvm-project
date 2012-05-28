@@ -355,8 +355,11 @@ public:
     size_t
     Remove (ModuleList &module_list);
     
+    bool
+    RemoveIfOrphaned (const Module *module_ptr);
+    
     size_t
-    RemoveOrphans ();
+    RemoveOrphans (bool mandatory);
 
     bool
     ResolveFileAddress (lldb::addr_t vm_addr,
@@ -418,7 +421,10 @@ public:
                        ModuleList &matching_module_list);
 
     static uint32_t
-    RemoveOrphanSharedModules ();
+    RemoveOrphanSharedModules (bool mandatory);
+    
+    static bool
+    RemoveSharedModuleIfOrphaned (const Module *module_ptr);
 
 protected:
     //------------------------------------------------------------------

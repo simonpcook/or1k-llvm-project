@@ -78,11 +78,11 @@ SBInstruction::GetMnemonic(SBTarget target)
         TargetSP target_sp (target.GetSP());
         if (target_sp)
         {
-            api_locker.Reset (target_sp->GetAPIMutex().GetMutex());
+            api_locker.Lock (target_sp->GetAPIMutex());
             target_sp->CalculateExecutionContext (exe_ctx);
             exe_ctx.SetProcessSP(target_sp->GetProcessSP());
         }
-        return m_opaque_sp->GetMnemonic(exe_ctx.GetBestExecutionContextScope());
+        return m_opaque_sp->GetMnemonic(&exe_ctx);
     }
     return NULL;
 }
@@ -97,11 +97,11 @@ SBInstruction::GetOperands(SBTarget target)
         TargetSP target_sp (target.GetSP());
         if (target_sp)
         {
-            api_locker.Reset (target_sp->GetAPIMutex().GetMutex());
+            api_locker.Lock (target_sp->GetAPIMutex());
             target_sp->CalculateExecutionContext (exe_ctx);
             exe_ctx.SetProcessSP(target_sp->GetProcessSP());
         }
-        return m_opaque_sp->GetOperands(exe_ctx.GetBestExecutionContextScope());
+        return m_opaque_sp->GetOperands(&exe_ctx);
     }
     return NULL;
 }
@@ -116,11 +116,11 @@ SBInstruction::GetComment(SBTarget target)
         TargetSP target_sp (target.GetSP());
         if (target_sp)
         {
-            api_locker.Reset (target_sp->GetAPIMutex().GetMutex());
+            api_locker.Lock (target_sp->GetAPIMutex());
             target_sp->CalculateExecutionContext (exe_ctx);
             exe_ctx.SetProcessSP(target_sp->GetProcessSP());
         }
-        return m_opaque_sp->GetComment(exe_ctx.GetBestExecutionContextScope());
+        return m_opaque_sp->GetComment(&exe_ctx);
     }
     return NULL;
 }
@@ -139,19 +139,9 @@ SBInstruction::GetData (SBTarget target)
     lldb::SBData sb_data;
     if (m_opaque_sp)
     {
-        const Opcode &opcode = m_opaque_sp->GetOpcode();
-        const void *opcode_data = opcode.GetOpcodeBytes();
-        const uint32_t opcode_data_size = opcode.GetByteSize();
-        if (opcode_data && opcode_data_size > 0)
+        DataExtractorSP data_extractor_sp (new DataExtractor());
+        if (m_opaque_sp->GetData (*data_extractor_sp))
         {
-            ByteOrder data_byte_order = opcode.GetDataByteOrder();
-            TargetSP target_sp (target.GetSP());
-            if (data_byte_order == eByteOrderInvalid && target_sp)
-                data_byte_order = target_sp->GetArchitecture().GetByteOrder();
-            DataBufferSP data_buffer_sp (new DataBufferHeap (opcode_data, opcode_data_size));
-            DataExtractorSP data_extractor_sp (new DataExtractor (data_buffer_sp, 
-                                                                  data_byte_order,
-                                                                  target_sp ? target_sp->GetArchitecture().GetAddressByteSize() : sizeof(void*)));
             sb_data.SetOpaque (data_extractor_sp);
         }
     }
@@ -181,7 +171,7 @@ SBInstruction::GetDescription (lldb::SBStream &s)
     {
         // Use the "ref()" instead of the "get()" accessor in case the SBStream 
         // didn't have a stream already created, one will get created...
-        m_opaque_sp->Dump (&s.ref(), 0, true, false, NULL, false);
+        m_opaque_sp->Dump (&s.ref(), 0, true, false, NULL);
         return true;
     }
     return false;
@@ -196,7 +186,7 @@ SBInstruction::Print (FILE *out)
     if (m_opaque_sp)
     {
         StreamFile out_stream (out, false);
-        m_opaque_sp->Dump (&out_stream, 0, true, false, NULL, false);
+        m_opaque_sp->Dump (&out_stream, 0, true, false, NULL);
     }
 }
 
@@ -246,4 +236,12 @@ SBInstruction::TestEmulation (lldb::SBStream &output_stream,  const char *test_f
         m_opaque_sp.reset (new PseudoInstruction());
         
     return m_opaque_sp->TestEmulation (output_stream.get(), test_file);
+}
+
+lldb::AddressClass
+SBInstruction::GetAddressClass ()
+{
+    if (m_opaque_sp.get())
+        return m_opaque_sp->GetAddressClass();
+    return eAddressClassInvalid;
 }

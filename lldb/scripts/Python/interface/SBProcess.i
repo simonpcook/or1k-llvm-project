@@ -282,6 +282,9 @@ public:
     GetDescription (lldb::SBStream &description);
 
     uint32_t
+    GetNumSupportedHardwareWatchpoints (lldb::SBError &error) const;
+
+    uint32_t
     LoadImage (lldb::SBFileSpec &image_spec, lldb::SBError &error);
     
     lldb::SBError
@@ -321,7 +324,8 @@ public:
                 self.sbprocess = sbprocess
         
             def __len__(self):
-                if self.sbprocess: return self.sbprocess.GetNumThreads()
+                if self.sbprocess:
+                    return int(self.sbprocess.GetNumThreads())
                 return 0
         
             def __getitem__(self, key):

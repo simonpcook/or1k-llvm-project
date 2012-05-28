@@ -2041,7 +2041,7 @@ IRForTarget::ReplaceStaticLiterals (llvm::BasicBlock &basic_block)
             
             ConstantFP *operand_constant_fp = dyn_cast<ConstantFP>(operand_val);
             
-            if (operand_constant_fp && operand_constant_fp->getType()->isX86_FP80Ty())
+            if (operand_constant_fp/* && operand_constant_fp->getType()->isX86_FP80Ty()*/)
             {
                 static_constants.push_back(operand_val);
                 static_users.push_back(ii);
@@ -2676,7 +2676,8 @@ IRForTarget::runOnModule (Module &llvm_module)
     }
     
     if (m_execution_policy == lldb_private::eExecutionPolicyNever) {
-        m_decl_map->RemoveResultVariable(m_result_name);
+        if (m_result_name)
+            m_decl_map->RemoveResultVariable(m_result_name);
         return false;
     }
     

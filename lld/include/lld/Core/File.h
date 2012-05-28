@@ -27,8 +27,11 @@ namespace lld {
 /// object file (.o) to be parsed by some reader and produce a single
 /// File object that represents the content of that object file.  
 ///
-/// The File class has *begin() and *end() methods for use iterating through
-/// the Atoms in a File object.  
+/// To iterate through the Atoms in a File there are four methods that
+/// return collections.  For instance to iterate through all the DefinedAtoms
+/// in a File object use:  
+///      for (const DefinedAtoms *atom : file->defined()) {
+///      }
 ///
 /// The Atom objects in a File are owned by the File object.  The Atom objects  
 /// are destroyed when the File object is destroyed.
@@ -36,6 +39,18 @@ namespace lld {
 class File {
 public:
   virtual ~File();
+
+  /// Kinds of files that are supported.
+  enum Kind {
+    kindObject,            ///< object file (.o)
+    kindSharedLibrary,     ///< shared library (.so)
+    kindArchiveLibrary,    ///< archive (.a)
+  };
+
+  /// Returns file kind.  Need for dyn_cast<> on File objects.
+  virtual Kind kind() const {
+    return kindObject;
+  }
 
   /// For error messages and debugging, this returns the path to the file
   /// which was used to create this object (e.g. "/tmp/foo.o").
@@ -49,11 +64,10 @@ public:
   /// be ascertained, this method returns the empty string.
   virtual StringRef translationUnitSource() const;
 
-  /// Returns pointer to "main" atom, or nullptr. All object files can
-  /// use the default implementation which just returns nullptr.  
-  /// But the master merged File operated on by Passes, needs override
-  /// this and return the atom for "main". 
-  virtual const Atom *entryPoint() const; 
+
+  static inline bool classof(const File *) { 
+    return true; 
+  }
 
 protected:
   template <typename T> class atom_iterator; // forward reference
@@ -71,46 +85,8 @@ public:
   /// For use interating over AbsoluteAtoms in this File.
   typedef atom_iterator<AbsoluteAtom> absolute_iterator;
 
-  /// Returns an iterator to the beginning of this File's DefinedAtoms
-  defined_iterator definedAtomsBegin() const {
-    return defined().begin();
-  }
-  
-  /// Returns an iterator to the end of this File's DefinedAtoms
-  defined_iterator definedAtomsEnd() const {
-    return defined().end();
-  }
-   
-  /// Returns an iterator to the beginning of this File's DefinedAtoms
-  undefined_iterator undefinedAtomsBegin() const {
-    return undefined().begin();
-  }
-  
-  /// Returns an iterator to the end of this File's UndefinedAtoms
-  undefined_iterator undefinedAtomsEnd() const {
-    return undefined().end();
-  }
-  
-  /// Returns an iterator to the beginning of this File's SharedLibraryAtoms
-  shared_library_iterator sharedLibraryAtomsBegin() const {
-    return sharedLibrary().begin();
-  }
 
-  /// Returns an iterator to the end of this File's SharedLibraryAtoms
-  shared_library_iterator sharedLibraryAtomsEnd() const {
-    return sharedLibrary().end();
-  }
 
-  /// Returns an iterator to the beginning of this File's AbsoluteAtoms
-  absolute_iterator absoluteAtomsBegin() const {
-    return absolute().begin();
-  }
-
-  /// Returns an iterator to the end of this File's AbsoluteAtoms
-  absolute_iterator absoluteAtomsEnd() const {
-    return absolute().end();
-  }
-  
   /// Note: this method is not const.  All File objects instantiated by reading
   /// an object file from disk are "const File*" objects and cannot be 
   /// modified.  This method can only be used with temporay File objects
@@ -188,7 +164,7 @@ public:
   /// Must be implemented to return the atom_collection object for 
   /// all AbsoluteAtoms in this File.
   virtual const atom_collection<AbsoluteAtom>& absolute() const = 0;
-  
+
 protected:
   /// This is a convenience class for File subclasses which manage their
   /// atoms as a simple std::vector<>.  
@@ -196,11 +172,12 @@ protected:
   class atom_collection_vector : public atom_collection<T> {
   public:
     virtual atom_iterator<T> begin() const { 
-      return atom_iterator<T>(*this, reinterpret_cast<const void*>(_atoms.data()));
+      return atom_iterator<T>(*this, reinterpret_cast<const void*>
+                                                              (_atoms.data()));
     }
     virtual atom_iterator<T> end() const{ 
       return atom_iterator<T>(*this, reinterpret_cast<const void*>
-        (_atoms.data() + _atoms.size()));
+                                              (_atoms.data() + _atoms.size()));
     }
     virtual const T* deref(const void* it) const {
       return *reinterpret_cast<const T* const*>(it);
@@ -213,8 +190,6 @@ protected:
     std::vector<const T*>   _atoms;
   };
   
-
-private:
   StringRef _path;
 };
 

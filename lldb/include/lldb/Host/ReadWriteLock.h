@@ -78,6 +78,12 @@ public:
     }
     
     bool
+    WriteTryLock()
+    {
+        return ::pthread_rwlock_trywrlock (&m_rwlock) == 0;
+    }
+    
+    bool
     WriteUnlock ()
     {
         return ::pthread_rwlock_unlock (&m_rwlock) == 0;
@@ -90,6 +96,13 @@ public:
             m_lock (NULL)
         {
         }
+
+        ReadLocker (ReadWriteLock &lock) :
+            m_lock (NULL)
+        {
+            Lock(&lock);
+        }
+    
 
         ReadLocker (ReadWriteLock *lock) :
             m_lock (NULL)
@@ -164,11 +177,17 @@ public:
             m_lock (NULL)
         {
         }
-        
-        WriteLocker (ReadWriteLock *lock) :
-            m_lock (lock)
+
+        WriteLocker (ReadWriteLock &lock) :
+            m_lock (NULL)
         {
-            Lock();
+            Lock(&lock);
+        }
+
+        WriteLocker (ReadWriteLock *lock) :
+            m_lock (NULL)
+        {
+            Lock(lock);
         }
 
         ~WriteLocker()
@@ -177,17 +196,30 @@ public:
         }
 
         void
-        Lock ()
+        Lock (ReadWriteLock *lock)
         {
             if (m_lock)
-                m_lock->WriteLock();
+            {
+                if (m_lock == lock)
+                    return; // We already have this lock locked
+                else
+                    Unlock();
+            }
+            if (lock)
+            {
+                lock->WriteLock();
+                m_lock = lock;
+            }
         }
 
         void
         Unlock ()
         {
             if (m_lock)
+            {
                 m_lock->WriteUnlock();
+                m_lock = NULL;
+            }
         }
         
     protected:

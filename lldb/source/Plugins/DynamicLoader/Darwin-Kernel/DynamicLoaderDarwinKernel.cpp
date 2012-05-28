@@ -65,7 +65,17 @@ DynamicLoaderDarwinKernel::CreateInstance (Process* process, bool force)
         if (create)
         {
             const llvm::Triple &triple_ref = process->GetTarget().GetArchitecture().GetTriple();
-            create = triple_ref.getOS() == llvm::Triple::Darwin && triple_ref.getVendor() == llvm::Triple::Apple;
+            switch (triple_ref.getOS())
+            {
+                case llvm::Triple::Darwin:
+                case llvm::Triple::MacOSX:
+                case llvm::Triple::IOS:
+                    create = triple_ref.getVendor() == llvm::Triple::Apple;
+                    break;
+                default:
+                    create = false;
+                    break;
+            }
         }
     }
     
@@ -700,7 +710,7 @@ DynamicLoaderDarwinKernel::SetNotificationBreakpointIfNeeded ()
         DEBUG_PRINTF("DynamicLoaderDarwinKernel::%s() process state = %s\n", __FUNCTION__, StateAsCString(m_process->GetState()));
 
         
-        const bool internal_bp = false;
+        const bool internal_bp = true;
         const LazyBool skip_prologue = eLazyBoolNo;
         FileSpecList module_spec_list;
         module_spec_list.Append (m_kernel.module_sp->GetFileSpec());
@@ -708,8 +718,8 @@ DynamicLoaderDarwinKernel::SetNotificationBreakpointIfNeeded ()
                                                                   NULL,
                                                                   "OSKextLoadedKextSummariesUpdated",
                                                                   eFunctionNameTypeFull,
-                                                                  internal_bp,
-                                                                  skip_prologue).get();
+                                                                  skip_prologue,
+                                                                  internal_bp).get();
 
         bp->SetCallback (DynamicLoaderDarwinKernel::BreakpointHitCallback, this, true);
         m_break_id = bp->GetID();

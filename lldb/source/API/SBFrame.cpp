@@ -86,7 +86,9 @@ SBFrame::~SBFrame()
 StackFrameSP
 SBFrame::GetFrameSP() const
 {
-    return m_opaque_sp->GetFrameSP();
+    if (m_opaque_sp)
+        return m_opaque_sp->GetFrameSP();
+    return StackFrameSP();
 }
 
 void
@@ -497,7 +499,7 @@ SBFrame::GetPCAddress () const
 void
 SBFrame::Clear()
 {
-    m_opaque_sp.reset();
+    m_opaque_sp->Clear();
 }
 
 lldb::SBValue
@@ -881,11 +883,8 @@ SBFrame::GetVariables (bool arguments,
 
             size_t i;
             VariableList *variable_list = NULL;
-            // Scope for locker
-            {
-                Mutex::Locker api_locker (target->GetAPIMutex());
-                variable_list = frame->GetVariableList(true);
-            }
+            Mutex::Locker api_locker (target->GetAPIMutex());
+            variable_list = frame->GetVariableList(true);
             if (variable_list)
             {
                 const size_t num_variables = variable_list->GetSize();
@@ -1029,6 +1028,12 @@ SBFrame::EvaluateExpression (const char *expr)
 SBValue
 SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dynamic_value)
 {
+    return EvaluateExpression (expr, fetch_dynamic_value, true);
+}
+
+SBValue
+SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dynamic_value, bool unwind_on_error)
+{
     LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
     
     LogSP expr_log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
@@ -1045,13 +1050,11 @@ SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dyna
 
     if (frame && target)
     {
+        Mutex::Locker api_locker (target->GetAPIMutex());
+            
         Process::StopLocker stop_locker;
         if (stop_locker.TryLock(&exe_ctx.GetProcessPtr()->GetRunLock()))
         {
-
-            Mutex::Locker api_locker (target->GetAPIMutex());
-            
-            
             StreamString frame_description;
             frame->DumpUsingSettingsFormat (&frame_description);
 
@@ -1059,7 +1062,6 @@ SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dyna
                                                  expr, fetch_dynamic_value, frame_description.GetString().c_str());
 
             const bool coerce_to_id = false;
-            const bool unwind_on_error = true;
             const bool keep_in_memory = false;
 
             exe_results = target->EvaluateExpression (expr, 

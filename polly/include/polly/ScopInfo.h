@@ -321,6 +321,12 @@ public:
     return *InstructionToAccess[Inst];
   }
 
+  MemoryAccess *lookupAccessFor(const Instruction *Inst) const {
+    std::map<const Instruction*, MemoryAccess*>::const_iterator at
+      = InstructionToAccess.find(Inst);
+    return at == InstructionToAccess.end() ? NULL : at->second;
+  }
+
   void setBasicBlock(BasicBlock *Block) { BB = Block; }
 
   typedef MemoryAccessVec::iterator memacc_iterator;
@@ -436,6 +442,9 @@ class Scop {
 
   /// @brief Build the Context of the Scop.
   void buildContext();
+
+  /// @brief Add the bounds of the parameters to the context.
+  void addParameterBounds();
 
   /// Build the Scop and Statement with precalculate scop information.
   void buildScop(TempScop &TempScop, const Region &CurRegion,

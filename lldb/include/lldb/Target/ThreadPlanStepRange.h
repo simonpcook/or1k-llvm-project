@@ -42,8 +42,8 @@ public:
     virtual lldb::StateType GetPlanRunState ();
     virtual bool WillStop ();
     virtual bool MischiefManaged ();
-    virtual bool PlanExplainsStop ();
     virtual void DidPush ();
+    virtual bool IsPlanStale ();
 
 
     void AddRange(const AddressRange &new_range);

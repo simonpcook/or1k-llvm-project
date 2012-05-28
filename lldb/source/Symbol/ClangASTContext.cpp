@@ -622,7 +622,7 @@ ClangASTContext::getTargetOptions()
 TargetInfo *
 ClangASTContext::getTargetInfo()
 {
-    // target_triple should be something like "x86_64-apple-darwin10"
+    // target_triple should be something like "x86_64-apple-macosx"
     if (m_target_info_ap.get() == NULL && !m_target_triple.empty())
         m_target_info_ap.reset (TargetInfo::CreateTargetInfo(*getDiagnosticsEngine(), *getTargetOptions()));
     return m_target_info_ap.get();
@@ -1125,11 +1125,11 @@ ClangASTContext::GetTypeForDecl (ObjCInterfaceDecl *decl)
 #pragma mark Structure, Unions, Classes
 
 clang_type_t
-ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type, const char *name, int kind, LanguageType language)
+ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type, const char *name, int kind, LanguageType language, uint64_t metadata)
 {
     ASTContext *ast = getASTContext();
     assert (ast != NULL);
-    
+     
     if (decl_ctx == NULL)
         decl_ctx = ast->getTranslationUnitDecl();
 
@@ -1138,7 +1138,7 @@ ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type
     {
         bool isForwardDecl = true;
         bool isInternal = false;
-        return CreateObjCClass (name, decl_ctx, isForwardDecl, isInternal);
+        return CreateObjCClass (name, decl_ctx, isForwardDecl, isInternal, metadata);
     }
 
     // NOTE: Eventually CXXRecordDecl will be merged back into RecordDecl and
@@ -1152,6 +1152,9 @@ ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type
                                                  SourceLocation(),
                                                  SourceLocation(),
                                                  name && name[0] ? &ast->Idents.get(name) : NULL);
+    
+    if (decl)
+        SetMetadata(ast, (uintptr_t)decl, metadata);
     
     if (!name)
         decl->setAnonymousStructOrUnion(true);
@@ -2245,12 +2248,13 @@ ClangASTContext::SetBaseClassesForClassType (clang_type_t class_clang_type, CXXB
 #pragma mark Objective C Classes
 
 clang_type_t
-ClangASTContext::CreateObjCClass 
+ClangASTContext::CreateObjCClass
 (
     const char *name, 
     DeclContext *decl_ctx, 
     bool isForwardDecl, 
-    bool isInternal
+    bool isInternal,
+    uint64_t metadata
 )
 {
     ASTContext *ast = getASTContext();
@@ -2272,6 +2276,9 @@ ClangASTContext::CreateObjCClass
                                                          SourceLocation(),
                                                          /*isForwardDecl,*/
                                                          isInternal);
+    
+    if (decl)
+        SetMetadata(ast, (uintptr_t)decl, metadata);
     
     return ast->getObjCInterfaceType(decl).getAsOpaquePtr();
 }
@@ -2384,7 +2391,8 @@ ClangASTContext::AddObjCClassProperty
     ObjCIvarDecl *ivar_decl,
     const char *property_setter_name,
     const char *property_getter_name,
-    uint32_t property_attributes
+    uint32_t property_attributes,
+    uint64_t metadata
 )
 {
     if (class_opaque_type == NULL || property_name == NULL || property_name[0] == '\0')
@@ -2428,8 +2436,11 @@ ClangASTContext::AddObjCClassProperty
                                                                            SourceLocation(), //Source location for (
                                                                            prop_type_source
                                                                            );
+                
                 if (property_decl)
                 {
+                    SetMetadata(ast, (uintptr_t)property_decl, metadata);
+                    
                     class_interface_decl->addDecl (property_decl);
                     
                     Selector setter_sel, getter_sel;
@@ -2506,6 +2517,9 @@ ClangASTContext::AddObjCClassProperty
                                                                         isDefined,
                                                                         impControl,
                                                                         HasRelatedResultType);
+                        
+                        if (getter)
+                            SetMetadata(ast, (uintptr_t)getter, metadata);
                                                 
                         getter->setMethodParams(*ast, ArrayRef<ParmVarDecl*>(), ArrayRef<SourceLocation>());
                         
@@ -2538,6 +2552,9 @@ ClangASTContext::AddObjCClassProperty
                                                                         isDefined,
                                                                         impControl,
                                                                         HasRelatedResultType);
+                        
+                        if (setter)
+                            SetMetadata(ast, (uintptr_t)setter, metadata);
                         
                         llvm::SmallVector<ParmVarDecl *, 1> params;
 
@@ -6195,36 +6212,6 @@ ClangASTContext::GetTypeQualifiers(clang_type_t clang_type)
     return qual_type.getQualifiers().getCVRQualifiers();
 }
 
-uint64_t
-GetTypeFlags(clang::ASTContext *ast, lldb::clang_type_t clang_type)
-{
-    assert (clang_type);
-    
-    clang::ExternalASTSource *external_ast_source = ast->getExternalSource();
-    
-    if (!external_ast_source)
-        return 0;
-    
-    ClangExternalASTSourceCommon *common_ast_source = static_cast<ClangExternalASTSourceCommon*>(external_ast_source);
-    
-    return common_ast_source->GetMetadata((uintptr_t)clang_type);
-}
-
-void
-SetTypeFlags(clang::ASTContext *ast, lldb::clang_type_t clang_type, uint64_t flags)
-{
-    assert (clang_type);
-    
-    clang::ExternalASTSource *external_ast_source = ast->getExternalSource();
-    
-    if (!external_ast_source)
-        return;
-    
-    ClangExternalASTSourceCommon *common_ast_source = static_cast<ClangExternalASTSourceCommon*>(external_ast_source);
-    
-    return common_ast_source->SetMetadata((uintptr_t)clang_type, flags);
-}
-
 bool
 ClangASTContext::GetCompleteType (clang::ASTContext *ast, lldb::clang_type_t clang_type)
 {
@@ -6297,6 +6284,31 @@ ClangASTContext::GetCompleteDecl (clang::ASTContext *ast,
     {
         return false;
     }
+}
+
+void
+ClangASTContext::SetMetadata (clang::ASTContext *ast,
+                              uintptr_t object,
+                              uint64_t metadata)
+{
+    ClangExternalASTSourceCommon *external_source =
+        static_cast<ClangExternalASTSourceCommon*>(ast->getExternalSource());
+    
+    if (external_source)
+        external_source->SetMetadata(object, metadata);
+}
+
+uint64_t
+ClangASTContext::GetMetadata (clang::ASTContext *ast,
+                              uintptr_t object)
+{
+    ClangExternalASTSourceCommon *external_source =
+        static_cast<ClangExternalASTSourceCommon*>(ast->getExternalSource());
+    
+    if (external_source && external_source->HasMetadata(object))
+        return external_source->GetMetadata(object);
+    else
+        return 0;
 }
 
 clang::DeclContext *

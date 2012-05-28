@@ -39,9 +39,36 @@ PlatformLinux::CreateInstance (bool force, const ArchSpec *arch)
     if (create == false && arch && arch->IsValid())
     {
         const llvm::Triple &triple = arch->GetTriple();
-        const llvm::Triple::OSType os = triple.getOS();
-        if (os == llvm::Triple::Linux)
-            create = true;
+        switch (triple.getVendor())
+        {
+            case llvm::Triple::PC:
+                create = true;
+                break;
+                
+            case llvm::Triple::UnknownArch:
+                create = !arch->TripleVendorWasSpecified();
+                break;
+                
+            default:
+                break;
+        }
+        
+        if (create)
+        {
+            switch (triple.getOS())
+            {
+                case llvm::Triple::Linux:
+                    break;
+                    
+                case llvm::Triple::UnknownOS:
+                    create = !arch->TripleOSWasSpecified();
+                    break;
+                    
+                default:
+                    create = false;
+                    break;
+            }
+        }
     }
     if (create)
         return new PlatformLinux(true);
@@ -330,7 +357,12 @@ PlatformLinux::LaunchProcess (ProcessLaunchInfo &launch_info)
         if (launch_info.GetFlags().Test (eLaunchFlagLaunchInShell))
         {
             const bool is_localhost = true;
-            if (!launch_info.ConvertArgumentsForLaunchingInShell (error, is_localhost))
+            const bool will_debug = launch_info.GetFlags().Test(eLaunchFlagDebug);
+            const bool first_arg_is_full_shell_command = false;
+            if (!launch_info.ConvertArgumentsForLaunchingInShell (error,
+                                                                  is_localhost,
+                                                                  will_debug,
+                                                                  first_arg_is_full_shell_command))
                 return error;
         }
         error = Platform::LaunchProcess (launch_info);

@@ -250,7 +250,9 @@ ValueObject::UpdateFormatsIfNeeded(DynamicValueType use_dynamic)
     {
         SetValueFormat(DataVisualization::ValueFormats::GetFormat (*this, eNoDynamicValues));
         SetSummaryFormat(DataVisualization::GetSummaryFormat (*this, use_dynamic));
+#ifndef LLDB_DISABLE_PYTHON
         SetSyntheticChildren(DataVisualization::GetSyntheticChildren (*this, use_dynamic));
+#endif
 
         m_last_format_mgr_revision = DataVisualization::GetCurrentRevision();
         m_last_format_mgr_dynamic = use_dynamic;
@@ -1591,12 +1593,16 @@ ValueObject::GetPointerValue (AddressType *address_type)
 }
 
 bool
-ValueObject::SetValueFromCString (const char *value_str)
+ValueObject::SetValueFromCString (const char *value_str, Error& error)
 {
+    error.Clear();
     // Make sure our value is up to date first so that our location and location
     // type is valid.
     if (!UpdateValueIfNeeded(false))
+    {
+        error.SetErrorString("unable to read value");
         return false;
+    }
 
     uint32_t count = 0;
     Encoding encoding = ClangASTType::GetEncoding (GetClangType(), count);
@@ -1615,7 +1621,6 @@ ValueObject::SetValueFromCString (const char *value_str)
         // If the value fits in a scalar, then make a new scalar and again let the
         // scalar code do the conversion, then figure out where to put the new value.
         Scalar new_scalar;
-        Error error;
         error = new_scalar.SetValueFromCString (value_str, encoding, byte_size);
         if (error.Success())
         {
@@ -1634,8 +1639,13 @@ ValueObject::SetValueFromCString (const char *value_str)
                                                                              new_scalar, 
                                                                              byte_size, 
                                                                              error);
-                        if (!error.Success() || bytes_written != byte_size)
-                            return false;                            
+                        if (!error.Success())
+                            return false;
+                        if (bytes_written != byte_size)
+                        {
+                            error.SetErrorString("unable to write value to memory");
+                            return false;
+                        }
                     }
                 }
                 break;
@@ -1673,6 +1683,7 @@ ValueObject::SetValueFromCString (const char *value_str)
     else
     {
         // We don't support setting things bigger than a scalar at present.
+        error.SetErrorString("unable to write aggregate data type");
         return false;
     }
     
@@ -1755,15 +1766,14 @@ ValueObject::IsPointerOrReferenceType ()
 }
 
 bool
-ValueObject::IsPossibleCPlusPlusDynamicType ()
-{
-    return ClangASTContext::IsPossibleCPlusPlusDynamicType (GetClangAST (), GetClangType());
-}
-
-bool
 ValueObject::IsPossibleDynamicType ()
 {
-    return ClangASTContext::IsPossibleDynamicType (GetClangAST (), GetClangType());
+    ExecutionContext exe_ctx (GetExecutionContextRef());
+    Process *process = exe_ctx.GetProcessPtr();
+    if (process)
+        return process->IsPossibleDynamicValue(*this);
+    else
+        return ClangASTContext::IsPossibleDynamicType (GetClangAST (), GetClangType());
 }
 
 ValueObjectSP
@@ -2047,37 +2057,8 @@ ValueObject::CalculateDynamicValue (DynamicValueType use_dynamic)
     {
         ExecutionContext exe_ctx (GetExecutionContextRef());
         Process *process = exe_ctx.GetProcessPtr();
-        if (process)
-        {
-            bool worth_having_dynamic_value = false;
-            
-            
-            // FIXME: Process should have some kind of "map over Runtimes" so we don't have to
-            // hard code this everywhere.
-            LanguageType known_type = GetObjectRuntimeLanguage();
-            if (known_type != eLanguageTypeUnknown && known_type != eLanguageTypeC)
-            {
-                LanguageRuntime *runtime = process->GetLanguageRuntime (known_type);
-                if (runtime)
-                    worth_having_dynamic_value = runtime->CouldHaveDynamicValue(*this);
-            }
-            else
-            {
-                LanguageRuntime *cpp_runtime = process->GetLanguageRuntime (eLanguageTypeC_plus_plus);
-                if (cpp_runtime)
-                    worth_having_dynamic_value = cpp_runtime->CouldHaveDynamicValue(*this);
-                
-                if (!worth_having_dynamic_value)
-                {
-                    LanguageRuntime *objc_runtime = process->GetLanguageRuntime (eLanguageTypeObjC);
-                    if (objc_runtime)
-                        worth_having_dynamic_value = objc_runtime->CouldHaveDynamicValue(*this);
-                }
-            }
-            
-            if (worth_having_dynamic_value)
-                m_dynamic_value = new ValueObjectDynamicValue (*this, use_dynamic);
-        }
+        if (process && process->IsPossibleDynamicValue(*this))
+            m_dynamic_value = new ValueObjectDynamicValue (*this, use_dynamic);
     }
 }
 
@@ -2099,6 +2080,12 @@ ValueObject::GetDynamicValue (DynamicValueType use_dynamic)
 
 ValueObjectSP
 ValueObject::GetStaticValue()
+{
+    return GetSP();
+}
+
+lldb::ValueObjectSP
+ValueObject::GetNonSyntheticValue ()
 {
     return GetSP();
 }
@@ -3485,7 +3472,13 @@ ValueObject::CreateConstantValue (const ConstString &name)
         data.SetByteOrder (m_data.GetByteOrder());
         data.SetAddressByteSize(m_data.GetAddressByteSize());
         
-        m_error = m_value.GetValueAsData (&exe_ctx, ast, data, 0, GetModule().get());
+        if (IsBitfield())
+        {
+            Value v(Scalar(GetValueAsUnsigned(UINT64_MAX)));
+            m_error = v.GetValueAsData (&exe_ctx, ast, data, 0, GetModule().get());
+        }
+        else
+            m_error = m_value.GetValueAsData (&exe_ctx, ast, data, 0, GetModule().get());
         
         valobj_sp = ValueObjectConstResult::Create (exe_ctx.GetBestExecutionContextScope(), 
                                                     ast,

@@ -6,7 +6,7 @@ OS=`uname`
 CXX=$1
 CC=$2
 FILE_CHECK=$3
-CXXFLAGS="-mno-omit-leaf-frame-pointer -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+CXXFLAGS="-mno-omit-leaf-frame-pointer -fno-omit-frame-pointer -fno-optimize-sibling-calls -g"
 SYMBOLIZER=../scripts/asan_symbolize.py
 TMP_ASAN_REPORT=asan_report.tmp
 
@@ -14,7 +14,7 @@ run_program() {
   ./$1 2>&1 | $SYMBOLIZER 2> /dev/null | c++filt > $TMP_ASAN_REPORT
 }
 
-# check_program exe_file source_file check_prefix
+# check_program exe_file source_file check_prefixf
 check_program() {
   run_program $1
   $FILE_CHECK $2 --check-prefix=$3 < $TMP_ASAN_REPORT
@@ -43,18 +43,22 @@ for t in  *.cc; do
   for b in 32 64; do
     for O in 0 1 2 3; do
       c=`basename $t .cc`
-      if [[ "$c" == *"-so" ]]
-      then
+      if [[ "$c" == *"-so" ]]; then
         continue
+      fi
+      if [[ "$c" == *"-linux" ]]; then
+        if [[ "$OS" != "Linux" ]]; then
+          continue
+        fi
       fi
       c_so=$c-so
       exe=$c.$b.O$O
       so=$c.$b.O$O-so.so
       echo testing $exe
-      build_command="$CXX $CXXFLAGS -g -m$b -faddress-sanitizer -O$O $c.cc -o $exe"
+      build_command="$CXX $CXXFLAGS -m$b -faddress-sanitizer -O$O $c.cc -o $exe"
       [ "$DEBUG" == "1" ] && echo $build_command
       $build_command
-      [ -e "$c_so.cc" ] && $CXX $CXXFLAGS -g -m$b -faddress-sanitizer -O$O $c_so.cc -fPIC -shared -o $so
+      [ -e "$c_so.cc" ] && $CXX $CXXFLAGS -m$b -faddress-sanitizer -O$O $c_so.cc -fPIC -shared -o $so
       run_program $exe
       # Check common expected lines for OS.
       $FILE_CHECK $c.cc --check-prefix="Check-Common" < $TMP_ASAN_REPORT

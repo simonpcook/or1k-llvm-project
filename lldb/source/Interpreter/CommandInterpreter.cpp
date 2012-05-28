@@ -113,6 +113,12 @@ CommandInterpreter::Initialize ()
         AddAlias ("q", cmd_obj_sp);
         AddAlias ("exit", cmd_obj_sp);
     }
+    
+    cmd_obj_sp = GetCommandSPExact ("process attach", false);
+    if (cmd_obj_sp)
+    {
+        AddAlias ("attach", cmd_obj_sp);
+    }
 
     cmd_obj_sp = GetCommandSPExact ("process continue", false);
     if (cmd_obj_sp)
@@ -238,7 +244,7 @@ CommandInterpreter::Initialize ()
     if (cmd_obj_sp)
     {
         alias_arguments_vector_sp.reset (new OptionArgVector);
-        ProcessAliasOptionsArgs (cmd_obj_sp, "--", alias_arguments_vector_sp);
+        ProcessAliasOptionsArgs (cmd_obj_sp, "--shell=/bin/bash --", alias_arguments_vector_sp);
         AddAlias ("r", cmd_obj_sp);
         AddAlias ("run", cmd_obj_sp);
         AddOrReplaceAliasOptions ("r", alias_arguments_vector_sp);
@@ -249,6 +255,15 @@ CommandInterpreter::Initialize ()
     if (cmd_obj_sp)
     {
         AddAlias ("add-dsym", cmd_obj_sp);
+    }
+    
+    cmd_obj_sp = GetCommandSPExact ("breakpoint set", false);
+    if (cmd_obj_sp)
+    {
+        alias_arguments_vector_sp.reset (new OptionArgVector);
+        ProcessAliasOptionsArgs (cmd_obj_sp, "--func-regex %1", alias_arguments_vector_sp);
+        AddAlias ("rb", cmd_obj_sp);
+        AddOrReplaceAliasOptions("rb", alias_arguments_vector_sp);
     }
 }
 
@@ -1320,6 +1335,7 @@ CommandInterpreter::HandleCommand (const char *command_line,
     StreamString revised_command_line;
     size_t actual_cmd_name_len = 0;
     std::string next_word;
+    StringList matches;
     while (!done)
     {
         char quote_char = '\0';
@@ -1340,7 +1356,7 @@ CommandInterpreter::HandleCommand (const char *command_line,
             }
             else
             {
-                cmd_obj = GetCommandObject (next_word.c_str());
+                cmd_obj = GetCommandObject (next_word.c_str(), &matches);
                 if (cmd_obj)
                 {
                     actual_cmd_name_len += next_word.length();
@@ -1386,7 +1402,26 @@ CommandInterpreter::HandleCommand (const char *command_line,
 
         if (cmd_obj == NULL)
         {
-            result.AppendErrorWithFormat ("'%s' is not a valid command.\n", next_word.c_str());
+            uint32_t num_matches = matches.GetSize();
+            if (matches.GetSize() > 1) {
+                std::string error_msg;
+                error_msg.assign ("Ambiguous command '");
+                error_msg.append(next_word.c_str());
+                error_msg.append ("'.");
+
+                error_msg.append (" Possible matches:");
+
+                for (uint32_t i = 0; i < num_matches; ++i) {
+                    error_msg.append ("\n\t");
+                    error_msg.append (matches.GetStringAtIndex(i));
+                }
+                error_msg.append ("\n");
+                result.AppendRawError (error_msg.c_str(), error_msg.size());
+            } else {
+                // We didn't have only one match, otherwise we wouldn't get here.
+                assert(num_matches == 0);
+                result.AppendErrorWithFormat ("'%s' is not a valid command.\n", next_word.c_str());
+            }
             result.SetStatus (eReturnStatusFailed);
             return false;
         }
@@ -2272,20 +2307,23 @@ CommandInterpreter::HandleCommands (const StringList &commands,
                 
         if (!success || !tmp_result.Succeeded())
         {
+            const char *error_msg = tmp_result.GetErrorData();
+            if (error_msg == NULL || error_msg[0] == '\0')
+                error_msg = "<unknown error>.\n";
             if (stop_on_error)
             {
-                result.AppendErrorWithFormat("Aborting reading of commands after command #%d: '%s' failed.\n", 
-                                         idx, cmd);
+                result.AppendErrorWithFormat("Aborting reading of commands after command #%d: '%s' failed with %s",
+                                         idx, cmd, error_msg);
                 result.SetStatus (eReturnStatusFailed);
                 m_debugger.SetAsyncExecution (old_async_execution);
                 return;
             }
             else if (print_results)
             {
-                result.AppendMessageWithFormat ("Command #%d '%s' failed with error: %s.\n", 
+                result.AppendMessageWithFormat ("Command #%d '%s' failed with %s",
                                                 idx + 1, 
                                                 cmd, 
-                                                tmp_result.GetErrorData());
+                                                error_msg);
             }
         }
         

@@ -30,11 +30,10 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CommandLine.h"
 
-#include <isl/flow.h>
 #include <isl/aff.h>
-#define CLOOG_INT_GMP 1
-#include <cloog/cloog.h>
-#include <cloog/isl/cloog.h>
+#include <isl/flow.h>
+#include <isl/map.h>
+#include <isl/set.h>
 
 using namespace polly;
 using namespace llvm;
@@ -172,63 +171,50 @@ isl_union_map *getCombinedScheduleForSpace(Scop *scop, unsigned dimLevel) {
   return schedule;
 }
 
-bool Dependences::isParallelDimension(__isl_take isl_set *Domain,
+bool Dependences::isParallelDimension(__isl_take isl_set *ScheduleSubset,
                                       unsigned ParallelDim) {
+  // To check if a loop is parallel, we perform the following steps:
+  //
+  // o Move dependences from 'Domain -> Domain' to 'Schedule -> Schedule' space.
+  // o Limit dependences to the schedule space enumerated by the loop.
+  // o Calculate distances of the dependences.
+  // o Check if one of the distances is invalid in presence of parallelism.
+
   isl_union_map *Schedule, *Deps;
-  isl_union_set *ScheduleSubset;
+  isl_map *ScheduleDeps;
   Scop *S = &getCurScop();
 
-  Schedule = getCombinedScheduleForSpace(S, ParallelDim);
   Deps = getDependences(TYPE_ALL);
 
-  ScheduleSubset = isl_union_set_from_set(Domain);
+  if (isl_union_map_is_empty(Deps)) {
+    isl_union_map_free(Deps);
+    isl_set_free(ScheduleSubset);
+    return true;
+  }
+
+  Schedule = getCombinedScheduleForSpace(S, ParallelDim);
   Deps = isl_union_map_apply_range(Deps, isl_union_map_copy(Schedule));
   Deps = isl_union_map_apply_domain(Deps, Schedule);
+  ScheduleDeps = isl_map_from_union_map(Deps);
+  ScheduleDeps = isl_map_intersect_domain(ScheduleDeps,
+                                          isl_set_copy(ScheduleSubset));
+  ScheduleDeps = isl_map_intersect_range(ScheduleDeps, ScheduleSubset);
 
-  // Dependences need to originate and to terminate in the scheduling space
-  // enumerated by this loop.
-  Deps = isl_union_map_intersect_domain(Deps,
-                                        isl_union_set_copy(ScheduleSubset));
-  Deps = isl_union_map_intersect_range(Deps, ScheduleSubset);
+  isl_set *Distances = isl_map_deltas(ScheduleDeps);
+  isl_space *Space = isl_set_get_space(Distances);
+  isl_set *Invalid = isl_set_universe(Space);
 
-  isl_union_set *Distance = isl_union_map_deltas(Deps);
+  // [0, ..., 0, +] - All zeros and last dimension larger than zero
+  for (unsigned i = 0; i < ParallelDim - 1; i++)
+    Invalid = isl_set_fix_si(Invalid, isl_dim_set, i, 0);
 
-  isl_space *Space = isl_space_set_alloc(S->getIslCtx(), 0, ParallelDim);
+  Invalid = isl_set_lower_bound_si(Invalid, isl_dim_set, ParallelDim - 1, 1);
+  Invalid = isl_set_intersect(Invalid, Distances);
 
-  // [0, 0, 0, 0] - All zero
-  isl_set *AllZero = isl_set_universe(isl_space_copy(Space));
-  unsigned Dimensions = isl_space_dim(Space, isl_dim_set);
+  bool IsParallel = isl_set_is_empty(Invalid);
+  isl_set_free(Invalid);
 
-  for (unsigned i = 0; i < Dimensions; i++)
-    AllZero = isl_set_fix_si(AllZero, isl_dim_set, i, 0);
-
-  AllZero = isl_set_align_params(AllZero, S->getParamSpace());
-
-  // All zero, last unknown.
-  // [0, 0, 0, ?]
-  isl_set *LastUnknown = isl_set_universe(Space);
-
-  for (unsigned i = 0; i < Dimensions - 1; i++)
-    LastUnknown = isl_set_fix_si(LastUnknown, isl_dim_set, i, 0);
-
-  LastUnknown = isl_set_align_params(LastUnknown, S->getParamSpace());
-
-  // Valid distance vectors
-  isl_set *ValidDistances = isl_set_subtract(LastUnknown, AllZero);
-  ValidDistances = isl_set_complement(ValidDistances);
-  isl_union_set *ValidDistancesUS = isl_union_set_from_set(ValidDistances);
-  isl_union_set *Invalid = isl_union_set_subtract(Distance, ValidDistancesUS);
-
-  bool IsParallel = isl_union_set_is_empty(Invalid);
-  isl_union_set_free(Invalid);
   return IsParallel;
-}
-
-bool Dependences::isParallelFor(const clast_for *f) {
-  isl_set *Domain = isl_set_from_cloog_domain(f->domain);
-  assert(Domain && "Cannot access domain of loop");
-
-  return isParallelDimension(isl_set_copy(Domain), isl_set_n_dim(Domain));
 }
 
 void Dependences::printScop(raw_ostream &OS) const {

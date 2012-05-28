@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly %defaultOpts -polly-codegen -enable-polly-vector -dce -S %s | FileCheck %s
+; RUN: opt %loadPolly %defaultOpts -polly-codegen %vector-opt -dce -S %s | FileCheck %s
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
 target triple = "x86_64-unknown-linux-gnu"
 
@@ -43,10 +43,8 @@ define i32 @main() nounwind {
   ret i32 %2
 }
 
-; CHECK: bitcast float* {{.*}} to <4 x float>*
-; CHECK: load <4 x float>*
-; CHECK: store <4 x float> %tmp1_p_vec_full, <4 x float>* %vector_ptr7
-; CHECK: bitcast float* {{.*}} to <4 x float>*
-; CHECK: load <4 x float>*
-; CHECK: store <4 x float> %tmp2_p_vec_full, <4 x float>* %vector_ptr15
+; CHECK: [[LOAD1:%[a-zA-Z0-9_]+_full]] = load <4 x float>*
+; CHECK: store <4 x float> [[LOAD1]]
+; CHECK: [[LOAD2:%[a-zA-Z0-9_]+_full]] = load <4 x float>*
+; CHECK: store <4 x float> [[LOAD2]]
 

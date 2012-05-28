@@ -66,7 +66,7 @@ static uint32_t global_seed = 0;
 
 const size_t kLargeMalloc = 1 << 24;
 
-template<class T>
+template<typename T>
 NOINLINE void asan_write(T *a) {
   *a = 0;
 }
@@ -112,7 +112,7 @@ NOINLINE void free_ccc(void *p) { free(p); break_optimization(0);}
 NOINLINE void free_bbb(void *p) { free_ccc(p); break_optimization(0);}
 NOINLINE void free_aaa(void *p) { free_bbb(p); break_optimization(0);}
 
-template<class T>
+template<typename T>
 NOINLINE void oob_test(int size, int off) {
   char *p = (char*)malloc_aaa(size);
   // fprintf(stderr, "writing %d byte(s) into [%p,%p) with offset %d\n",
@@ -122,7 +122,7 @@ NOINLINE void oob_test(int size, int off) {
 }
 
 
-template<class T>
+template<typename T>
 NOINLINE void uaf_test(int size, int off) {
   char *p = (char *)malloc_aaa(size);
   free_aaa(p);
@@ -210,48 +210,6 @@ TEST(AddressSanitizer, PvallocTest) {
 }
 #endif  // __APPLE__
 
-void NoOpSignalHandler(int unused) {
-  fprintf(stderr, "NoOpSignalHandler (should not happen). Aborting\n");
-  abort();
-}
-
-void NoOpSigaction(int, siginfo_t *siginfo, void *context) {
-  fprintf(stderr, "NoOpSigaction (should not happen). Aborting\n");
-  abort();
-}
-
-TEST(AddressSanitizer, SignalTest) {
-  signal(SIGSEGV, NoOpSignalHandler);
-  signal(SIGILL, NoOpSignalHandler);
-  // If asan did not intercept sigaction NoOpSigaction will fire.
-  char *x = Ident((char*)malloc(5));
-  EXPECT_DEATH(x[6]++, "is located 1 bytes to the right");
-  free(Ident(x));
-}
-
-TEST(AddressSanitizer, SigactionTest) {
-  {
-    struct sigaction sigact;
-    memset(&sigact, 0, sizeof(sigact));
-    sigact.sa_sigaction = NoOpSigaction;;
-    sigact.sa_flags = SA_SIGINFO;
-    sigaction(SIGSEGV, &sigact, 0);
-  }
-
-  {
-    struct sigaction sigact;
-    memset(&sigact, 0, sizeof(sigact));
-    sigact.sa_sigaction = NoOpSigaction;;
-    sigact.sa_flags = SA_SIGINFO;
-    sigaction(SIGILL, &sigact, 0);
-  }
-
-  // If asan did not intercept sigaction NoOpSigaction will fire.
-  char *x = Ident((char*)malloc(5));
-  EXPECT_DEATH(x[6]++, "is located 1 bytes to the right");
-  free(Ident(x));
-}
-
 void *TSDWorker(void *test_key) {
   if (test_key) {
     pthread_setspecific(*(pthread_key_t*)test_key, (void*)0xfeedface);
@@ -282,7 +240,7 @@ TEST(AddressSanitizer, DISABLED_TSDTest) {
   pthread_key_delete(test_key);
 }
 
-template<class T>
+template<typename T>
 void OOBTest() {
   char expected_str[100];
   for (int size = sizeof(T); size < 20; size += 5) {
@@ -465,10 +423,11 @@ TEST(AddressSanitizer, LargeMallocTest) {
 TEST(AddressSanitizer, HugeMallocTest) {
 #ifdef __APPLE__
   // It was empirically found out that 1215 megabytes is the maximum amount of
-  // memory available to the process under AddressSanitizer on Darwin.
+  // memory available to the process under AddressSanitizer on 32-bit Mac 10.6.
+  // 32-bit Mac 10.7 gives even less (< 1G).
   // (the libSystem malloc() allows allocating up to 2300 megabytes without
   // ASan).
-  size_t n_megs = __WORDSIZE == 32 ? 1200 : 4100;
+  size_t n_megs = __WORDSIZE == 32 ? 500 : 4100;
 #else
   size_t n_megs = __WORDSIZE == 32 ? 2600 : 4100;
 #endif
@@ -795,7 +754,7 @@ static string LeftOOBErrorMessage(int oob_distance) {
   return string(expected_str);
 }
 
-template<class T>
+template<typename T>
 void MemSetOOBTestTemplate(size_t length) {
   if (length == 0) return;
   size_t size = Ident(sizeof(T) * length);
@@ -852,7 +811,7 @@ TEST(AddressSanitizer, MemSetOOBTest) {
 }
 
 // Same test for memcpy and memmove functions
-template <class T, class M>
+template <typename T, class M>
 void MemTransferOOBTestTemplate(size_t length) {
   if (length == 0) return;
   size_t size = Ident(sizeof(T) * length);
@@ -1874,6 +1833,16 @@ TEST(AddressSanitizer, DISABLED_DemoTooMuchMemoryTest) {
     total_size += kAllocSize;
     fprintf(stderr, "total: %ldM\n", (long)total_size >> 20);
   }
+}
+
+// http://code.google.com/p/address-sanitizer/issues/detail?id=66
+TEST(AddressSanitizer, BufferOverflowAfterManyFrees) {
+  for (int i = 0; i < 1000000; i++) {
+    delete [] (Ident(new char [8644]));
+  }
+  char *x = new char[8192];
+  EXPECT_DEATH(x[Ident(8192)] = 0, "AddressSanitizer heap-buffer-overflow");
+  delete [] Ident(x);
 }
 
 #ifdef __APPLE__

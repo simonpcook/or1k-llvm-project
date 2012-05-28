@@ -274,6 +274,9 @@ public:
     Vote
     ShouldReportRun (Event *event_ptr);
     
+    void
+    Flush ();
+
     // Return whether this thread matches the specification in ThreadSpec.  This is a virtual
     // method because at some point we may extend the thread spec with a platform specific
     // dictionary of attributes, which then only the platform specific Thread implementation
@@ -521,6 +524,11 @@ public:
     /// Gets the plan used to step through the code that steps from a function
     /// call site at the current PC into the actual function call.
     ///
+    ///
+    /// @param[in] return_stack_id
+    ///    The stack id that we will return to (by setting backstop breakpoints on the return
+    ///    address to that frame) if we fail to step through.
+    ///
     /// @param[in] abort_other_plans
     ///    \b true if we discard the currently queued plans and replace them with this one.
     ///    Otherwise this plan will go on the end of the plan stack.
@@ -532,7 +540,8 @@ public:
     ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
     virtual ThreadPlan *
-    QueueThreadPlanForStepThrough (bool abort_other_plans,
+    QueueThreadPlanForStepThrough (StackID &return_stack_id,
+                                   bool abort_other_plans,
                                    bool stop_other_threads);
 
     //------------------------------------------------------------------
@@ -587,12 +596,8 @@ public:
 
 private:
     bool
-    PlanIsBasePlan (ThreadPlan *plan_ptr)
-    {
-        if (m_plan_stack.size() == 0)
-            return false;
-        return m_plan_stack[0].get() == plan_ptr;
-    }
+    PlanIsBasePlan (ThreadPlan *plan_ptr);
+    
 public:
 
     //------------------------------------------------------------------
@@ -678,6 +683,9 @@ public:
     void
     DiscardThreadPlansUpToPlan (lldb::ThreadPlanSP &up_to_plan_sp);
 
+    void
+    DiscardThreadPlansUpToPlan (ThreadPlan *up_to_plan_ptr);
+    
     //------------------------------------------------------------------
     /// Prints the current plan stack.
     ///

@@ -89,6 +89,7 @@ Thread::DestroyThread ()
     m_plan_stack.clear();
     m_discarded_plan_stack.clear();
     m_completed_plan_stack.clear();
+    m_actual_stop_info_sp.reset();
     m_destroy_called = true;
 }
 
@@ -96,7 +97,7 @@ lldb::StopInfoSP
 Thread::GetStopInfo ()
 {
     ThreadPlanSP plan_sp (GetCompletedPlan());
-    if (plan_sp)
+    if (plan_sp && plan_sp->PlanSucceeded())
         return StopInfo::CreateStopReasonWithPlan (plan_sp, GetReturnValueObject());
     else
     {
@@ -332,6 +333,17 @@ Thread::ShouldStop (Event* event_ptr)
     
     // The top most plan always gets to do the trace log...
     current_plan->DoTraceLog ();
+    
+    // First query the stop info's ShouldStopSynchronous.  This handles "synchronous" stop reasons, for example the breakpoint
+    // command on internal breakpoints.  If a synchronous stop reason says we should not stop, then we don't have to
+    // do any more work on this stop.
+    StopInfoSP private_stop_info (GetPrivateStopReason());
+    if (private_stop_info && private_stop_info->ShouldStopSynchronous(event_ptr) == false)
+    {
+        if (log)
+            log->Printf ("StopInfo::ShouldStop async callback says we should not stop, returning ShouldStop of false.");
+        return false;
+    }
 
     // If the base plan doesn't understand why we stopped, then we have to find a plan that does.
     // If that plan is still working, then we don't need to do any more work.  If the plan that explains 
@@ -349,7 +361,7 @@ Thread::ShouldStop (Event* event_ptr)
         }
         else
         {
-            // If the current plan doesn't explain the stop, then, find one that
+            // If the current plan doesn't explain the stop, then find one that
             // does and let it handle the situation.
             ThreadPlan *plan_ptr = current_plan;
             while ((plan_ptr = GetPreviousPlan(plan_ptr)) != NULL)
@@ -363,8 +375,8 @@ Thread::ShouldStop (Event* event_ptr)
                     
                     if (plan_ptr->MischiefManaged())
                     {
-                        // We're going to pop the plans up to AND INCLUDING the plan that explains the stop.
-                        plan_ptr = GetPreviousPlan(plan_ptr);
+                        // We're going to pop the plans up to and including the plan that explains the stop.
+                        ThreadPlan *prev_plan_ptr = GetPreviousPlan (plan_ptr);
                         
                         do 
                         {
@@ -372,8 +384,13 @@ Thread::ShouldStop (Event* event_ptr)
                                 current_plan->WillStop();
                             PopPlan();
                         }
-                        while ((current_plan = GetCurrentPlan()) != plan_ptr);
-                        done_processing_current_plan = false;
+                        while ((current_plan = GetCurrentPlan()) != prev_plan_ptr);
+                        // Now, if the responsible plan was not "Okay to discard" then we're done,
+                        // otherwise we forward this to the next plan in the stack below.
+                        if (plan_ptr->IsMasterPlan() && !plan_ptr->OkayToDiscard())
+                            done_processing_current_plan = true;
+                        else
+                            done_processing_current_plan = false;
                     }
                     else
                         done_processing_current_plan = true;
@@ -435,7 +452,6 @@ Thread::ShouldStop (Event* event_ptr)
                             break;
                         }
                     }
-
                 }
                 else
                 {
@@ -443,8 +459,33 @@ Thread::ShouldStop (Event* event_ptr)
                 }
             }
         }
+        
         if (over_ride_stop)
             should_stop = false;
+
+        // One other potential problem is that we set up a master plan, then stop in before it is complete - for instance
+        // by hitting a breakpoint during a step-over - then do some step/finish/etc operations that wind up
+        // past the end point condition of the initial plan.  We don't want to strand the original plan on the stack,
+        // This code clears stale plans off the stack.
+        
+        if (should_stop)
+        {
+            ThreadPlan *plan_ptr = GetCurrentPlan();
+            while (!PlanIsBasePlan(plan_ptr))
+            {
+                bool stale = plan_ptr->IsPlanStale ();
+                ThreadPlan *examined_plan = plan_ptr;
+                plan_ptr = GetPreviousPlan (examined_plan);
+                
+                if (stale)
+                {
+                    if (log)
+                        log->Printf("Plan %s being discarded in cleanup, it says it is already done.", examined_plan->GetName());
+                    DiscardThreadPlansUpToPlan(examined_plan);
+                }
+            }
+        }
+        
     }
 
     if (log)
@@ -605,10 +646,11 @@ Thread::DiscardPlan ()
 ThreadPlan *
 Thread::GetCurrentPlan ()
 {
-    if (m_plan_stack.empty())
-        return NULL;
-    else
-        return m_plan_stack.back().get();
+    // There will always be at least the base plan.  If somebody is mucking with a
+    // thread with an empty plan stack, we should assert right away.
+    assert (!m_plan_stack.empty());
+
+    return m_plan_stack.back().get();
 }
 
 ThreadPlanSP
@@ -737,10 +779,16 @@ Thread::SetTracer (lldb::ThreadPlanTracerSP &tracer_sp)
 void
 Thread::DiscardThreadPlansUpToPlan (lldb::ThreadPlanSP &up_to_plan_sp)
 {
+    DiscardThreadPlansUpToPlan (up_to_plan_sp.get());
+}
+
+void
+Thread::DiscardThreadPlansUpToPlan (ThreadPlan *up_to_plan_ptr)
+{
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     if (log)
     {
-        log->Printf("Discarding thread plans for thread tid = 0x%4.4llx, up to %p", GetID(), up_to_plan_sp.get());
+        log->Printf("Discarding thread plans for thread tid = 0x%4.4llx, up to %p", GetID(), up_to_plan_ptr);
     }
 
     int stack_size = m_plan_stack.size();
@@ -748,7 +796,7 @@ Thread::DiscardThreadPlansUpToPlan (lldb::ThreadPlanSP &up_to_plan_sp)
     // If the input plan is NULL, discard all plans.  Otherwise make sure this plan is in the
     // stack, and if so discard up to and including it.
     
-    if (up_to_plan_sp.get() == NULL)
+    if (up_to_plan_ptr == NULL)
     {
         for (int i = stack_size - 1; i > 0; i--)
             DiscardPlan();
@@ -758,7 +806,7 @@ Thread::DiscardThreadPlansUpToPlan (lldb::ThreadPlanSP &up_to_plan_sp)
         bool found_it = false;
         for (int i = stack_size - 1; i > 0; i--)
         {
-            if (m_plan_stack[i] == up_to_plan_sp)
+            if (m_plan_stack[i].get() == up_to_plan_ptr)
                 found_it = true;
         }
         if (found_it)
@@ -766,7 +814,7 @@ Thread::DiscardThreadPlansUpToPlan (lldb::ThreadPlanSP &up_to_plan_sp)
             bool last_one = false;
             for (int i = stack_size - 1; i > 0 && !last_one ; i--)
             {
-                if (GetCurrentPlan() == up_to_plan_sp.get())
+                if (GetCurrentPlan() == up_to_plan_ptr)
                     last_one = true;
                 DiscardPlan();
             }
@@ -837,6 +885,17 @@ Thread::DiscardThreadPlans(bool force)
         }
 
     }
+}
+
+bool
+Thread::PlanIsBasePlan (ThreadPlan *plan_ptr)
+{
+    if (plan_ptr->IsBasePlan())
+        return true;
+    else if (m_plan_stack.size() == 0)
+        return false;
+    else
+       return m_plan_stack[0].get() == plan_ptr;
 }
 
 ThreadPlan *
@@ -921,9 +980,9 @@ Thread::QueueThreadPlanForStepOut
 }
 
 ThreadPlan *
-Thread::QueueThreadPlanForStepThrough (bool abort_other_plans, bool stop_other_threads)
+Thread::QueueThreadPlanForStepThrough (StackID &return_stack_id, bool abort_other_plans, bool stop_other_threads)
 {
-    ThreadPlanSP thread_plan_sp(new ThreadPlanStepThrough (*this, stop_other_threads));
+    ThreadPlanSP thread_plan_sp(new ThreadPlanStepThrough (*this, return_stack_id, stop_other_threads));
     if (!thread_plan_sp || !thread_plan_sp->ValidatePlan (NULL))
         return NULL;
 
@@ -1348,6 +1407,14 @@ Thread::GetUnwinder ()
         }
     }
     return m_unwinder_ap.get();
+}
+
+
+void
+Thread::Flush ()
+{
+    ClearStackFrames ();
+    m_reg_context_sp.reset();
 }
 
 

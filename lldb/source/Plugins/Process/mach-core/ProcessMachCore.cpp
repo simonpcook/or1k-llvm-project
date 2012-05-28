@@ -81,8 +81,7 @@ ProcessMachCore::CanDebug(Target &target, bool plugin_specified_by_name)
         if (m_core_module_sp)
         {
             const llvm::Triple &triple_ref = m_core_module_sp->GetArchitecture().GetTriple();
-            if (triple_ref.getOS() == llvm::Triple::Darwin && 
-                triple_ref.getVendor() == llvm::Triple::Apple)
+            if (triple_ref.getVendor() == llvm::Triple::Apple)
             {
                 ObjectFile *core_objfile = m_core_module_sp->GetObjectFile();
                 if (core_objfile && core_objfile->GetType() == ObjectFile::eTypeCoreFile)
@@ -337,7 +336,7 @@ ProcessMachCore::GetDynamicLoader ()
     return m_dyld_ap.get();
 }
 
-uint32_t
+bool
 ProcessMachCore::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_thread_list)
 {
     if (old_thread_list.GetSize(false) == 0)
@@ -362,7 +361,7 @@ ProcessMachCore::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_
         for (uint32_t i=0; i<num_threads; ++i)
             new_thread_list.AddThread (old_thread_list.GetThreadAtIndex (i));
     }
-    return new_thread_list.GetSize(false);
+    return new_thread_list.GetSize(false) > 0;
 }
 
 void

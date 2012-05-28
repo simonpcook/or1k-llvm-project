@@ -414,6 +414,12 @@ public:
     const lldb::ProcessSP &
     GetProcessSP () const;
 
+    bool
+    IsValid()
+    {
+        return m_valid;
+    }
+
     void
     Destroy();
 
@@ -442,6 +448,7 @@ public:
                       const FileSpec &file,
                       uint32_t line_no,
                       bool check_inlines,
+                      LazyBool skip_prologue = eLazyBoolCalculate,
                       bool internal = false);
 
     // Use this to create breakpoint that matches regex against the source lines in files given in source_file_list:
@@ -468,8 +475,8 @@ public:
     CreateFuncRegexBreakpoint (const FileSpecList *containingModules,
                       const FileSpecList *containingSourceFiles,
                       RegularExpression &func_regexp,
-                      bool internal = false,
-                      LazyBool skip_prologue = eLazyBoolCalculate);
+                      LazyBool skip_prologue = eLazyBoolCalculate,
+                      bool internal = false);
 
     // Use this to create a function breakpoint by name in containingModule, or all modules if it is NULL
     // When "skip_prologue is set to eLazyBoolCalculate, we use the current target 
@@ -479,8 +486,8 @@ public:
                       const FileSpecList *containingSourceFiles,
                       const char *func_name,
                       uint32_t func_name_type_mask, 
-                      bool internal = false,
-                      LazyBool skip_prologue = eLazyBoolCalculate);
+                      LazyBool skip_prologue = eLazyBoolCalculate,
+                      bool internal = false);
                       
     lldb::BreakpointSP
     CreateExceptionBreakpoint (enum lldb::LanguageType language, bool catch_bp, bool throw_bp, bool internal = false);
@@ -494,16 +501,16 @@ public:
                       const char *func_names[],
                       size_t num_names, 
                       uint32_t func_name_type_mask, 
-                      bool internal = false,
-                      LazyBool skip_prologue = eLazyBoolCalculate);
+                      LazyBool skip_prologue = eLazyBoolCalculate,
+                      bool internal = false);
 
     lldb::BreakpointSP
     CreateBreakpoint (const FileSpecList *containingModules,
                       const FileSpecList *containingSourceFiles,
-                      std::vector<std::string> func_names,
-                      uint32_t func_name_type_mask, 
-                      bool internal = false,
-                      LazyBool skip_prologue = eLazyBoolCalculate);
+                      const std::vector<std::string> &func_names,
+                      uint32_t func_name_type_mask,
+                      LazyBool skip_prologue = eLazyBoolCalculate,
+                      bool internal = false);
 
 
     // Use this to create a general breakpoint:
@@ -597,7 +604,7 @@ public:
     /// returned.
     //------------------------------------------------------------------
     lldb::addr_t
-    GetCallableLoadAddress (lldb::addr_t load_addr, AddressClass addr_class = lldb_private::eAddressClassInvalid) const;
+    GetCallableLoadAddress (lldb::addr_t load_addr, lldb::AddressClass addr_class = lldb::eAddressClassInvalid) const;
 
     //------------------------------------------------------------------
     /// Get \a load_addr as an opcode for this target.
@@ -612,7 +619,7 @@ public:
     /// returned.
     //------------------------------------------------------------------
     lldb::addr_t
-    GetOpcodeLoadAddress (lldb::addr_t load_addr, AddressClass addr_class = lldb_private::eAddressClassInvalid) const;
+    GetOpcodeLoadAddress (lldb::addr_t load_addr, lldb::AddressClass addr_class = lldb::eAddressClassInvalid) const;
 
 protected:
     void
@@ -1156,6 +1163,7 @@ protected:
     // we can correctly tear down everything that we need to, so the only
     // class that knows about the process lifespan is this target class.
     lldb::ProcessSP m_process_sp;
+    bool m_valid;
     lldb::SearchFilterSP  m_search_filter_sp;
     PathMappingList m_image_search_paths;
     std::auto_ptr<ClangASTContext> m_scratch_ast_context_ap;

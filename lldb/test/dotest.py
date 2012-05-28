@@ -96,12 +96,15 @@ count = 1
 
 # The dictionary as a result of sourcing configFile.
 config = {}
+# The pre_flight and post_flight functions come from reading a config file.
+pre_flight = None
+post_flight = None
 
 # The 'archs' and 'compilers' can be specified via either command line or configFile,
 # with the command line overriding the configFile.  When specified, they should be
 # of the list type.  For example, "-A x86_64^i386" => archs=['x86_64', 'i386'] and
 # "-C gcc^clang" => compilers=['gcc', 'clang'].
-archs = ['x86_64']
+archs = ['x86_64', 'i386']
 compilers = ['clang']
 
 # The arch might dictate some specific CFLAGS to be passed to the toolchain to build
@@ -238,9 +241,11 @@ where options:
 -l   : don't skip long running test
 -n   : don't print the headers like build dir, lldb version, and svn info at all
 -p   : specify a regexp filename pattern for inclusion in the test suite
--r   : specify a dir to relocate the tests and their intermediate files to;
-       the directory must not exist before running this test driver;
+-R   : specify a dir to relocate the tests and their intermediate files to;
+       BE WARNED THAT the directory, if exists, will be deleted before running this test driver;
        no cleanup of intermediate test files is performed in this case
+-r   : similar to '-R',
+       except that the directory must not exist before running this test driver
 -S   : skip the build and cleanup while running the test
        use this option with care as you would need to build the inferior(s) by hand
        and build the executable(s) with the correct name(s)
@@ -393,9 +398,6 @@ def parseOptionsAndInitTestdirs():
 
     do_help = False
 
-    if len(sys.argv) == 1:
-        return
-
     # Process possible trace and/or verbose flag, among other things.
     index = 1
     while index < len(sys.argv):
@@ -529,6 +531,17 @@ def parseOptionsAndInitTestdirs():
                 usage()
             regexp = sys.argv[index]
             index += 1
+        elif sys.argv[index].startswith('-R'):
+            # Increment by 1 to fetch the relocated directory argument.
+            index += 1
+            if index >= len(sys.argv) or sys.argv[index].startswith('-'):
+                usage()
+            rdir = os.path.abspath(sys.argv[index])
+            if os.path.exists(rdir):
+                import shutil
+                print "Removing tree:", rdir
+                shutil.rmtree(rdir)
+            index += 1
         elif sys.argv[index].startswith('-r'):
             # Increment by 1 to fetch the relocated directory argument.
             index += 1
@@ -618,12 +631,17 @@ def parseOptionsAndInitTestdirs():
         from shutil import copytree, ignore_patterns
 
         tmpdirs = []
+        orig_testdirs = testdirs[:]
         for srcdir in testdirs:
             # For example, /Volumes/data/lldb/svn/ToT/test/functionalities/watchpoint/hello_watchpoint
             # shall be split into ['/Volumes/data/lldb/svn/ToT/', 'functionalities/watchpoint/hello_watchpoint'].
             # Utilize the relative path to the 'test' directory to make our destination dir path.
-            dstdir = os.path.join(rdir, srcdir.split("test"+os.sep)[1])
-            #print "(srcdir, dstdir)=(%s, %s)" % (srcdir, dstdir)
+            if ("test"+os.sep) in srcdir:
+                to_split_on = "test"+os.sep
+            else:
+                to_split_on = "test"
+            dstdir = os.path.join(rdir, srcdir.split(to_split_on)[1])
+            dstdir = dstdir.rstrip(os.sep)
             # Don't copy the *.pyc and .svn stuffs.
             copytree(srcdir, dstdir, ignore=ignore_patterns('*.pyc', '.svn'))
             tmpdirs.append(dstdir)
@@ -634,7 +652,7 @@ def parseOptionsAndInitTestdirs():
         # With '-r dir' specified, there's no cleanup of intermediate test files.
         os.environ["LLDB_DO_CLEANUP"] = 'NO'
 
-        # If testdirs is ['test'], the make directory has already been copied
+        # If the original testdirs is ['test'], the make directory has already been copied
         # recursively and is contained within the rdir/test dir.  For anything
         # else, we would need to copy over the make directory and its contents,
         # so that, os.listdir(rdir) looks like, for example:
@@ -642,7 +660,7 @@ def parseOptionsAndInitTestdirs():
         #     array_types conditional_break make
         #
         # where the make directory contains the Makefile.rules file.
-        if len(testdirs) != 1 or os.path.basename(testdirs[0]) != 'test':
+        if len(testdirs) != 1 or os.path.basename(orig_testdirs[0]) != 'test':
             # Don't copy the .svn stuffs.
             copytree('make', os.path.join(rdir, 'make'),
                      ignore=ignore_patterns('.svn'))
@@ -660,11 +678,21 @@ def parseOptionsAndInitTestdirs():
     # respectively.
     #
     # See also lldb-trunk/example/test/usage-config.
-    global config
+    global config, pre_flight, post_flight
     if configFile:
         # Pass config (a dictionary) as the locals namespace for side-effect.
         execfile(configFile, globals(), config)
-        #print "config:", config
+        print "config:", config
+        if "pre_flight" in config:
+            pre_flight = config["pre_flight"]
+            if not callable(pre_flight):
+                print "fatal error: pre_flight is not callable, exiting."
+                sys.exit(1)
+        if "post_flight" in config:
+            post_flight = config["post_flight"]
+            if not callable(post_flight):
+                print "fatal error: post_flight is not callable, exiting."
+                sys.exit(1)
         #print "sys.stderr:", sys.stderr
         #print "sys.stdout:", sys.stdout
 
@@ -803,17 +831,17 @@ def setupSysPath():
     baiPath2 = os.path.join(base, *(xcode4_build_dir + bai + python_resource_dir))
 
     lldbPath = None
-    if os.path.isfile(os.path.join(dbgPath, 'lldb.py')):
+    if os.path.isfile(os.path.join(dbgPath, 'lldb/__init__.py')):
         lldbPath = dbgPath
-    elif os.path.isfile(os.path.join(dbgPath2, 'lldb.py')):
+    elif os.path.isfile(os.path.join(dbgPath2, 'lldb/__init__.py')):
         lldbPath = dbgPath2
-    elif os.path.isfile(os.path.join(relPath, 'lldb.py')):
+    elif os.path.isfile(os.path.join(relPath, 'lldb/__init__.py')):
         lldbPath = relPath
-    elif os.path.isfile(os.path.join(relPath2, 'lldb.py')):
+    elif os.path.isfile(os.path.join(relPath2, 'lldb/__init__.py')):
         lldbPath = relPath2
-    elif os.path.isfile(os.path.join(baiPath, 'lldb.py')):
+    elif os.path.isfile(os.path.join(baiPath, 'lldb/__init__.py')):
         lldbPath = baiPath
-    elif os.path.isfile(os.path.join(baiPath2, 'lldb.py')):
+    elif os.path.isfile(os.path.join(baiPath2, 'lldb/__init__.py')):
         lldbPath = baiPath2
 
     if not lldbPath:
@@ -1021,6 +1049,23 @@ lldb.DBG = lldb.SBDebugger.Create()
 # Put the blacklist in the lldb namespace, to be used by lldb.TestBase.
 lldb.blacklist = blacklist
 
+# The pre_flight and post_flight come from reading a config file.
+lldb.pre_flight = pre_flight
+lldb.post_flight = post_flight
+def getsource_if_available(obj):
+    """
+    Return the text of the source code for an object if available.  Otherwise,
+    a print representation is returned.
+    """
+    import inspect
+    try:
+        return inspect.getsource(obj)
+    except:
+        return repr(obj)
+
+print "lldb.pre_flight:", getsource_if_available(lldb.pre_flight)
+print "lldb.post_flight:", getsource_if_available(lldb.post_flight)
+
 # Put all these test decorators in the lldb namespace.
 lldb.dont_do_python_api_test = dont_do_python_api_test
 lldb.just_do_python_api_test = just_do_python_api_test
@@ -1174,11 +1219,13 @@ for ia in range(len(archs) if iterArchs else 1):
             # The purpose is to separate the configuration-specific directories
             # from each other.
             if rdir:
-                from shutil import copytree, ignore_patterns
+                from shutil import copytree, rmtree, ignore_patterns
 
                 newrdir = "%s.%s" % (rdir, configPostfix)
 
                 # Copy the tree to a new directory with postfix name configPostfix.
+                if os.path.exists(newrdir):
+                    rmtree(newrdir)
                 copytree(rdir, newrdir, ignore=ignore_patterns('*.pyc', '*.o', '*.d'))
 
                # Update the LLDB_TEST environment variable to reflect new top
@@ -1232,6 +1279,14 @@ for ia in range(len(archs) if iterArchs else 1):
                 # This counts from 1 .. suite.countTestCases().
                 self.counter = 0
 
+            def _exc_info_to_string(self, err, test):
+                """Overrides superclass TestResult's method in order to append
+                our test config info string to the exception info string."""
+                modified_exc_string = '%sConfig=%s-%s' % (super(LLDBTestResult, self)._exc_info_to_string(err, test),
+                                                          test.getArchitecture(),
+                                                          test.getCompiler())
+                return modified_exc_string
+
             def getDescription(self, test):
                 doc_first_line = test.shortDescription()
                 if self.descriptions and doc_first_line:
@@ -1244,16 +1299,6 @@ for ia in range(len(archs) if iterArchs else 1):
                 if self.showAll:
                     self.stream.write(self.fmt % self.counter)
                 super(LLDBTestResult, self).startTest(test)
-
-            def stopTest(self, test):
-                """Called when the given test has been run"""
-                if progress_bar:
-                    sys.__stdout__.write('.')
-                    sys.__stdout__.flush()
-                    if self.counter == suite.countTestCases():
-                        sys.__stdout__.write('\n')
-
-                super(LLDBTestResult, self).stopTest(test)
 
             def addError(self, test, err):
                 global sdir_has_content
@@ -1298,7 +1343,7 @@ for ia in range(len(archs) if iterArchs else 1):
         # Invoke the test runner.
         if count == 1:
             result = unittest2.TextTestRunner(stream=sys.stderr,
-                                              verbosity=verbose,
+                                              verbosity=(1 if progress_bar else verbose),
                                               failfast=failfast,
                                               resultclass=LLDBTestResult).run(suite)
         else:
@@ -1308,7 +1353,7 @@ for ia in range(len(archs) if iterArchs else 1):
             LLDBTestResult.__ignore_singleton__ = True
             for i in range(count):
                 result = unittest2.TextTestRunner(stream=sys.stderr,
-                                                  verbosity=verbose,
+                                                  verbosity=(1 if progress_bar else verbose),
                                                   failfast=failfast,
                                                   resultclass=LLDBTestResult).run(suite)
         

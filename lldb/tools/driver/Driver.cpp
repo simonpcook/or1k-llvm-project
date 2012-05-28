@@ -135,7 +135,7 @@ Driver::~Driver ()
 void
 Driver::CloseIOChannelFile ()
 {
-    // Write and End of File sequence to the file descriptor to ensure any
+    // Write an End of File sequence to the file descriptor to ensure any
     // read functions can exit.
     char eof_str[] = "\x04";
     ::write (m_editline_pty.GetMasterFileDescriptor(), eof_str, strlen(eof_str));
@@ -945,11 +945,26 @@ Driver::HandleProcessEvent (const SBEvent &event)
             }
             else
             {
-                SBCommandReturnObject result;
-                UpdateSelectedThread ();
-                m_debugger.GetCommandInterpreter().HandleCommand("process status", result, false);
-                m_io_channel_ap->ErrWrite (result.GetError(), result.GetErrorSize(), ASYNC);
-                m_io_channel_ap->OutWrite (result.GetOutput(), result.GetOutputSize(), ASYNC);
+                if (GetDebugger().GetSelectedTarget() == process.GetTarget())
+                {
+                    SBCommandReturnObject result;
+                    UpdateSelectedThread ();
+                    m_debugger.GetCommandInterpreter().HandleCommand("process status", result, false);
+                    m_io_channel_ap->ErrWrite (result.GetError(), result.GetErrorSize(), ASYNC);
+                    m_io_channel_ap->OutWrite (result.GetOutput(), result.GetOutputSize(), ASYNC);
+                }
+                else
+                {
+                    SBStream out_stream;
+                    uint32_t target_idx = GetDebugger().GetIndexOfTarget(process.GetTarget());
+                    if (target_idx != UINT32_MAX)
+                        out_stream.Printf ("Target %d: (", target_idx);
+                    else
+                        out_stream.Printf ("Target <unknown index>: (");
+                    process.GetTarget().GetDescription (out_stream, eDescriptionLevelBrief);
+                    out_stream.Printf (") stopped.\n");
+                    m_io_channel_ap->OutWrite (out_stream.GetData(), out_stream.GetSize(), ASYNC);
+                }
             }
             break;
         }
@@ -1066,6 +1081,8 @@ Driver::EditLineInputReaderCallback
         if (driver->m_io_channel_ap.get() != NULL)
         {
             driver->m_io_channel_ap->OutWrite ("^C\n", 3, NO_ASYNC);
+            // I wish I could erase the entire input line, but there's no public API for that.
+            driver->m_io_channel_ap->EraseCharsBeforeCursor();
             driver->m_io_channel_ap->RefreshPrompt();
         }
         break;
@@ -1087,14 +1104,6 @@ Driver::EditLineInputReaderCallback
         break;
     }
     return bytes_len;
-}
-
-// Intercept when the quit command is called and tell our driver that it is done
-static bool
-QuitCommandOverrideCallback (void *baton, const char **argv)
-{
-    ((Driver *)baton)->SetIsDone();
-    return true;
 }
 
 void
@@ -1198,10 +1207,6 @@ Driver::MainLoop ()
     }
 
     SBCommandInterpreter sb_interpreter = m_debugger.GetCommandInterpreter();
-
-    // Intercept when the quit command is called and tell our driver that it is done
-    bool quit_success = sb_interpreter.SetCommandOverrideCallback ("quit", QuitCommandOverrideCallback, this);
-    assert (quit_success);
 
     m_io_channel_ap.reset (new IOChannel(m_editline_slave_fh, editline_output_slave_fh, stdout, stderr, this));
 
@@ -1484,11 +1489,9 @@ sigwinch_handler (int signo)
     if (isatty (STDIN_FILENO)
         && ::ioctl (STDIN_FILENO, TIOCGWINSZ, &window_size) == 0)
     {
-        if ((window_size.ws_col > 0) && (strlen (g_debugger_name) > 0))
+        if ((window_size.ws_col > 0) && g_driver != NULL)
         {
-            char width_str_buffer[25];
-            ::sprintf (width_str_buffer, "%d", window_size.ws_col);
-            SBDebugger::SetInternalVariable ("term-width", width_str_buffer, g_debugger_name);
+            g_driver->GetDebugger().SetTerminalWidth (window_size.ws_col);
         }
     }
 }

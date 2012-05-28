@@ -204,11 +204,20 @@ public:
     virtual lldb_private::Error
     DisableWatchpoint (lldb_private::Watchpoint *wp);
 
+    virtual lldb_private::Error
+    GetWatchpointSupportInfo (uint32_t &num);
+    
     virtual bool
     StartNoticingNewThreads();    
 
     virtual bool
     StopNoticingNewThreads();    
+
+    GDBRemoteCommunicationClient &
+    GetGDBRemote()
+    {
+        return m_gdb_comm;
+    }
 
 protected:
     friend class ThreadGDBRemote;
@@ -259,7 +268,7 @@ protected:
         return m_flags;
     }
 
-    uint32_t
+    virtual bool
     UpdateThreadList (lldb_private::ThreadList &old_thread_list, 
                       lldb_private::ThreadList &new_thread_list);
 
@@ -275,12 +284,6 @@ protected:
     void
     BuildDynamicRegisterInfo (bool force);
 
-    GDBRemoteCommunicationClient &
-    GetGDBRemote()
-    {
-        return m_gdb_comm;
-    }
-
     void
     SetLastStopPacket (const StringExtractorGDBRemote &response)
     {
@@ -293,7 +296,8 @@ protected:
     enum
     {
         eBroadcastBitAsyncContinue                  = (1 << 0),
-        eBroadcastBitAsyncThreadShouldExit          = (1 << 1)
+        eBroadcastBitAsyncThreadShouldExit          = (1 << 1),
+        eBroadcastBitAsyncThreadDidExit             = (1 << 2)
     };
 
     lldb_private::Flags m_flags;            // Process specific flags (see eFlags enums)
@@ -307,15 +311,17 @@ protected:
     typedef std::vector<lldb::tid_t> tid_collection;
     typedef std::vector< std::pair<lldb::tid_t,int> > tid_sig_collection;
     typedef std::map<lldb::addr_t, lldb::addr_t> MMapMap;
+    tid_collection m_thread_ids; // Thread IDs for all threads. This list gets updated after stopping
     tid_collection m_continue_c_tids;                  // 'c' for continue
     tid_sig_collection m_continue_C_tids; // 'C' for continue with signal
     tid_collection m_continue_s_tids;                  // 's' for step
     tid_sig_collection m_continue_S_tids; // 'S' for step with signal
     lldb::addr_t m_dispatch_queue_offsets_addr;
     size_t m_max_memory_size;       // The maximum number of bytes to read/write when reading and writing memory
-    bool m_waiting_for_attach;
-    std::vector<lldb::user_id_t>  m_thread_observation_bps;
     MMapMap m_addr_to_mmap_size;
+    lldb::BreakpointSP m_thread_create_bp_sp;
+    bool m_waiting_for_attach;
+    
     bool
     StartAsyncThread ();
 
@@ -334,6 +340,12 @@ protected:
 
     lldb::StateType
     SetThreadStopInfo (StringExtractor& stop_packet);
+
+    void
+    ClearThreadIDList ();
+
+    bool
+    UpdateThreadIDList ();
 
     void
     DidLaunchOrAttach ();

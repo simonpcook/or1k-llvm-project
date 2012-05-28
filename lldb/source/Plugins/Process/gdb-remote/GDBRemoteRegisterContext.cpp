@@ -18,9 +18,11 @@
 #include "lldb/Core/Scalar.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Target/ExecutionContext.h"
+#include "lldb/Utility/Utils.h"
 // Project includes
 #include "Utility/StringExtractorGDBRemote.h"
 #include "ProcessGDBRemote.h"
+#include "ProcessGDBRemoteLog.h"
 #include "ThreadGDBRemote.h"
 #include "Utility/ARM_GCC_Registers.h"
 #include "Utility/ARM_DWARF_Registers.h"
@@ -241,6 +243,30 @@ GDBRemoteRegisterContext::ReadRegisterBytes (const RegisterInfo *reg_info, DataE
                 }
             }
         }
+        else
+        {
+            LogSP log (ProcessGDBRemoteLog::GetLogIfAnyCategoryIsSet (GDBR_LOG_THREAD | GDBR_LOG_PACKETS));
+#if LLDB_CONFIGURATION_DEBUG
+            StreamString strm;
+            gdb_comm.DumpHistory(strm);
+            Host::SetCrashDescription (strm.GetData());
+            assert (!"Didn't get sequence mutex for read register.");
+#else
+            if (log)
+            {
+                if (log->GetVerbose())
+                {
+                    StreamString strm;
+                    gdb_comm.DumpHistory(strm);
+                    log->Printf("error: failed to get packet sequence mutex, not sending read register for \"%s\":\n%s", reg_info->name, strm.GetData());
+                }
+                else
+                {
+                    log->Printf("error: failed to get packet sequence mutex, not sending read register for \"%s\"", reg_info->name);
+                }
+            }
+#endif
+        }
 
         // Make sure we got a valid register value after reading it
         if (!m_reg_valid[reg])
@@ -337,16 +363,12 @@ GDBRemoteRegisterContext::WriteRegisterBytes (const lldb_private::RegisterInfo *
             ProcessSP process_sp (m_thread.GetProcess());
             if (thread_suffix_supported || static_cast<ProcessGDBRemote *>(process_sp.get())->GetGDBRemote().SetCurrentThread(m_thread.GetID()))
             {
-                uint32_t offset, end_offset;
                 StreamString packet;
                 StringExtractorGDBRemote response;
                 if (m_read_all_at_once)
                 {
                     // Set all registers in one packet
                     packet.PutChar ('G');
-                    offset = 0;
-                    end_offset = m_reg_data.GetByteSize();
-
                     packet.PutBytesAsRawHex8 (m_reg_data.GetDataStart(),
                                               m_reg_data.GetByteSize(),
                                               lldb::endian::InlHostByteOrder(),
@@ -420,6 +442,28 @@ GDBRemoteRegisterContext::WriteRegisterBytes (const lldb_private::RegisterInfo *
                 }
             }
         }
+        else
+        {
+            LogSP log (ProcessGDBRemoteLog::GetLogIfAnyCategoryIsSet (GDBR_LOG_THREAD | GDBR_LOG_PACKETS));
+#if LLDB_CONFIGURATION_DEBUG
+            StreamString strm;
+            gdb_comm.DumpHistory(strm);
+            Host::SetCrashDescription (strm.GetData());
+            assert (!"Didn't get sequence mutex for write register.");
+#else
+            if (log)
+            {
+                if (log->GetVerbose())
+                {
+                    StreamString strm;
+                    gdb_comm.DumpHistory(strm);
+                    log->Printf("error: failed to get packet sequence mutex, not sending write register for \"%s\":\n%s", reg_info->name, strm.GetData());
+                }
+                else
+                    log->Printf("error: failed to get packet sequence mutex, not sending write register for \"%s\"", reg_info->name);
+            }
+#endif
+        }
     }
     return false;
 }
@@ -475,6 +519,29 @@ GDBRemoteRegisterContext::ReadAllRegisterValues (lldb::DataBufferSP &data_sp)
             }
         }
     }
+    else
+    {
+        LogSP log (ProcessGDBRemoteLog::GetLogIfAnyCategoryIsSet (GDBR_LOG_THREAD | GDBR_LOG_PACKETS));
+#if LLDB_CONFIGURATION_DEBUG
+        StreamString strm;
+        gdb_comm.DumpHistory(strm);
+        Host::SetCrashDescription (strm.GetData());
+        assert (!"Didn't get sequence mutex for read all registers.");
+#else
+        if (log)
+        {
+            if (log->GetVerbose())
+            {
+                StreamString strm;
+                gdb_comm.DumpHistory(strm);
+                log->Printf("error: failed to get packet sequence mutex, not sending read all registers:\n%s", strm.GetData());
+            }
+            else
+                log->Printf("error: failed to get packet sequence mutex, not sending read all registers");
+        }
+#endif
+    }
+
     data_sp.reset();
     return false;
 }
@@ -592,6 +659,28 @@ GDBRemoteRegisterContext::WriteAllRegisterValues (const lldb::DataBufferSP &data
             }
         }
     }
+    else
+    {
+        LogSP log (ProcessGDBRemoteLog::GetLogIfAnyCategoryIsSet (GDBR_LOG_THREAD | GDBR_LOG_PACKETS));
+#if LLDB_CONFIGURATION_DEBUG
+        StreamString strm;
+        gdb_comm.DumpHistory(strm);
+        Host::SetCrashDescription (strm.GetData());
+        assert (!"Didn't get sequence mutex for write all registers.");
+#else
+        if (log)
+        {
+            if (log->GetVerbose())
+            {
+                StreamString strm;
+                gdb_comm.DumpHistory(strm);
+                log->Printf("error: failed to get packet sequence mutex, not sending write all registers:\n%s", strm.GetData());
+            }
+            else
+                log->Printf("error: failed to get packet sequence mutex, not sending write all registers");
+        }
+#endif
+    }
     return false;
 }
 
@@ -603,7 +692,7 @@ GDBRemoteRegisterContext::ConvertRegisterKindToRegisterNumber (uint32_t kind, ui
 }
 
 void
-GDBRemoteDynamicRegisterInfo::HardcodeARMRegisters()
+GDBRemoteDynamicRegisterInfo::HardcodeARMRegisters(bool from_scratch)
 {
     // For Advanced SIMD and VFP register mapping.
     static uint32_t g_d0_regs[] =  { 26, 27, LLDB_INVALID_REGNUM }; // (s0, s1)
@@ -638,6 +727,14 @@ GDBRemoteDynamicRegisterInfo::HardcodeARMRegisters()
     static uint32_t g_q13_regs[] = { 69, 70, LLDB_INVALID_REGNUM }; // (d26, d27)
     static uint32_t g_q14_regs[] = { 71, 72, LLDB_INVALID_REGNUM }; // (d28, d29)
     static uint32_t g_q15_regs[] = { 73, 74, LLDB_INVALID_REGNUM }; // (d30, d31)
+
+    // This is our array of composite registers, with each element coming from the above register mappings.
+    static uint32_t *g_composites[] = {
+        g_d0_regs, g_d1_regs,  g_d2_regs,  g_d3_regs,  g_d4_regs,  g_d5_regs,  g_d6_regs,  g_d7_regs,
+        g_d8_regs, g_d9_regs, g_d10_regs, g_d11_regs, g_d12_regs, g_d13_regs, g_d14_regs, g_d15_regs,
+        g_q0_regs, g_q1_regs,  g_q2_regs,  g_q3_regs,  g_q4_regs,  g_q5_regs,  g_q6_regs,  g_q7_regs,
+        g_q8_regs, g_q9_regs, g_q10_regs, g_q11_regs, g_q12_regs, g_q13_regs, g_q14_regs, g_q15_regs
+    };
 
     static RegisterInfo g_register_infos[] = {
 //   NAME    ALT    SZ  OFF  ENCODING          FORMAT          COMPILER             DWARF                GENERIC                 GDB    LLDB      VALUE REGS    INVALIDATE REGS
@@ -751,51 +848,173 @@ GDBRemoteDynamicRegisterInfo::HardcodeARMRegisters()
     { "q15",  NULL,   16,  0, eEncodingVector,  eFormatVectorOfUInt8, { LLDB_INVALID_REGNUM, dwarf_q15,   LLDB_INVALID_REGNUM,   106,    106 },  g_q15_regs,              NULL}
     };
 
-    static const uint32_t num_registers = sizeof (g_register_infos)/sizeof (RegisterInfo);
+    static const uint32_t num_registers = llvm::array_lengthof(g_register_infos);
     static ConstString gpr_reg_set ("General Purpose Registers");
     static ConstString sfp_reg_set ("Software Floating Point Registers");
     static ConstString vfp_reg_set ("Floating Point Registers");
     uint32_t i;
-    // Calculate the offsets of the registers
-    // Note that the layout of the "composite" registers (d0-d15 and q0-q15) which comes after the
-    // "primordial" registers is important.  This enables us to calculate the offset of the composite
-    // register by using the offset of its first primordial register.  For example, to calculate the
-    // offset of q0, use s0's offset.
-    if (g_register_infos[2].byte_offset == 0)
+    if (from_scratch)
     {
-        uint32_t byte_offset = 0;
+        // Calculate the offsets of the registers
+        // Note that the layout of the "composite" registers (d0-d15 and q0-q15) which comes after the
+        // "primordial" registers is important.  This enables us to calculate the offset of the composite
+        // register by using the offset of its first primordial register.  For example, to calculate the
+        // offset of q0, use s0's offset.
+        if (g_register_infos[2].byte_offset == 0)
+        {
+            uint32_t byte_offset = 0;
+            for (i=0; i<num_registers; ++i)
+            {
+                // For primordial registers, increment the byte_offset by the byte_size to arrive at the
+                // byte_offset for the next register.  Otherwise, we have a composite register whose
+                // offset can be calculated by consulting the offset of its first primordial register.
+                if (!g_register_infos[i].value_regs)
+                {
+                    g_register_infos[i].byte_offset = byte_offset;
+                    byte_offset += g_register_infos[i].byte_size;
+                }
+                else
+                {
+                    const uint32_t first_primordial_reg = g_register_infos[i].value_regs[0];
+                    g_register_infos[i].byte_offset = g_register_infos[first_primordial_reg].byte_offset;
+                }
+            }
+        }
         for (i=0; i<num_registers; ++i)
         {
-            // For primordial registers, increment the byte_offset by the byte_size to arrive at the
-            // byte_offset for the next register.  Otherwise, we have a composite register whose
-            // offset can be calculated by consulting the offset of its first primordial register.
-            if (!g_register_infos[i].value_regs)
-            {
-                g_register_infos[i].byte_offset = byte_offset;
-                byte_offset += g_register_infos[i].byte_size;
-            }
+            ConstString name;
+            ConstString alt_name;
+            if (g_register_infos[i].name && g_register_infos[i].name[0])
+                name.SetCString(g_register_infos[i].name);
+            if (g_register_infos[i].alt_name && g_register_infos[i].alt_name[0])
+                alt_name.SetCString(g_register_infos[i].alt_name);
+
+            if (i <= 15 || i == 25)
+                AddRegister (g_register_infos[i], name, alt_name, gpr_reg_set);
+            else if (i <= 24)
+                AddRegister (g_register_infos[i], name, alt_name, sfp_reg_set);
             else
+                AddRegister (g_register_infos[i], name, alt_name, vfp_reg_set);
+        }
+    }
+    else
+    {
+        // Add composite registers to our primordial registers, then.
+        const uint32_t num_composites = llvm::array_lengthof(g_composites);
+        const uint32_t num_primordials = GetNumRegisters();
+        RegisterInfo *g_comp_register_infos = g_register_infos + (num_registers - num_composites);
+        for (i=0; i<num_composites; ++i)
+        {
+            ConstString name;
+            ConstString alt_name;
+            const uint32_t first_primordial_reg = g_comp_register_infos[i].value_regs[0];
+            const char *reg_name = g_register_infos[first_primordial_reg].name;
+            if (reg_name && reg_name[0])
             {
-                const uint32_t first_primordial_reg = g_register_infos[i].value_regs[0];
-                g_register_infos[i].byte_offset = g_register_infos[first_primordial_reg].byte_offset;
+                for (uint32_t j = 0; j < num_primordials; ++j)
+                {
+                    const RegisterInfo *reg_info = GetRegisterInfoAtIndex(j);
+                    // Find a matching primordial register info entry.
+                    if (reg_info && reg_info->name && ::strcasecmp(reg_info->name, reg_name) == 0)
+                    {
+                        // The name matches the existing primordial entry.
+                        // Find and assign the offset, and then add this composite register entry.
+                        g_comp_register_infos[i].byte_offset = reg_info->byte_offset;
+                        name.SetCString(g_comp_register_infos[i].name);
+                        AddRegister(g_comp_register_infos[i], name, alt_name, vfp_reg_set);
+                    }
+                }
             }
         }
     }
-    for (i=0; i<num_registers; ++i)
+}
+
+void
+GDBRemoteDynamicRegisterInfo::Addx86_64ConvenienceRegisters()
+{
+    // For eax, ebx, ecx, edx, esi, edi, ebp, esp register mapping.
+    static const char* g_mapped_names[] = {
+        "rax", "rbx", "rcx", "rdx", "rdi", "rsi", "rbp", "rsp",
+        "rax", "rbx", "rcx", "rdx", "rdi", "rsi", "rbp", "rsp",
+        "rax", "rbx", "rcx", "rdx",
+        "rax", "rbx", "rcx", "rdx", "rdi", "rsi", "rbp", "rsp"
+    };
+
+    // These value regs are to be populated with the corresponding primordial register index.
+    // For example,
+    static uint32_t g_eax_regs[] =  { 0, LLDB_INVALID_REGNUM }; // 0 is to be replaced with rax's index.
+    static uint32_t g_ebx_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    static uint32_t g_ecx_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    static uint32_t g_edx_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    static uint32_t g_edi_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    static uint32_t g_esi_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    static uint32_t g_ebp_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    static uint32_t g_esp_regs[] =  { 0, LLDB_INVALID_REGNUM };
+    
+    static RegisterInfo g_conv_register_infos[] = 
+    {
+//    NAME      ALT      SZ OFF ENCODING         FORMAT                COMPILER              DWARF                 GENERIC                      GDB                   LLDB NATIVE            VALUE REGS    INVALIDATE REGS
+//    ======    =======  == === =============    ============          ===================== ===================== ============================ ====================  ====================== ==========    ===============
+    { "eax"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_eax_regs,              NULL},
+    { "ebx"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebx_regs,              NULL},
+    { "ecx"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ecx_regs,              NULL},
+    { "edx"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edx_regs,              NULL},
+    { "edi"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edi_regs,              NULL},
+    { "esi"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_esi_regs,              NULL},
+    { "ebp"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebp_regs,              NULL},
+    { "esp"   , NULL,    4,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_esp_regs,              NULL},
+    { "ax"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_eax_regs,              NULL},
+    { "bx"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebx_regs,              NULL},
+    { "cx"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ecx_regs,              NULL},
+    { "dx"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edx_regs,              NULL},
+    { "di"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edi_regs,              NULL},
+    { "si"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_esi_regs,              NULL},
+    { "bp"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebp_regs,              NULL},
+    { "sp"    , NULL,    2,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_esp_regs,              NULL},
+    { "ah"    , NULL,    1,  1, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_eax_regs,              NULL},
+    { "bh"    , NULL,    1,  1, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebx_regs,              NULL},
+    { "ch"    , NULL,    1,  1, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ecx_regs,              NULL},
+    { "dh"    , NULL,    1,  1, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edx_regs,              NULL},
+    { "al"    , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_eax_regs,              NULL},
+    { "bl"    , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebx_regs,              NULL},
+    { "cl"    , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ecx_regs,              NULL},
+    { "dl"    , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edx_regs,              NULL},
+    { "dil"   , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_edi_regs,              NULL},
+    { "sil"   , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_esi_regs,              NULL},
+    { "bpl"   , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_ebp_regs,              NULL},
+    { "spl"   , NULL,    1,  0, eEncodingUint  , eFormatHex          , { LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM      , LLDB_INVALID_REGNUM , LLDB_INVALID_REGNUM }, g_esp_regs,              NULL}
+    };
+
+    static const uint32_t num_conv_regs = llvm::array_lengthof(g_mapped_names);
+    static ConstString gpr_reg_set ("General Purpose Registers");
+    
+    // Add convenience registers to our primordial registers.
+    const uint32_t num_primordials = GetNumRegisters();
+    uint32_t reg_kind = num_primordials;
+    for (uint32_t i=0; i<num_conv_regs; ++i)
     {
         ConstString name;
         ConstString alt_name;
-        if (g_register_infos[i].name && g_register_infos[i].name[0])
-            name.SetCString(g_register_infos[i].name);
-        if (g_register_infos[i].alt_name && g_register_infos[i].alt_name[0])
-            alt_name.SetCString(g_register_infos[i].alt_name);
-
-        if (i <= 15 || i == 25)
-            AddRegister (g_register_infos[i], name, alt_name, gpr_reg_set);
-        else if (i <= 24)
-            AddRegister (g_register_infos[i], name, alt_name, sfp_reg_set);
-        else
-            AddRegister (g_register_infos[i], name, alt_name, vfp_reg_set);
+        const char *prim_reg_name = g_mapped_names[i];
+        if (prim_reg_name && prim_reg_name[0])
+        {
+            for (uint32_t j = 0; j < num_primordials; ++j)
+            {
+                const RegisterInfo *reg_info = GetRegisterInfoAtIndex(j);
+                // Find a matching primordial register info entry.
+                if (reg_info && reg_info->name && ::strcasecmp(reg_info->name, prim_reg_name) == 0)
+                {
+                    // The name matches the existing primordial entry.
+                    // Find and assign the offset, and then add this composite register entry.
+                    g_conv_register_infos[i].byte_offset = reg_info->byte_offset + g_conv_register_infos[i].byte_offset;
+                    // Update the value_regs and the kinds fields in order to delegate to the primordial register.
+                    g_conv_register_infos[i].value_regs[0] = j;
+                    g_conv_register_infos[i].kinds[eRegisterKindLLDB] = ++reg_kind;
+                    name.SetCString(g_conv_register_infos[i].name);
+                    AddRegister(g_conv_register_infos[i], name, alt_name, gpr_reg_set);
+                }
+            }
+        }
     }
 }
 

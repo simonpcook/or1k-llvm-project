@@ -28,7 +28,8 @@ endif
 
 POLLY_CXXFLAGS += "-fno-rtti -fno-exceptions"
 
-# Do us work with scoplib?
+CLOOG_FOUND := @cloog_found@
+ISL_CODEGEN_FOUND := @isl_codegen_found@
 OPENSCOP_FOUND := @openscop_found@
 SCOPLIB_FOUND := @scoplib_found@
 

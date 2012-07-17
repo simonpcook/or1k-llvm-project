@@ -1,4 +1,4 @@
-//===-- tsan_rtl_thread.cc --------------------------------------*- C++ -*-===//
+//===-- tsan_rtl_thread.cc ------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -11,16 +11,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "sanitizer_common/sanitizer_placement_new.h"
 #include "tsan_rtl.h"
 #include "tsan_mman.h"
-#include "tsan_placement_new.h"
 #include "tsan_platform.h"
 #include "tsan_report.h"
 #include "tsan_sync.h"
 
 namespace __tsan {
 
+#ifndef TSAN_GO
 const int kThreadQuarantineSize = 16;
+#else
+const int kThreadQuarantineSize = 64;
+#endif
 
 static void MaybeReportThreadLeak(ThreadContext *tctx) {
   if (tctx->detached)
@@ -53,7 +57,7 @@ static void ThreadDead(ThreadState *thr, ThreadContext *tctx) {
   CHECK_GT(thr->in_rtl, 0);
   CHECK(tctx->status == ThreadStatusRunning
       || tctx->status == ThreadStatusFinished);
-  DPrintf("#%d: ThreadDead uid=%lu\n", thr->tid, tctx->user_id);
+  DPrintf("#%d: ThreadDead uid=%zu\n", thr->tid, tctx->user_id);
   tctx->status = ThreadStatusDead;
   tctx->user_id = 0;
   tctx->sync.Reset();
@@ -78,7 +82,8 @@ int ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
   if (ctx->dead_list_size > kThreadQuarantineSize
       || ctx->thread_seq >= kMaxTid) {
     if (ctx->dead_list_size == 0) {
-      Printf("ThreadSanitizer: %d thread limit exceeded. Dying.\n", kMaxTid);
+      TsanPrintf("ThreadSanitizer: %d thread limit exceeded. Dying.\n",
+                 kMaxTid);
       Die();
     }
     StatInc(thr, StatThreadReuse);
@@ -105,7 +110,7 @@ int ThreadCreate(ThreadState *thr, uptr pc, uptr uid, bool detached) {
   CHECK_NE(tctx, 0);
   CHECK_GE(tid, 0);
   CHECK_LT(tid, kMaxTid);
-  DPrintf("#%d: ThreadCreate tid=%d uid=%lu\n", thr->tid, tid, uid);
+  DPrintf("#%d: ThreadCreate tid=%d uid=%zu\n", thr->tid, tid, uid);
   CHECK_EQ(tctx->status, ThreadStatusInvalid);
   ctx->alive_threads++;
   if (ctx->max_alive_threads < ctx->alive_threads) {
@@ -140,18 +145,24 @@ void ThreadStart(ThreadState *thr, int tid) {
   uptr tls_size = 0;
   GetThreadStackAndTls(tid == 0, &stk_addr, &stk_size, &tls_addr, &tls_size);
 
-  MemoryResetRange(thr, /*pc=*/ 1, stk_addr, stk_size);
+  if (tid) {
+    if (stk_addr && stk_size) {
+      MemoryResetRange(thr, /*pc=*/ 1, stk_addr, stk_size);
+    }
 
-  // Check that the thr object is in tls;
-  const uptr thr_beg = (uptr)thr;
-  const uptr thr_end = (uptr)thr + sizeof(*thr);
-  CHECK_GE(thr_beg, tls_addr);
-  CHECK_LE(thr_beg, tls_addr + tls_size);
-  CHECK_GE(thr_end, tls_addr);
-  CHECK_LE(thr_end, tls_addr + tls_size);
-  // Since the thr object is huge, skip it.
-  MemoryResetRange(thr, /*pc=*/ 2, tls_addr, thr_beg - tls_addr);
-  MemoryResetRange(thr, /*pc=*/ 2, thr_end, tls_addr + tls_size - thr_end);
+    if (tls_addr && tls_size) {
+      // Check that the thr object is in tls;
+      const uptr thr_beg = (uptr)thr;
+      const uptr thr_end = (uptr)thr + sizeof(*thr);
+      CHECK_GE(thr_beg, tls_addr);
+      CHECK_LE(thr_beg, tls_addr + tls_size);
+      CHECK_GE(thr_end, tls_addr);
+      CHECK_LE(thr_end, tls_addr + tls_size);
+      // Since the thr object is huge, skip it.
+      MemoryResetRange(thr, /*pc=*/ 2, tls_addr, thr_beg - tls_addr);
+      MemoryResetRange(thr, /*pc=*/ 2, thr_end, tls_addr + tls_size - thr_end);
+    }
+  }
 
   Lock l(&CTX()->thread_mtx);
   ThreadContext *tctx = CTX()->threads[tid];
@@ -162,14 +173,23 @@ void ThreadStart(ThreadState *thr, int tid) {
   tctx->epoch1 = (u64)-1;
   new(thr) ThreadState(CTX(), tid, tctx->epoch0, stk_addr, stk_size,
                        tls_addr, tls_size);
+#ifdef TSAN_GO
+  // Setup dynamic shadow stack.
+  const int kInitStackSize = 8;
+  thr->shadow_stack = (uptr*)internal_alloc(MBlockShadowStack,
+      kInitStackSize * sizeof(uptr));
+  thr->shadow_stack_pos = thr->shadow_stack;
+  thr->shadow_stack_end = thr->shadow_stack + kInitStackSize;
+#endif
   tctx->thr = thr;
   thr->fast_synch_epoch = tctx->epoch0;
   thr->clock.set(tid, tctx->epoch0);
   thr->clock.acquire(&tctx->sync);
   StatInc(thr, StatSyncAcquire);
-  DPrintf("#%d: ThreadStart epoch=%llu stk_addr=%lx stk_size=%lx "
-      "tls_addr=%lx tls_size=%lx\n",
-      tid, tctx->epoch0, stk_addr, stk_size, tls_addr, tls_size);
+  DPrintf("#%d: ThreadStart epoch=%zu stk_addr=%zx stk_size=%zx "
+          "tls_addr=%zx tls_size=%zx\n",
+          tid, (uptr)tctx->epoch0, stk_addr, stk_size, tls_addr, tls_size);
+  thr->is_alive = true;
 }
 
 void ThreadFinish(ThreadState *thr) {
@@ -186,6 +206,7 @@ void ThreadFinish(ThreadState *thr) {
     MemoryResetRange(thr, /*pc=*/ 5,
         thr_end, thr->tls_addr + thr->tls_size - thr_end);
   }
+  thr->is_alive = false;
   Context *ctx = CTX();
   Lock l(&ctx->thread_mtx);
   ThreadContext *tctx = ctx->threads[thr->tid];
@@ -224,15 +245,20 @@ void ThreadFinish(ThreadState *thr) {
 
 int ThreadTid(ThreadState *thr, uptr pc, uptr uid) {
   CHECK_GT(thr->in_rtl, 0);
-  DPrintf("#%d: ThreadTid uid=%lu\n", thr->tid, uid);
-  Lock l(&CTX()->thread_mtx);
+  Context *ctx = CTX();
+  Lock l(&ctx->thread_mtx);
+  int res = -1;
   for (unsigned tid = 0; tid < kMaxTid; tid++) {
-    if (CTX()->threads[tid] != 0
-        && CTX()->threads[tid]->user_id == uid
-        && CTX()->threads[tid]->status != ThreadStatusInvalid)
-      return tid;
+    ThreadContext *tctx = ctx->threads[tid];
+    if (tctx != 0 && tctx->user_id == uid
+        && tctx->status != ThreadStatusInvalid) {
+      tctx->user_id = 0;
+      res = tid;
+      break;
+    }
   }
-  return -1;
+  DPrintf("#%d: ThreadTid uid=%zu tid=%d\n", thr->tid, uid, res);
+  return res;
 }
 
 void ThreadJoin(ThreadState *thr, uptr pc, int tid) {
@@ -244,7 +270,7 @@ void ThreadJoin(ThreadState *thr, uptr pc, int tid) {
   Lock l(&ctx->thread_mtx);
   ThreadContext *tctx = ctx->threads[tid];
   if (tctx->status == ThreadStatusInvalid) {
-    Printf("ThreadSanitizer: join of non-existent thread\n");
+    TsanPrintf("ThreadSanitizer: join of non-existent thread\n");
     return;
   }
   CHECK_EQ(tctx->detached, false);
@@ -262,7 +288,7 @@ void ThreadDetach(ThreadState *thr, uptr pc, int tid) {
   Lock l(&ctx->thread_mtx);
   ThreadContext *tctx = ctx->threads[tid];
   if (tctx->status == ThreadStatusInvalid) {
-    Printf("ThreadSanitizer: detach of non-existent thread\n");
+    TsanPrintf("ThreadSanitizer: detach of non-existent thread\n");
     return;
   }
   if (tctx->status == ThreadStatusFinished) {
@@ -284,20 +310,20 @@ void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr,
 
 #if TSAN_DEBUG
   if (!IsAppMem(addr)) {
-    Printf("Access to non app mem %lx\n", addr);
+    TsanPrintf("Access to non app mem %zx\n", addr);
     DCHECK(IsAppMem(addr));
   }
   if (!IsAppMem(addr + size - 1)) {
-    Printf("Access to non app mem %lx\n", addr + size - 1);
+    TsanPrintf("Access to non app mem %zx\n", addr + size - 1);
     DCHECK(IsAppMem(addr + size - 1));
   }
   if (!IsShadowMem((uptr)shadow_mem)) {
-    Printf("Bad shadow addr %p (%lx)\n", shadow_mem, addr);
+    TsanPrintf("Bad shadow addr %p (%zx)\n", shadow_mem, addr);
     DCHECK(IsShadowMem((uptr)shadow_mem));
   }
   if (!IsShadowMem((uptr)(shadow_mem + size * kShadowCnt / 8 - 1))) {
-    Printf("Bad shadow addr %p (%lx)\n",
-        shadow_mem + size * kShadowCnt / 8 - 1, addr + size - 1);
+    TsanPrintf("Bad shadow addr %p (%zx)\n",
+               shadow_mem + size * kShadowCnt / 8 - 1, addr + size - 1);
     DCHECK(IsShadowMem((uptr)(shadow_mem + size * kShadowCnt / 8 - 1)));
   }
 #endif

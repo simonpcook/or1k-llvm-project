@@ -1,4 +1,4 @@
-//===-- tsan_platform_linux.cc ----------------------------------*- C++ -*-===//
+//===-- tsan_platform_linux.cc --------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -12,6 +12,11 @@
 // Linux-specific code.
 //===----------------------------------------------------------------------===//
 
+#ifdef __linux__
+
+#include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_libc.h"
+#include "sanitizer_common/sanitizer_procmaps.h"
 #include "tsan_platform.h"
 #include "tsan_rtl.h"
 #include "tsan_flags.h"
@@ -36,12 +41,19 @@
 #include <sched.h>
 #include <dlfcn.h>
 
-extern "C" int arch_prctl(int code, __tsan::uptr *addr);
+extern "C" int arch_prctl(int code, __sanitizer::uptr *addr);
+
+namespace __sanitizer {
+
+void Die() {
+  _exit(1);
+}
+
+}  // namespace __sanitizer
 
 namespace __tsan {
 
-static uptr g_tls_size;
-
+#ifndef TSAN_GO
 ScopedInRtl::ScopedInRtl()
     : thr_(cur_thread()) {
   in_rtl_ = thr_->in_rtl;
@@ -54,10 +66,13 @@ ScopedInRtl::~ScopedInRtl() {
   errno = errno_;
   CHECK_EQ(in_rtl_, thr_->in_rtl);
 }
-
-void Die() {
-  _exit(1);
+#else
+ScopedInRtl::ScopedInRtl() {
 }
+
+ScopedInRtl::~ScopedInRtl() {
+}
+#endif
 
 uptr GetShadowMemoryConsumption() {
   return 0;
@@ -69,132 +84,73 @@ void FlushShadowMemory() {
           MADV_DONTNEED);
 }
 
-static void *my_mmap(void *addr, size_t length, int prot, int flags,
-                    int fd, u64 offset) {
-  ScopedInRtl in_rtl;
-# if __WORDSIZE == 64
-  return (void *)syscall(__NR_mmap, addr, length, prot, flags, fd, offset);
-# else
-  return (void *)syscall(__NR_mmap2, addr, length, prot, flags, fd, offset);
-# endif
-}
-
-static void my_munmap(void *addr, size_t length) {
-  ScopedInRtl in_rtl;
-  syscall(__NR_munmap, addr, length);
-}
-
-void internal_yield() {
-  ScopedInRtl in_rtl;
-  syscall(__NR_sched_yield);
-}
-
-void internal_sleep_ms(u32 ms) {
-  usleep(ms * 1000);
-}
-
-fd_t internal_open(const char *name, bool write) {
-  ScopedInRtl in_rtl;
-  return syscall(__NR_open, name,
-      write ? O_WRONLY | O_CREAT | O_CLOEXEC : O_RDONLY, 0660);
-}
-
-void internal_close(fd_t fd) {
-  ScopedInRtl in_rtl;
-  syscall(__NR_close, fd);
-}
-
-uptr internal_filesize(fd_t fd) {
-  struct stat st = {};
-  if (syscall(__NR_fstat, fd, &st))
-    return -1;
-  return (uptr)st.st_size;
-}
-
-uptr internal_read(fd_t fd, void *p, uptr size) {
-  ScopedInRtl in_rtl;
-  return syscall(__NR_read, fd, p, size);
-}
-
-uptr internal_write(fd_t fd, const void *p, uptr size) {
-  ScopedInRtl in_rtl;
-  return syscall(__NR_write, fd, p, size);
-}
-
-int internal_dup2(int oldfd, int newfd) {
-  ScopedInRtl in_rtl;
-  return syscall(__NR_dup2, oldfd, newfd);
-}
-
-const char *internal_getpwd() {
-  return getenv("PWD");
-}
-
+#ifndef TSAN_GO
 static void ProtectRange(uptr beg, uptr end) {
   ScopedInRtl in_rtl;
   CHECK_LE(beg, end);
   if (beg == end)
     return;
-  if (beg != (uptr)my_mmap((void*)(beg), end - beg,
-      PROT_NONE,
-      MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,
-      -1, 0)) {
-    Printf("FATAL: ThreadSanitizer can not protect [%lx,%lx]\n", beg, end);
-    Printf("FATAL: Make sure you are not using unlimited stack\n");
+  if (beg != (uptr)Mprotect(beg, end - beg)) {
+    TsanPrintf("FATAL: ThreadSanitizer can not protect [%zx,%zx]\n", beg, end);
+    TsanPrintf("FATAL: Make sure you are not using unlimited stack\n");
     Die();
   }
 }
+#endif
 
 void InitializeShadowMemory() {
+  uptr shadow = (uptr)MmapFixedNoReserve(kLinuxShadowBeg,
+    kLinuxShadowEnd - kLinuxShadowBeg);
+  if (shadow != kLinuxShadowBeg) {
+    TsanPrintf("FATAL: ThreadSanitizer can not mmap the shadow memory\n");
+    TsanPrintf("FATAL: Make sure to compile with -fPIE and "
+               "to link with -pie.\n");
+    Die();
+  }
+#ifndef TSAN_GO
   const uptr kClosedLowBeg  = 0x200000;
   const uptr kClosedLowEnd  = kLinuxShadowBeg - 1;
   const uptr kClosedMidBeg = kLinuxShadowEnd + 1;
   const uptr kClosedMidEnd = kLinuxAppMemBeg - 1;
-  uptr shadow = (uptr)my_mmap((void*)kLinuxShadowBeg,
-      kLinuxShadowEnd - kLinuxShadowBeg,
-      PROT_READ | PROT_WRITE,
-      MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,
-      -1, 0);
-  if (shadow != kLinuxShadowBeg) {
-    Printf("FATAL: ThreadSanitizer can not mmap the shadow memory\n");
-    Printf("FATAL: Make sure to compile with -fPIE and to link with -pie.\n");
-    Die();
-  }
   ProtectRange(kClosedLowBeg, kClosedLowEnd);
   ProtectRange(kClosedMidBeg, kClosedMidEnd);
-  DPrintf("kClosedLow   %lx-%lx (%luGB)\n",
+#endif
+#ifndef TSAN_GO
+  DPrintf("kClosedLow   %zx-%zx (%zuGB)\n",
       kClosedLowBeg, kClosedLowEnd, (kClosedLowEnd - kClosedLowBeg) >> 30);
-  DPrintf("kLinuxShadow %lx-%lx (%luGB)\n",
+#endif
+  DPrintf("kLinuxShadow %zx-%zx (%zuGB)\n",
       kLinuxShadowBeg, kLinuxShadowEnd,
       (kLinuxShadowEnd - kLinuxShadowBeg) >> 30);
-  DPrintf("kClosedMid   %lx-%lx (%luGB)\n",
+#ifndef TSAN_GO
+  DPrintf("kClosedMid   %zx-%zx (%zuGB)\n",
       kClosedMidBeg, kClosedMidEnd, (kClosedMidEnd - kClosedMidBeg) >> 30);
-  DPrintf("kLinuxAppMem %lx-%lx (%luGB)\n",
+#endif
+  DPrintf("kLinuxAppMem %zx-%zx (%zuGB)\n",
       kLinuxAppMemBeg, kLinuxAppMemEnd,
       (kLinuxAppMemEnd - kLinuxAppMemBeg) >> 30);
-  DPrintf("stack        %lx\n", (uptr)&shadow);
+  DPrintf("stack        %zx\n", (uptr)&shadow);
 }
 
+#ifndef TSAN_GO
 static void CheckPIE() {
   // Ensure that the binary is indeed compiled with -pie.
-  fd_t fmaps = internal_open("/proc/self/maps", false);
-  if (fmaps == kInvalidFd)
-    return;
-  char buf[20];
-  if (internal_read(fmaps, buf, sizeof(buf)) == sizeof(buf)) {
-    buf[sizeof(buf) - 1] = 0;
-    u64 addr = strtoll(buf, 0, 16);
-    if ((u64)addr < kLinuxAppMemBeg) {
-      Printf("FATAL: ThreadSanitizer can not mmap the shadow memory ("
-             "something is mapped at 0x%llx < 0x%lx)\n",
-             addr, kLinuxAppMemBeg);
-      Printf("FATAL: Make sure to compile with -fPIE"
+  ProcessMaps proc_maps;
+  uptr start, end;
+  if (proc_maps.Next(&start, &end,
+                     /*offset*/0, /*filename*/0, /*filename_size*/0)) {
+    if ((u64)start < kLinuxAppMemBeg) {
+      TsanPrintf("FATAL: ThreadSanitizer can not mmap the shadow memory ("
+             "something is mapped at 0x%zx < 0x%zx)\n",
+             start, kLinuxAppMemBeg);
+      TsanPrintf("FATAL: Make sure to compile with -fPIE"
              " and to link with -pie.\n");
       Die();
     }
   }
-  internal_close(fmaps);
 }
+
+static uptr g_tls_size;
 
 #ifdef __i386__
 # define INTERNAL_FUNCTION __attribute__((regparm(3), stdcall))
@@ -215,6 +171,7 @@ static int InitTlsSize() {
   get_tls(&tls_size, &tls_align);
   return tls_size;
 }
+#endif  // #ifndef TSAN_GO
 
 const char *InitializePlatform() {
   void *p = 0;
@@ -227,8 +184,10 @@ const char *InitializePlatform() {
     setrlimit(RLIMIT_CORE, (rlimit*)&lim);
   }
 
+#ifndef TSAN_GO
   CheckPIE();
   g_tls_size = (uptr)InitTlsSize();
+#endif
   return getenv("TSAN_OPTIONS");
 }
 
@@ -237,71 +196,26 @@ void FinalizePlatform() {
 }
 
 uptr GetTlsSize() {
+#ifndef TSAN_GO
   return g_tls_size;
+#else
+  return 0;
+#endif
 }
 
 void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
                           uptr *tls_addr, uptr *tls_size) {
+#ifndef TSAN_GO
   arch_prctl(ARCH_GET_FS, tls_addr);
   *tls_addr -= g_tls_size;
   *tls_size = g_tls_size;
 
-  if (main) {
-    uptr kBufSize = 1 << 20;
-    char *buf = (char*)my_mmap(0, kBufSize, PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANON, -1, 0);
-    fd_t maps = internal_open("/proc/self/maps", false);
-    if (maps == kInvalidFd) {
-      Printf("Failed to open /proc/self/maps\n");
-      Die();
-    }
-    char *end = buf;
-    while (end + kPageSize < buf + kBufSize) {
-      uptr read = internal_read(maps, end, kPageSize);
-      if ((int)read <= 0)
-        break;
-      end += read;
-    }
-    end[0] = 0;
-    end = (char*)internal_strstr(buf, "[stack]");
-    if (end == 0) {
-      Printf("Can't find [stack] in /proc/self/maps\n");
-      Die();
-    }
-    end[0] = 0;
-    char *pos = (char*)internal_strrchr(buf, '\n');
-    if (pos == 0) {
-      Printf("Can't find [stack] in /proc/self/maps\n");
-      Die();
-    }
-    uptr stack = 0;
-    for (; pos++;) {
-      uptr num = 0;
-      if (pos[0] >= '0' && pos[0] <= '9')
-        num = pos[0] - '0';
-      else if (pos[0] >= 'a' && pos[0] <= 'f')
-        num = pos[0] - 'a' + 10;
-      else
-        break;
-      stack = stack * 16 + num;
-    }
-    internal_close(maps);
-    my_munmap(buf, kBufSize);
+  uptr stack_top, stack_bottom;
+  GetThreadStackTopAndBottom(main, &stack_top, &stack_bottom);
+  *stk_addr = stack_bottom;
+  *stk_size = stack_top - stack_bottom;
 
-    struct rlimit rl;
-    CHECK_EQ(getrlimit(RLIMIT_STACK, &rl), 0);
-
-    *stk_addr = stack;
-    *stk_size = rl.rlim_cur;
-  } else {
-    *stk_addr = 0;
-    *stk_size = 0;
-    pthread_attr_t attr;
-    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
-      pthread_attr_getstack(&attr, (void**)stk_addr, (size_t*)stk_size);
-      pthread_attr_destroy(&attr);
-    }
-
+  if (!main) {
     // If stack and tls intersect, make them non-intersecting.
     if (*tls_addr > *stk_addr && *tls_addr < *stk_addr + *stk_size) {
       CHECK_GT(*tls_addr + *tls_size, *stk_addr);
@@ -310,10 +224,15 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
       *tls_addr = *stk_addr + *stk_size;
     }
   }
+#else
+  *stk_addr = 0;
+  *stk_size = 0;
+  *tls_addr = 0;
+  *tls_size = 0;
+#endif
 }
 
-int GetPid() {
-  return getpid();
-}
 
 }  // namespace __tsan
+
+#endif  // #ifdef __linux__

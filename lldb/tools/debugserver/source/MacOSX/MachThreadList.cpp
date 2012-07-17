@@ -470,22 +470,30 @@ MachThreadList::DisableHardwareBreakpoint (const DNBBreakpoint* bp) const
 uint32_t
 MachThreadList::EnableHardwareWatchpoint (const DNBBreakpoint* wp) const
 {
+    uint32_t hw_index = INVALID_NUB_HW_INDEX;
     if (wp != NULL)
     {
-        uint32_t hw_index;
         PTHREAD_MUTEX_LOCKER (locker, m_threads_mutex);
         const uint32_t num_threads = m_threads.size();
         for (uint32_t idx = 0; idx < num_threads; ++idx)
         {
             if ((hw_index = m_threads[idx]->EnableHardwareWatchpoint(wp)) == INVALID_NUB_HW_INDEX)
+            {
+                // We know that idx failed for some reason.  Let's rollback the transaction for [0, idx).
+                for (uint32_t i = 0; i < idx; ++i)
+                    m_threads[i]->RollbackTransForHWP();
                 return INVALID_NUB_HW_INDEX;
+            }
         }
+        // Notify each thread to commit the pending transaction.
+        for (uint32_t idx = 0; idx < num_threads; ++idx)
+            m_threads[idx]->FinishTransForHWP();
+
         // Use an arbitrary thread to signal the completion of our transaction.
         if (num_threads)
             m_threads[0]->HardwareWatchpointStateChanged();
-        return hw_index;
     }
-    return INVALID_NUB_HW_INDEX;
+    return hw_index;
 }
 
 bool
@@ -498,8 +506,17 @@ MachThreadList::DisableHardwareWatchpoint (const DNBBreakpoint* wp) const
         for (uint32_t idx = 0; idx < num_threads; ++idx)
         {
             if (!m_threads[idx]->DisableHardwareWatchpoint(wp))
+            {
+                // We know that idx failed for some reason.  Let's rollback the transaction for [0, idx).
+                for (uint32_t i = 0; i < idx; ++i)
+                    m_threads[i]->RollbackTransForHWP();
                 return false;
+            }
         }
+        // Notify each thread to commit the pending transaction.
+        for (uint32_t idx = 0; idx < num_threads; ++idx)
+            m_threads[idx]->FinishTransForHWP();
+
         // Use an arbitrary thread to signal the completion of our transaction.
         if (num_threads)
             m_threads[0]->HardwareWatchpointStateChanged();

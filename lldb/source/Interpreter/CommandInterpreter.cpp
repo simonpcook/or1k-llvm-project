@@ -80,8 +80,8 @@ CommandInterpreter::CommandInterpreter
     m_script_interpreter_ap (),
     m_comment_char ('#'),
     m_repeat_char ('!'),
-    m_batch_command_mode (false),
-    m_truncation_warning(eNoTruncation)
+    m_truncation_warning(eNoTruncation),
+    m_command_source_depth (0)
 {
     const char *dbg_name = debugger.GetInstanceName().AsCString();
     std::string lang_name = ScriptInterpreter::LanguageToString (script_language);
@@ -240,11 +240,19 @@ CommandInterpreter::Initialize ()
         AddOrReplaceAliasOptions ("po", alias_arguments_vector_sp);
     }
     
+    cmd_obj_sp = GetCommandSPExact ("process kill", false);
+    if (cmd_obj_sp)
+        AddAlias ("kill", cmd_obj_sp);
+    
     cmd_obj_sp = GetCommandSPExact ("process launch", false);
     if (cmd_obj_sp)
     {
         alias_arguments_vector_sp.reset (new OptionArgVector);
+#if defined (__arm__)
+        ProcessAliasOptionsArgs (cmd_obj_sp, "--", alias_arguments_vector_sp);
+#else
         ProcessAliasOptionsArgs (cmd_obj_sp, "--shell=/bin/bash --", alias_arguments_vector_sp);
+#endif
         AddAlias ("r", cmd_obj_sp);
         AddAlias ("run", cmd_obj_sp);
         AddOrReplaceAliasOptions ("r", alias_arguments_vector_sp);
@@ -1135,7 +1143,8 @@ CommandInterpreter::PreprocessCommand (std::string &command)
             {
                 std::string expr_str (command, expr_content_start, end_backtick - expr_content_start);
                 
-                Target *target = m_exe_ctx.GetTargetPtr();
+                ExecutionContext exe_ctx(GetExecutionContext());
+                Target *target = exe_ctx.GetTargetPtr();
                 // Get a dummy target to allow for calculator mode while processing backticks.
                 // This also helps break the infinite loop caused when target is null.
                 if (!target)
@@ -1147,13 +1156,14 @@ CommandInterpreter::PreprocessCommand (std::string &command)
                     const bool keep_in_memory = false;
                     ValueObjectSP expr_result_valobj_sp;
                     ExecutionResults expr_result = target->EvaluateExpression (expr_str.c_str(), 
-                                                                               m_exe_ctx.GetFramePtr(), 
+                                                                               exe_ctx.GetFramePtr(), 
                                                                                eExecutionPolicyOnlyWhenNeeded,
                                                                                coerce_to_id,
                                                                                unwind_on_error, 
                                                                                keep_in_memory, 
                                                                                eNoDynamicValues, 
-                                                                               expr_result_valobj_sp);
+                                                                               expr_result_valobj_sp,
+                                                                               0 /* no timeout */);
                     if (expr_result == eExecutionCompleted)
                     {
                         Scalar scalar;
@@ -1218,7 +1228,7 @@ CommandInterpreter::PreprocessCommand (std::string &command)
 
 bool
 CommandInterpreter::HandleCommand (const char *command_line, 
-                                   bool add_to_history,
+                                   LazyBool lazy_add_to_history,
                                    CommandReturnObject &result,
                                    ExecutionContext *override_context,
                                    bool repeat_on_empty_command,
@@ -1246,7 +1256,14 @@ CommandInterpreter::HandleCommand (const char *command_line,
     
     if (!no_context_switching)
         UpdateExecutionContext (override_context);
-
+    
+    // <rdar://problem/11328896>
+    bool add_to_history;
+    if (lazy_add_to_history == eLazyBoolCalculate)
+        add_to_history = (m_command_source_depth == 0);
+    else
+        add_to_history = (lazy_add_to_history == eLazyBoolYes);
+    
     bool empty_command = false;
     bool comment_command = false;
     if (command_string.empty())
@@ -1551,35 +1568,7 @@ CommandInterpreter::HandleCommand (const char *command_line,
         if (log)
             log->Printf ("HandleCommand, command line after removing command name(s): '%s'", remainder.c_str());
     
-
-        CommandOverrideCallback command_callback = cmd_obj->GetOverrideCallback();
-        bool handled = false;
-        if (wants_raw_input)
-        {
-            if (command_callback)
-            {
-                std::string full_command (cmd_obj->GetCommandName ());
-                full_command += ' ';
-                full_command += remainder;
-                const char *argv[2] = { NULL, NULL };
-                argv[0] = full_command.c_str();
-                handled = command_callback (cmd_obj->GetOverrideCallbackBaton(), argv);
-            }
-            if (!handled)
-                cmd_obj->ExecuteRawCommandString (remainder.c_str(), result);
-        }
-        else
-        {
-            Args cmd_args (remainder.c_str());
-            if (command_callback)
-            {
-                Args full_args (cmd_obj->GetCommandName ());
-                full_args.AppendArguments(cmd_args);
-                handled = command_callback (cmd_obj->GetOverrideCallbackBaton(), full_args.GetConstArgumentVector());
-            }
-            if (!handled)
-                cmd_obj->ExecuteWithOptions (cmd_args, result);
-        }
+        cmd_obj->Execute (remainder.c_str(), result);
     }
     else
     {
@@ -2226,7 +2215,7 @@ CommandInterpreter::SourceInitFile (bool in_cwd, CommandReturnObject &result)
         bool echo_commands    = false;
         bool print_results    = false;
         
-        HandleCommandsFromFile (init_file, exe_ctx, stop_on_continue, stop_on_error, echo_commands, print_results, result);
+        HandleCommandsFromFile (init_file, exe_ctx, stop_on_continue, stop_on_error, echo_commands, print_results, eLazyBoolNo, result);
     }
     else
     {
@@ -2241,7 +2230,8 @@ CommandInterpreter::GetPlatform (bool prefer_target_platform)
     PlatformSP platform_sp;
     if (prefer_target_platform)
     {
-        Target *target = m_exe_ctx.GetTargetPtr();
+        ExecutionContext exe_ctx(GetExecutionContext());
+        Target *target = exe_ctx.GetTargetPtr();
         if (target)
             platform_sp = target->GetPlatform();
     }
@@ -2258,6 +2248,7 @@ CommandInterpreter::HandleCommands (const StringList &commands,
                                     bool stop_on_error,
                                     bool echo_commands,
                                     bool print_results,
+                                    LazyBool add_to_history,
                                     CommandReturnObject &result)
 {
     size_t num_lines = commands.GetSize();
@@ -2294,7 +2285,7 @@ CommandInterpreter::HandleCommands (const StringList &commands,
         CommandReturnObject tmp_result;
         // If override_context is not NULL, pass no_context_switching = true for
         // HandleCommand() since we updated our context already.
-        bool success = HandleCommand(cmd, false, tmp_result,
+        bool success = HandleCommand(cmd, add_to_history, tmp_result,
                                      NULL, /* override_context */
                                      true, /* repeat_on_empty_command */
                                      override_context != NULL /* no_context_switching */);
@@ -2372,6 +2363,7 @@ CommandInterpreter::HandleCommandsFromFile (FileSpec &cmd_file,
                                             bool stop_on_error,
                                             bool echo_command,
                                             bool print_result,
+                                            LazyBool add_to_history,
                                             CommandReturnObject &result)
 {
     if (cmd_file.Exists())
@@ -2385,7 +2377,9 @@ CommandInterpreter::HandleCommandsFromFile (FileSpec &cmd_file,
             result.SetStatus (eReturnStatusFailed);
             return;
         }
-        HandleCommands (commands, context, stop_on_continue, stop_on_error, echo_command, print_result, result);
+        m_command_source_depth++;
+        HandleCommands (commands, context, stop_on_continue, stop_on_error, echo_command, print_result, add_to_history, result);
+        m_command_source_depth--;
     }
     else
     {
@@ -2399,6 +2393,16 @@ CommandInterpreter::HandleCommandsFromFile (FileSpec &cmd_file,
 ScriptInterpreter *
 CommandInterpreter::GetScriptInterpreter ()
 {
+    // <rdar://problem/11751427>
+    // we need to protect the initialization of the script interpreter
+    // otherwise we could end up with two threads both trying to create
+    // their instance of it, and for some languages (e.g. Python)
+    // this is a bulletproof recipe for disaster!
+    // this needs to be a function-level static because multiple Debugger instances living in the same process
+    // still need to be isolated and not try to initialize Python concurrently
+    static Mutex g_interpreter_mutex(Mutex::eMutexTypeRecursive);
+    Mutex::Locker interpreter_lock(g_interpreter_mutex);
+    
     if (m_script_interpreter_ap.get() != NULL)
         return m_script_interpreter_ap.get();
     
@@ -2533,7 +2537,6 @@ CommandInterpreter::OutputHelpText (Stream &strm,
     text_strm.Printf ("%-*s %s %s",  max_word_len, word_text, separator, help_text);
     
     const uint32_t max_columns = m_debugger.GetTerminalWidth();
-    bool first_line = true;
     
     size_t len = text_strm.GetSize();
     const char *text = text_strm.GetData();
@@ -2544,7 +2547,6 @@ CommandInterpreter::OutputHelpText (Stream &strm,
     {
         if ((text[i] == ' ' && ::strchr((text+i+1), ' ') && chars_left < ::strchr((text+i+1), ' ')-(text+i)) || text[i] == '\n')
         {
-            first_line = false;
             chars_left = max_columns - indent_size;
             strm.EOL();
             strm.Indent();
@@ -2617,39 +2619,14 @@ CommandInterpreter::FindCommandsForApropos (const char *search_word, StringList 
 void
 CommandInterpreter::UpdateExecutionContext (ExecutionContext *override_context)
 {
-    m_exe_ctx.Clear();
-    
     if (override_context != NULL)
     {
-        m_exe_ctx = *override_context;
+        m_exe_ctx_ref = *override_context;
     }
     else
     {
-        TargetSP target_sp (m_debugger.GetSelectedTarget());
-        if (target_sp)
-        {
-            m_exe_ctx.SetTargetSP (target_sp);
-            ProcessSP process_sp (target_sp->GetProcessSP());
-            m_exe_ctx.SetProcessSP (process_sp);
-            if (process_sp && process_sp->IsAlive() && !process_sp->IsRunning())
-            {
-                ThreadSP thread_sp (process_sp->GetThreadList().GetSelectedThread());
-                if (thread_sp)
-                {
-                    m_exe_ctx.SetThreadSP (thread_sp);
-                    StackFrameSP frame_sp (thread_sp->GetSelectedFrame());
-                    if (!frame_sp)
-                    {
-                        frame_sp = thread_sp->GetStackFrameAtIndex (0);
-                        // If we didn't have a selected frame select one here.
-                        if (frame_sp)
-                            thread_sp->SetSelectedFrame(frame_sp.get());
-                    }
-                    if (frame_sp)
-                        m_exe_ctx.SetFrameSP (frame_sp);
-                }
-            }
-        }
+        const bool adopt_selected = true;
+        m_exe_ctx_ref.SetTargetPtr (m_debugger.GetSelectedTarget().get(), adopt_selected);
     }
 }
 

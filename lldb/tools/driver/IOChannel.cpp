@@ -50,6 +50,17 @@ IOChannel::GetPrompt ()
     return pos->second.c_str();
 }
 
+bool
+IOChannel::EditLineHasCharacters ()
+{
+    const LineInfo *line_info  = el_line(m_edit_line);
+    if (line_info)
+        return line_info->cursor != line_info->buffer;
+    else
+        return false;
+}
+
+
 void
 IOChannel::EraseCharsBeforeCursor ()
 {
@@ -201,6 +212,7 @@ IOChannel::IOChannel
     el_set (m_edit_line, EL_BIND, m_completion_key, "lldb_complete", NULL);
     el_set (m_edit_line, EL_BIND, "^r", "em-inc-search-prev", NULL);  // Cycle through backwards search, entering string
     el_set (m_edit_line, EL_BIND, "^w", "ed-delete-prev-word", NULL); // Delete previous word, behave like bash does.
+    el_set (m_edit_line, EL_BIND, "\e[3~", "ed-delete-next-char", NULL); // Fix the delete key.
     el_set (m_edit_line, EL_CLIENTDATA, this);
 
     // Source $PWD/.editrc then $HOME/.editrc

@@ -97,10 +97,12 @@ DynamicLoaderStatic::LoadAllImagesAtFileAddresses ()
     
     ModuleList loaded_module_list;
 
+    Mutex::Locker mutex_locker(module_list.GetMutex());
+    
     const size_t num_modules = module_list.GetSize();
     for (uint32_t idx = 0; idx < num_modules; ++idx)
     {
-        ModuleSP module_sp (module_list.GetModuleAtIndex (idx));
+        ModuleSP module_sp (module_list.GetModuleAtIndexUnlocked (idx));
         if (module_sp)
         {
             bool changed = false;
@@ -124,10 +126,10 @@ DynamicLoaderStatic::LoadAllImagesAtFileAddresses ()
                         // Iterate through the object file sections to find the
                         // first section that starts of file offset zero and that
                         // has bytes in the file...
-                        Section *section = section_list->GetSectionAtIndex (sect_idx).get();
-                        if (section)
+                        SectionSP section_sp (section_list->GetSectionAtIndex (sect_idx));
+                        if (section_sp)
                         {
-                            if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section, section->GetFileAddress()))
+                            if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section_sp, section_sp->GetFileAddress()))
                                 changed = true;
                         }
                     }

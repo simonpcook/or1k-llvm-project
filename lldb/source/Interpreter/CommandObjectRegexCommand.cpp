@@ -30,7 +30,7 @@ CommandObjectRegexCommand::CommandObjectRegexCommand
     const char *syntax,
     uint32_t max_matches
 ) :
-    CommandObject (interpreter, name, help, syntax),
+    CommandObjectRaw (interpreter, name, help, syntax),
     m_max_matches (max_matches),
     m_entries ()
 {
@@ -45,18 +45,7 @@ CommandObjectRegexCommand::~CommandObjectRegexCommand()
 
 
 bool
-CommandObjectRegexCommand::Execute
-(
-    Args& command,
-    CommandReturnObject &result
-)
-{
-    return false;
-}
-
-
-bool
-CommandObjectRegexCommand::ExecuteRawCommandString
+CommandObjectRegexCommand::DoExecute
 (
     const char *command,
     CommandReturnObject &result
@@ -88,7 +77,7 @@ CommandObjectRegexCommand::ExecuteRawCommandString
                 }
                 // Interpret the new command and return this as the result!
                 result.GetOutputStream().Printf("%s\n", new_command.c_str());
-                return m_interpreter.HandleCommand(new_command.c_str(), true, result);
+                return m_interpreter.HandleCommand(new_command.c_str(), eLazyBoolCalculate, result);
             }
         }
         result.SetStatus(eReturnStatusFailed);

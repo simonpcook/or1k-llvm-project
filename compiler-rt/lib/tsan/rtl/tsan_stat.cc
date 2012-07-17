@@ -1,4 +1,4 @@
-//===-- tsan_stat.cc --------------------------------------------*- C++ -*-===//
+//===-- tsan_stat.cc ------------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -91,6 +91,8 @@ void StatOutput(u64 *stat) {
   name[StatAtomic8]                      = "            size 8                ";
 
   name[StatInterceptor]                  = "Interceptors                      ";
+  name[StatInt_longjmp]                  = "  longjmp                         ";
+  name[StatInt_siglongjmp]               = "  siglongjmp                      ";
   name[StatInt_malloc]                   = "  malloc                          ";
   name[StatInt_calloc]                   = "  calloc                          ";
   name[StatInt_realloc]                  = "  realloc                         ";
@@ -239,9 +241,9 @@ void StatOutput(u64 *stat) {
   name[StatMtxAtExit]                    = "  Atexit                          ";
   name[StatMtxAnnotations]               = "  Annotations                     ";
 
-  Printf("Statistics:\n");
+  TsanPrintf("Statistics:\n");
   for (int i = 0; i < StatCnt; i++)
-    Printf("%s: %llu\n", name[i], stat[i]);
+    TsanPrintf("%s: %zu\n", name[i], (uptr)stat[i]);
 }
 
 }  // namespace __tsan

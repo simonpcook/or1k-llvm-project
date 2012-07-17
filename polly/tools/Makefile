@@ -10,4 +10,11 @@
 LEVEL := ..
 DIRS :=
 
+include $(LEVEL)/Makefile.config
+
+# GPU Runtime Support
+ifeq ($(CUDALIB_FOUND), yes)
+ DIRS += GPURuntime
+endif
+
 include $(LEVEL)/Makefile.common

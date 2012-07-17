@@ -74,6 +74,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${POLLY_SOURCE_DIR}/cmake")
 FIND_PACKAGE(Cloog REQUIRED)
 FIND_PACKAGE(Isl REQUIRED)
 FIND_PACKAGE(Gmp REQUIRED)
+FIND_PACKAGE(CUDA)
 
 option(POLLY_ENABLE_OPENSCOP "Enable Openscop library for scop import/export" ON)
 if (POLLY_ENABLE_OPENSCOP)
@@ -90,6 +91,11 @@ if (CLOOG_FOUND)
 endif(CLOOG_FOUND)
 INCLUDE_DIRECTORIES( ${ISL_INCLUDE_DIR} )
 INCLUDE_DIRECTORIES( ${GMP_INCLUDE_DIR} )
+
+# Support GPGPU code generation if the library is available.
+if (CUDALIB_FOUND)
+  INCLUDE_DIRECTORIES( ${CUDALIB_INCLUDE_DIR} )
+endif(CUDALIB_FOUND)
 
 # Support OpenScop export/import if the library is available.
 if (OPENSCOP_FOUND)

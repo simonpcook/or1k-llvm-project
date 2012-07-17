@@ -754,20 +754,19 @@ SBTarget::Launch (SBLaunchInfo &sb_launch_info, SBError& error)
             const bool synchronous_execution = target_sp->GetDebugger().GetAsyncExecution () == false;
             if (error.Success())
             {
-                StateType state = eStateInvalid;
                 if (launch_info.GetFlags().Test(eLaunchFlagStopAtEntry))
                 {
                     // If we are doing synchronous mode, then wait for the initial
                     // stop to happen, else, return and let the caller watch for
                     // the stop
                     if (synchronous_execution)
-                         state = process_sp->WaitForProcessToStop (NULL);
+                         process_sp->WaitForProcessToStop (NULL);
                     // We we are stopping at the entry point, we can return now!
                     return sb_process;
                 }
                 
                 // Make sure we are stopped at the entry
-                state = process_sp->WaitForProcessToStop (NULL);
+                StateType state = process_sp->WaitForProcessToStop (NULL);
                 if (state == eStateStopped)
                 {
                     // resume the process to skip the entry point
@@ -1634,6 +1633,8 @@ SBTarget::DeleteWatchpoint (watch_id_t wp_id)
     if (target_sp)
     {
         Mutex::Locker api_locker (target_sp->GetAPIMutex());
+        Mutex::Locker locker;
+        target_sp->GetWatchpointList().GetListMutex(locker);
         result = target_sp->RemoveWatchpointByID (wp_id);
     }
 
@@ -1656,6 +1657,8 @@ SBTarget::FindWatchpointByID (lldb::watch_id_t wp_id)
     if (target_sp && wp_id != LLDB_INVALID_WATCH_ID)
     {
         Mutex::Locker api_locker (target_sp->GetAPIMutex());
+        Mutex::Locker locker;
+        target_sp->GetWatchpointList().GetListMutex(locker);
         watchpoint_sp = target_sp->GetWatchpointList().FindByID(wp_id);
         sb_watchpoint.SetSP (watchpoint_sp);
     }
@@ -1670,7 +1673,7 @@ SBTarget::FindWatchpointByID (lldb::watch_id_t wp_id)
 }
 
 lldb::SBWatchpoint
-SBTarget::WatchAddress (lldb::addr_t addr, size_t size, bool read, bool write)
+SBTarget::WatchAddress (lldb::addr_t addr, size_t size, bool read, bool write, SBError &error)
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
     
@@ -1685,7 +1688,10 @@ SBTarget::WatchAddress (lldb::addr_t addr, size_t size, bool read, bool write)
             watch_type |= LLDB_WATCH_TYPE_READ;
         if (write)
             watch_type |= LLDB_WATCH_TYPE_WRITE;
-        watchpoint_sp = target_sp->CreateWatchpoint(addr, size, watch_type);
+        // Target::CreateWatchpoint() is thread safe.
+        Error cw_error;
+        watchpoint_sp = target_sp->CreateWatchpoint(addr, size, watch_type, cw_error);
+        error.SetError(cw_error);
         sb_watchpoint.SetSP (watchpoint_sp);
     }
     
@@ -1705,6 +1711,8 @@ SBTarget::EnableAllWatchpoints ()
     if (target_sp)
     {
         Mutex::Locker api_locker (target_sp->GetAPIMutex());
+        Mutex::Locker locker;
+        target_sp->GetWatchpointList().GetListMutex(locker);
         target_sp->EnableAllWatchpoints ();
         return true;
     }
@@ -1718,6 +1726,8 @@ SBTarget::DisableAllWatchpoints ()
     if (target_sp)
     {
         Mutex::Locker api_locker (target_sp->GetAPIMutex());
+        Mutex::Locker locker;
+        target_sp->GetWatchpointList().GetListMutex(locker);
         target_sp->DisableAllWatchpoints ();
         return true;
     }
@@ -1731,6 +1741,8 @@ SBTarget::DeleteAllWatchpoints ()
     if (target_sp)
     {
         Mutex::Locker api_locker (target_sp->GetAPIMutex());
+        Mutex::Locker locker;
+        target_sp->GetWatchpointList().GetListMutex(locker);
         target_sp->RemoveAllWatchpoints ();
         return true;
     }
@@ -2124,7 +2136,7 @@ SBTarget::SetSectionLoadAddress (lldb::SBSection section,
                 }
                 else
                 {
-                    target_sp->GetSectionLoadList().SetSectionLoadAddress (section_sp.get(), section_base_addr);
+                    target_sp->GetSectionLoadList().SetSectionLoadAddress (section_sp, section_base_addr);
                 }
             }
         }
@@ -2150,7 +2162,7 @@ SBTarget::ClearSectionLoadAddress (lldb::SBSection section)
         }
         else
         {
-            target_sp->GetSectionLoadList().SetSectionUnloaded (section.GetSP().get());
+            target_sp->GetSectionLoadList().SetSectionUnloaded (section.GetSP());
         }
     }
     else
@@ -2220,7 +2232,7 @@ SBTarget::ClearModuleLoadAddress (lldb::SBModule module)
                     {
                         SectionSP section_sp (section_list->GetSectionAtIndex(sect_idx));
                         if (section_sp)
-                            target_sp->GetSectionLoadList().SetSectionUnloaded (section_sp.get());
+                            target_sp->GetSectionLoadList().SetSectionUnloaded (section_sp);
                     }
                 }
                 else

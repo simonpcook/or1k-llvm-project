@@ -280,6 +280,9 @@ SymbolFileDWARFDebugMap::GetSymbolFileByCompUnitInfo (CompileUnitInfo *comp_unit
                 // it will have the remapped sections that we do below.
                 SymbolFileDWARF *oso_symfile = (SymbolFileDWARF *)comp_unit_info->oso_symbol_vendor->GetSymbolFile();
                 
+                if (!oso_symfile)
+                    return NULL;
+                
                 if (oso_symfile->GetNumCompileUnits() != 1)
                 {
                     oso_symfile->GetObjectFile()->GetModule()->ReportError ("DWARF for object file '%s' contains multiple translation units!",
@@ -426,6 +429,8 @@ SymbolFileDWARFDebugMap::GetSymbolFileByCompUnitInfo (CompileUnitInfo *comp_unit
                         }
                     }
                 }
+                oso_objfile->GetSectionList()->Finalize(); // Now that we're done adding sections, finalize to build fast-lookup caches
+                comp_unit_info->debug_map_sections_sp->Finalize();
 #if defined(DEBUG_OSO_DMAP)
                 s << "OSO sections after:\n";
                 oso_objfile->GetSectionList()->Dump(&s, NULL, true);

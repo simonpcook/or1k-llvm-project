@@ -1,4 +1,4 @@
-//===-- tsan_mutex.cc -------------------------------------------*- C++ -*-===//
+//===-- tsan_mutex.cc -----------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -10,6 +10,7 @@
 // This file is a part of ThreadSanitizer (TSan), a race detector.
 //
 //===----------------------------------------------------------------------===//
+#include "sanitizer_common/sanitizer_libc.h"
 #include "tsan_mutex.h"
 #include "tsan_platform.h"
 #include "tsan_rtl.h"
@@ -91,25 +92,25 @@ void InitializeMutex() {
     }
   }
 #if 0
-  Printf("Can lock graph:\n");
+  TsanPrintf("Can lock graph:\n");
   for (int i = 0; i < N; i++) {
     for (int j = 0; j < N; j++) {
-      Printf("%d ", CanLockAdj[i][j]);
+      TsanPrintf("%d ", CanLockAdj[i][j]);
     }
-    Printf("\n");
+    TsanPrintf("\n");
   }
-  Printf("Can lock graph closure:\n");
+  TsanPrintf("Can lock graph closure:\n");
   for (int i = 0; i < N; i++) {
     for (int j = 0; j < N; j++) {
-      Printf("%d ", CanLockAdj2[i][j]);
+      TsanPrintf("%d ", CanLockAdj2[i][j]);
     }
-    Printf("\n");
+    TsanPrintf("\n");
   }
 #endif
   // Verify that the graph is acyclic.
   for (int i = 0; i < N; i++) {
     if (CanLockAdj2[i][i]) {
-      Printf("Mutex %d participates in a cycle\n", i);
+      TsanPrintf("Mutex %d participates in a cycle\n", i);
       Die();
     }
   }
@@ -120,7 +121,7 @@ DeadlockDetector::DeadlockDetector() {
 }
 
 void DeadlockDetector::Lock(MutexType t) {
-  // Printf("LOCK %d @%llu\n", t, seq_ + 1);
+  // TsanPrintf("LOCK %d @%zu\n", t, seq_ + 1);
   u64 max_seq = 0;
   u64 max_idx = MutexTypeInvalid;
   for (int i = 0; i != MutexTypeCount; i++) {
@@ -135,16 +136,17 @@ void DeadlockDetector::Lock(MutexType t) {
   locked_[t] = ++seq_;
   if (max_idx == MutexTypeInvalid)
     return;
-  // Printf("  last %d @%llu\n", max_idx, max_seq);
+  // TsanPrintf("  last %d @%zu\n", max_idx, max_seq);
   if (!CanLockAdj[max_idx][t]) {
-    Printf("ThreadSanitizer: internal deadlock detected\n");
-    Printf("ThreadSanitizer: can't lock %d while under %llu\n", t, max_idx);
+    TsanPrintf("ThreadSanitizer: internal deadlock detected\n");
+    TsanPrintf("ThreadSanitizer: can't lock %d while under %zu\n",
+               t, (uptr)max_idx);
     Die();
   }
 }
 
 void DeadlockDetector::Unlock(MutexType t) {
-  // Printf("UNLO %d @%llu #%llu\n", t, seq_, locked_[t]);
+  // TsanPrintf("UNLO %d @%zu #%zu\n", t, seq_, locked_[t]);
   CHECK(locked_[t]);
   locked_[t] = 0;
 }
@@ -163,7 +165,7 @@ class Backoff {
     if (iter_++ < kActiveSpinIters)
       proc_yield(kActiveSpinCnt);
     else
-      internal_yield();
+      internal_sched_yield();
     return true;
   }
 
@@ -196,7 +198,7 @@ Mutex::~Mutex() {
 }
 
 void Mutex::Lock() {
-#if TSAN_DEBUG
+#if TSAN_DEBUG && !TSAN_GO
   cur_thread()->deadlock_detector.Lock(type_);
 #endif
   uptr cmp = kUnlocked;
@@ -221,13 +223,13 @@ void Mutex::Unlock() {
   uptr prev = atomic_fetch_sub(&state_, kWriteLock, memory_order_release);
   (void)prev;
   DCHECK_NE(prev & kWriteLock, 0);
-#if TSAN_DEBUG
+#if TSAN_DEBUG && !TSAN_GO
   cur_thread()->deadlock_detector.Unlock(type_);
 #endif
 }
 
 void Mutex::ReadLock() {
-#if TSAN_DEBUG
+#if TSAN_DEBUG && !TSAN_GO
   cur_thread()->deadlock_detector.Lock(type_);
 #endif
   uptr prev = atomic_fetch_add(&state_, kReadLock, memory_order_acquire);
@@ -249,27 +251,9 @@ void Mutex::ReadUnlock() {
   (void)prev;
   DCHECK_EQ(prev & kWriteLock, 0);
   DCHECK_GT(prev & ~kWriteLock, 0);
-#if TSAN_DEBUG
+#if TSAN_DEBUG && !TSAN_GO
   cur_thread()->deadlock_detector.Unlock(type_);
 #endif
-}
-
-Lock::Lock(Mutex *m)
-  : m_(m) {
-  m_->Lock();
-}
-
-Lock::~Lock() {
-  m_->Unlock();
-}
-
-ReadLock::ReadLock(Mutex *m)
-  : m_(m) {
-  m_->ReadLock();
-}
-
-ReadLock::~ReadLock() {
-  m_->ReadUnlock();
 }
 
 }  // namespace __tsan

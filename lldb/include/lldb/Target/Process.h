@@ -82,8 +82,29 @@ public:
                               StringList &value,
                               Error *err);
 
-
+    bool GetDisableMemoryCache() const
+    {
+        return m_disable_memory_cache;
+    }
+    
+    const Args &
+    GetExtraStartupCommands () const
+    {
+        return m_extra_startup_commands;
+    }
+    
+    void
+    SetExtraStartupCommands (const Args &args)
+    {
+        m_extra_startup_commands = args;
+    }
+    
 protected:
+    const ConstString &
+    GetDisableMemoryCacheVarName () const;
+    
+    const ConstString &
+    GetExtraStartupCommandVarName () const;
 
     void
     CopyInstanceSettings (const lldb::InstanceSettingsSP &new_settings,
@@ -91,6 +112,9 @@ protected:
 
     const ConstString
     CreateInstanceName ();
+    
+    bool        m_disable_memory_cache;
+    Args        m_extra_startup_commands;
 };
 
 //----------------------------------------------------------------------
@@ -719,6 +743,22 @@ public:
     {
         m_resume_count = c;
     }
+    
+    bool
+    GetLaunchInSeparateProcessGroup ()
+    {
+        return m_flags.Test(lldb::eLaunchFlagLaunchInSeparateProcessGroup);
+    }
+    
+    void
+    SetLaunchInSeparateProcessGroup (bool separate)
+    {
+        if (separate)
+            m_flags.Set(lldb::eLaunchFlagLaunchInSeparateProcessGroup);
+        else
+            m_flags.Clear (lldb::eLaunchFlagLaunchInSeparateProcessGroup);
+
+    }
 
     void
     Clear ()
@@ -779,6 +819,7 @@ protected:
     Host::MonitorChildProcessCallback m_monitor_callback;
     void *m_monitor_callback_baton;
     bool m_monitor_signals;
+
 };
 
 //----------------------------------------------------------------------
@@ -2745,6 +2786,14 @@ public:
         return error;
     }
 
+    virtual Error
+    GetWatchpointSupportInfo (uint32_t &num, bool& after)
+    {
+        Error error;
+        error.SetErrorString ("Process::GetWatchpointSupportInfo() not supported");
+        return error;
+    }
+    
     lldb::ModuleSP
     ReadModuleFromMemory (const FileSpec& file_spec, 
                           lldb::addr_t header_addr,
@@ -3365,6 +3414,7 @@ protected:
     std::auto_ptr<NextEventAction> m_next_event_action_ap;
     std::vector<PreResumeCallbackAndBaton> m_pre_resume_actions;
     ReadWriteLock               m_run_lock;
+    Predicate<bool>             m_currently_handling_event;
 
     enum {
         eCanJITDontKnow= 0,

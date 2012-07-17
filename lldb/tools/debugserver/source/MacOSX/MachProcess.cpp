@@ -421,8 +421,7 @@ MachProcess::DoSIGSTOP (bool clear_bps_and_wps, bool allow_running, uint32_t *th
     {
         DisableAllBreakpoints (true);
         DisableAllWatchpoints (true);
-        // The static analyzer complains about this, but just leave the following line in.
-         clear_bps_and_wps = false;
+        //clear_bps_and_wps = false;
     }
     uint32_t thread_idx = m_thread_list.GetThreadIndexForThreadStoppedWithSignal (SIGSTOP);
     if (thread_idx_ptr)
@@ -1533,6 +1532,24 @@ MachProcess::LaunchForDebug
         m_pid = MachProcess::ForkChildForPTraceDebugging (path, argv, envp, this, launch_err);
         break;
 
+#ifdef WITH_SPRINGBOARD
+
+    case eLaunchFlavorSpringBoard:
+        {
+            const char *app_ext = strstr(path, ".app");
+            if (app_ext != NULL)
+            {
+                std::string app_bundle_path(path, app_ext + strlen(".app"));
+                if (SBLaunchForDebug (app_bundle_path.c_str(), argv, envp, no_stdio, launch_err) != 0)
+                    return m_pid; // A successful SBLaunchForDebug() returns and assigns a non-zero m_pid.
+            }
+        }
+        // In case the executable name has a ".app" fragment which confuses our debugserver,
+        // let's do an intentional fallthrough here...
+        launch_flavor = eLaunchFlavorPosixSpawn;
+
+#endif
+
     case eLaunchFlavorPosixSpawn:
         m_pid = MachProcess::PosixSpawnChildForPTraceDebugging (path, 
                                                                 DNBArchProtocol::GetArchitecture (),
@@ -1547,21 +1564,6 @@ MachProcess::LaunchForDebug
                                                                 disable_aslr, 
                                                                 launch_err);
         break;
-
-#ifdef WITH_SPRINGBOARD
-
-    case eLaunchFlavorSpringBoard:
-        {
-            const char *app_ext = strstr(path, ".app");
-            if (app_ext != NULL)
-            {
-                std::string app_bundle_path(path, app_ext + strlen(".app"));
-                return SBLaunchForDebug (app_bundle_path.c_str(), argv, envp, no_stdio, launch_err);
-            }
-        }
-        break;
-
-#endif
 
     default:
         // Invalid  launch
@@ -1862,18 +1864,20 @@ MachProcess::ForkChildForPTraceDebugging
 
         // If our parent is setgid, lets make sure we don't inherit those
         // extra powers due to nepotism.
-        ::setgid (getgid ());
+        if (::setgid (getgid ()) == 0)
+        {
 
-        // Let the child have its own process group. We need to execute
-        // this call in both the child and parent to avoid a race condition
-        // between the two processes.
-        ::setpgid (0, 0);    // Set the child process group to match its pid
+            // Let the child have its own process group. We need to execute
+            // this call in both the child and parent to avoid a race condition
+            // between the two processes.
+            ::setpgid (0, 0);    // Set the child process group to match its pid
 
-        // Sleep a bit to before the exec call
-        ::sleep (1);
+            // Sleep a bit to before the exec call
+            ::sleep (1);
 
-        // Turn this process into
-        ::execv (path, (char * const *)argv);
+            // Turn this process into
+            ::execv (path, (char * const *)argv);
+        }
         // Exit with error code. Child process should have taken
         // over in above exec call and if the exec fails it will
         // exit the child process below.

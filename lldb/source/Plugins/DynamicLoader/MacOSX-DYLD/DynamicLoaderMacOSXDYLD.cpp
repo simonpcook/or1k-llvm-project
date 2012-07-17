@@ -390,15 +390,15 @@ DynamicLoaderMacOSXDYLD::UpdateCommPageLoadAddress(Module *module)
                 uint32_t num_sections = section_list->GetSize();
                 for (uint32_t i=0; i<num_sections; ++i)
                 {
-                    Section* section = section_list->GetSectionAtIndex (i).get();
-                    if (section)
+                    SectionSP section_sp (section_list->GetSectionAtIndex (i));
+                    if (section_sp)
                     {
-                        const addr_t new_section_load_addr = section->GetFileAddress ();
-                        const addr_t old_section_load_addr = m_process->GetTarget().GetSectionLoadList().GetSectionLoadAddress (section);
+                        const addr_t new_section_load_addr = section_sp->GetFileAddress ();
+                        const addr_t old_section_load_addr = m_process->GetTarget().GetSectionLoadList().GetSectionLoadAddress (section_sp);
                         if (old_section_load_addr == LLDB_INVALID_ADDRESS ||
                             old_section_load_addr != new_section_load_addr)
                         {
-                            if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section, section->GetFileAddress ()))
+                            if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section_sp, section_sp->GetFileAddress ()))
                                 changed = true;
                         }
                     }
@@ -453,11 +453,11 @@ DynamicLoaderMacOSXDYLD::UpdateImageLoadAddress (Module *module, DYLDImageInfo& 
                             // "Section" objects, and "true" for all other sections.
                             const bool warn_multiple = section_sp->GetName() != g_section_name_LINKEDIT;
 
-                            const addr_t old_section_load_addr = m_process->GetTarget().GetSectionLoadList().GetSectionLoadAddress (section_sp.get());
+                            const addr_t old_section_load_addr = m_process->GetTarget().GetSectionLoadList().GetSectionLoadAddress (section_sp);
                             if (old_section_load_addr == LLDB_INVALID_ADDRESS ||
                                 old_section_load_addr != new_section_load_addr)
                             {
-                                if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section_sp.get(), new_section_load_addr, warn_multiple))
+                                if (m_process->GetTarget().GetSectionLoadList().SetSectionLoadAddress (section_sp, new_section_load_addr, warn_multiple))
                                     changed = true;
                             }
                         }
@@ -530,7 +530,7 @@ DynamicLoaderMacOSXDYLD::UnloadImageLoadAddress (Module *module, DYLDImageInfo& 
                     if (section_sp)
                     {
                         const addr_t old_section_load_addr = info.segments[i].vmaddr + info.slide;
-                        if (m_process->GetTarget().GetSectionLoadList().SetSectionUnloaded (section_sp.get(), old_section_load_addr))
+                        if (m_process->GetTarget().GetSectionLoadList().SetSectionUnloaded (section_sp, old_section_load_addr))
                             changed = true;
                     }
                     else
@@ -1057,12 +1057,14 @@ DynamicLoaderMacOSXDYLD::InitializeFromAllImageInfos ()
         // to an equivalent version.  We don't want it to stay in the target's module list or it will confuse
         // us, so unload it here.
         Target &target = m_process->GetTarget();
-        ModuleList &modules = target.GetImages();
+        ModuleList &target_modules = target.GetImages();
         ModuleList not_loaded_modules;
-        size_t num_modules = modules.GetSize();
+        Mutex::Locker modules_locker(target_modules.GetMutex());
+        
+        size_t num_modules = target_modules.GetSize();
         for (size_t i = 0; i < num_modules; i++)
         {
-            ModuleSP module_sp = modules.GetModuleAtIndex(i);
+            ModuleSP module_sp = target_modules.GetModuleAtIndexUnlocked (i);
             if (!module_sp->IsLoadedInTarget (&target))
             {
                 if (log)

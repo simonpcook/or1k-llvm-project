@@ -12,35 +12,39 @@
 // Platform-specific code.
 //===----------------------------------------------------------------------===//
 
-#ifndef TSAN_LINUX_H
-#define TSAN_LINUX_H
-#ifdef __linux__
+#ifndef TSAN_PLATFORM_H
+#define TSAN_PLATFORM_H
 
 #include "tsan_rtl.h"
 
 #if __LP64__
 namespace __tsan {
 
+#if defined(TSAN_GO)
+static const uptr kLinuxAppMemBeg = 0x000000000000ULL;
+static const uptr kLinuxAppMemEnd = 0x00fcffffffffULL;
+static const uptr kLinuxShadowMsk = 0x100000000000ULL;
 // TSAN_COMPAT_SHADOW is intended for COMPAT virtual memory layout,
 // when memory addresses are of the 0x2axxxxxxxxxx form.
 // The option is enabled with 'setarch x86_64 -L'.
-#if defined(TSAN_COMPAT_SHADOW) && TSAN_COMPAT_SHADOW
-
+#elif defined(TSAN_COMPAT_SHADOW) && TSAN_COMPAT_SHADOW
 static const uptr kLinuxAppMemBeg = 0x2a0000000000ULL;
 static const uptr kLinuxAppMemEnd = 0x7fffffffffffULL;
-
 #else
-
 static const uptr kLinuxAppMemBeg = 0x7ef000000000ULL;
 static const uptr kLinuxAppMemEnd = 0x7fffffffffffULL;
-
 #endif
 
 static const uptr kLinuxAppMemMsk = 0x7c0000000000ULL;
 
 // This has to be a macro to allow constant initialization of constants below.
+#ifndef TSAN_GO
 #define MemToShadow(addr) \
     (((addr) & ~(kLinuxAppMemMsk | (kShadowCell - 1))) * kShadowCnt)
+#else
+#define MemToShadow(addr) \
+    ((((addr) & ~(kShadowCell - 1)) * kShadowCnt) | kLinuxShadowMsk)
+#endif
 
 static const uptr kLinuxShadowBeg = MemToShadow(kLinuxAppMemBeg);
 static const uptr kLinuxShadowEnd =
@@ -56,11 +60,23 @@ static inline bool IsShadowMem(uptr mem) {
 
 static inline uptr ShadowToMem(uptr shadow) {
   CHECK(IsShadowMem(shadow));
-#if defined(TSAN_COMPAT_SHADOW) && TSAN_COMPAT_SHADOW
+#ifdef TSAN_GO
+  return (shadow & ~kLinuxShadowMsk) / kShadowCnt;
+#elif defined(TSAN_COMPAT_SHADOW) && TSAN_COMPAT_SHADOW
   // COMPAT mapping is not quite one-to-one.
   return (shadow / kShadowCnt) | 0x280000000000ULL;
 #else
   return (shadow / kShadowCnt) | kLinuxAppMemMsk;
+#endif
+}
+
+// For COMPAT mapping returns an alternative address
+// that mapped to the same shadow address.
+static inline uptr AlternativeAddress(uptr addr) {
+#if defined(TSAN_COMPAT_SHADOW) && TSAN_COMPAT_SHADOW
+  return addr | kLinuxAppMemMsk;
+#else
+  return 0;
 #endif
 }
 
@@ -69,22 +85,8 @@ void FlushShadowMemory();
 
 const char *InitializePlatform();
 void FinalizePlatform();
-int GetPid();
-
-void internal_yield();
-void internal_sleep_ms(u32 ms);
 
 void internal_start_thread(void(*func)(void*), void *arg);
-
-typedef int fd_t;
-const fd_t kInvalidFd = -1;
-fd_t internal_open(const char *name, bool write);
-void internal_close(fd_t fd);
-uptr internal_filesize(fd_t fd);  // -1 on error.
-uptr internal_read(fd_t fd, void *p, uptr size);
-uptr internal_write(fd_t fd, const void *p, uptr size);
-int internal_dup2(int oldfd, int newfd);
-const char *internal_getpwd();
 
 uptr GetTlsSize();
 void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
@@ -96,5 +98,4 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
 # error "Only 64-bit is supported"
 #endif
 
-#endif  // __linux__
-#endif  // TSAN_LINUX_H
+#endif  // TSAN_PLATFORM_H

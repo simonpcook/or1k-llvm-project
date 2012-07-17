@@ -14,7 +14,8 @@
 #ifndef TSAN_DEFS_H
 #define TSAN_DEFS_H
 
-#include "tsan_compiler.h"
+#include "sanitizer_common/sanitizer_internal_defs.h"
+#include "sanitizer_common/sanitizer_libc.h"
 #include "tsan_stat.h"
 
 #ifndef TSAN_DEBUG
@@ -23,16 +24,13 @@
 
 namespace __tsan {
 
-typedef unsigned u32;  // NOLINT
-typedef unsigned long long u64;  // NOLINT
-typedef   signed long long s64;  // NOLINT
-typedef unsigned long uptr;  // NOLINT
-
-const uptr kPageSize = 4096;
 const int kTidBits = 13;
 const unsigned kMaxTid = 1 << kTidBits;
 const unsigned kMaxTidInClock = kMaxTid * 2;  // This includes msb 'freed' bit.
 const int kClkBits = 43;
+#ifndef TSAN_GO
+const int kShadowStackSize = 1024;
+#endif
 
 #ifdef TSAN_SHADOW_COUNT
 # if TSAN_SHADOW_COUNT == 2 \
@@ -57,44 +55,6 @@ const bool kCollectStats = true;
 #else
 const bool kCollectStats = false;
 #endif
-
-#define CHECK_IMPL(c1, op, c2) \
-  do { \
-    __tsan::u64 v1 = (u64)(c1); \
-    __tsan::u64 v2 = (u64)(c2); \
-    if (!(v1 op v2)) \
-      __tsan::CheckFailed(__FILE__, __LINE__, \
-        "(" #c1 ") " #op " (" #c2 ")", v1, v2); \
-  } while (false) \
-/**/
-
-#define CHECK(a)       CHECK_IMPL((a), !=, 0)
-#define CHECK_EQ(a, b) CHECK_IMPL((a), ==, (b))
-#define CHECK_NE(a, b) CHECK_IMPL((a), !=, (b))
-#define CHECK_LT(a, b) CHECK_IMPL((a), <,  (b))
-#define CHECK_LE(a, b) CHECK_IMPL((a), <=, (b))
-#define CHECK_GT(a, b) CHECK_IMPL((a), >,  (b))
-#define CHECK_GE(a, b) CHECK_IMPL((a), >=, (b))
-
-#if TSAN_DEBUG
-#define DCHECK(a)       CHECK(a)
-#define DCHECK_EQ(a, b) CHECK_EQ(a, b)
-#define DCHECK_NE(a, b) CHECK_NE(a, b)
-#define DCHECK_LT(a, b) CHECK_LT(a, b)
-#define DCHECK_LE(a, b) CHECK_LE(a, b)
-#define DCHECK_GT(a, b) CHECK_GT(a, b)
-#define DCHECK_GE(a, b) CHECK_GE(a, b)
-#else
-#define DCHECK(a)
-#define DCHECK_EQ(a, b)
-#define DCHECK_NE(a, b)
-#define DCHECK_LT(a, b)
-#define DCHECK_LE(a, b)
-#define DCHECK_GT(a, b)
-#define DCHECK_GE(a, b)
-#endif
-
-void CheckFailed(const char *file, int line, const char *cond, u64 v1, u64 v2);
 
 // The following "build consistency" machinery ensures that all source files
 // are built in the same configuration. Inconsistent builds lead to
@@ -159,23 +119,9 @@ T RoundUp(T p, int align) {
   return (T)(((u64)p + align - 1) & ~(align - 1));
 }
 
-void internal_memset(void *ptr, int c, uptr size);
-void internal_memcpy(void *dst, const void *src, uptr size);
-int internal_memcmp(const void *s1, const void *s2, uptr size);
-int internal_strcmp(const char *s1, const char *s2);
-int internal_strncmp(const char *s1, const char *s2, uptr size);
-void internal_strcpy(char *s1, const char *s2);
-uptr internal_strlen(const char *s);
-char* internal_strdup(const char *s);
-const char *internal_strstr(const char *where, const char *what);
-const char *internal_strchr(const char *where, char what);
-const char *internal_strrchr(const char *where, char what);
-
 struct MD5Hash {
   u64 hash[2];
-  bool operator==(const MD5Hash &other) const {
-    return hash[0] == other.hash[0] && hash[1] == other.hash[1];
-  }
+  bool operator==(const MD5Hash &other) const;
 };
 
 MD5Hash md5_hash(const void *data, uptr size);

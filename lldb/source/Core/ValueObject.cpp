@@ -1246,15 +1246,23 @@ ValueObject::GetValueAsCString ()
 // if > 8bytes, 0 is returned. this method should mostly be used
 // to read address values out of pointers
 uint64_t
-ValueObject::GetValueAsUnsigned (uint64_t fail_value)
+ValueObject::GetValueAsUnsigned (uint64_t fail_value, bool *success)
 {
     // If our byte size is zero this is an aggregate type that has children
     if (ClangASTContext::IsAggregateType (GetClangType()) == false)
     {
         Scalar scalar;
         if (ResolveValue (scalar))
+        {
+            if (success)
+                *success = true;
             return scalar.GetRawBits64(fail_value);
+        }
+        // fallthrough, otherwise...
     }
+
+    if (success)
+        *success = false;
     return fail_value;
 }
 
@@ -2336,8 +2344,10 @@ ValueObject::GetValuesForExpressionPath(const char* expression,
                 ValueObjectSP final_value = ret_val->Dereference(error);
                 if (error.Fail() || !final_value.get())
                 {
-                    *reason_to_stop = ValueObject::eExpressionPathScanEndReasonDereferencingFailed;
-                    *final_value_type = ValueObject::eExpressionPathEndResultTypeInvalid;
+                    if (reason_to_stop)
+                        *reason_to_stop = ValueObject::eExpressionPathScanEndReasonDereferencingFailed;
+                    if (final_value_type)
+                        *final_value_type = ValueObject::eExpressionPathEndResultTypeInvalid;
                     return 0;
                 }
                 else
@@ -2353,8 +2363,10 @@ ValueObject::GetValuesForExpressionPath(const char* expression,
                 ValueObjectSP final_value = ret_val->AddressOf(error);
                 if (error.Fail() || !final_value.get())
                 {
-                    *reason_to_stop = ValueObject::eExpressionPathScanEndReasonTakingAddressFailed;
-                    *final_value_type = ValueObject::eExpressionPathEndResultTypeInvalid;
+                    if (reason_to_stop)
+                        *reason_to_stop = ValueObject::eExpressionPathScanEndReasonTakingAddressFailed;
+                    if (final_value_type)
+                        *final_value_type = ValueObject::eExpressionPathEndResultTypeInvalid;
                     return 0;
                 }
                 else
@@ -3762,9 +3774,9 @@ ValueObject::EvaluationPoint::SyncWithProcessState()
     if (current_mod_id.GetStopID() == 0)
         return false;
     
-    bool changed;
-    
-    if (m_mod_id.IsValid())
+    bool changed = false;
+    const bool was_valid = m_mod_id.IsValid();
+    if (was_valid)
     {
         if (m_mod_id == current_mod_id)
         {
@@ -3796,6 +3808,7 @@ ValueObject::EvaluationPoint::SyncWithProcessState()
                 {
                     // We used to have a frame, but now it is gone
                     SetInvalid();
+                    changed = was_valid;
                 }
             }
         }
@@ -3803,6 +3816,7 @@ ValueObject::EvaluationPoint::SyncWithProcessState()
         {
             // We used to have a thread, but now it is gone
             SetInvalid();
+            changed = was_valid;
         }
 
     }

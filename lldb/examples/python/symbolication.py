@@ -83,7 +83,7 @@ class Address:
             return sym_ctx.GetSymbol().GetInstructions(self.target)
         return None
     
-    def symbolicate(self):
+    def symbolicate(self, verbose = False):
         if self.symbolication == None:
             self.symbolication = ''
             self.inlined = False
@@ -91,7 +91,11 @@ class Address:
             if sym_ctx:
                 module = sym_ctx.GetModule()
                 if module:
-                    self.symbolication += module.GetFileSpec().GetFilename() + '`'
+                    # Print full source file path in verbose mode
+                    if verbose:
+                        self.symbolication += str(module.GetFileSpec()) + '`'
+                    else:
+                        self.symbolication += module.GetFileSpec().GetFilename() + '`'
                     function_start_load_addr = -1
                     function = sym_ctx.GetFunction()
                     block = sym_ctx.GetBlock()
@@ -126,11 +130,15 @@ class Address:
 
                     # Print out any line information if any is available
                     if line_entry.GetFileSpec():
+                        # Print full source file path in verbose mode
+                        if verbose:
+                            self.symbolication += ' at %s' % line_entry.GetFileSpec()
+                        else:
                             self.symbolication += ' at %s' % line_entry.GetFileSpec().GetFilename()
-                            self.symbolication += ':%u' % line_entry.GetLine ()
-                            column = line_entry.GetColumn()
-                            if column > 0:
-                                self.symbolication += ':%u' % column
+                        self.symbolication += ':%u' % line_entry.GetLine ()
+                        column = line_entry.GetColumn()
+                        if column > 0:
+                            self.symbolication += ':%u' % column
                     return True
         return False
 
@@ -193,6 +201,8 @@ class Image:
     def __init__(self, path, uuid = None):
         self.path = path
         self.resolved_path = None
+        self.resolved = False
+        self.unavailable = False
         self.uuid = uuid
         self.section_infos = list()
         self.identifier = None
@@ -245,6 +255,8 @@ class Image:
         return self.section_infos or self.slide != None
     
     def load_module(self, target):
+        if self.unavailable:
+            return None # We already warned that we couldn't find this module, so don't return an error string
         # Load this module into "target" using the section infos to
         # set the section load addresses
         if self.has_section_load_info():
@@ -288,6 +300,8 @@ class Image:
                 self.module = target.AddModule (None, None, uuid_str)
             if not self.module:
                 self.locate_module_and_debug_symbols ()
+                if self.unavailable:
+                    return None
                 resolved_path = self.get_resolved_path()
                 self.module = target.AddModule (resolved_path, self.arch, uuid_str, self.symfile)
             if not self.module:
@@ -306,6 +320,7 @@ class Image:
         # self.module
         # self.symfile
         # Subclasses can inherit from this class and override this function
+        self.resolved = True
         return True
     
     def get_uuid(self):
@@ -320,6 +335,9 @@ class Image:
 
     def create_target(self):
         '''Create a target using the information in this Image object.'''
+        if self.unavailable:
+            return None
+
         if self.locate_module_and_debug_symbols ():
             resolved_path = self.get_resolved_path();
             path_spec = lldb.SBFileSpec (resolved_path)
@@ -368,7 +386,7 @@ class Symbolicator:
         
     def find_image_containing_load_addr(self, load_addr):
         for image in self.images:
-            if image.contains_addr (load_addr):
+            if image.get_section_containing_load_addr (load_addr):
                 return image
         return None
     
@@ -383,11 +401,15 @@ class Symbolicator:
                     return self.target
         return None
     
-    def symbolicate(self, load_addr):
+    def symbolicate(self, load_addr, verbose = False):
+        if not self.target:
+            self.create_target()
         if self.target:
+            image = self.find_image_containing_load_addr (load_addr)
+            if image:
+                image.add_module (self.target)
             symbolicated_address = Address(self.target, load_addr)
-            if symbolicated_address.symbolicate ():
-            
+            if symbolicated_address.symbolicate (verbose):
                 if symbolicated_address.so_addr:
                     symbolicated_addresses = list()
                     symbolicated_addresses.append(symbolicated_address)
@@ -403,13 +425,15 @@ class Symbolicator:
                         symbolicated_address = Address(self.target, inlined_parent_so_addr.GetLoadAddress(self.target))
                         symbolicated_address.sym_ctx = inlined_parent_sym_ctx
                         symbolicated_address.so_addr = inlined_parent_so_addr
-                        symbolicated_address.symbolicate ()
-                
+                        symbolicated_address.symbolicate (verbose)
+            
                         # push the new frame onto the new frame stack
                         symbolicated_addresses.append (symbolicated_address)
-            
+        
                     if symbolicated_addresses:
                         return symbolicated_addresses
+        else:
+            print 'error: no target in Symbolicator'
         return None
             
         
@@ -515,7 +539,7 @@ def Symbolicate(command_args):
     if target:
         for addr_str in args:
             addr = int(addr_str, 0)
-            symbolicated_addrs = symbolicator.symbolicate(addr)
+            symbolicated_addrs = symbolicator.symbolicate(addr, options.verbose)
             for symbolicated_addr in symbolicated_addrs:
                 print symbolicated_addr
             print

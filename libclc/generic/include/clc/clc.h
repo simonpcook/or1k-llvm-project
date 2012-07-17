@@ -17,6 +17,9 @@
 /* 6.1 Supported Data Types */
 #include <clc/clctypes.h>
 
+/* 6.2.3 Explicit Conversions */
+#include <clc/convert.h>
+
 /* 6.2.4.2 Reinterpreting Types Using as_type() and as_typen() */
 #include <clc/as_type.h>
 
@@ -30,10 +33,23 @@
 
 /* 6.11.2 Math Functions */
 #include <clc/math/cos.h>
+#include <clc/math/exp.h>
+#include <clc/math/exp2.h>
+#include <clc/math/fabs.h>
+#include <clc/math/fma.h>
+#include <clc/math/hypot.h>
+#include <clc/math/log.h>
+#include <clc/math/log2.h>
+#include <clc/math/mad.h>
+#include <clc/math/pow.h>
 #include <clc/math/sin.h>
 #include <clc/math/sqrt.h>
 #include <clc/math/native_cos.h>
 #include <clc/math/native_divide.h>
+#include <clc/math/native_exp.h>
+#include <clc/math/native_exp2.h>
+#include <clc/math/native_log.h>
+#include <clc/math/native_log2.h>
 #include <clc/math/native_sin.h>
 #include <clc/math/native_sqrt.h>
 
@@ -44,6 +60,7 @@
 
 /* 6.11.5 Geometric Functions */
 #include <clc/geometric/cross.h>
+#include <clc/geometric/dot.h>
 #include <clc/geometric/length.h>
 #include <clc/geometric/normalize.h>
 

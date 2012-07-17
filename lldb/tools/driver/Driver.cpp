@@ -722,7 +722,7 @@ Driver::ParseArgs (int argc, const char *argv[], FILE *out_fh, bool &exit)
     {
         // Skip any options we consumed with getopt_long
         argc -= optind;
-        argv += optind;
+        //argv += optind; // Commented out to keep static analyzer happy
 
         if (argc > 0)
             ::fprintf (out_fh, "Warning: program arguments are ignored when attaching.\n");
@@ -1080,10 +1080,19 @@ Driver::EditLineInputReaderCallback
     case eInputReaderInterrupt:
         if (driver->m_io_channel_ap.get() != NULL)
         {
-            driver->m_io_channel_ap->OutWrite ("^C\n", 3, NO_ASYNC);
-            // I wish I could erase the entire input line, but there's no public API for that.
-            driver->m_io_channel_ap->EraseCharsBeforeCursor();
-            driver->m_io_channel_ap->RefreshPrompt();
+            SBProcess process = driver->GetDebugger().GetSelectedTarget().GetProcess();
+            if (!driver->m_io_channel_ap->EditLineHasCharacters()
+                &&  process.IsValid() && process.GetState() == lldb::eStateRunning)
+            {
+                process.Stop();
+            }
+            else
+            {
+                driver->m_io_channel_ap->OutWrite ("^C\n", 3, NO_ASYNC);
+                // I wish I could erase the entire input line, but there's no public API for that.
+                driver->m_io_channel_ap->EraseCharsBeforeCursor();
+                driver->m_io_channel_ap->RefreshPrompt();
+            }
         }
         break;
         
@@ -1308,13 +1317,13 @@ Driver::MainLoop ()
                 if (m_debugger.GetDefaultArchitecture (arch_name, sizeof (arch_name)))
                     ::snprintf (command_string, 
                                 sizeof (command_string), 
-                                "target create --arch=%s '%s'", 
+                                "target create --arch=%s \"%s\"", 
                                 arch_name,
                                 m_option_data.m_args[0].c_str());
                 else
                     ::snprintf (command_string, 
                                 sizeof(command_string), 
-                                "target create '%s'", 
+                                "target create \"%s\"", 
                                 m_option_data.m_args[0].c_str());
 
                 m_debugger.HandleCommand (command_string);

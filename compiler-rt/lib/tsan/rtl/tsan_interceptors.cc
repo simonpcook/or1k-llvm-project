@@ -1,4 +1,4 @@
-//===-- tsan_interceptors_linux.cc ------------------------------*- C++ -*-===//
+//===-- tsan_interceptors_linux.cc ----------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -12,21 +12,28 @@
 //===----------------------------------------------------------------------===//
 
 #include "interception/interception.h"
+#include "sanitizer_common/sanitizer_atomic.h"
+#include "sanitizer_common/sanitizer_libc.h"
+#include "sanitizer_common/sanitizer_placement_new.h"
 #include "tsan_rtl.h"
 #include "tsan_interface.h"
-#include "tsan_atomic.h"
 #include "tsan_platform.h"
 #include "tsan_mman.h"
-#include "tsan_placement_new.h"
 
 using namespace __tsan;  // NOLINT
+
+const int kSigCount = 128;
+
+struct my_siginfo_t {
+  int opaque[128];
+};
 
 struct sigset_t {
   u64 val[1024 / 8 / sizeof(u64)];
 };
 
 struct ucontext_t {
-  u64 opaque[1024];
+  uptr opaque[117];
 };
 
 extern "C" int pthread_attr_init(void *attr);
@@ -41,7 +48,6 @@ extern "C" int pthread_yield();
 extern "C" int pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
 extern "C" int sigfillset(sigset_t *set);
 extern "C" void *pthread_self();
-extern "C" int getcontext(ucontext_t *ucp);
 extern "C" void _exit(int status);
 extern "C" int __cxa_atexit(void (*func)(void *arg), void *arg, void *dso);
 extern "C" int *__errno_location();
@@ -65,6 +71,8 @@ typedef long long_t;  // NOLINT
 
 typedef void (*sighandler_t)(int sig);
 
+#define errno (*__errno_location())
+
 union pthread_attr_t {
   char size[kPthreadAttrSize];
   void *align;
@@ -87,6 +95,34 @@ const int SA_SIGINFO = 4;
 const int SIG_SETMASK = 2;
 
 static sigaction_t sigactions[kSigCount];
+
+namespace __tsan {
+struct SignalDesc {
+  bool armed;
+  bool sigaction;
+  my_siginfo_t siginfo;
+  ucontext_t ctx;
+};
+
+struct SignalContext {
+  int int_signal_send;
+  int pending_signal_count;
+  SignalDesc pending_signals[kSigCount];
+};
+}
+
+static SignalContext *SigCtx(ThreadState *thr) {
+  SignalContext *ctx = (SignalContext*)thr->signal_ctx;
+  if (ctx == 0 && thr->is_alive) {
+    ScopedInRtl in_rtl;
+    ctx = (SignalContext*)internal_alloc(
+        MBlockSignal, sizeof(*ctx));
+    MemoryResetRange(thr, 0, (uptr)ctx, sizeof(*ctx));
+    internal_memset(ctx, 0, sizeof(*ctx));
+    thr->signal_ctx = ctx;
+  }
+  return ctx;
+}
 
 static unsigned g_thread_finalize_key;
 
@@ -126,13 +162,24 @@ class ScopedInterceptor {
     StatInc(thr, StatInterceptor); \
     StatInc(thr, StatInt_##func); \
     ScopedInterceptor si(thr, #func, \
-        (__tsan::uptr)__builtin_return_address(0)); \
+        (__sanitizer::uptr)__builtin_return_address(0)); \
     const uptr pc = (uptr)&func; \
     (void)pc; \
 /**/
 
 #define SCOPED_TSAN_INTERCEPTOR(func, ...) \
     SCOPED_INTERCEPTOR_RAW(func, __VA_ARGS__); \
+    if (thr->in_rtl > 1) \
+      return REAL(func)(__VA_ARGS__); \
+/**/
+
+#define SCOPED_INTERCEPTOR_LIBC(func, ...) \
+    ThreadState *thr = cur_thread(); \
+    StatInc(thr, StatInterceptor); \
+    StatInc(thr, StatInt_##func); \
+    ScopedInterceptor si(thr, #func, callpc); \
+    const uptr pc = (uptr)&func; \
+    (void)pc; \
     if (thr->in_rtl > 1) \
       return REAL(func)(__VA_ARGS__); \
 /**/
@@ -235,6 +282,18 @@ TSAN_INTERCEPTOR(int, atexit, void (*f)()) {
   return 0;
 }
 
+TSAN_INTERCEPTOR(void, longjmp, void *env, int val) {
+  SCOPED_TSAN_INTERCEPTOR(longjmp, env, val);
+  TsanPrintf("ThreadSanitizer: longjmp() is not supported\n");
+  Die();
+}
+
+TSAN_INTERCEPTOR(void, siglongjmp, void *env, int val) {
+  SCOPED_TSAN_INTERCEPTOR(siglongjmp, env, val);
+  TsanPrintf("ThreadSanitizer: siglongjmp() is not supported\n");
+  Die();
+}
+
 static uptr fd2addr(int fd) {
   (void)fd;
   static u64 addr;
@@ -307,9 +366,9 @@ TSAN_INTERCEPTOR(void, cfree, void *p) {
   user_free(thr, pc, p);
 }
 
-TSAN_INTERCEPTOR(uptr, strlen, const void *s) {
+TSAN_INTERCEPTOR(uptr, strlen, const char *s) {
   SCOPED_TSAN_INTERCEPTOR(strlen, s);
-  uptr len = REAL(strlen)(s);
+  uptr len = internal_strlen(s);
   MemoryAccessRange(thr, pc, (uptr)s, len + 1, false);
   return len;
 }
@@ -317,14 +376,27 @@ TSAN_INTERCEPTOR(uptr, strlen, const void *s) {
 TSAN_INTERCEPTOR(void*, memset, void *dst, int v, uptr size) {
   SCOPED_TSAN_INTERCEPTOR(memset, dst, v, size);
   MemoryAccessRange(thr, pc, (uptr)dst, size, true);
-  return REAL(memset)(dst, v, size);
+  return internal_memset(dst, v, size);
 }
 
 TSAN_INTERCEPTOR(void*, memcpy, void *dst, const void *src, uptr size) {
   SCOPED_TSAN_INTERCEPTOR(memcpy, dst, src, size);
   MemoryAccessRange(thr, pc, (uptr)dst, size, true);
   MemoryAccessRange(thr, pc, (uptr)src, size, false);
-  return REAL(memcpy)(dst, src, size);
+  return internal_memcpy(dst, src, size);
+}
+
+TSAN_INTERCEPTOR(int, memcmp, const void *s1, const void *s2, uptr n) {
+  SCOPED_TSAN_INTERCEPTOR(memcmp, s1, s2, n);
+  int res = 0;
+  uptr len = 0;
+  for (; len < n; len++) {
+    if ((res = ((unsigned char*)s1)[len] - ((unsigned char*)s2)[len]))
+      break;
+  }
+  MemoryAccessRange(thr, pc, (uptr)s1, len < n ? len + 1 : n, false);
+  MemoryAccessRange(thr, pc, (uptr)s2, len < n ? len + 1 : n, false);
+  return res;
 }
 
 TSAN_INTERCEPTOR(int, strcmp, const char *s1, const char *s2) {
@@ -372,52 +444,39 @@ TSAN_INTERCEPTOR(void*, memmove, void *dst, void *src, uptr n) {
   return REAL(memmove)(dst, src, n);
 }
 
-TSAN_INTERCEPTOR(int, memcmp, const void *s1, const void *s2, uptr n) {
-  SCOPED_TSAN_INTERCEPTOR(memcmp, s1, s2, n);
-  int res = 0;
-  uptr len = 0;
-  for (; len < n; len++) {
-    if ((res = ((unsigned char*)s1)[len] - ((unsigned char*)s2)[len]))
-      break;
-  }
-  MemoryAccessRange(thr, pc, (uptr)s1, len < n ? len + 1 : n, false);
-  MemoryAccessRange(thr, pc, (uptr)s2, len < n ? len + 1 : n, false);
-  return res;
-}
-
-TSAN_INTERCEPTOR(void*, strchr, void *s, int c) {
+TSAN_INTERCEPTOR(char*, strchr, char *s, int c) {
   SCOPED_TSAN_INTERCEPTOR(strchr, s, c);
-  void *res = REAL(strchr)(s, c);
-  uptr len = res ? (char*)res - (char*)s + 1 : REAL(strlen)(s) + 1;
+  char *res = REAL(strchr)(s, c);
+  uptr len = res ? (char*)res - (char*)s + 1 : internal_strlen(s) + 1;
   MemoryAccessRange(thr, pc, (uptr)s, len, false);
   return res;
 }
 
-TSAN_INTERCEPTOR(void*, strchrnul, void *s, int c) {
+TSAN_INTERCEPTOR(char*, strchrnul, char *s, int c) {
   SCOPED_TSAN_INTERCEPTOR(strchrnul, s, c);
-  void *res = REAL(strchrnul)(s, c);
+  char *res = REAL(strchrnul)(s, c);
   uptr len = (char*)res - (char*)s + 1;
   MemoryAccessRange(thr, pc, (uptr)s, len, false);
   return res;
 }
 
-TSAN_INTERCEPTOR(void*, strrchr, void *s, int c) {
+TSAN_INTERCEPTOR(char*, strrchr, char *s, int c) {
   SCOPED_TSAN_INTERCEPTOR(strrchr, s, c);
-  MemoryAccessRange(thr, pc, (uptr)s, REAL(strlen)(s) + 1, false);
+  MemoryAccessRange(thr, pc, (uptr)s, internal_strlen(s) + 1, false);
   return REAL(strrchr)(s, c);
 }
 
-TSAN_INTERCEPTOR(void*, strcpy, void *dst, const void *src) {  // NOLINT
+TSAN_INTERCEPTOR(char*, strcpy, char *dst, const char *src) {  // NOLINT
   SCOPED_TSAN_INTERCEPTOR(strcpy, dst, src);  // NOLINT
-  uptr srclen = REAL(strlen)(src);
+  uptr srclen = internal_strlen(src);
   MemoryAccessRange(thr, pc, (uptr)dst, srclen + 1, true);
   MemoryAccessRange(thr, pc, (uptr)src, srclen + 1, false);
   return REAL(strcpy)(dst, src);  // NOLINT
 }
 
-TSAN_INTERCEPTOR(void*, strncpy, void *dst, void *src, uptr n) {
+TSAN_INTERCEPTOR(char*, strncpy, char *dst, char *src, uptr n) {
   SCOPED_TSAN_INTERCEPTOR(strncpy, dst, src, n);
-  uptr srclen = REAL(strlen)(src);
+  uptr srclen = internal_strnlen(src, n);
   MemoryAccessRange(thr, pc, (uptr)dst, n, true);
   MemoryAccessRange(thr, pc, (uptr)src, min(srclen + 1, n), false);
   return REAL(strncpy)(dst, src, n);
@@ -426,8 +485,8 @@ TSAN_INTERCEPTOR(void*, strncpy, void *dst, void *src, uptr n) {
 TSAN_INTERCEPTOR(const char*, strstr, const char *s1, const char *s2) {
   SCOPED_TSAN_INTERCEPTOR(strstr, s1, s2);
   const char *res = REAL(strstr)(s1, s2);
-  uptr len1 = REAL(strlen)(s1);
-  uptr len2 = REAL(strlen)(s2);
+  uptr len1 = internal_strlen(s1);
+  uptr len2 = internal_strlen(s2);
   MemoryAccessRange(thr, pc, (uptr)s1, len1 + 1, false);
   MemoryAccessRange(thr, pc, (uptr)s2, len2 + 1, false);
   return res;
@@ -437,7 +496,7 @@ static bool fix_mmap_addr(void **addr, long_t sz, int flags) {
   if (*addr) {
     if (!IsAppMem((uptr)*addr) || !IsAppMem((uptr)*addr + sz - 1)) {
       if (flags & MAP_FIXED) {
-        *__errno_location() = EINVAL;
+        errno = EINVAL;
         return false;
       } else {
         *addr = 0;
@@ -607,14 +666,20 @@ static void thread_finalize(void *v) {
   uptr iter = (uptr)v;
   if (iter > 1) {
     if (pthread_setspecific(g_thread_finalize_key, (void*)(iter - 1))) {
-      Printf("ThreadSanitizer: failed to set thread key\n");
+      TsanPrintf("ThreadSanitizer: failed to set thread key\n");
       Die();
     }
     return;
   }
   {
     ScopedInRtl in_rtl;
-    ThreadFinish(cur_thread());
+    ThreadState *thr = cur_thread();
+    ThreadFinish(thr);
+    SignalContext *sctx = thr->signal_ctx;
+    if (sctx) {
+      thr->signal_ctx = 0;
+      internal_free(sctx);
+    }
   }
 }
 
@@ -634,7 +699,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
     ThreadState *thr = cur_thread();
     ScopedInRtl in_rtl;
     if (pthread_setspecific(g_thread_finalize_key, (void*)4)) {
-      Printf("ThreadSanitizer: failed to set thread key\n");
+      TsanPrintf("ThreadSanitizer: failed to set thread key\n");
       Die();
     }
     while ((tid = atomic_load(&p->tid, memory_order_acquire)) == 0)
@@ -666,7 +731,7 @@ TSAN_INTERCEPTOR(int, pthread_create,
   // We place the huge ThreadState object into TLS, account for that.
   const uptr minstacksize = GetTlsSize() + 128*1024;
   if (stacksize < minstacksize) {
-    DPrintf("ThreadSanitizer: stacksize %lu->%lu\n", stacksize, minstacksize);
+    DPrintf("ThreadSanitizer: stacksize %zu->%zu\n", stacksize, minstacksize);
     pthread_attr_setstacksize(attr, minstacksize);
   }
   ThreadParam p;
@@ -1173,7 +1238,7 @@ TSAN_INTERCEPTOR(uptr, fwrite, const void *p, uptr size, uptr nmemb, void *f) {
 
 TSAN_INTERCEPTOR(int, puts, const char *s) {
   SCOPED_TSAN_INTERCEPTOR(puts, s);
-  MemoryAccessRange(thr, pc, (uptr)s, REAL(strlen)(s), false);
+  MemoryAccessRange(thr, pc, (uptr)s, internal_strlen(s), false);
   return REAL(puts)(s);
 }
 
@@ -1212,9 +1277,11 @@ TSAN_INTERCEPTOR(int, epoll_wait, int epfd, void *ev, int cnt, int timeout) {
 static void ALWAYS_INLINE rtl_generic_sighandler(bool sigact, int sig,
     my_siginfo_t *info, void *ctx) {
   ThreadState *thr = cur_thread();
+  SignalContext *sctx = SigCtx(thr);
   // Don't mess with synchronous signals.
-  if (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGABRT ||
-      sig == SIGFPE || sig == SIGPIPE || sig == thr->int_signal_send) {
+  if (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL ||
+      sig == SIGABRT || sig == SIGFPE || sig == SIGPIPE ||
+      (sctx && sig == sctx->int_signal_send)) {
     CHECK(thr->in_rtl == 0 || thr->in_rtl == 1);
     int in_rtl = thr->in_rtl;
     thr->in_rtl = 0;
@@ -1230,13 +1297,17 @@ static void ALWAYS_INLINE rtl_generic_sighandler(bool sigact, int sig,
     return;
   }
 
-  SignalDesc *signal = &thr->pending_signals[sig];
+  if (sctx == 0)
+    return;
+  SignalDesc *signal = &sctx->pending_signals[sig];
   if (signal->armed == false) {
     signal->armed = true;
     signal->sigaction = sigact;
     if (info)
-      signal->siginfo = *info;
-    thr->pending_signal_count++;
+      internal_memcpy(&signal->siginfo, info, sizeof(*info));
+    if (ctx)
+      internal_memcpy(&signal->ctx, ctx, sizeof(signal->ctx));
+    sctx->pending_signal_count++;
   }
 }
 
@@ -1251,11 +1322,13 @@ static void rtl_sigaction(int sig, my_siginfo_t *info, void *ctx) {
 TSAN_INTERCEPTOR(int, sigaction, int sig, sigaction_t *act, sigaction_t *old) {
   SCOPED_TSAN_INTERCEPTOR(sigaction, sig, act, old);
   if (old)
-    *old = sigactions[sig];
+    internal_memcpy(old, &sigactions[sig], sizeof(*old));
   if (act == 0)
     return 0;
-  sigactions[sig] = *act;
-  sigaction_t newact = *act;
+  internal_memcpy(&sigactions[sig], act, sizeof(*act));
+  sigaction_t newact;
+  internal_memcpy(&newact, act, sizeof(newact));
+  sigfillset(&newact.sa_mask);
   if (act->sa_handler != SIG_IGN && act->sa_handler != SIG_DFL) {
     if (newact.sa_flags & SA_SIGINFO)
       newact.sa_sigaction = rtl_sigaction;
@@ -1269,7 +1342,7 @@ TSAN_INTERCEPTOR(int, sigaction, int sig, sigaction_t *act, sigaction_t *old) {
 TSAN_INTERCEPTOR(sighandler_t, signal, int sig, sighandler_t h) {
   sigaction_t act = {};
   act.sa_handler = h;
-  internal_memset(&act.sa_mask, -1, sizeof(act.sa_mask));
+  REAL(memset)(&act.sa_mask, -1, sizeof(act.sa_mask));
   act.sa_flags = 0;
   sigaction_t old = {};
   int res = sigaction(sig, &act, &old);
@@ -1280,65 +1353,84 @@ TSAN_INTERCEPTOR(sighandler_t, signal, int sig, sighandler_t h) {
 
 TSAN_INTERCEPTOR(int, raise, int sig) {
   SCOPED_TSAN_INTERCEPTOR(raise, sig);
-  int prev = thr->int_signal_send;
-  thr->int_signal_send = sig;
+  SignalContext *sctx = SigCtx(thr);
+  CHECK_NE(sctx, 0);
+  int prev = sctx->int_signal_send;
+  sctx->int_signal_send = sig;
   int res = REAL(raise)(sig);
-  CHECK_EQ(thr->int_signal_send, sig);
-  thr->int_signal_send = prev;
+  CHECK_EQ(sctx->int_signal_send, sig);
+  sctx->int_signal_send = prev;
   return res;
 }
 
 TSAN_INTERCEPTOR(int, kill, int pid, int sig) {
   SCOPED_TSAN_INTERCEPTOR(kill, pid, sig);
-  int prev = thr->int_signal_send;
+  SignalContext *sctx = SigCtx(thr);
+  CHECK_NE(sctx, 0);
+  int prev = sctx->int_signal_send;
   if (pid == GetPid()) {
-    thr->int_signal_send = sig;
+    sctx->int_signal_send = sig;
   }
   int res = REAL(kill)(pid, sig);
   if (pid == GetPid()) {
-    CHECK_EQ(thr->int_signal_send, sig);
-    thr->int_signal_send = prev;
+    CHECK_EQ(sctx->int_signal_send, sig);
+    sctx->int_signal_send = prev;
   }
   return res;
 }
 
 TSAN_INTERCEPTOR(int, pthread_kill, void *tid, int sig) {
   SCOPED_TSAN_INTERCEPTOR(pthread_kill, tid, sig);
-  int prev = thr->int_signal_send;
+  SignalContext *sctx = SigCtx(thr);
+  CHECK_NE(sctx, 0);
+  int prev = sctx->int_signal_send;
   if (tid == pthread_self()) {
-    thr->int_signal_send = sig;
+    sctx->int_signal_send = sig;
   }
   int res = REAL(pthread_kill)(tid, sig);
   if (tid == pthread_self()) {
-    CHECK_EQ(thr->int_signal_send, sig);
-    thr->int_signal_send = prev;
+    CHECK_EQ(sctx->int_signal_send, sig);
+    sctx->int_signal_send = prev;
   }
   return res;
 }
 
 static void process_pending_signals(ThreadState *thr) {
   CHECK_EQ(thr->in_rtl, 0);
-  if (thr->pending_signal_count == 0 || thr->in_signal_handler)
+  SignalContext *sctx = SigCtx(thr);
+  if (sctx == 0 || sctx->pending_signal_count == 0 || thr->in_signal_handler)
     return;
-  CHECK_EQ(thr->in_signal_handler, false);
   thr->in_signal_handler = true;
-  thr->pending_signal_count = 0;
+  sctx->pending_signal_count = 0;
   // These are too big for stack.
-  static THREADLOCAL ucontext_t uctx;
   static THREADLOCAL sigset_t emptyset, oldset;
-  getcontext(&uctx);
   sigfillset(&emptyset);
   pthread_sigmask(SIG_SETMASK, &emptyset, &oldset);
   for (int sig = 0; sig < kSigCount; sig++) {
-    SignalDesc *signal = &thr->pending_signals[sig];
+    SignalDesc *signal = &sctx->pending_signals[sig];
     if (signal->armed) {
       signal->armed = false;
       if (sigactions[sig].sa_handler != SIG_DFL
           && sigactions[sig].sa_handler != SIG_IGN) {
+        // Insure that the handler does not spoil errno.
+        const int saved_errno = errno;
+        errno = 0;
         if (signal->sigaction)
-          sigactions[sig].sa_sigaction(sig, &signal->siginfo, &uctx);
+          sigactions[sig].sa_sigaction(sig, &signal->siginfo, &signal->ctx);
         else
           sigactions[sig].sa_handler(sig);
+        if (errno != 0) {
+          ScopedInRtl in_rtl;
+          StackTrace stack;
+          uptr pc = signal->sigaction ?
+              (uptr)sigactions[sig].sa_sigaction :
+              (uptr)sigactions[sig].sa_handler;
+          stack.Init(&pc, 1);
+          ScopedReport rep(ReportTypeErrnoInSignal);
+          rep.AddStack(&stack);
+          OutputReport(rep, rep.GetReport()->stacks[0]);
+        }
+        errno = saved_errno;
       }
     }
   }
@@ -1349,25 +1441,16 @@ static void process_pending_signals(ThreadState *thr) {
 
 namespace __tsan {
 
-// Used until we obtain real efficient functions.
-static void* poormans_memset(void *dst, int v, uptr size) {
-  for (uptr i = 0; i < size; i++)
-    ((char*)dst)[i] = (char)v;
-  return dst;
-}
-
-static void* poormans_memcpy(void *dst, const void *src, uptr size) {
-  for (uptr i = 0; i < size; i++)
-    ((char*)dst)[i] = ((char*)src)[i];
-  return dst;
-}
-
 void InitializeInterceptors() {
   CHECK_GT(cur_thread()->in_rtl, 0);
 
   // We need to setup it early, because functions like dlsym() can call it.
-  REAL(memset) = poormans_memset;
-  REAL(memcpy) = poormans_memcpy;
+  REAL(memset) = internal_memset;
+  REAL(memcpy) = internal_memcpy;
+  REAL(memcmp) = internal_memcmp;
+
+  TSAN_INTERCEPT(longjmp);
+  TSAN_INTERCEPT(siglongjmp);
 
   TSAN_INTERCEPT(malloc);
   TSAN_INTERCEPT(calloc);
@@ -1494,62 +1577,14 @@ void InitializeInterceptors() {
       AtExitContext();
 
   if (__cxa_atexit(&finalize, 0, 0)) {
-    Printf("ThreadSanitizer: failed to setup atexit callback\n");
+    TsanPrintf("ThreadSanitizer: failed to setup atexit callback\n");
     Die();
   }
 
   if (pthread_key_create(&g_thread_finalize_key, &thread_finalize)) {
-    Printf("ThreadSanitizer: failed to create thread key\n");
+    TsanPrintf("ThreadSanitizer: failed to create thread key\n");
     Die();
   }
-}
-
-void internal_memset(void *ptr, int c, uptr size) {
-  REAL(memset)(ptr, c, size);
-}
-
-void internal_memcpy(void *dst, const void *src, uptr size) {
-  REAL(memcpy)(dst, src, size);
-}
-
-int internal_memcmp(const void *s1, const void *s2, uptr size) {
-  return REAL(memcmp)(s1, s2, size);
-}
-
-int internal_strcmp(const char *s1, const char *s2) {
-  return REAL(strcmp)(s1, s2);
-}
-
-int internal_strncmp(const char *s1, const char *s2, uptr size) {
-  return REAL(strncmp)(s1, s2, size);
-}
-
-void internal_strcpy(char *s1, const char *s2) {
-  REAL(strcpy)(s1, s2);  // NOLINT
-}
-
-uptr internal_strlen(const char *s) {
-  return REAL(strlen)(s);
-}
-
-char* internal_strdup(const char *s) {
-  uptr len = internal_strlen(s);
-  char *s2 = (char*)internal_alloc(MBlockString, len + 1);
-  internal_memcpy(s2, s, len);
-  s2[len] = 0;
-  return s2;
-}
-
-const char *internal_strstr(const char *where, const char *what) {
-  return REAL(strstr)(where, what);
-}
-
-const char *internal_strchr(const char *where, char what) {
-  return (const char*)REAL(strchr)((void*)where, what);
-}
-
-const char *internal_strrchr(const char *where, char what) {
-  return (const char*)REAL(strrchr)((void*)where, what);
 }
 
 void internal_start_thread(void(*func)(void *arg), void *arg) {

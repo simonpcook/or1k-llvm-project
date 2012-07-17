@@ -15,6 +15,7 @@
 #include "lldb/API/SBBroadcaster.h"
 #include "lldb/API/SBFileSpec.h"
 #include "lldb/API/SBFileSpecList.h"
+#include "lldb/API/SBSymbolContextList.h"
 #include "lldb/API/SBType.h"
 #include "lldb/API/SBWatchpoint.h"
 
@@ -692,7 +693,7 @@ public:
     FindWatchpointByID (lldb::watch_id_t watch_id);
 
     lldb::SBWatchpoint
-    WatchAddress (lldb::addr_t addr, size_t size, bool read, bool write);
+    WatchAddress (lldb::addr_t addr, size_t size, bool read, bool write, SBError& error);
 
     bool
     EnableAllWatchpoints ();
@@ -741,6 +742,7 @@ protected:
     friend class SBInstruction;
     friend class SBModule;
     friend class SBProcess;
+    friend class SBSection;
     friend class SBSourceManager;
     friend class SBSymbol;
     friend class SBValue;

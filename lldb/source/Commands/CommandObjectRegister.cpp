@@ -34,16 +34,15 @@ using namespace lldb_private;
 //----------------------------------------------------------------------
 // "register read"
 //----------------------------------------------------------------------
-class CommandObjectRegisterRead : public CommandObject
+class CommandObjectRegisterRead : public CommandObjectParsed
 {
 public:
     CommandObjectRegisterRead (CommandInterpreter &interpreter) :
-        CommandObject (interpreter, 
-                       "register read",
-                       "Dump the contents of one or more register values from the current frame.  If no register is specified, dumps them all.",
-                       //"register read [<reg-name1> [<reg-name2> [...]]]",
-                       NULL,
-                       eFlagProcessMustBeLaunched | eFlagProcessMustBePaused),
+        CommandObjectParsed (interpreter, 
+                             "register read",
+                             "Dump the contents of one or more register values from the current frame.  If no register is specified, dumps them all.",
+                             NULL,
+                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused),
         m_option_group (interpreter),
         m_format_options (eFormatDefault),
         m_command_options ()
@@ -95,7 +94,7 @@ public:
 
                 bool prefix_with_altname = m_command_options.alternate_name;
                 bool prefix_with_name = !prefix_with_altname;
-                reg_value.Dump(&strm, reg_info, prefix_with_name, prefix_with_altname, m_format_options.GetFormat());
+                reg_value.Dump(&strm, reg_info, prefix_with_name, prefix_with_altname, m_format_options.GetFormat(), 8);
                 if ((reg_info->encoding == eEncodingUint) || (reg_info->encoding == eEncodingSint))
                 {
                     Process *process = exe_ctx.GetProcessPtr();
@@ -124,7 +123,8 @@ public:
     DumpRegisterSet (const ExecutionContext &exe_ctx,
                      Stream &strm,
                      RegisterContext *reg_ctx,
-                     uint32_t set_idx)
+                     uint32_t set_idx,
+                     bool primitive_only=false)
     {
         uint32_t unavailable_count = 0;
         uint32_t available_count = 0;
@@ -137,7 +137,11 @@ public:
             for (uint32_t reg_idx = 0; reg_idx < num_registers; ++reg_idx)
             {
                 const uint32_t reg = reg_set->registers[reg_idx];
-                if (DumpRegister (exe_ctx, strm, reg_ctx, reg_ctx->GetRegisterInfoAtIndex(reg)))
+                const RegisterInfo *reg_info = reg_ctx->GetRegisterInfoAtIndex(reg);
+                // Skip the dumping of derived register if primitive_only is true.
+                if (primitive_only && reg_info && reg_info->value_regs)
+                    continue;
+                if (DumpRegister (exe_ctx, strm, reg_ctx, reg_info))
                     ++available_count;
                 else
                     ++unavailable_count;
@@ -153,12 +157,9 @@ public:
         return available_count > 0;
     }
 
+protected:
     virtual bool
-    Execute 
-    (
-        Args& command,
-        CommandReturnObject &result
-    )
+    DoExecute (Args& command, CommandReturnObject &result)
     {
         Stream &strm = result.GetOutputStream();
         ExecutionContext exe_ctx(m_interpreter.GetExecutionContext());
@@ -202,7 +203,8 @@ public:
 
                     for (set_idx = 0; set_idx < num_register_sets; ++set_idx)
                     {
-                        DumpRegisterSet (exe_ctx, strm, reg_ctx, set_idx);
+                        // When dump_all_sets option is set, dump primitive as well as derived registers.
+                        DumpRegisterSet (exe_ctx, strm, reg_ctx, set_idx, !m_command_options.dump_all_sets.GetCurrentValue());
                     }
                 }
             }
@@ -353,15 +355,15 @@ CommandObjectRegisterRead::CommandOptions::GetNumDefinitions ()
 //----------------------------------------------------------------------
 // "register write"
 //----------------------------------------------------------------------
-class CommandObjectRegisterWrite : public CommandObject
+class CommandObjectRegisterWrite : public CommandObjectParsed
 {
 public:
     CommandObjectRegisterWrite (CommandInterpreter &interpreter) :
-        CommandObject (interpreter,
-                       "register write",
-                       "Modify a single register value.",
-                       NULL,
-                       eFlagProcessMustBeLaunched | eFlagProcessMustBePaused)
+        CommandObjectParsed (interpreter,
+                             "register write",
+                             "Modify a single register value.",
+                             NULL,
+                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused)
     {
         CommandArgumentEntry arg1;
         CommandArgumentEntry arg2;
@@ -392,12 +394,9 @@ public:
     {
     }
 
+protected:
     virtual bool
-    Execute 
-    (
-        Args& command,
-        CommandReturnObject &result
-    )
+    DoExecute(Args& command, CommandReturnObject &result)
     {
         DataExtractor reg_data;
         ExecutionContext exe_ctx(m_interpreter.GetExecutionContext());

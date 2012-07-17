@@ -47,6 +47,7 @@
 // Project includes
 #include "lldb/Host/Host.h"
 #include "Plugins/Process/Utility/InferiorCallPOSIX.h"
+#include "Plugins/Platform/MacOSX/PlatformRemoteiOS.h"
 #include "Utility/StringExtractorGDBRemote.h"
 #include "GDBRemoteRegisterContext.h"
 #include "ProcessGDBRemote.h"
@@ -175,7 +176,8 @@ ProcessGDBRemote::ProcessGDBRemote(Target& target, Listener &listener) :
     m_max_memory_size (512),
     m_addr_to_mmap_size (),
     m_thread_create_bp_sp (),
-    m_waiting_for_attach (false)
+    m_waiting_for_attach (false),
+    m_destroy_tried_resuming (false)
 {
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncThreadShouldExit,   "async thread should exit");
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncContinue,           "async thread continue");
@@ -227,8 +229,7 @@ ProcessGDBRemote::BuildDynamicRegisterInfo (bool force)
     m_register_info.Clear();
     uint32_t reg_offset = 0;
     uint32_t reg_num = 0;
-    StringExtractorGDBRemote::ResponseType response_type;
-    for (response_type = StringExtractorGDBRemote::eResponse; 
+    for (StringExtractorGDBRemote::ResponseType response_type = StringExtractorGDBRemote::eResponse;
          response_type == StringExtractorGDBRemote::eResponse; 
          ++reg_num)
     {
@@ -374,7 +375,6 @@ ProcessGDBRemote::BuildDynamicRegisterInfo (bool force)
         }
         else
         {
-            response_type = StringExtractorGDBRemote::eError;
             break;
         }
     }
@@ -401,7 +401,8 @@ ProcessGDBRemote::BuildDynamicRegisterInfo (bool force)
     }
 
     // Add some convenience registers (eax, ebx, ecx, edx, esi, edi, ebp, esp) to x86_64.
-    if (target_arch.IsValid() && target_arch.GetMachine() == llvm::Triple::x86_64)
+    if ((target_arch.IsValid() && target_arch.GetMachine() == llvm::Triple::x86_64)
+        || (remote_arch.IsValid() && remote_arch.GetMachine() == llvm::Triple::x86_64))
         m_register_info.Addx86_64ConvenienceRegisters();
 
     // At this point, we can finalize our register info.
@@ -728,6 +729,14 @@ ProcessGDBRemote::ConnectToDebugserver (const char *connect_url)
     m_gdb_comm.GetListThreadsInStopReplySupported ();
     m_gdb_comm.GetHostInfo ();
     m_gdb_comm.GetVContSupported ('c');
+    
+    size_t num_cmds = GetExtraStartupCommands().GetArgumentCount();
+    for (size_t idx = 0; idx < num_cmds; idx++)
+    {
+        StringExtractorGDBRemote response;
+        printf ("Sending command: \%s.\n", GetExtraStartupCommands().GetArgumentAtIndex(idx));
+        m_gdb_comm.SendPacketAndWaitForResponse (GetExtraStartupCommands().GetArgumentAtIndex(idx), response, false);
+    }
     return error;
 }
 
@@ -1189,9 +1198,6 @@ ProcessGDBRemote::UpdateThreadIDList ()
     m_gdb_comm.GetCurrentThreadIDs (m_thread_ids, sequence_mutex_unavailable);
     if (sequence_mutex_unavailable)
     {
-#if defined (LLDB_CONFIGURATION_DEBUG)
-        assert(!"ProcessGDBRemote::UpdateThreadList() failed due to not getting the sequence mutex");
-#endif
         return false; // We just didn't get the list
     }
     return true;
@@ -1263,7 +1269,6 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
             uint32_t exc_type = 0;
             std::vector<addr_t> exc_data;
             addr_t thread_dispatch_qaddr = LLDB_INVALID_ADDRESS;
-            uint32_t exc_data_count = 0;
             ThreadSP thread_sp;
 
             while (stop_packet.GetNameColonValue(name, value))
@@ -1272,11 +1277,6 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                 {
                     // exception type in big endian hex
                     exc_type = Args::StringToUInt32 (value.c_str(), 0, 16);
-                }
-                else if (name.compare("mecount") == 0)
-                {
-                    // exception count in big endian hex
-                    exc_data_count = Args::StringToUInt32 (value.c_str(), 0, 16);
                 }
                 else if (name.compare("medata") == 0)
                 {
@@ -1415,17 +1415,18 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                                 // If the breakpoint is for this thread, then we'll report the hit, but if it is for another thread,
                                 // we can just report no reason.  We don't need to worry about stepping over the breakpoint here, that
                                 // will be taken care of when the thread resumes and notices that there's a breakpoint under the pc.
+                                handled = true;
                                 if (bp_site_sp->ValidForThisThread (gdb_thread))
                                 {
                                     gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithBreakpointSiteID (*thread_sp, bp_site_sp->GetID()));
-                                    handled = true;
+                                }
+                                else
+                                {
+                                    StopInfoSP invalid_stop_info_sp;
+                                    gdb_thread->SetStopInfo (invalid_stop_info_sp);
                                 }
                             }
                             
-                            if (!handled)
-                            {
-                                gdb_thread->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
-                            }
                         }
                         else if (reason.compare("trap") == 0)
                         {
@@ -1451,8 +1452,10 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                         {
                             // Currently we are going to assume SIGTRAP means we are either
                             // hitting a breakpoint or hardware single stepping. 
+                            handled = true;
                             addr_t pc = gdb_thread->GetRegisterContext()->GetPC();
                             lldb::BreakpointSiteSP bp_site_sp = gdb_thread->GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
+                            
                             if (bp_site_sp)
                             {
                                 // If the breakpoint is for this thread, then we'll report the hit, but if it is for another thread,
@@ -1461,15 +1464,18 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                                 if (bp_site_sp->ValidForThisThread (gdb_thread))
                                 {
                                     gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithBreakpointSiteID (*thread_sp, bp_site_sp->GetID()));
-                                    handled = true;
+                                }
+                                else
+                                {
+                                    StopInfoSP invalid_stop_info_sp;
+                                    gdb_thread->SetStopInfo (invalid_stop_info_sp);
                                 }
                             }
-                            if (!handled)
+                            else
                             {
                                 // TODO: check for breakpoint or trap opcode in case there is a hard 
                                 // coded software trap
                                 gdb_thread->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
-                                handled = true;
                             }
                         }
                         if (!handled)
@@ -1646,6 +1652,10 @@ ProcessGDBRemote::WillDetach ()
     bool discard_thread_plans = true; 
     bool catch_stop_event = true;
     EventSP event_sp;
+    
+    // FIXME: InterruptIfRunning should be done in the Process base class, or better still make Halt do what is
+    // needed.  This shouldn't be a feature of a particular plugin.
+    
     return InterruptIfRunning (discard_thread_plans, catch_stop_event, event_sp);
 }
 
@@ -1679,6 +1689,7 @@ ProcessGDBRemote::DoDetach()
     return error;
 }
 
+
 Error
 ProcessGDBRemote::DoDestroy ()
 {
@@ -1687,7 +1698,114 @@ ProcessGDBRemote::DoDestroy ()
     if (log)
         log->Printf ("ProcessGDBRemote::DoDestroy()");
 
+    // There is a bug in older iOS debugservers where they don't shut down the process
+    // they are debugging properly.  If the process is sitting at a breakpoint or an exception,
+    // this can cause problems with restarting.  So we check to see if any of our threads are stopped
+    // at a breakpoint, and if so we remove all the breakpoints, resume the process, and THEN
+    // destroy it again.
+    //
+    // Note, we don't have a good way to test the version of debugserver, but I happen to know that
+    // the set of all the iOS debugservers which don't support GetThreadSuffixSupported() and that of
+    // the debugservers with this bug are equal.  There really should be a better way to test this!
+    //
+    // We also use m_destroy_tried_resuming to make sure we only do this once, if we resume and then halt and
+    // get called here to destroy again and we're still at a breakpoint or exception, then we should
+    // just do the straight-forward kill.
+    //
+    // And of course, if we weren't able to stop the process by the time we get here, it isn't
+    // necessary (or helpful) to do any of this.
+
+    if (!m_gdb_comm.GetThreadSuffixSupported() && m_public_state.GetValue() != eStateRunning)
+    {
+        PlatformSP platform_sp = GetTarget().GetPlatform();
+        
+        // FIXME: These should be ConstStrings so we aren't doing strcmp'ing.
+        if (platform_sp
+            && platform_sp->GetName()
+            && strcmp (platform_sp->GetName(), PlatformRemoteiOS::GetShortPluginNameStatic()) == 0)
+        {
+            if (m_destroy_tried_resuming)
+            {
+                if (log)
+                    log->PutCString ("ProcessGDBRemote::DoDestroy()Tried resuming to destroy once already, not doing it again.");
+            }
+            else
+            {            
+                // At present, the plans are discarded and the breakpoints disabled Process::Destroy,
+                // but we really need it to happen here and it doesn't matter if we do it twice.
+                m_thread_list.DiscardThreadPlans();
+                DisableAllBreakpointSites();
+                
+                bool stop_looks_like_crash = false;
+                ThreadList &threads = GetThreadList();
+                
+                {
+                    Mutex::Locker(threads.GetMutex());
+                    
+                    size_t num_threads = threads.GetSize();
+                    for (size_t i = 0; i < num_threads; i++)
+                    {
+                        ThreadSP thread_sp = threads.GetThreadAtIndex(i);
+                        StopInfoSP stop_info_sp = thread_sp->GetPrivateStopReason();
+                        StopReason reason = eStopReasonInvalid;
+                        if (stop_info_sp)
+                            reason = stop_info_sp->GetStopReason();
+                        if (reason == eStopReasonBreakpoint
+                            || reason == eStopReasonException)
+                        {
+                            if (log)
+                                log->Printf ("ProcessGDBRemote::DoDestroy() - thread: %lld stopped with reason: %s.",
+                                             thread_sp->GetID(),
+                                             stop_info_sp->GetDescription());
+                            stop_looks_like_crash = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (stop_looks_like_crash)
+                {
+                    if (log)
+                        log->PutCString ("ProcessGDBRemote::DoDestroy() - Stopped at a breakpoint, continue and then kill.");
+                    m_destroy_tried_resuming = true;
+                    
+                    // If we are going to run again before killing, it would be good to suspend all the threads 
+                    // before resuming so they won't get into more trouble.  Sadly, for the threads stopped with
+                    // the breakpoint or exception, the exception doesn't get cleared if it is suspended, so we do
+                    // have to run the risk of letting those threads proceed a bit.
+    
+                    {
+                        Mutex::Locker(threads.GetMutex());
+                        
+                        size_t num_threads = threads.GetSize();
+                        for (size_t i = 0; i < num_threads; i++)
+                        {
+                            ThreadSP thread_sp = threads.GetThreadAtIndex(i);
+                            StopInfoSP stop_info_sp = thread_sp->GetPrivateStopReason();
+                            StopReason reason = eStopReasonInvalid;
+                            if (stop_info_sp)
+                                reason = stop_info_sp->GetStopReason();
+                            if (reason != eStopReasonBreakpoint
+                                && reason != eStopReasonException)
+                            {
+                                if (log)
+                                    log->Printf ("ProcessGDBRemote::DoDestroy() - Suspending thread: %lld before running.",
+                                                 thread_sp->GetID());
+                                thread_sp->SetResumeState(eStateSuspended);
+                            }
+                        }
+                    }
+                    Resume ();
+                    return Destroy();
+                }
+            }
+        }
+    }
+    
     // Interrupt if our inferior is running...
+    int exit_status = SIGABRT;
+    std::string exit_string;
+
     if (m_gdb_comm.IsConnected())
     {
         if (m_public_state.GetValue() != eStateAttaching)
@@ -1703,16 +1821,39 @@ ProcessGDBRemote::DoDestroy ()
                 {
                     SetLastStopPacket (response);
                     ClearThreadIDList ();
-                    SetExitStatus(response.GetHexU8(), NULL);
+                    exit_status = response.GetHexU8();
+                }
+                else
+                {
+                    if (log)
+                        log->Printf ("ProcessGDBRemote::DoDestroy - got unexpected response to k packet: %s", response.GetStringRef().c_str());
+                    exit_string.assign("got unexpected response to k packet: ");
+                    exit_string.append(response.GetStringRef());
                 }
             }
             else
             {
-                SetExitStatus(SIGABRT, NULL);
-                //error.SetErrorString("kill packet failed");
+                if (log)
+                    log->Printf ("ProcessGDBRemote::DoDestroy - failed to send k packet");
+                exit_string.assign("failed to send the k packet");
             }
         }
+        else
+        {
+            if (log)
+                log->Printf ("ProcessGDBRemote::DoDestroy - failed to send k packet");
+            exit_string.assign ("killing while attaching.");
+        }
     }
+    else
+    {
+        // If we missed setting the exit status on the way out, do it here.
+        // NB set exit status can be called multiple times, the first one sets the status.
+        exit_string.assign("destroying when not connected to debugserver");
+    }
+
+    SetExitStatus(exit_status, exit_string.c_str());
+
     StopAsyncThread ();
     KillDebugserverProcess ();
     return error;
@@ -1862,6 +2003,13 @@ ProcessGDBRemote::GetWatchpointSupportInfo (uint32_t &num)
 {
     
     Error error (m_gdb_comm.GetWatchpointSupportInfo (num));
+    return error;
+}
+
+Error
+ProcessGDBRemote::GetWatchpointSupportInfo (uint32_t &num, bool& after)
+{
+    Error error (m_gdb_comm.GetWatchpointSupportInfo (num, after));
     return error;
 }
 

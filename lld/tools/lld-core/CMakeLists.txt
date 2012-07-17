@@ -1,18 +1,20 @@
-set(LLVM_USED_LIBS
-  lldCore
-  lldReader
-  lldPasses
-  lldDarwinPlatform
-  )
-
-set(LLVM_LINK_COMPONENTS
-  support
-  Object
-  )
 
 add_lld_executable(lld-core
   lld-core.cpp
   )
+
+target_link_libraries(lld-core
+  lldPasses
+  lldMachO
+  lldPECOFF
+  lldELF
+  lldNative
+  lldReaderWriter
+  lldYAML
+  lldCore
+  LLVMObject
+  LLVMSupport
+ )
 
 install(TARGETS lld-core
   RUNTIME DESTINATION bin)

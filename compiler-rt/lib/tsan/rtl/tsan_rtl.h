@@ -26,6 +26,7 @@
 #ifndef TSAN_RTL_H
 #define TSAN_RTL_H
 
+#include "sanitizer_common/sanitizer_common.h"
 #include "tsan_clock.h"
 #include "tsan_defs.h"
 #include "tsan_flags.h"
@@ -36,8 +37,7 @@
 
 namespace __tsan {
 
-void Printf(const char *format, ...) FORMAT(1, 2);
-uptr Snprintf(char *buffer, uptr length, const char *format, ...)  FORMAT(3, 4);
+void TsanPrintf(const char *format, ...);
 
 // FastState (from most significant bit):
 //   unused          : 1
@@ -95,7 +95,7 @@ class FastState {
 //   is_write        : 1
 //   size_log        : 2
 //   addr0           : 3
-class Shadow: public FastState {
+class Shadow : public FastState {
  public:
   explicit Shadow(u64 x) : FastState(x) { }
 
@@ -203,18 +203,7 @@ class Shadow: public FastState {
 // As if 8-byte write by thread 0xff..f at epoch 0xff..f, races with everything.
 const u64 kShadowFreed = 0xfffffffffffffff8ull;
 
-const int kSigCount = 128;
-const int kShadowStackSize = 1024;
-
-struct my_siginfo_t {
-  int opaque[128];
-};
-
-struct SignalDesc {
-  bool armed;
-  bool sigaction;
-  my_siginfo_t siginfo;
-};
+struct SignalContext;
 
 // This struct is stored in TLS.
 struct ThreadState {
@@ -239,11 +228,19 @@ struct ThreadState {
   u64 *racy_shadow_addr;
   u64 racy_state[2];
   Trace trace;
+#ifndef TSAN_GO
+  // C/C++ uses embed shadow stack of fixed size.
   uptr shadow_stack[kShadowStackSize];
+#else
+  // Go uses satellite shadow stack with dynamic size.
+  uptr *shadow_stack;
+  uptr *shadow_stack_end;
+#endif
   ThreadClock clock;
   u64 stat[StatCnt];
   const int tid;
   int in_rtl;
+  bool is_alive;
   const uptr stk_addr;
   const uptr stk_size;
   const uptr tls_addr;
@@ -252,9 +249,11 @@ struct ThreadState {
   DeadlockDetector deadlock_detector;
 
   bool in_signal_handler;
-  int int_signal_send;
-  int pending_signal_count;
-  SignalDesc pending_signals[kSigCount];
+  SignalContext *signal_ctx;
+
+  // Set in regions of runtime that must be signal-safe and fork-safe.
+  // If set, malloc must not be called.
+  int nomalloc;
 
   explicit ThreadState(Context *ctx, int tid, u64 epoch,
                        uptr stk_addr, uptr stk_size,
@@ -262,11 +261,13 @@ struct ThreadState {
 };
 
 Context *CTX();
-extern THREADLOCAL char cur_thread_placeholder[];
 
+#ifndef TSAN_GO
+extern THREADLOCAL char cur_thread_placeholder[];
 INLINE ThreadState *cur_thread() {
   return reinterpret_cast<ThreadState *>(&cur_thread_placeholder);
 }
+#endif
 
 enum ThreadStatus {
   ThreadStatusInvalid,   // Non-existent thread, data is invalid.
@@ -390,7 +391,6 @@ void ALWAYS_INLINE INLINE StatInc(ThreadState *thr, StatType typ, u64 n = 1) {
 void InitializeShadowMemory();
 void InitializeInterceptors();
 void InitializeDynamicAnnotations();
-void Die() NORETURN;
 
 void ReportRace(ThreadState *thr);
 bool OutputReport(const ScopedReport &srep,
@@ -398,13 +398,13 @@ bool OutputReport(const ScopedReport &srep,
 bool IsExpectedReport(uptr addr, uptr size);
 
 #if defined(TSAN_DEBUG_OUTPUT) && TSAN_DEBUG_OUTPUT >= 1
-# define DPrintf Printf
+# define DPrintf TsanPrintf
 #else
 # define DPrintf(...)
 #endif
 
 #if defined(TSAN_DEBUG_OUTPUT) && TSAN_DEBUG_OUTPUT >= 2
-# define DPrintf2 Printf
+# define DPrintf2 TsanPrintf
 #else
 # define DPrintf2(...)
 #endif
@@ -466,12 +466,19 @@ void Release(ThreadState *thr, uptr pc, uptr addr);
 #define HACKY_CALL(f) f()
 #endif
 
+void TraceSwitch(ThreadState *thr);
+
 extern "C" void __tsan_trace_switch();
 void ALWAYS_INLINE INLINE TraceAddEvent(ThreadState *thr, u64 epoch,
                                         EventType typ, uptr addr) {
   StatInc(thr, StatEvents);
-  if (UNLIKELY((epoch % kTracePartSize) == 0))
+  if (UNLIKELY((epoch % kTracePartSize) == 0)) {
+#ifndef TSAN_GO
     HACKY_CALL(__tsan_trace_switch);
+#else
+    TraceSwitch(thr);
+#endif
+  }
   Event *evp = &thr->trace.events[epoch % kTraceSize];
   Event ev = (u64)addr | ((u64)typ << 61);
   *evp = ev;

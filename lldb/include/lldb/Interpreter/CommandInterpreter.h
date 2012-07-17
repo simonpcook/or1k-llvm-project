@@ -146,7 +146,7 @@ public:
 
     bool
     HandleCommand (const char *command_line, 
-                   bool add_to_history, 
+                   LazyBool add_to_history,
                    CommandReturnObject &result, 
                    ExecutionContext *override_context = NULL,
                    bool repeat_on_empty_command = true,
@@ -179,7 +179,8 @@ public:
                     bool stop_on_continue, 
                     bool stop_on_error, 
                     bool echo_commands,
-                    bool print_results, 
+                    bool print_results,
+                    LazyBool add_to_history,
                     CommandReturnObject &result);
 
     //------------------------------------------------------------------
@@ -209,7 +210,8 @@ public:
                             bool stop_on_continue, 
                             bool stop_on_error, 
                             bool echo_commands,
-                            bool print_results, 
+                            bool print_results,
+                            LazyBool add_to_history,
                             CommandReturnObject &result);
 
     CommandObject *
@@ -294,10 +296,10 @@ public:
         return m_debugger;
     }
     
-    ExecutionContext &
+    ExecutionContext
     GetExecutionContext()
     {
-        return m_exe_ctx;
+        return m_exe_ctx_ref.Lock();
     }
     
     void
@@ -462,7 +464,7 @@ private:
     PreprocessCommand (std::string &command);
 
     Debugger &m_debugger;                       // The debugger session that this interpreter is associated with
-    ExecutionContext m_exe_ctx;                 // The current execution context to use when handling commands
+    ExecutionContextRef m_exe_ctx_ref;          // The current execution context to use when handling commands
     bool m_synchronous_execution;
     bool m_skip_lldbinit_files;
     bool m_skip_app_init_files;
@@ -477,6 +479,7 @@ private:
     char m_repeat_char;
     bool m_batch_command_mode;
     ChildrenTruncatedWarningStatus m_truncation_warning;    // Whether we truncated children and whether the user has been told
+    uint32_t m_command_source_depth;
     
 };
 

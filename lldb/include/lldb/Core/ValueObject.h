@@ -690,7 +690,7 @@ public:
                        std::string& destination);
     
     virtual uint64_t
-    GetValueAsUnsigned (uint64_t fail_value);
+    GetValueAsUnsigned (uint64_t fail_value, bool *success = NULL);
 
     virtual bool
     SetValueFromCString (const char *value_str, Error& error);
@@ -823,7 +823,7 @@ public:
     virtual lldb::ValueObjectSP
     GetSyntheticChildAtOffset(uint32_t offset, const ClangASTType& type, bool can_create);
     
-    lldb::ValueObjectSP
+    virtual lldb::ValueObjectSP
     GetDynamicValue (lldb::DynamicValueType valueType);
     
     virtual lldb::ValueObjectSP

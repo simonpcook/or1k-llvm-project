@@ -1,4 +1,4 @@
-//===-- tsan_platform_test.cc -----------------------------------*- C++ -*-===//
+//===-- tsan_platform_test.cc ---------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -10,6 +10,7 @@
 // This file is a part of ThreadSanitizer (TSan), a race detector.
 //
 //===----------------------------------------------------------------------===//
+#include "sanitizer_common/sanitizer_libc.h"
 #include "tsan_platform.h"
 #include "gtest/gtest.h"
 
@@ -22,8 +23,8 @@ static void TestThreadInfo(bool main) {
   uptr tls_addr = 0;
   uptr tls_size = 0;
   GetThreadStackAndTls(main, &stk_addr, &stk_size, &tls_addr, &tls_size);
-  // Printf("stk=%lx-%lx(%lu)\n", stk_addr, stk_addr + stk_size, stk_size);
-  // Printf("tls=%lx-%lx(%lu)\n", tls_addr, tls_addr + tls_size, tls_size);
+  // Printf("stk=%zx-%zx(%zu)\n", stk_addr, stk_addr + stk_size, stk_size);
+  // Printf("tls=%zx-%zx(%zu)\n", tls_addr, tls_addr + tls_size, tls_size);
 
   int stack_var;
   EXPECT_NE(stk_addr, (uptr)0);

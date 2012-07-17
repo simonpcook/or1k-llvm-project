@@ -37,8 +37,12 @@ ModuleList::ModuleList() :
 // Copy constructor
 //----------------------------------------------------------------------
 ModuleList::ModuleList(const ModuleList& rhs) :
-    m_modules(rhs.m_modules)
+    m_modules(),
+    m_modules_mutex (Mutex::eMutexTypeRecursive)
 {
+    Mutex::Locker lhs_locker(m_modules_mutex);
+    Mutex::Locker rhs_locker(rhs.m_modules_mutex);
+    m_modules = rhs.m_modules;
 }
 
 //----------------------------------------------------------------------
@@ -49,7 +53,8 @@ ModuleList::operator= (const ModuleList& rhs)
 {
     if (this != &rhs)
     {
-        Mutex::Locker locker(m_modules_mutex);
+        Mutex::Locker lhs_locker(m_modules_mutex);
+        Mutex::Locker rhs_locker(rhs.m_modules_mutex);
         m_modules = rhs.m_modules;
     }
     return *this;
@@ -68,6 +73,32 @@ ModuleList::Append (const ModuleSP &module_sp)
     if (module_sp)
     {
         Mutex::Locker locker(m_modules_mutex);
+        m_modules.push_back(module_sp);
+    }
+}
+
+void
+ModuleList::ReplaceEquivalent (const ModuleSP &module_sp)
+{
+    if (module_sp)
+    {
+        Mutex::Locker locker(m_modules_mutex);
+
+        // First remove any equivalent modules. Equivalent modules are modules
+        // whose path, platform path and architecture match.
+        ModuleSpec equivalent_module_spec (module_sp->GetFileSpec(), module_sp->GetArchitecture());
+        equivalent_module_spec.GetPlatformFileSpec() = module_sp->GetPlatformFileSpec();
+
+        size_t idx = 0;
+        while (idx < m_modules.size())
+        {
+            ModuleSP module_sp (m_modules[idx]);
+            if (module_sp->MatchesModuleSpec (equivalent_module_spec))
+                m_modules.erase(m_modules.begin() + idx);
+            else
+                ++idx;
+        }
+        // Now add the new module to the list
         m_modules.push_back(module_sp);
     }
 }
@@ -201,6 +232,12 @@ Module*
 ModuleList::GetModulePointerAtIndex (uint32_t idx) const
 {
     Mutex::Locker locker(m_modules_mutex);
+    return GetModulePointerAtIndexUnlocked(idx);
+}
+
+Module*
+ModuleList::GetModulePointerAtIndexUnlocked (uint32_t idx) const
+{
     if (idx < m_modules.size())
         return m_modules[idx].get();
     return NULL;
@@ -210,6 +247,12 @@ ModuleSP
 ModuleList::GetModuleAtIndex(uint32_t idx)
 {
     Mutex::Locker locker(m_modules_mutex);
+    return GetModuleAtIndexUnlocked(idx);
+}
+
+ModuleSP
+ModuleList::GetModuleAtIndexUnlocked(uint32_t idx)
+{
     ModuleSP module_sp;
     if (idx < m_modules.size())
         module_sp = m_modules[idx];
@@ -306,7 +349,7 @@ ModuleList::FindSymbolsWithNameAndType (const ConstString &name,
     return sc_list.GetSize() - initial_size;
 }
 
-    size_t
+size_t
 ModuleList::FindSymbolsMatchingRegExAndType (const RegularExpression &regex, 
                                              lldb::SymbolType symbol_type, 
                                              SymbolContextList &sc_list,
@@ -667,24 +710,21 @@ ModuleList::GetSharedModule
             for (uint32_t module_idx = 0; module_idx < num_matching_modules; ++module_idx)
             {
                 module_sp = matching_module_list.GetModuleAtIndex(module_idx);
-                // If we had a UUID and we found a match, then that is good enough for a match
-                if (uuid_ptr)
-                    break;
-                if (module_file_spec)
+                
+                // Make sure the file for the module hasn't been modified
+                if (module_sp->FileHasChanged())
                 {
-                    // If we didn't have a UUID in mind when looking for the object file,
-                    // then we should make sure the modification time hasn't changed!
-                    TimeValue file_spec_mod_time(module_file_spec.GetModificationTime());
-                    if (file_spec_mod_time.IsValid())
-                    {
-                        if (file_spec_mod_time == module_sp->GetModificationTime())
-                            return error;
-                    }
+                    if (old_module_sp_ptr && !old_module_sp_ptr->get())
+                        *old_module_sp_ptr = module_sp;
+                    shared_module_list.Remove (module_sp);
+                    module_sp.reset();
                 }
-                if (old_module_sp_ptr && !old_module_sp_ptr->get())
-                    *old_module_sp_ptr = module_sp;
-                shared_module_list.Remove (module_sp);
-                module_sp.reset();
+                else
+                {
+                    // The module matches and the module was not modified from
+                    // when it was last loaded.
+                    return error;
+                }
             }
         }
     }
@@ -710,7 +750,7 @@ ModuleList::GetSharedModule
                     if (did_create_ptr)
                         *did_create_ptr = true;
                     
-                    shared_module_list.Append(module_sp);
+                    shared_module_list.ReplaceEquivalent(module_sp);
                     return error;
                 }
             }
@@ -802,7 +842,7 @@ ModuleList::GetSharedModule
                 if (did_create_ptr)
                     *did_create_ptr = true;
 
-                shared_module_list.Append(module_sp);
+                shared_module_list.ReplaceEquivalent(module_sp);
             }
             else
             {

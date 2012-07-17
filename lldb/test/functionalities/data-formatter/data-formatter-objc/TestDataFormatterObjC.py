@@ -227,14 +227,21 @@ class ObjCDataFormatterTestCase(TestBase):
                     substrs = ['(NSNumber *) num1 = ',' (int)5',
                     '(NSNumber *) num2 = ',' (float)3.1',
                     '(NSNumber *) num3 = ',' (double)3.14',
-                    '(NSNumber *) num4 = ',' (long)18446744073709551614',
+                    '(NSNumber *) num4 = ',' (long)-2',
                     '(NSNumber *) num5 = ',' (char)65',
                     '(NSNumber *) num6 = ',' (long)255',
                     '(NSNumber *) num7 = ','2000000',
                     '(NSNumber *) num8_Y = ',' @"1"',
                     '(NSNumber *) num8_N = ',' @"0"',
-                    '(NSNumber *) num9 = ',' (short)33920'])
+                    '(NSNumber *) num9 = ',' (short)-31616'])
 
+        self.expect('frame variable num_at1 num_at2 num_at3 num_at4',
+                    substrs = ['(NSNumber *) num_at1 = ',' (int)12',
+                    '(NSNumber *) num_at2 = ',' (int)-12',
+                    '(NSNumber *) num_at3 = ',' (double)12.5',
+                    '(NSNumber *) num_at4 = ',' (double)-12.5'])
+
+        
         self.expect('frame variable str0 str1 str2 str3 str4 str5 str6 str8 str9 str10 str11 label1 label2 processName str12',
                     substrs = ['(NSString *) str1 = ',' @"A rather short ASCII NSString object is here"',
                     '(NSString *) str0 = ',' @"255"',
@@ -265,6 +272,9 @@ class ObjCDataFormatterTestCase(TestBase):
                     substrs = ['(NSAttributedString *) attrString = ',' @"hello world from foo"',
                     '(NSAttributedString *) mutableAttrString = ',' @"hello world from foo"',
                     '(NSString *) mutableGetConst = ',' @"foo said this string needs to be very long so much longer than whatever other string has been seen ever before by anyone of the mankind that of course this is still not long enough given what foo our friend foo our lovely dearly friend foo desired of us so i am adding more stuff here for the sake of it and for the joy of our friend who is named guess what just foo. hence, dear friend foo, stay safe, your string is now  long enough to accommodate your testing need and I will make sure that if not we extend it with even more fuzzy random meaningless words pasted one after the other from a long tiresome friday evening spent working in my office. my office mate went home but I am still randomly typing just for the fun of seeing what happens of the length of a Mutable String in Cocoa if it goes beyond one byte.. so be it, dear foo"'])
+
+        self.expect('frame variable -d run-target path',substrs = ['usr/blah/stuff'])
+        self.expect('frame variable path',substrs = ['usr/blah/stuff'])
 
         self.expect('frame variable immutableData mutableData data_ref mutable_data_ref mutable_string_ref',
                     substrs = ['(NSData *) immutableData = ',' 4 bytes',

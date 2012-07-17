@@ -461,11 +461,16 @@ private:
         case eMsgSend_stret:
             target_object = call_inst->getArgOperand(1);
             selector = call_inst->getArgOperand(2);
+            break;
         case eMsgSendSuper:
         case eMsgSendSuper_stret:
             return true;
         }
-                
+            
+        // These objects should always be valid according to Sean Calannan
+        assert (target_object);
+        assert (selector);
+
         // Insert an instruction to cast the receiver id to int8_t*
         
         BitCastInst *bit_cast = new BitCastInst(target_object,
@@ -611,22 +616,28 @@ IRDynamicChecks::runOnModule(llvm::Module &M)
         return false;
     }
 
-    ValidPointerChecker vpc(M, m_checker_functions);
+    if (m_checker_functions.m_valid_pointer_check.get())
+    {
+        ValidPointerChecker vpc(M, m_checker_functions);
+        
+        if (!vpc.Inspect(*function))
+            return false;
+        
+        if (!vpc.Instrument())
+            return false;
+    }
     
-    if (!vpc.Inspect(*function))
-        return false;
-    
-    if (!vpc.Instrument())
-        return false;
-    
-    ObjcObjectChecker ooc(M, m_checker_functions);
-    
-    if (!ooc.Inspect(*function))
-        return false;
-    
-    if (!ooc.Instrument())
-        return false;
-
+    if (m_checker_functions.m_objc_object_check.get())
+    {
+        ObjcObjectChecker ooc(M, m_checker_functions);
+        
+        if (!ooc.Inspect(*function))
+            return false;
+        
+        if (!ooc.Instrument())
+            return false;
+    }
+        
     if (log && log->GetVerbose())
     {
         std::string s;

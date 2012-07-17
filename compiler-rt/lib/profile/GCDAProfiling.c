@@ -67,38 +67,55 @@ static void write_string(const char *s) {
 }
 
 static char *mangle_filename(const char *orig_filename) {
-  /* TODO: handle GCOV_PREFIX_STRIP */
-  const char *prefix;
   char *filename = 0;
-
-  prefix = getenv("GCOV_PREFIX");
+  int prefix_len = 0;
+  int prefix_strip = 0;
+  int level = 0;
+  const char *fname = orig_filename, *ptr = NULL;
+  const char *prefix = getenv("GCOV_PREFIX");
+  const char *tmp = getenv("GCOV_PREFIX_STRIP");
 
   if (!prefix)
     return strdup(orig_filename);
 
-  filename = malloc(strlen(prefix) + 1 + strlen(orig_filename) + 1);
+  if (tmp) {
+    prefix_strip = atoi(tmp);
+
+    /* Negative GCOV_PREFIX_STRIP values are ignored */
+    if (prefix_strip < 0)
+      prefix_strip = 0;
+  }
+
+  prefix_len = strlen(prefix);
+  filename = malloc(prefix_len + 1 + strlen(orig_filename) + 1);
   strcpy(filename, prefix);
-  strcat(filename, "/");
-  strcat(filename, orig_filename);
+
+  if (prefix[prefix_len - 1] != '/')
+    strcat(filename, "/");
+
+  for (ptr = fname + 1; *ptr != '\0' && level < prefix_strip; ++ptr) {
+    if (*ptr != '/') continue;
+    fname = ptr;
+    ++level;
+  }
+
+  strcat(filename, fname);
 
   return filename;
 }
 
-static void recursive_mkdir(const char *filename) {
-  char *pathname;
-  int i, e;
+static void recursive_mkdir(char *filename) {
+  int i;
 
-  for (i = 1, e = strlen(filename); i != e; ++i) {
+  for (i = 1; filename[i] != '\0'; ++i) {
     if (filename[i] != '/') continue;
-    pathname = malloc(i + 1);
-    strncpy(pathname, filename, i);
-    pathname[i] = '\0';
+    filename[i] = '\0';
 #ifdef _WIN32
-    _mkdir(pathname);
+    _mkdir(filename);
 #else
-    mkdir(pathname, 0750);  /* some of these will fail, ignore it. */
+    mkdir(filename, 0755);  /* Some of these will fail, ignore it. */
 #endif
-    free(pathname);
+    filename[i] = '/';
   }
 }
 
@@ -111,26 +128,15 @@ static void recursive_mkdir(const char *filename) {
  * started at a time.
  */
 void llvm_gcda_start_file(const char *orig_filename) {
-  char *filename;
-  filename = mangle_filename(orig_filename);
-  recursive_mkdir(filename);
+  char *filename = mangle_filename(orig_filename);
   output_file = fopen(filename, "w+b");
 
   if (!output_file) {
-    int len = strlen(orig_filename) - 1;
-
-    for (; len >= 0 && orig_filename[len] != '/'; --len)
-      /* empty */;
-
-    if (len < 0)
-      len = 0;
-    else if (orig_filename[len] == '/')
-      ++len;
-
-    output_file = fopen(&orig_filename[len], "w+b");
-
+    recursive_mkdir(filename);
+    output_file = fopen(filename, "w+b");
     if (!output_file) {
-      fprintf(stderr, "profiling:%s: cannot open\n", &orig_filename[len]);
+      fprintf(stderr, "profiling:%s: cannot open\n", filename);
+      free(filename);
       return;
     }
   }

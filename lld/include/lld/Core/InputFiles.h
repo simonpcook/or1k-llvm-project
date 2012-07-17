@@ -12,6 +12,7 @@
 
 #include "lld/Core/File.h"
 
+#include <memory>
 #include <vector>
 
 namespace lld {
@@ -37,12 +38,14 @@ public:
   InputFiles();
   virtual ~InputFiles();
 
-  /// Used by platforms to insert platform specific files.
+  /// Used by Writers to insert writer specific files.
   virtual void prependFile(const File&);
   
-  /// Used by platforms to insert platform specific files.
+  /// Used by Writers to insert writer specific files.
   virtual void appendFile(const File&);
  
+ /// Transfers ownership of a vector of Files to this InputFile object.
+  virtual void appendFiles(std::vector<std::unique_ptr<File>> &files);
 
   /// @brief iterates all atoms in initial files
   virtual void forEachInitialAtom(Handler &) const;

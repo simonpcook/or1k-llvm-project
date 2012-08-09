@@ -35,7 +35,7 @@ void Die() {
     while (1) { }
   }
   if (flags()->sleep_before_dying) {
-    Report("Sleeping for %zd second(s)\n", flags()->sleep_before_dying);
+    Report("Sleeping for %d second(s)\n", flags()->sleep_before_dying);
     SleepForSeconds(flags()->sleep_before_dying);
   }
   if (flags()->unmap_shadow_on_exit)
@@ -96,7 +96,12 @@ static void ParseFlagsFromString(Flags *f, const char *str) {
   ParseFlag(str, &f->abort_on_error, "abort_on_error");
   ParseFlag(str, &f->atexit, "atexit");
   ParseFlag(str, &f->disable_core, "disable_core");
+  ParseFlag(str, &f->strip_path_prefix, "strip_path_prefix");
 }
+
+extern "C" {
+const char* WEAK __asan_default_options() { return ""; }
+}  // extern "C"
 
 void InitializeFlags(Flags *f, const char *env) {
   internal_memset(f, 0, sizeof(*f));
@@ -124,17 +129,14 @@ void InitializeFlags(Flags *f, const char *env) {
   f->abort_on_error = false;
   f->atexit = false;
   f->disable_core = (__WORDSIZE == 64);
+  f->strip_path_prefix = "";
 
   // Override from user-specified string.
-#if !defined(_WIN32)
-  if (__asan_default_options) {
-    ParseFlagsFromString(f, __asan_default_options);
-    if (flags()->verbosity) {
-      Report("Using the defaults from __asan_default_options: %s\n",
-             __asan_default_options);
-    }
+  ParseFlagsFromString(f, __asan_default_options());
+  if (flags()->verbosity) {
+    Report("Using the defaults from __asan_default_options: %s\n",
+           __asan_default_options());
   }
-#endif
 
   // Override from command line.
   ParseFlagsFromString(f, env);
@@ -257,7 +259,35 @@ static bool DescribeStackAddress(uptr addr, uptr access_size) {
   return true;
 }
 
+static bool DescribeAddrIfShadow(uptr addr) {
+  if (AddrIsInMem(addr))
+    return false;
+  static const char kAddrInShadowReport[] =
+      "Address %p is located in the %s.\n";
+  if (AddrIsInShadowGap(addr)) {
+    AsanPrintf(kAddrInShadowReport, addr, "shadow gap area");
+    return true;
+  }
+  if (AddrIsInHighShadow(addr)) {
+    AsanPrintf(kAddrInShadowReport, addr, "high shadow area");
+    return true;
+  }
+  if (AddrIsInLowShadow(addr)) {
+    AsanPrintf(kAddrInShadowReport, addr, "low shadow area");
+    return true;
+  }
+
+  CHECK(0);  // Unreachable.
+  return false;
+}
+
 static NOINLINE void DescribeAddress(uptr addr, uptr access_size) {
+  // Check if this is shadow or shadow gap.
+  if (DescribeAddrIfShadow(addr))
+    return;
+
+  CHECK(AddrIsInMem(addr));
+
   // Check if this is a global.
   if (DescribeAddrIfGlobal(addr))
     return;
@@ -359,9 +389,15 @@ void NOINLINE __asan_set_error_report_callback(void (*callback)(const char*)) {
 
 void __asan_report_error(uptr pc, uptr bp, uptr sp,
                          uptr addr, bool is_write, uptr access_size) {
-  // Do not print more than one report, otherwise they will mix up.
   static atomic_uint32_t num_calls;
-  if (atomic_fetch_add(&num_calls, 1, memory_order_relaxed) != 0) return;
+  if (atomic_fetch_add(&num_calls, 1, memory_order_relaxed) != 0) {
+    // Do not print more than one report, otherwise they will mix up.
+    // We can not return here because the function is marked as never-return.
+    AsanPrintf("AddressSanitizer: while reporting a bug found another one."
+               "Ignoring.\n");
+    SleepForSeconds(5);
+    Die();
+  }
 
   AsanPrintf("===================================================="
              "=============\n");
@@ -426,27 +462,27 @@ void __asan_report_error(uptr pc, uptr bp, uptr sp,
   GET_STACK_TRACE_WITH_PC_AND_BP(kStackTraceMax, pc, bp);
   stack.PrintStack();
 
-  CHECK(AddrIsInMem(addr));
-
   DescribeAddress(addr, access_size);
 
-  uptr shadow_addr = MemToShadow(addr);
-  AsanReport("ABORTING\n");
-  __asan_print_accumulated_stats();
-  AsanPrintf("Shadow byte and word:\n");
-  AsanPrintf("  %p: %x\n", (void*)shadow_addr, *(unsigned char*)shadow_addr);
-  uptr aligned_shadow = shadow_addr & ~(kWordSize - 1);
-  PrintBytes("  ", (uptr*)(aligned_shadow));
-  AsanPrintf("More shadow bytes:\n");
-  PrintBytes("  ", (uptr*)(aligned_shadow-4*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow-3*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow-2*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow-1*kWordSize));
-  PrintBytes("=>", (uptr*)(aligned_shadow+0*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow+1*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow+2*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow+3*kWordSize));
-  PrintBytes("  ", (uptr*)(aligned_shadow+4*kWordSize));
+  if (AddrIsInMem(addr)) {
+    uptr shadow_addr = MemToShadow(addr);
+    AsanReport("ABORTING\n");
+    __asan_print_accumulated_stats();
+    AsanPrintf("Shadow byte and word:\n");
+    AsanPrintf("  %p: %x\n", (void*)shadow_addr, *(unsigned char*)shadow_addr);
+    uptr aligned_shadow = shadow_addr & ~(kWordSize - 1);
+    PrintBytes("  ", (uptr*)(aligned_shadow));
+    AsanPrintf("More shadow bytes:\n");
+    PrintBytes("  ", (uptr*)(aligned_shadow-4*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow-3*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow-2*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow-1*kWordSize));
+    PrintBytes("=>", (uptr*)(aligned_shadow+0*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow+1*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow+2*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow+3*kWordSize));
+    PrintBytes("  ", (uptr*)(aligned_shadow+4*kWordSize));
+  }
   if (error_report_callback) {
     error_report_callback(error_message_buffer);
   }

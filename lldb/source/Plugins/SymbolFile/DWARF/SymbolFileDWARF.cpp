@@ -859,9 +859,9 @@ SymbolFileDWARF::ParseCompileUnitFunction (const SymbolContext& sc, DWARFCompile
         {
             Mangled func_name;
             if (mangled)
-                func_name.SetValue(mangled, true);
+                func_name.SetValue(ConstString(mangled), true);
             else if (name)
-                func_name.SetValue(name, false);
+                func_name.SetValue(ConstString(name), false);
 
             FunctionSP func_sp;
             std::auto_ptr<Declaration> decl_ap;
@@ -1012,7 +1012,7 @@ ParseDWARFLineTableCallback(dw_offset_t offset, const DWARFDebugLine::State& sta
                 // this address is resolved. If they are the same, then the
                 // function for this address didn't make it into the final
                 // executable.
-                bool curr_in_final_executable = info->curr_section_sp->GetLinkedSection () != NULL;
+                bool curr_in_final_executable = info->curr_section_sp->GetLinkedSection ();
 
                 // If we are doing DWARF with debug map, then we need to carefully
                 // add each line table entry as there may be gaps as functions
@@ -3069,7 +3069,7 @@ SymbolFileDWARF::FunctionDieMatchesPartialName (const DWARFDebugInfoEntry* die,
             if (attributes.ExtractFormValueAtIndex(this, idx, form_value))
             {
                 const char *name = form_value.AsCString(&get_debug_str_data());
-                best_name.SetValue (name, true);
+                best_name.SetValue (ConstString(name), true);
             } 
         }
         if (best_name)
@@ -6162,9 +6162,6 @@ SymbolFileDWARF::ParseType (const SymbolContext& sc, DWARFCompileUnit* dwarf_cu,
                         {
                             std::vector<uint64_t> element_orders;
                             ParseChildArrayInfo(sc, dwarf_cu, die, first_index, element_orders, byte_stride, bit_stride);
-                            // We have an array that claims to have no members, lets give it at least one member...
-                            if (element_orders.empty())
-                                element_orders.push_back (1);
                             if (byte_stride == 0 && bit_stride == 0)
                                 byte_stride = element_type->GetByteSize();
                             clang_type_t array_element_type = element_type->GetClangForwardType();

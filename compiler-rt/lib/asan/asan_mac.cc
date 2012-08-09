@@ -56,7 +56,7 @@ int GetMacosVersion() {
   int mib[2] = { CTL_KERN, KERN_OSRELEASE };
   char version[100];
   uptr len = 0, maxlen = sizeof(version) / sizeof(version[0]);
-  for (int i = 0; i < maxlen; i++) version[i] = '\0';
+  for (uptr i = 0; i < maxlen; i++) version[i] = '\0';
   // Get the version length.
   CHECK(sysctl(mib, 2, 0, &len, 0, 0) != -1);
   CHECK(len < maxlen);
@@ -90,6 +90,10 @@ void *AsanDoesNotSupportStaticLinkage() {
 
 bool AsanInterceptsSignal(int signum) {
   return (signum == SIGSEGV || signum == SIGBUS) && flags()->handle_segv;
+}
+
+void AsanPlatformThreadInit() {
+  ReplaceCFAllocator();
 }
 
 AsanLock::AsanLock(LinkerInitialized) {

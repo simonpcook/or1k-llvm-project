@@ -26,14 +26,37 @@ ASAN_USE_EXTERNAL_SYMBOLIZER(const void *pc, char *out, int out_size);
 
 namespace __asan {
 
+static const char *StripPathPrefix(const char *filepath) {
+  const char *path_prefix = flags()->strip_path_prefix;
+  if (filepath == internal_strstr(filepath, path_prefix))
+    return filepath + internal_strlen(path_prefix);
+  return filepath;
+}
+
 // ----------------------- AsanStackTrace ----------------------------- {{{1
+// PCs in stack traces are actually the return addresses, that is,
+// addresses of the next instructions after the call. That's why we
+// decrement them.
+static uptr patch_pc(uptr pc) {
+#ifdef __arm__
+  // Cancel Thumb bit.
+  pc = pc & (~1);
+#endif
+  return pc - 1;
+}
+
 #if defined(ASAN_USE_EXTERNAL_SYMBOLIZER)
 void AsanStackTrace::PrintStack(uptr *addr, uptr size) {
   for (uptr i = 0; i < size && addr[i]; i++) {
     uptr pc = addr[i];
+    if (i < size - 1 && addr[i + 1])
+      pc = patch_pc(pc);
     char buff[4096];
     ASAN_USE_EXTERNAL_SYMBOLIZER((void*)pc, buff, sizeof(buff));
-    AsanPrintf("  #%zu 0x%zx %s\n", i, pc, buff);
+    // We can't know anything about the string returned by external
+    // symbolizer, but if it starts with filename, try to strip path prefix
+    // from it.
+    AsanPrintf("  #%zu 0x%zx %s\n", i, pc, StripPathPrefix(buff));
   }
 }
 
@@ -43,11 +66,12 @@ void AsanStackTrace::PrintStack(uptr *addr, uptr size) {
   uptr frame_num = 0;
   for (uptr i = 0; i < size && addr[i]; i++) {
     uptr pc = addr[i];
+    if (i < size - 1 && addr[i + 1])
+      pc = patch_pc(pc);
     AddressInfo addr_frames[64];
     uptr addr_frames_num = 0;
     if (flags()->symbolize) {
-      bool last_frame = (i == size - 1) || !addr[i + 1];
-      addr_frames_num = SymbolizeCode(pc - !last_frame, addr_frames,
+      addr_frames_num = SymbolizeCode(pc, addr_frames,
                                       ASAN_ARRAY_SIZE(addr_frames));
     }
     if (addr_frames_num > 0) {
@@ -58,9 +82,11 @@ void AsanStackTrace::PrintStack(uptr *addr, uptr size) {
           AsanPrintf(" in %s", info.function);
         }
         if (info.file) {
-          AsanPrintf(" %s:%d:%d", info.file, info.line, info.column);
+          AsanPrintf(" %s:%d:%d", StripPathPrefix(info.file), info.line,
+                                  info.column);
         } else if (info.module) {
-          AsanPrintf(" (%s+0x%zx)", info.module, info.module_offset);
+          AsanPrintf(" (%s+0x%zx)", StripPathPrefix(info.module),
+                                    info.module_offset);
         }
         AsanPrintf("\n");
         info.Clear();
@@ -71,8 +97,8 @@ void AsanStackTrace::PrintStack(uptr *addr, uptr size) {
       char filename[4096];
       if (proc_maps.GetObjectNameAndOffset(pc, &offset,
                                            filename, sizeof(filename))) {
-        AsanPrintf("    #%zu 0x%zx (%s+0x%zx)\n", frame_num, pc, filename,
-                                                  offset);
+        AsanPrintf("    #%zu 0x%zx (%s+0x%zx)\n",
+                   frame_num, pc, StripPathPrefix(filename), offset);
       } else {
         AsanPrintf("    #%zu 0x%zx\n", frame_num, pc);
       }

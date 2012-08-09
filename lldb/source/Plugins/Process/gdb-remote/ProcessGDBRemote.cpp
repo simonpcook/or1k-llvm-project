@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <spawn.h>
 #include <stdlib.h>
+#include <netinet/in.h>
 #include <sys/mman.h>       // for mmap
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -47,13 +48,13 @@
 // Project includes
 #include "lldb/Host/Host.h"
 #include "Plugins/Process/Utility/InferiorCallPOSIX.h"
+#include "Plugins/Process/Utility/StopInfoMachException.h"
 #include "Plugins/Platform/MacOSX/PlatformRemoteiOS.h"
 #include "Utility/StringExtractorGDBRemote.h"
 #include "GDBRemoteRegisterContext.h"
 #include "ProcessGDBRemote.h"
 #include "ProcessGDBRemoteLog.h"
 #include "ThreadGDBRemote.h"
-#include "StopInfoMachException.h"
 
 namespace lldb
 {
@@ -80,6 +81,18 @@ using namespace lldb_private;
 
 static bool rand_initialized = false;
 
+// TODO Randomly assigning a port is unsafe.  We should get an unused
+// ephemeral port from the kernel and make sure we reserve it before passing
+// it to debugserver.
+
+#if defined (__APPLE__)
+#define LOW_PORT    (IPPORT_RESERVED)
+#define HIGH_PORT   (IPPORT_HIFIRSTAUTO)
+#else
+#define LOW_PORT    (1024u)
+#define HIGH_PORT   (49151u)
+#endif
+
 static inline uint16_t
 get_random_port ()
 {
@@ -90,7 +103,7 @@ get_random_port ()
         rand_initialized = true;
         srand(seed);
     }
-    return (rand() % (UINT16_MAX - 1000u)) + 1000u;
+    return (rand() % (HIGH_PORT - LOW_PORT)) + LOW_PORT;
 }
 
 
@@ -729,6 +742,7 @@ ProcessGDBRemote::ConnectToDebugserver (const char *connect_url)
     m_gdb_comm.GetListThreadsInStopReplySupported ();
     m_gdb_comm.GetHostInfo ();
     m_gdb_comm.GetVContSupported ('c');
+    m_gdb_comm.GetVAttachOrWaitSupported();
     
     size_t num_cmds = GetExtraStartupCommands().GetArgumentCount();
     for (size_t idx = 0; idx < num_cmds; idx++)
@@ -916,7 +930,19 @@ ProcessGDBRemote::DoAttachToProcessWithName (const char *process_name, bool wait
             StreamString packet;
             
             if (wait_for_launch)
-                packet.PutCString("vAttachWait");
+            {
+                if (!m_gdb_comm.GetVAttachOrWaitSupported())
+                {
+                    packet.PutCString ("vAttachWait");
+                }
+                else
+                {
+                    if (attach_info.GetIgnoreExisting())
+                        packet.PutCString("vAttachWait");
+                    else
+                        packet.PutCString ("vAttachOrWait");
+                }
+            }
             else
                 packet.PutCString("vAttachName");
             packet.PutChar(';');
@@ -1842,7 +1868,7 @@ ProcessGDBRemote::DoDestroy ()
         {
             if (log)
                 log->Printf ("ProcessGDBRemote::DoDestroy - failed to send k packet");
-            exit_string.assign ("killing while attaching.");
+            exit_string.assign ("killed or interrupted while attaching.");
         }
     }
     else

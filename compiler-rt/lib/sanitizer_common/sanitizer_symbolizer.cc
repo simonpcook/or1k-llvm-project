@@ -7,13 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This is a stub for LLVM-based symbolizer.
 // This file is shared between AddressSanitizer and ThreadSanitizer
-// run-time libraries. See sanitizer.h for details.
+// run-time libraries. See sanitizer_symbolizer.h for details.
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common.h"
-#include "sanitizer_placement_new.h"
 #include "sanitizer_procmaps.h"
 #include "sanitizer_symbolizer.h"
 
@@ -38,7 +36,7 @@ void AddressInfo::Clear() {
   internal_memset(this, 0, sizeof(AddressInfo));
 }
 
-ModuleDIContext::ModuleDIContext(const char *module_name) {
+ModuleDIContext::ModuleDIContext(const char *module_name, uptr base_address) {
   full_name_ = internal_strdup(module_name);
   short_name_ = internal_strrchr(module_name, '/');
   if (short_name_ == 0) {
@@ -46,17 +44,17 @@ ModuleDIContext::ModuleDIContext(const char *module_name) {
   } else {
     short_name_++;
   }
-  base_address_ = (uptr)-1;
+  base_address_ = base_address;
   n_ranges_ = 0;
   mapped_addr_ = 0;
   mapped_size_ = 0;
+  dwarf_context_ = 0;
 }
 
 void ModuleDIContext::addAddressRange(uptr beg, uptr end) {
   CHECK_LT(n_ranges_, kMaxNumberOfAddressRanges);
   ranges_[n_ranges_].beg = beg;
   ranges_[n_ranges_].end = end;
-  base_address_ = Min(base_address_, beg);
   n_ranges_++;
 }
 
@@ -72,29 +70,25 @@ void ModuleDIContext::getAddressInfo(AddressInfo *info) {
   info->module = internal_strdup(full_name_);
   info->module_offset = info->address - base_address_;
   if (mapped_addr_ == 0)
-    CreateDIContext();
-  // FIXME: Use the actual debug info context here.
-  info->function = 0;
-  info->file = 0;
-  info->line = 0;
-  info->column = 0;
+    CreateDWARFContext();
+  getLineInfoFromContext(dwarf_context_, info);
 }
 
-void ModuleDIContext::CreateDIContext() {
+void ModuleDIContext::CreateDWARFContext() {
   mapped_addr_ = (uptr)MapFileToMemory(full_name_, &mapped_size_);
   CHECK(mapped_addr_);
   DWARFSection debug_info;
   DWARFSection debug_abbrev;
-  DWARFSection debug_line;
   DWARFSection debug_aranges;
+  DWARFSection debug_line;
   DWARFSection debug_str;
   FindDWARFSection(mapped_addr_, "debug_info", &debug_info);
   FindDWARFSection(mapped_addr_, "debug_abbrev", &debug_abbrev);
-  FindDWARFSection(mapped_addr_, "debug_line", &debug_line);
   FindDWARFSection(mapped_addr_, "debug_aranges", &debug_aranges);
+  FindDWARFSection(mapped_addr_, "debug_line", &debug_line);
   FindDWARFSection(mapped_addr_, "debug_str", &debug_str);
-  // FIXME: Construct actual debug info context using mapped_addr,
-  // mapped_size and pointers to DWARF sections in memory.
+  dwarf_context_ = getDWARFContext(debug_info, debug_abbrev, debug_aranges,
+                                   debug_line, debug_str);
 }
 
 class Symbolizer {
@@ -130,7 +124,7 @@ class Symbolizer {
     }
     return 0;
   }
-  static const uptr kMaxNumberOfModuleContexts = 256;
+  static const uptr kMaxNumberOfModuleContexts = 4096;
   // Array of module debug info contexts is leaked.
   ModuleDIContext *modules_;
   uptr n_modules_;

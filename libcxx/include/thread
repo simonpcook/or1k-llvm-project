@@ -173,13 +173,13 @@ __thread_specific_ptr<_Tp>::reset(pointer __p)
     delete __p_old;
 }
 
-class thread;
-class __thread_id;
+class _LIBCPP_VISIBLE thread;
+class _LIBCPP_VISIBLE __thread_id;
 
 namespace this_thread
 {
 
-__thread_id get_id() _NOEXCEPT;
+_LIBCPP_INLINE_VISIBILITY __thread_id get_id() _NOEXCEPT;
 
 }  // this_thread
 
@@ -227,7 +227,7 @@ private:
     _LIBCPP_INLINE_VISIBILITY
     __thread_id(pthread_t __id) : __id_(__id) {}
 
-    friend __thread_id this_thread::get_id();
+    friend __thread_id this_thread::get_id() _NOEXCEPT;
     friend class _LIBCPP_VISIBLE thread;
     friend struct _LIBCPP_VISIBLE hash<__thread_id>;
 };
@@ -410,10 +410,20 @@ void
 sleep_for(const chrono::duration<_Rep, _Period>& __d)
 {
     using namespace chrono;
-    nanoseconds __ns = duration_cast<nanoseconds>(__d);
-    if (__ns < __d)
-        ++__ns;
-    sleep_for(__ns);
+    if (__d > duration<_Rep, _Period>::zero())
+    {
+        _LIBCPP_CONSTEXPR duration<long double> _Max = nanoseconds::max();
+        nanoseconds __ns;
+        if (__d < _Max)
+        {
+            __ns = duration_cast<nanoseconds>(__d);
+            if (__ns < __d)
+                ++__ns;
+        }
+        else
+            __ns = nanoseconds::max();
+        sleep_for(__ns);
+    }
 }
 
 template <class _Clock, class _Duration>

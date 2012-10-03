@@ -15,7 +15,9 @@
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_libc.h"
+#include "sanitizer_common/sanitizer_stackdepot.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
+#include "sanitizer_common/sanitizer_symbolizer.h"
 #include "tsan_defs.h"
 #include "tsan_platform.h"
 #include "tsan_rtl.h"
@@ -51,7 +53,7 @@ Context::Context()
 }
 
 // The objects are allocated in TLS, so one may rely on zero-initialization.
-ThreadState::ThreadState(Context *ctx, int tid, u64 epoch,
+ThreadState::ThreadState(Context *ctx, int tid, int unique_id, u64 epoch,
                          uptr stk_addr, uptr stk_size,
                          uptr tls_addr, uptr tls_size)
   : fast_state(tid, epoch)
@@ -62,6 +64,7 @@ ThreadState::ThreadState(Context *ctx, int tid, u64 epoch,
   // , in_rtl()
   , shadow_stack_pos(&shadow_stack[0])
   , tid(tid)
+  , unique_id(unique_id)
   , stk_addr(stk_addr)
   , stk_size(stk_size)
   , tls_addr(tls_addr)
@@ -71,6 +74,7 @@ ThreadState::ThreadState(Context *ctx, int tid, u64 epoch,
 ThreadContext::ThreadContext(int tid)
   : tid(tid)
   , unique_id()
+  , os_id()
   , user_id()
   , thr()
   , status(ThreadStatusInvalid)
@@ -119,9 +123,9 @@ static void MemoryProfileThread(void *arg) {
   ScopedInRtl in_rtl;
   fd_t fd = (fd_t)(uptr)arg;
   for (int i = 0; ; i++) {
-    InternalScopedBuf<char> buf(4096);
-    WriteMemoryProfile(buf.Ptr(), buf.Size(), i);
-    internal_write(fd, buf.Ptr(), internal_strlen(buf.Ptr()));
+    InternalScopedBuffer<char> buf(4096);
+    WriteMemoryProfile(buf.data(), buf.size(), i);
+    internal_write(fd, buf.data(), internal_strlen(buf.data()));
     SleepForSeconds(1);
   }
 }
@@ -129,10 +133,10 @@ static void MemoryProfileThread(void *arg) {
 static void InitializeMemoryProfile() {
   if (flags()->profile_memory == 0 || flags()->profile_memory[0] == 0)
     return;
-  InternalScopedBuf<char> filename(4096);
-  internal_snprintf(filename.Ptr(), filename.Size(), "%s.%d",
+  InternalScopedBuffer<char> filename(4096);
+  internal_snprintf(filename.data(), filename.size(), "%s.%d",
       flags()->profile_memory, GetPid());
-  fd_t fd = internal_open(filename.Ptr(), true);
+  fd_t fd = internal_open(filename.data(), true);
   if (fd == kInvalidFd) {
     TsanPrintf("Failed to open memory profile file '%s'\n", &filename[0]);
     Die();
@@ -162,7 +166,13 @@ void Initialize(ThreadState *thr) {
   if (is_initialized)
     return;
   is_initialized = true;
+  // Install tool-specific callbacks in sanitizer_common.
+  SetCheckFailedCallback(TsanCheckFailed);
+
   ScopedInRtl in_rtl;
+#ifndef TSAN_GO
+  InitializeAllocator();
+#endif
   InitializeInterceptors();
   const char *env = InitializePlatform();
   InitializeMutex();
@@ -174,6 +184,13 @@ void Initialize(ThreadState *thr) {
   ctx->dead_list_tail = 0;
   InitializeFlags(&ctx->flags, env);
   InitializeSuppressions();
+#ifndef TSAN_GO
+  // Initialize external symbolizer before internal threads are started.
+  const char *external_symbolizer = flags()->external_symbolizer_path;
+  if (external_symbolizer != 0 && external_symbolizer[0] != '\0') {
+    InitializeExternalSymbolizer(external_symbolizer);
+  }
+#endif
   InitializeMemoryProfile();
   InitializeMemoryFlush();
 
@@ -185,7 +202,7 @@ void Initialize(ThreadState *thr) {
   ctx->thread_seq = 0;
   int tid = ThreadCreate(thr, 0, 0, true);
   CHECK_EQ(tid, 0);
-  ThreadStart(thr, tid);
+  ThreadStart(thr, tid, GetPid());
   CHECK_EQ(thr->in_rtl, 1);
   ctx->initialized = true;
 
@@ -201,6 +218,10 @@ int Finalize(ThreadState *thr) {
   ScopedInRtl in_rtl;
   Context *ctx = __tsan::ctx;
   bool failed = false;
+
+  // Wait for pending reports.
+  ctx->report_mtx.Lock();
+  ctx->report_mtx.Unlock();
 
   ThreadFinalize(thr);
 
@@ -218,6 +239,22 @@ int Finalize(ThreadState *thr) {
   StatOutput(ctx->stat);
   return failed ? flags()->exitcode : 0;
 }
+
+#ifndef TSAN_GO
+u32 CurrentStackId(ThreadState *thr, uptr pc) {
+  if (thr->shadow_stack_pos == 0)  // May happen during bootstrap.
+    return 0;
+  if (pc) {
+    thr->shadow_stack_pos[0] = pc;
+    thr->shadow_stack_pos++;
+  }
+  u32 id = StackDepotPut(thr->shadow_stack,
+                         thr->shadow_stack_pos - thr->shadow_stack);
+  if (pc)
+    thr->shadow_stack_pos--;
+  return id;
+}
+#endif
 
 void TraceSwitch(ThreadState *thr) {
   thr->nomalloc++;
@@ -414,24 +451,29 @@ static void MemoryRangeSet(ThreadState *thr, uptr pc, uptr addr, uptr size,
     addr += offset;
     size -= offset;
   }
-  CHECK_EQ(addr % 8, 0);
-  CHECK(IsAppMem(addr));
-  CHECK(IsAppMem(addr + size - 1));
+  DCHECK_EQ(addr % 8, 0);
+  // If a user passes some insane arguments (memset(0)),
+  // let it just crash as usual.
+  if (!IsAppMem(addr) || !IsAppMem(addr + size - 1))
+    return;
   (void)thr;
   (void)pc;
   // Some programs mmap like hundreds of GBs but actually used a small part.
   // So, it's better to report a false positive on the memory
   // then to hang here senselessly.
-  const uptr kMaxResetSize = 1024*1024*1024;
+  const uptr kMaxResetSize = 4ull*1024*1024*1024;
   if (size > kMaxResetSize)
     size = kMaxResetSize;
-  size = (size + 7) & ~7;
+  size = (size + (kShadowCell - 1)) & ~(kShadowCell - 1);
   u64 *p = (u64*)MemToShadow(addr);
   CHECK(IsShadowMem((uptr)p));
   CHECK(IsShadowMem((uptr)(p + size * kShadowCnt / kShadowCell - 1)));
   // FIXME: may overwrite a part outside the region
-  for (uptr i = 0; i < size * kShadowCnt / kShadowCell; i++)
-    p[i] = val;
+  for (uptr i = 0; i < size * kShadowCnt / kShadowCell;) {
+    p[i++] = val;
+    for (uptr j = 1; j < kShadowCnt; j++)
+      p[i++] = 0;
+  }
 }
 
 void MemoryResetRange(ThreadState *thr, uptr pc, uptr addr, uptr size) {
@@ -442,6 +484,13 @@ void MemoryRangeFreed(ThreadState *thr, uptr pc, uptr addr, uptr size) {
   MemoryAccessRange(thr, pc, addr, size, true);
   Shadow s(thr->fast_state);
   s.MarkAsFreed();
+  s.SetWrite(true);
+  s.SetAddr0AndSizeLog(0, 3);
+  MemoryRangeSet(thr, pc, addr, size, s.raw());
+}
+
+void MemoryRangeImitateWrite(ThreadState *thr, uptr pc, uptr addr, uptr size) {
+  Shadow s(thr->fast_state);
   s.SetWrite(true);
   s.SetAddr0AndSizeLog(0, 3);
   MemoryRangeSet(thr, pc, addr, size, s.raw());

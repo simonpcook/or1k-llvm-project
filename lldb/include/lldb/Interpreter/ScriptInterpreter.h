@@ -68,6 +68,11 @@ public:
                                                     const lldb::StackFrameSP& frame_sp,
                                                     const lldb::BreakpointLocationSP &bp_loc_sp);
     
+    typedef bool (*SWIGWatchpointCallbackFunction) (const char *python_function_name,
+                                                    const char *session_dictionary_name,
+                                                    const lldb::StackFrameSP& frame_sp,
+                                                    const lldb::WatchpointSP &wp_sp);
+    
     typedef bool (*SWIGPythonTypeScriptCallbackFunction) (const char *python_function_name,
                                                           void *session_dictionary,
                                                           const lldb::ValueObjectSP& valobj_sp,
@@ -77,6 +82,10 @@ public:
     typedef void* (*SWIGPythonCreateSyntheticProvider) (const std::string python_class_name,
                                                         const char *session_dictionary_name,
                                                         const lldb::ValueObjectSP& valobj_sp);
+
+    typedef void* (*SWIGPythonCreateOSPlugin) (const std::string python_class_name,
+                                               const char *session_dictionary_name,
+                                               const lldb::ProcessSP& process_sp);
     
     typedef uint32_t       (*SWIGPythonCalculateNumChildren)        (void *implementor);
     typedef void*          (*SWIGPythonGetChildAtIndex)             (void *implementor, uint32_t idx);
@@ -148,6 +157,12 @@ public:
     }
     
     virtual bool
+    GenerateWatchpointCommandCallbackData (StringList &input, std::string& output)
+    {
+        return false;
+    }
+    
+    virtual bool
     GenerateTypeScriptFunction (const char* oneliner, std::string& output, void* name_token = NULL)
     {
         return false;
@@ -184,6 +199,32 @@ public:
         return lldb::ScriptInterpreterObjectSP();
     }
     
+    virtual lldb::ScriptInterpreterObjectSP
+    CreateOSPlugin (std::string class_name,
+                    lldb::ProcessSP process_sp)
+    {
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_QueryForRegisterInfo (lldb::ScriptInterpreterObjectSP object)
+    {
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_QueryForThreadsInfo (lldb::ScriptInterpreterObjectSP object)
+    {
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_QueryForRegisterContextData (lldb::ScriptInterpreterObjectSP object,
+                                          lldb::tid_t thread_id)
+    {
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
     virtual bool
     GenerateFunction(const char *signature, const StringList &input)
     {
@@ -194,9 +235,21 @@ public:
     CollectDataForBreakpointCommandCallback (BreakpointOptions *bp_options,
                                              CommandReturnObject &result);
 
+    virtual void 
+    CollectDataForWatchpointCommandCallback (WatchpointOptions *wp_options,
+                                             CommandReturnObject &result);
+
     /// Set a one-liner as the callback for the breakpoint.
     virtual void 
     SetBreakpointCommandCallback (BreakpointOptions *bp_options,
+                                  const char *oneliner)
+    {
+        return;
+    }
+    
+    /// Set a one-liner as the callback for the watchpoint.
+    virtual void 
+    SetWatchpointCommandCallback (WatchpointOptions *wp_options,
                                   const char *oneliner)
     {
         return;
@@ -245,10 +298,11 @@ public:
         return false;
     }
     
-    virtual std::string
-    GetDocumentationForItem (const char* item)
+    virtual bool
+    GetDocumentationForItem (const char* item, std::string& dest)
     {
-        return std::string("");
+		dest.clear();
+        return false;
     }
 
     virtual bool

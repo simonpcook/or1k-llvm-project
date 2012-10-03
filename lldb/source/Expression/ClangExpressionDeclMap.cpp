@@ -13,6 +13,7 @@
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclarationName.h"
 #include "clang/AST/Decl.h"
 #include "lldb/lldb-private.h"
@@ -479,6 +480,8 @@ ClangExpressionDeclMap::AddPersistentVariable
     
     if (!var_sp)
         return false;
+    
+    var_sp->m_frozen_sp->SetHasCompleteType();
     
     if (is_result)
         var_sp->m_flags |= ClangExpressionVariable::EVNeedsFreezeDry;
@@ -1455,7 +1458,7 @@ ClangExpressionDeclMap::DoMaterialize
         if (log)
             log->PutCString("Not bothering to allocate a struct because no arguments are needed");
         
-        m_material_vars->m_allocated_area = NULL;
+        m_material_vars->m_allocated_area = 0UL;
         
         return true;
     }
@@ -1501,6 +1504,12 @@ ClangExpressionDeclMap::DoMaterialize
         
         if (m_found_entities.ContainsVariable (member_sp))
         {
+            if (!member_sp->GetValueObject())
+            {
+                err.SetErrorString("Variable being materialized doesn't have a frozen version");
+                return false;
+            }
+            
             RegisterInfo *reg_info = member_sp->GetRegisterInfo ();
             if (reg_info)
             {
@@ -1658,7 +1667,7 @@ ClangExpressionDeclMap::DoMaterializeOnePersistentVariable
                 mem = var_sp->m_live_sp->GetValue().GetScalar().ULongLong();
                 
                 if (log)
-                    log->Printf("Dematerializing %s from 0x%llx", var_sp->GetName().GetCString(), (uint64_t)mem);
+                    log->Printf("Dematerializing %s from 0x%llx (size = %u)", var_sp->GetName().GetCString(), (uint64_t)mem, (unsigned)pvar_byte_size);
                 
                 // Read the contents of the spare memory area
                                 
@@ -3135,7 +3144,7 @@ ClangExpressionDeclMap::ResolveUnknownTypes()
                 if (log)
                     log->Printf("ClangExpressionDeclMap::ResolveUnknownType - Couldn't import the type for a variable");
                 
-                return lldb::ClangExpressionVariableSP();
+                return (bool) lldb::ClangExpressionVariableSP();
             }
             
             TypeFromUser user_type(copied_type, scratch_ast_context);

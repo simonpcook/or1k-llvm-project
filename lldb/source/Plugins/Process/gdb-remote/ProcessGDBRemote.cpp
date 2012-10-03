@@ -31,12 +31,14 @@
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Core/InputReader.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/State.h"
 #include "lldb/Core/StreamFile.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Core/Value.h"
+#include "lldb/Host/Symbols.h"
 #include "lldb/Host/TimeValue.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/DynamicLoader.h"
@@ -55,6 +57,8 @@
 #include "ProcessGDBRemote.h"
 #include "ProcessGDBRemoteLog.h"
 #include "ThreadGDBRemote.h"
+
+#include "Plugins/DynamicLoader/Darwin-Kernel/DynamicLoaderDarwinKernel.h"
 
 namespace lldb
 {
@@ -190,7 +194,9 @@ ProcessGDBRemote::ProcessGDBRemote(Target& target, Listener &listener) :
     m_addr_to_mmap_size (),
     m_thread_create_bp_sp (),
     m_waiting_for_attach (false),
-    m_destroy_tried_resuming (false)
+    m_destroy_tried_resuming (false),
+    m_dyld_plugin_name(),
+    m_kernel_load_addr (LLDB_INVALID_ADDRESS)
 {
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncThreadShouldExit,   "async thread should exit");
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncContinue,           "async thread continue");
@@ -300,18 +306,16 @@ ProcessGDBRemote::BuildDynamicRegisterInfo (bool force)
                     }
                     else if (name.compare("encoding") == 0)
                     {
-                        if (value.compare("uint") == 0)
-                            reg_info.encoding = eEncodingUint;
-                        else if (value.compare("sint") == 0)
-                            reg_info.encoding = eEncodingSint;
-                        else if (value.compare("ieee754") == 0)
-                            reg_info.encoding = eEncodingIEEE754;
-                        else if (value.compare("vector") == 0)
-                            reg_info.encoding = eEncodingVector;
+                        const Encoding encoding = Args::StringToEncoding (value.c_str());
+                        if (encoding != eEncodingInvalid)
+                            reg_info.encoding = encoding;
                     }
                     else if (name.compare("format") == 0)
                     {
-                        if (value.compare("binary") == 0)
+                        Format format = eFormatInvalid;
+                        if (Args::StringToFormat (value.c_str(), format, NULL).Success())
+                            reg_info.format = format;
+                        else if (value.compare("binary") == 0)
                             reg_info.format = eFormatBinary;
                         else if (value.compare("decimal") == 0)
                             reg_info.format = eFormatDecimal;
@@ -350,33 +354,7 @@ ProcessGDBRemote::BuildDynamicRegisterInfo (bool force)
                     }
                     else if (name.compare("generic") == 0)
                     {
-                        if (value.compare("pc") == 0)
-                            reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_PC;
-                        else if (value.compare("sp") == 0)
-                            reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_SP;
-                        else if (value.compare("fp") == 0)
-                            reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_FP;
-                        else if (value.compare("ra") == 0)
-                            reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_RA;
-                        else if (value.compare("flags") == 0)
-                            reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_FLAGS;
-                        else if (value.find("arg") == 0)
-                        {
-                            if (value.size() == 4)
-                            {
-                                switch (value[3])
-                                {
-                                    case '1': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG1; break;
-                                    case '2': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG2; break;
-                                    case '3': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG3; break;
-                                    case '4': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG4; break;
-                                    case '5': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG5; break;
-                                    case '6': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG6; break;
-                                    case '7': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG7; break;
-                                    case '8': reg_info.kinds[eRegisterKindGeneric] = LLDB_REGNUM_GENERIC_ARG8; break;
-                                }
-                            }
-                        }
+                        reg_info.kinds[eRegisterKindGeneric] = Args::StringToGenericRegister (value.c_str());
                     }
                 }
 
@@ -441,7 +419,7 @@ ProcessGDBRemote::WillAttachToProcessWithName (const char *process_name, bool wa
 }
 
 Error
-ProcessGDBRemote::DoConnectRemote (const char *remote_url)
+ProcessGDBRemote::DoConnectRemote (Stream *strm, const char *remote_url)
 {
     Error error (WillLaunchOrAttach ());
     
@@ -453,6 +431,8 @@ ProcessGDBRemote::DoConnectRemote (const char *remote_url)
     if (error.Fail())
         return error;
     StartAsyncThread ();
+
+    CheckForKernel (strm);
 
     lldb::pid_t pid = m_gdb_comm.GetCurrentProcessID ();
     if (pid == LLDB_INVALID_PROCESS_ID)
@@ -489,6 +469,108 @@ ProcessGDBRemote::DoConnectRemote (const char *remote_url)
     }
 
     return error;
+}
+
+// When we are establishing a connection to a remote system and we have no executable specified,
+// or the executable is a kernel, we may be looking at a KASLR situation (where the kernel has been
+// slid in memory.)
+//
+// This function tries to locate the kernel in memory if this is possibly a kernel debug session.
+//
+// If a kernel is found, return the address of the kernel in GetImageInfoAddress() -- the 
+// DynamicLoaderDarwinKernel plugin uses this address as the kernel load address and will load the
+// binary, if needed, along with all the kexts.
+
+void
+ProcessGDBRemote::CheckForKernel (Stream *strm)
+{
+    // early return if this isn't an "unknown" system (kernel debugging doesn't have a system type)
+    const ArchSpec &gdb_remote_arch = m_gdb_comm.GetHostArchitecture();
+    if (!gdb_remote_arch.IsValid() || gdb_remote_arch.GetTriple().getVendor() != llvm::Triple::UnknownVendor)
+        return;
+
+    Module *exe_module = GetTarget().GetExecutableModulePointer();
+    ObjectFile *exe_objfile = NULL;
+    if (exe_module)
+        exe_objfile = exe_module->GetObjectFile();
+
+    // early return if we have an executable and it is not a kernel--this is very unlikely to be a kernel debug session.
+    if (exe_objfile
+        && (exe_objfile->GetType() != ObjectFile::eTypeExecutable 
+            || exe_objfile->GetStrata() != ObjectFile::eStrataKernel))
+        return;
+
+    // See if the kernel is in memory at the File address (slide == 0) -- no work needed, if so.
+    if (exe_objfile && exe_objfile->GetHeaderAddress().IsValid())
+    {
+        ModuleSP memory_module_sp;
+        memory_module_sp = ReadModuleFromMemory (exe_module->GetFileSpec(), exe_objfile->GetHeaderAddress().GetFileAddress(), false, false);
+        if (memory_module_sp.get() 
+            && memory_module_sp->GetUUID().IsValid() 
+            && memory_module_sp->GetUUID() == exe_module->GetUUID())
+        {
+            m_kernel_load_addr = exe_objfile->GetHeaderAddress().GetFileAddress();
+            m_dyld_plugin_name = DynamicLoaderDarwinKernel::GetPluginNameStatic();
+            return;
+        }
+    }
+
+    // See if the kernel's load address is stored in the kernel's low globals page; this is
+    // done when a debug boot-arg has been set.  
+
+    Error error;
+    uint8_t buf[24];
+    ModuleSP memory_module_sp;
+    addr_t kernel_addr = LLDB_INVALID_ADDRESS;
+    
+    // First try the 32-bit 
+    if (memory_module_sp.get() == NULL)
+    {
+        DataExtractor data4 (buf, sizeof(buf), gdb_remote_arch.GetByteOrder(), 4);
+        if (DoReadMemory (0xffff0110, buf, 4, error) == 4)
+        {
+            uint32_t offset = 0;
+            kernel_addr = data4.GetU32(&offset);
+            memory_module_sp = ReadModuleFromMemory (FileSpec("mach_kernel", false), kernel_addr, false, false);
+            if (!memory_module_sp.get()
+                || !memory_module_sp->GetUUID().IsValid()
+                || memory_module_sp->GetObjectFile() == NULL
+                || memory_module_sp->GetObjectFile()->GetType() != ObjectFile::eTypeExecutable
+                || memory_module_sp->GetObjectFile()->GetStrata() != ObjectFile::eStrataKernel)
+            {
+                memory_module_sp.reset();
+            }
+        }
+    }
+
+    // Now try the 64-bit location
+    if (memory_module_sp.get() == NULL)
+    {
+        DataExtractor data8 (buf, sizeof(buf), gdb_remote_arch.GetByteOrder(), 8);
+        if (DoReadMemory (0xffffff8000002010ULL, buf, 8, error) == 8)
+        {   
+            uint32_t offset = 0; 
+            kernel_addr = data8.GetU32(&offset);
+            memory_module_sp = ReadModuleFromMemory (FileSpec("mach_kernel", false), kernel_addr, false, false);
+            if (!memory_module_sp.get()
+                || !memory_module_sp->GetUUID().IsValid()
+                || memory_module_sp->GetObjectFile() == NULL
+                || memory_module_sp->GetObjectFile()->GetType() != ObjectFile::eTypeExecutable
+                || memory_module_sp->GetObjectFile()->GetStrata() != ObjectFile::eStrataKernel)
+            {
+                memory_module_sp.reset();
+            }
+        }
+    }
+
+    if (memory_module_sp.get() 
+        && memory_module_sp->GetArchitecture().IsValid() 
+        && memory_module_sp->GetArchitecture().GetTriple().getVendor() == llvm::Triple::Apple)
+    {
+        m_kernel_load_addr = kernel_addr;
+        m_dyld_plugin_name = DynamicLoaderDarwinKernel::GetPluginNameStatic();
+        return;
+    }
 }
 
 Error
@@ -1766,7 +1848,7 @@ ProcessGDBRemote::DoDestroy ()
                 ThreadList &threads = GetThreadList();
                 
                 {
-                    Mutex::Locker(threads.GetMutex());
+                    Mutex::Locker locker(threads.GetMutex());
                     
                     size_t num_threads = threads.GetSize();
                     for (size_t i = 0; i < num_threads; i++)
@@ -1801,7 +1883,7 @@ ProcessGDBRemote::DoDestroy ()
                     // have to run the risk of letting those threads proceed a bit.
     
                     {
-                        Mutex::Locker(threads.GetMutex());
+                        Mutex::Locker locker(threads.GetMutex());
                         
                         size_t num_threads = threads.GetSize();
                         for (size_t i = 0; i < num_threads; i++)
@@ -1839,6 +1921,8 @@ ProcessGDBRemote::DoDestroy ()
 
             StringExtractorGDBRemote response;
             bool send_async = true;
+            const uint32_t old_packet_timeout = m_gdb_comm.SetPacketTimeout (3);
+
             if (m_gdb_comm.SendPacketAndWaitForResponse("k", 1, response, send_async))
             {
                 char packet_cmd = response.GetChar(0);
@@ -1863,6 +1947,8 @@ ProcessGDBRemote::DoDestroy ()
                     log->Printf ("ProcessGDBRemote::DoDestroy - failed to send k packet");
                 exit_string.assign("failed to send the k packet");
             }
+
+            m_gdb_comm.SetPacketTimeout(old_packet_timeout);
         }
         else
         {
@@ -1898,7 +1984,10 @@ ProcessGDBRemote::IsAlive ()
 addr_t
 ProcessGDBRemote::GetImageInfoAddress()
 {
-    return m_gdb_comm.GetShlibInfoAddr();
+    if (m_kernel_load_addr != LLDB_INVALID_ADDRESS)
+        return m_kernel_load_addr;
+    else
+        return m_gdb_comm.GetShlibInfoAddr();
 }
 
 //------------------------------------------------------------------
@@ -1916,7 +2005,7 @@ ProcessGDBRemote::DoReadMemory (addr_t addr, void *buf, size_t size, Error &erro
     }
 
     char packet[64];
-    const int packet_len = ::snprintf (packet, sizeof(packet), "m%llx,%zx", (uint64_t)addr, size);
+    const int packet_len = ::snprintf (packet, sizeof(packet), "m%llx,%llx", (uint64_t)addr, (uint64_t)size);
     assert (packet_len + 1 < sizeof(packet));
     StringExtractorGDBRemote response;
     if (m_gdb_comm.SendPacketAndWaitForResponse(packet, packet_len, response, true))
@@ -1927,11 +2016,11 @@ ProcessGDBRemote::DoReadMemory (addr_t addr, void *buf, size_t size, Error &erro
             return response.GetHexBytes(buf, size, '\xdd');
         }
         else if (response.IsErrorResponse())
-            error.SetErrorStringWithFormat("gdb remote returned an error: %s", response.GetStringRef().c_str());
+            error.SetErrorString("memory read failed");
         else if (response.IsUnsupportedResponse())
-            error.SetErrorStringWithFormat("'%s' packet unsupported", packet);
+            error.SetErrorStringWithFormat("GDB server does not support reading memory");
         else
-            error.SetErrorStringWithFormat("unexpected response to '%s': '%s'", packet, response.GetStringRef().c_str());
+            error.SetErrorStringWithFormat("unexpected response to GDB server memory read packet '%s': '%s'", packet, response.GetStringRef().c_str());
     }
     else
     {
@@ -1952,7 +2041,7 @@ ProcessGDBRemote::DoWriteMemory (addr_t addr, const void *buf, size_t size, Erro
     }
 
     StreamString packet;
-    packet.Printf("M%llx,%zx:", addr, size);
+    packet.Printf("M%llx,%llx:", addr, (uint64_t)size);
     packet.PutBytesAsRawHex8(buf, size, lldb::endian::InlHostByteOrder(), lldb::endian::InlHostByteOrder());
     StringExtractorGDBRemote response;
     if (m_gdb_comm.SendPacketAndWaitForResponse(packet.GetData(), packet.GetSize(), response, true))
@@ -1963,11 +2052,11 @@ ProcessGDBRemote::DoWriteMemory (addr_t addr, const void *buf, size_t size, Erro
             return size;
         }
         else if (response.IsErrorResponse())
-            error.SetErrorStringWithFormat("gdb remote returned an error: %s", response.GetStringRef().c_str());
+            error.SetErrorString("memory write failed");
         else if (response.IsUnsupportedResponse())
-            error.SetErrorStringWithFormat("'%s' packet unsupported", packet.GetString().c_str());
+            error.SetErrorStringWithFormat("GDB server does not support writing memory");
         else
-            error.SetErrorStringWithFormat("unexpected response to '%s': '%s'", packet.GetString().c_str(), response.GetStringRef().c_str());
+            error.SetErrorStringWithFormat("unexpected response to GDB server memory write packet '%s': '%s'", packet.GetString().c_str(), response.GetStringRef().c_str());
     }
     else
     {
@@ -2009,7 +2098,7 @@ ProcessGDBRemote::DoAllocateMemory (size_t size, uint32_t permissions, Error &er
     }
     
     if (allocated_addr == LLDB_INVALID_ADDRESS)
-        error.SetErrorStringWithFormat("unable to allocate %zu bytes of memory with permissions %s", size, GetPermissionsAsCString (permissions));
+        error.SetErrorStringWithFormat("unable to allocate %llu bytes of memory with permissions %s", (uint64_t)size, GetPermissionsAsCString (permissions));
     else
         error.Clear();
     return allocated_addr;
@@ -2277,6 +2366,10 @@ ProcessGDBRemote::DisableWatchpoint (Watchpoint *wp)
         {
             if (log)
                 log->Printf ("ProcessGDBRemote::DisableWatchpoint (watchID = %llu) addr = 0x%8.8llx -- SUCCESS (already disabled)", watchID, (uint64_t)addr);
+            // See also 'class WatchpointSentry' within StopInfo.cpp.
+            // This disabling attempt might come from the user-supplied actions, we'll route it in order for
+            // the watchpoint object to intelligently process this action.
+            wp->SetEnabled(false);
             return error;
         }
         
@@ -2404,8 +2497,8 @@ ProcessGDBRemote::StartDebugserverProcess (const char *debugserver_url, const Pr
                 ::snprintf (arg_cstr, sizeof(arg_cstr), "--log-flags=%s", env_debugserver_log_flags);
                 debugserver_args.AppendArgument(arg_cstr);
             }
-//            debugserver_args.AppendArgument("--log-file=/tmp/debugserver.txt");
-//            debugserver_args.AppendArgument("--log-flags=0x802e0e");
+            debugserver_args.AppendArgument("--log-file=/tmp/debugserver.txt");
+            debugserver_args.AppendArgument("--log-flags=0x802e0e");
 
             // We currently send down all arguments, attach pids, or attach 
             // process names in dedicated GDB server packets, so we don't need
@@ -2907,4 +3000,11 @@ ProcessGDBRemote::StopNoticingNewThreads()
     return true;
 }
     
+lldb_private::DynamicLoader *
+ProcessGDBRemote::GetDynamicLoader ()
+{
+    if (m_dyld_ap.get() == NULL)
+        m_dyld_ap.reset (DynamicLoader::FindPlugin(this, m_dyld_plugin_name.empty() ? NULL : m_dyld_plugin_name.c_str()));
+    return m_dyld_ap.get();
+}
 

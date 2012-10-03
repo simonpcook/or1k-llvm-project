@@ -555,6 +555,7 @@ ClangASTType::GetFormat (clang_type_t clang_type)
         case clang::BuiltinType::Half:          
         case clang::BuiltinType::ARCUnbridgedCast:          
         case clang::BuiltinType::PseudoObject:
+        case clang::BuiltinType::BuiltinFn:
             return lldb::eFormatHex;
         }
         break;
@@ -1030,6 +1031,7 @@ ClangASTType::DumpTypeValue (clang::ASTContext *ast_context,
                     case eFormatDecimal:
                     case eFormatEnum:
                     case eFormatHex:
+                    case eFormatHexUppercase:
                     case eFormatFloat:
                     case eFormatOctal:
                     case eFormatOSType:
@@ -1270,7 +1272,7 @@ ClangASTType::DumpTypeDescription (clang::ASTContext *ast_context, clang_type_t 
                     if (class_interface_decl)
                     {
                         clang::PrintingPolicy policy = ast_context->getPrintingPolicy();
-                        policy.Dump = 1;
+                        policy.DumpSourceManager = &ast_context->getSourceManager();
                         class_interface_decl->print(llvm_ostrm, policy, s->GetIndentLevel());
                     }
                 }
@@ -1628,7 +1630,13 @@ ClangASTType::GetTypeByteSize(
     if (ClangASTContext::GetCompleteType (ast_context, opaque_clang_qual_type))
     {
         clang::QualType qual_type(clang::QualType::getFromOpaquePtr(opaque_clang_qual_type));
-        return (ast_context->getTypeSize (qual_type) + 7) / 8;
+        
+        uint32_t byte_size = (ast_context->getTypeSize (qual_type) + 7) / 8;
+        
+        if (ClangASTContext::IsObjCClassType(opaque_clang_qual_type))
+            byte_size += ast_context->getTypeSize(ast_context->ObjCBuiltinClassTy) / 8; // isa
+        
+        return byte_size;
     }
     return 0;
 }

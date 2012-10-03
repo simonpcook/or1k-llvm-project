@@ -22,6 +22,7 @@
 #include "lldb/Core/DataVisualization.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Log.h"
+#include "lldb/Core/Module.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/ValueObjectChild.h"
 #include "lldb/Core/ValueObjectConstResult.h"
@@ -1426,6 +1427,7 @@ ValueObject::DumpPrintableRepresentation(Stream& s,
                 (custom_format == eFormatComplexFloat) ||
                 (custom_format == eFormatDecimal) ||
                 (custom_format == eFormatHex) ||
+                (custom_format == eFormatHexUppercase) ||
                 (custom_format == eFormatFloat) ||
                 (custom_format == eFormatOctal) ||
                 (custom_format == eFormatOSType) ||
@@ -1782,7 +1784,7 @@ ValueObject::IsPossibleDynamicType ()
     if (process)
         return process->IsPossibleDynamicValue(*this);
     else
-        return ClangASTContext::IsPossibleDynamicType (GetClangAST (), GetClangType());
+        return ClangASTContext::IsPossibleDynamicType (GetClangAST (), GetClangType(), NULL, true, true);
 }
 
 ValueObjectSP
@@ -3191,9 +3193,16 @@ DumpValueObject_Impl (Stream &s,
             }
 
             s.Indent();
-
-            // Always show the type for the top level items.
-            if (options.m_show_types || (curr_depth == 0 && !options.m_flat_output))
+            
+            bool show_type = true;
+            // if we are at the root-level and been asked to hide the root's type, then hide it
+            if (curr_depth == 0 && options.m_hide_root_type)
+                show_type = false;
+            else
+            // otherwise decide according to the usual rules (asked to show types - always at the root level)
+                show_type = options.m_show_types || (curr_depth == 0 && !options.m_flat_output);
+            
+            if (show_type)
             {
                 const char* typeName = valobj->GetQualifiedTypeName().AsCString("<invalid type>");
                 //const char* typeName = valobj->GetTypeName().AsCString("<invalid type>");
@@ -3980,4 +3989,68 @@ ValueObject::GetSymbolContextScope()
             return m_parent->GetSymbolContextScope();
     }
     return NULL;
+}
+
+lldb::ValueObjectSP
+ValueObject::CreateValueObjectFromExpression (const char* name,
+                                              const char* expression,
+                                              const ExecutionContext& exe_ctx)
+{
+    lldb::ValueObjectSP retval_sp;
+    lldb::TargetSP target_sp(exe_ctx.GetTargetSP());
+    if (!target_sp)
+        return retval_sp;
+    if (!expression || !*expression)
+        return retval_sp;
+    target_sp->EvaluateExpression (expression,
+                                   exe_ctx.GetFrameSP().get(),
+                                   retval_sp);
+    if (retval_sp && name && *name)
+        retval_sp->SetName(ConstString(name));
+    return retval_sp;
+}
+
+lldb::ValueObjectSP
+ValueObject::CreateValueObjectFromAddress (const char* name,
+                                           uint64_t address,
+                                           const ExecutionContext& exe_ctx,
+                                           ClangASTType type)
+{
+    ClangASTType pointer_type(type.GetASTContext(),type.GetPointerType());
+    lldb::DataBufferSP buffer(new lldb_private::DataBufferHeap(&address,sizeof(lldb::addr_t)));
+    lldb::ValueObjectSP ptr_result_valobj_sp(ValueObjectConstResult::Create (exe_ctx.GetBestExecutionContextScope(),
+                                                                             pointer_type.GetASTContext(),
+                                                                             pointer_type.GetOpaqueQualType(),
+                                                                             ConstString(name),
+                                                                             buffer,
+                                                                             lldb::endian::InlHostByteOrder(),
+                                                                             exe_ctx.GetAddressByteSize()));
+    if (ptr_result_valobj_sp)
+    {
+        ptr_result_valobj_sp->GetValue().SetValueType(Value::eValueTypeLoadAddress);
+        Error err;
+        ptr_result_valobj_sp = ptr_result_valobj_sp->Dereference(err);
+        if (ptr_result_valobj_sp && name && *name)
+            ptr_result_valobj_sp->SetName(ConstString(name));
+    }
+    return ptr_result_valobj_sp;
+}
+
+lldb::ValueObjectSP
+ValueObject::CreateValueObjectFromData (const char* name,
+                                        DataExtractor& data,
+                                        const ExecutionContext& exe_ctx,
+                                        ClangASTType type)
+{
+    lldb::ValueObjectSP new_value_sp;
+    new_value_sp = ValueObjectConstResult::Create (exe_ctx.GetBestExecutionContextScope(),
+                                                   type.GetASTContext() ,
+                                                   type.GetOpaqueQualType(),
+                                                   ConstString(name),
+                                                   data,
+                                                   LLDB_INVALID_ADDRESS);
+    new_value_sp->SetAddressTypeOfChildren(eAddressTypeLoad);
+    if (new_value_sp && name && *name)
+        new_value_sp->SetName(ConstString(name));
+    return new_value_sp;
 }

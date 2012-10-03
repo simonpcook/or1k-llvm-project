@@ -19,7 +19,9 @@
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Address.h"
 #include "lldb/Core/Log.h"
+#include "lldb/Core/Module.h"
 #include "lldb/Core/Stream.h"
+#include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/LanguageRuntime.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -130,7 +132,7 @@ ThreadPlanCallFunction::ThreadPlanCallFunction (Thread &thread,
     m_valid (false),
     m_stop_other_threads (stop_other_threads),
     m_function_addr (function),
-    m_function_sp (NULL),
+    m_function_sp (0),
     m_return_type (return_type),
     m_takedown_done (false),
     m_stop_address (LLDB_INVALID_ADDRESS),
@@ -194,7 +196,7 @@ ThreadPlanCallFunction::ThreadPlanCallFunction (Thread &thread,
     m_valid (false),
     m_stop_other_threads (stop_other_threads),
     m_function_addr (function),
-    m_function_sp(NULL),
+    m_function_sp(0),
     m_return_type (return_type),
     m_takedown_done (false),
     m_stop_address (LLDB_INVALID_ADDRESS)

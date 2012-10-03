@@ -19,7 +19,10 @@
 #include "lldb/Core/Value.h"
 #include "lldb/Core/ValueObjectVariable.h"
 #include "lldb/Core/ValueObjectConstResult.h"
+#include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/Function.h"
+#include "lldb/Symbol/Symbol.h"
+#include "lldb/Symbol/SymbolContextScope.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
@@ -192,6 +195,16 @@ StackFrame::GetStackID()
         }
     }
     return m_id;
+}
+
+uint32_t
+StackFrame::GetFrameIndex () const
+{
+    ThreadSP thread_sp = GetThread();
+    if (thread_sp)
+        return thread_sp->GetStackFrameList()->GetVisibleStackFrameIndex(m_frame_index);
+    else
+        return m_frame_index;
 }
 
 void
@@ -1350,7 +1363,7 @@ StackFrame::GetStatus (Stream& strm,
     {
         ExecutionContext exe_ctx (shared_from_this());
         bool have_source = false;
-        DebuggerInstanceSettings::StopDisassemblyType disasm_display = DebuggerInstanceSettings::eStopDisassemblyTypeNever;
+        Debugger::StopDisassemblyType disasm_display = Debugger::eStopDisassemblyTypeNever;
         Target *target = exe_ctx.GetTargetPtr();
         if (target)
         {
@@ -1378,14 +1391,14 @@ StackFrame::GetStatus (Stream& strm,
             }
             switch (disasm_display)
             {
-            case DebuggerInstanceSettings::eStopDisassemblyTypeNever:
+            case Debugger::eStopDisassemblyTypeNever:
                 break;
                 
-            case DebuggerInstanceSettings::eStopDisassemblyTypeNoSource:
+            case Debugger::eStopDisassemblyTypeNoSource:
                 if (have_source)
                     break;
                 // Fall through to next case
-            case DebuggerInstanceSettings::eStopDisassemblyTypeAlways:
+            case Debugger::eStopDisassemblyTypeAlways:
                 if (target)
                 {
                     const uint32_t disasm_lines = debugger.GetDisassemblyLineCount();

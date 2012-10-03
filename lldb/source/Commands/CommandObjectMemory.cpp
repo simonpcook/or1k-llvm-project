@@ -16,6 +16,7 @@
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/DataExtractor.h"
 #include "lldb/Core/Debugger.h"
+#include "lldb/Core/Module.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/ValueObjectMemory.h"
 #include "lldb/Interpreter/Args.h"
@@ -25,7 +26,8 @@
 #include "lldb/Interpreter/OptionGroupFormat.h"
 #include "lldb/Interpreter/OptionGroupOutputFile.h"
 #include "lldb/Interpreter/OptionGroupValueObjectDisplay.h"
-#include "lldb/Symbol/ClangNamespaceDecl.h"
+#include "lldb/Interpreter/OptionValueString.h"
+#include "lldb/Symbol/TypeList.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/StackFrame.h"
 
@@ -37,7 +39,7 @@ g_option_table[] =
 {
     { LLDB_OPT_SET_1, false, "num-per-line" ,'l', required_argument, NULL, 0, eArgTypeNumberPerLine ,"The number of items per line to display."},
     { LLDB_OPT_SET_2, false, "binary"       ,'b', no_argument      , NULL, 0, eArgTypeNone          ,"If true, memory will be saved as binary. If false, the memory is saved save as an ASCII dump that uses the format, size, count and number per line settings."},
-    { LLDB_OPT_SET_3, true , "view-as"      ,'t', required_argument, NULL, 0, eArgTypeNone          ,"The name of a type to view memory as."}, 
+    { LLDB_OPT_SET_3, true , "type"         ,'t', required_argument, NULL, 0, eArgTypeNone          ,"The name of a type to view memory as."}, 
     { LLDB_OPT_SET_4, false, "force"        ,'r', no_argument,       NULL, 0, eArgTypeNone          ,"Necessary if reading over 1024 bytes of memory."},
 };
 
@@ -701,7 +703,7 @@ protected:
                     }
                     else 
                     {
-                        result.AppendErrorWithFormat("Failed to write %zu bytes to '%s'.\n", bytes_read, path);
+                        result.AppendErrorWithFormat("Failed to write %llu bytes to '%s'.\n", (uint64_t)bytes_read, path);
                         result.SetStatus(eReturnStatusFailed);
                         return false;
                     }
@@ -1040,13 +1042,13 @@ protected:
                     if (bytes_written == length)
                     {
                         // All bytes written
-                        result.GetOutputStream().Printf("%zu bytes were written to 0x%llx\n", bytes_written, addr);
+                        result.GetOutputStream().Printf("%llu bytes were written to 0x%llx\n", (uint64_t)bytes_written, addr);
                         result.SetStatus(eReturnStatusSuccessFinishResult);
                     }
                     else if (bytes_written > 0)
                     {
                         // Some byte written
-                        result.GetOutputStream().Printf("%zu bytes of %zu requested were written to 0x%llx\n", bytes_written, length, addr);
+                        result.GetOutputStream().Printf("%llu bytes of %llu requested were written to 0x%llx\n", (uint64_t)bytes_written, (uint64_t)length, addr);
                         result.SetStatus(eReturnStatusSuccessFinishResult);
                     }
                     else 
@@ -1116,6 +1118,7 @@ protected:
             case eFormatDefault:
             case eFormatBytes:
             case eFormatHex:
+            case eFormatHexUppercase:
             case eFormatPointer:
                 
                 // Decode hex bytes

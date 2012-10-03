@@ -15,10 +15,13 @@
 #include "lldb/API/SBSymbolContextList.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/Log.h"
+#include "lldb/Core/Section.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/ValueObjectList.h"
 #include "lldb/Core/ValueObjectVariable.h"
+#include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/SymbolVendor.h"
+#include "lldb/Symbol/Symtab.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/Target.h"
 
@@ -539,17 +542,15 @@ SBModule::GetVersion (uint32_t *versions, uint32_t num_versions)
 {
     ModuleSP module_sp (GetSP ());
     if (module_sp)
+        return module_sp->GetVersion(versions, num_versions);
+    else
     {
-        ObjectFile *obj_file = module_sp->GetObjectFile();
-        if (obj_file)
-            return obj_file->GetVersion (versions, num_versions);
+        if (versions && num_versions)
+        {
+            for (uint32_t i=0; i<num_versions; ++i)
+                versions[i] = UINT32_MAX;
+        }
+        return 0;
     }
-    
-    if (versions && num_versions)
-    {
-        for (uint32_t i=0; i<num_versions; ++i)
-            versions[i] = UINT32_MAX;
-    }
-    return 0;
 }
 

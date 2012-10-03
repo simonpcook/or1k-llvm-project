@@ -14,6 +14,7 @@
 
 #include "lldb/Core/Address.h"
 #include "lldb/Core/DataExtractor.h"
+#include "lldb/Core/Module.h"
 #include "lldb/Core/Stream.h"
 #include "lldb/Symbol/SymbolContext.h"
 #include "lldb/Target/ExecutionContext.h"
@@ -431,11 +432,13 @@ bool InstructionLLVMC::s_regex_compiled = false;
 Disassembler *
 DisassemblerLLVMC::CreateInstance (const ArchSpec &arch)
 {
-    std::auto_ptr<DisassemblerLLVMC> disasm_ap (new DisassemblerLLVMC(arch));
+    if (arch.GetTriple().getArch() != llvm::Triple::UnknownArch)
+    {
+        std::auto_ptr<DisassemblerLLVMC> disasm_ap (new DisassemblerLLVMC(arch));
     
-    if (disasm_ap.get() && disasm_ap->IsValid())
-        return disasm_ap.release();
-    
+        if (disasm_ap.get() && disasm_ap->IsValid())
+            return disasm_ap.release();
+    }
     return NULL;
 }
 

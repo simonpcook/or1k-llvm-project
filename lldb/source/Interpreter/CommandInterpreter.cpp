@@ -26,6 +26,7 @@
 #include "../Commands/CommandObjectLog.h"
 #include "../Commands/CommandObjectMemory.h"
 #include "../Commands/CommandObjectPlatform.h"
+#include "../Commands/CommandObjectPlugin.h"
 #include "../Commands/CommandObjectProcess.h"
 #include "../Commands/CommandObjectQuit.h"
 #include "../Commands/CommandObjectRegister.h"
@@ -59,6 +60,19 @@
 using namespace lldb;
 using namespace lldb_private;
 
+
+static PropertyDefinition
+g_properties[] =
+{
+    { "expand-regex-aliases", OptionValue::eTypeBoolean, true, false, NULL, NULL, "If true, regular expression alias commands will show the expanded command that will be executed. This can be used to debug new regular expression alias commands." },
+    { NULL                  , OptionValue::eTypeInvalid, true, 0    , NULL, NULL, NULL }
+};
+
+enum
+{
+    ePropertyExpandRegexAliases = 0
+};
+
 ConstString &
 CommandInterpreter::GetStaticBroadcasterClass ()
 {
@@ -73,6 +87,7 @@ CommandInterpreter::CommandInterpreter
     bool synchronous_execution
 ) :
     Broadcaster (&debugger, "lldb.command-interpreter"),
+    Properties(OptionValuePropertiesSP(new OptionValueProperties(ConstString("interpreter")))),
     m_debugger (debugger),
     m_synchronous_execution (synchronous_execution),
     m_skip_lldbinit_files (false),
@@ -80,22 +95,26 @@ CommandInterpreter::CommandInterpreter
     m_script_interpreter_ap (),
     m_comment_char ('#'),
     m_repeat_char ('!'),
+    m_batch_command_mode (false),
     m_truncation_warning(eNoTruncation),
     m_command_source_depth (0)
 {
-    const char *dbg_name = debugger.GetInstanceName().AsCString();
-    std::string lang_name = ScriptInterpreter::LanguageToString (script_language);
-    StreamString var_name;
-    var_name.Printf ("[%s].script-lang", dbg_name);
-    debugger.GetSettingsController()->SetVariable (var_name.GetData(), lang_name.c_str(), 
-                                                   eVarSetOperationAssign, false, 
-                                                   m_debugger.GetInstanceName().AsCString());                                                   
+    debugger.SetScriptLanguage (script_language);
     SetEventName (eBroadcastBitThreadShouldExit, "thread-should-exit");
     SetEventName (eBroadcastBitResetPrompt, "reset-prompt");
-    SetEventName (eBroadcastBitQuitCommandReceived, "quit");
-    
+    SetEventName (eBroadcastBitQuitCommandReceived, "quit");    
     CheckInWithManager ();
+    m_collection_sp->Initialize (g_properties);
 }
+
+bool
+CommandInterpreter::GetExpandRegexAliases () const
+{
+    const uint32_t idx = ePropertyExpandRegexAliases;
+    return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
+}
+
+
 
 void
 CommandInterpreter::Initialize ()
@@ -114,10 +133,16 @@ CommandInterpreter::Initialize ()
         AddAlias ("exit", cmd_obj_sp);
     }
     
-    cmd_obj_sp = GetCommandSPExact ("process attach", false);
+    cmd_obj_sp = GetCommandSPExact ("_regexp-attach",false);
     if (cmd_obj_sp)
     {
         AddAlias ("attach", cmd_obj_sp);
+    }
+
+    cmd_obj_sp = GetCommandSPExact ("process detach",false);
+    if (cmd_obj_sp)
+    {
+        AddAlias ("detach", cmd_obj_sp);
     }
 
     cmd_obj_sp = GetCommandSPExact ("process continue", false);
@@ -244,7 +269,10 @@ CommandInterpreter::Initialize ()
     
     cmd_obj_sp = GetCommandSPExact ("process kill", false);
     if (cmd_obj_sp)
+    {
         AddAlias ("kill", cmd_obj_sp);
+        AddAlias ("k", cmd_obj_sp);
+    }
     
     cmd_obj_sp = GetCommandSPExact ("process launch", false);
     if (cmd_obj_sp)
@@ -329,6 +357,7 @@ CommandInterpreter::LoadCommandDictionary ()
     m_command_dict["log"]       = CommandObjectSP (new CommandObjectLog (*this));
     m_command_dict["memory"]    = CommandObjectSP (new CommandObjectMemory (*this));
     m_command_dict["platform"]  = CommandObjectSP (new CommandObjectPlatform (*this));
+    m_command_dict["plugin"]    = CommandObjectSP (new CommandObjectPlugin (*this));
     m_command_dict["process"]   = CommandObjectSP (new CommandObjectMultiwordProcess (*this));
     m_command_dict["quit"]      = CommandObjectSP (new CommandObjectQuit (*this));
     m_command_dict["register"]  = CommandObjectSP (new CommandObjectRegister (*this));
@@ -344,11 +373,12 @@ CommandInterpreter::LoadCommandDictionary ()
     std::auto_ptr<CommandObjectRegexCommand>
     break_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                       "_regexp-break",
-                                                      "Set a breakpoint using a regular expression to specify the location.",
-                                                      "_regexp-break [<filename>:<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>", 2));
+                                                      "Set a breakpoint using a regular expression to specify the location, where <linenum> is in decimal and <address> is in hex.",
+                                                      "_regexp-break [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>", 2));
     if (break_regex_cmd_ap.get())
     {
         if (break_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])[[:space:]]*:[[:space:]]*([[:digit:]]+)[[:space:]]*$", "breakpoint set --file '%1' --line %2") &&
+            break_regex_cmd_ap->AddRegexCommand("^([[:digit:]]+)[[:space:]]*$", "breakpoint set --line %1") &&
             break_regex_cmd_ap->AddRegexCommand("^(0x[[:xdigit:]]+)[[:space:]]*$", "breakpoint set --address %1") &&
             break_regex_cmd_ap->AddRegexCommand("^[\"']?([-+]\\[.*\\])[\"']?[[:space:]]*$", "breakpoint set --name '%1'") &&
             break_regex_cmd_ap->AddRegexCommand("^$", "breakpoint list --full") &&
@@ -361,6 +391,21 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
+    std::auto_ptr<CommandObjectRegexCommand>
+    attach_regex_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                       "_regexp-attach",
+                                                       "Attach to a process id if in decimal, otherwise treat the argument as a process name to attach to.",
+                                                       "_regexp-attach [<pid>]\n_regexp-attach [<process-name>]", 2));
+    if (attach_regex_cmd_ap.get())
+    {
+        if (attach_regex_cmd_ap->AddRegexCommand("^([0-9]+)$", "process attach --pid %1") &&
+            attach_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])[[:space:]]*$", "process attach --name '%1'"))
+        {
+            CommandObjectSP attach_regex_cmd_sp(attach_regex_cmd_ap.release());
+            m_command_dict[attach_regex_cmd_sp->GetCommandName ()] = attach_regex_cmd_sp;
+        }
+    }
+    
     std::auto_ptr<CommandObjectRegexCommand>
     down_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                      "_regexp-down",
@@ -416,6 +461,36 @@ CommandInterpreter::LoadCommandDictionary ()
         {
             CommandObjectSP undisplay_regex_cmd_sp(undisplay_regex_cmd_ap.release());
             m_command_dict[undisplay_regex_cmd_sp->GetCommandName ()] = undisplay_regex_cmd_sp;
+        }
+    }
+
+    std::auto_ptr<CommandObjectRegexCommand>
+    connect_gdb_remote_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                      "gdb-remote",
+                                                      "Connect to a remote GDB server.",
+                                                      "gdb-remote [<host>:<port>]\ngdb-remote [<port>]", 2));
+    if (connect_gdb_remote_cmd_ap.get())
+    {
+        if (connect_gdb_remote_cmd_ap->AddRegexCommand("^([^:]+:[[:digit:]]+)$", "process connect --plugin gdb-remote connect://%1") &&
+            connect_gdb_remote_cmd_ap->AddRegexCommand("^([[:digit:]]+)$", "process connect --plugin gdb-remote connect://localhost:%1"))
+        {
+            CommandObjectSP command_sp(connect_gdb_remote_cmd_ap.release());
+            m_command_dict[command_sp->GetCommandName ()] = command_sp;
+        }
+    }
+
+    std::auto_ptr<CommandObjectRegexCommand>
+    connect_kdp_remote_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                             "kdp-remote",
+                                                             "Connect to a remote KDP server.",
+                                                             "kdp-remote [<host>]\nkdp-remote [<host>:<port>]", 2));
+    if (connect_kdp_remote_cmd_ap.get())
+    {
+        if (connect_kdp_remote_cmd_ap->AddRegexCommand("^([^:]+:[[:digit:]]+)$", "process connect --plugin kdp-remote udp://%1") &&
+            connect_kdp_remote_cmd_ap->AddRegexCommand("^(.+)$", "process connect --plugin kdp-remote udp://%1:41139"))
+        {
+            CommandObjectSP command_sp(connect_kdp_remote_cmd_ap.release());
+            m_command_dict[command_sp->GetCommandName ()] = command_sp;
         }
     }
 
@@ -549,11 +624,11 @@ CommandInterpreter::AddCommand (const char *name, const lldb::CommandObjectSP &c
     if (name && name[0])
     {
         std::string name_sstr(name);
-        if (!can_replace)
-        {
-            if (m_command_dict.find (name_sstr) != m_command_dict.end())
-                return false;
-        }
+        bool found = (m_command_dict.find (name_sstr) != m_command_dict.end());
+        if (found && !can_replace)
+            return false;
+        if (found && m_command_dict[name_sstr]->IsRemovable() == false)
+            return false;
         m_command_dict[name_sstr] = cmd_sp;
         return true;
     }
@@ -572,11 +647,21 @@ CommandInterpreter::AddUserCommand (std::string name,
         
         // do not allow replacement of internal commands
         if (CommandExists(name_cstr))
-            return false;
+        {
+            if (can_replace == false)
+                return false;
+            if (m_command_dict[name]->IsRemovable() == false)
+                return false;
+        }
         
-        if (can_replace == false && UserCommandExists(name_cstr))
-            return false;
-
+        if (UserCommandExists(name_cstr))
+        {
+            if (can_replace == false)
+                return false;
+            if (m_user_dict[name]->IsRemovable() == false)
+                return false;
+        }
+        
         m_user_dict[name] = cmd_sp;
         return true;
     }
@@ -1153,19 +1238,19 @@ CommandInterpreter::PreprocessCommand (std::string &command)
                     target = Host::GetDummyTarget(GetDebugger()).get();
                 if (target)
                 {
-                    const bool coerce_to_id = false;
-                    const bool unwind_on_error = true;
-                    const bool keep_in_memory = false;
                     ValueObjectSP expr_result_valobj_sp;
+                    
+                    Target::EvaluateExpressionOptions options;
+                    options.SetCoerceToId(false)
+                    .SetUnwindOnError(true)
+                    .SetKeepInMemory(false)
+                    .SetSingleThreadTimeoutUsec(0);
+                    
                     ExecutionResults expr_result = target->EvaluateExpression (expr_str.c_str(), 
-                                                                               exe_ctx.GetFramePtr(), 
-                                                                               eExecutionPolicyOnlyWhenNeeded,
-                                                                               coerce_to_id,
-                                                                               unwind_on_error, 
-                                                                               keep_in_memory, 
-                                                                               eNoDynamicValues, 
+                                                                               exe_ctx.GetFramePtr(),
                                                                                expr_result_valobj_sp,
-                                                                               0 /* no timeout */);
+                                                                               options);
+                    
                     if (expr_result == eExecutionCompleted)
                     {
                         Scalar scalar;
@@ -2504,6 +2589,7 @@ CommandInterpreter::OutputFormattedHelpText (Stream &strm,
                 while (end > start
                        && text[end] != ' ' && text[end] != '\t' && text[end] != '\n')
                     end--;
+                assert (end > 0);
             }
 
             sub_len = end - start;

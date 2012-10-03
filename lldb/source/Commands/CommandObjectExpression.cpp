@@ -298,15 +298,17 @@ CommandObjectExpression::EvaluateExpression
             break;
         }
         
+        Target::EvaluateExpressionOptions options;
+        options.SetCoerceToId(m_command_options.print_object)
+        .SetUnwindOnError(m_command_options.unwind_on_error)
+        .SetKeepInMemory(keep_in_memory)
+        .SetUseDynamic(use_dynamic)
+        .SetSingleThreadTimeoutUsec(0);
+        
         exe_results = target->EvaluateExpression (expr, 
                                                   m_interpreter.GetExecutionContext().GetFramePtr(),
-                                                  eExecutionPolicyOnlyWhenNeeded,
-                                                  m_command_options.print_object,
-                                                  m_command_options.unwind_on_error,
-                                                  keep_in_memory, 
-                                                  use_dynamic, 
                                                   result_valobj_sp,
-                                                  0 /* no timeout */);
+                                                  options);
         
         if (exe_results == eExecutionInterrupted && !m_command_options.unwind_on_error)
         {
@@ -360,7 +362,8 @@ CommandObjectExpression::EvaluateExpression
                     .SetIgnoreCap(false)
                     .SetFormat(format)
                     .SetSummary()
-                    .SetShowSummary(!m_command_options.print_object);
+                    .SetShowSummary(!m_command_options.print_object)
+                    .SetHideRootType(m_command_options.print_object);
                     
                     ValueObject::DumpValueObject (*(output_stream),
                                                   result_valobj_sp.get(),   // Variable object to dump
@@ -373,13 +376,13 @@ CommandObjectExpression::EvaluateExpression
             {
                 if (result_valobj_sp->GetError().GetError() == ClangUserExpression::kNoResult)
                 {
-                    if (format != eFormatVoid)
+                    if (format != eFormatVoid && m_interpreter.GetDebugger().GetNotifyVoid())
                     {
-                        error_stream->PutCString("<no result>\n");
-                        
-                        if (result)
-                            result->SetStatus (eReturnStatusSuccessFinishResult);
+                        error_stream->PutCString("(void)\n");
                     }
+                    
+                    if (result)
+                        result->SetStatus (eReturnStatusSuccessFinishResult);
                 }
                 else
                 {

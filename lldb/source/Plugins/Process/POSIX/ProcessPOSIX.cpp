@@ -12,6 +12,7 @@
 
 // C++ Includes
 // Other libraries and framework includes
+#include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/State.h"
 #include "lldb/Host/Host.h"
@@ -114,6 +115,12 @@ ProcessPOSIX::DoAttachToProcessWithID(lldb::pid_t pid)
 
     SetID(pid);
     return error;
+}
+
+Error
+ProcessPOSIX::DoAttachToProcessWithID (lldb::pid_t pid,  const ProcessAttachInfo &attach_info)
+{
+    return DoAttachToProcessWithID(pid);
 }
 
 Error

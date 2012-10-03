@@ -31,14 +31,18 @@
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Disassembler.h"
 #include "lldb/Core/Log.h"
+#include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/RegularExpression.h"
 #include "lldb/Core/SearchFilter.h"
+#include "lldb/Core/Section.h"
 #include "lldb/Core/STLUtils.h"
 #include "lldb/Core/ValueObjectList.h"
 #include "lldb/Core/ValueObjectVariable.h"
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Interpreter/Args.h"
+#include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/SymbolVendor.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/LanguageRuntime.h"
@@ -849,10 +853,19 @@ SBTarget::Attach (SBAttachInfo &sb_attach_info, SBError& error)
             if (attach_pid != LLDB_INVALID_PROCESS_ID)
             {
                 PlatformSP platform_sp = target_sp->GetPlatform();
-                ProcessInstanceInfo instance_info;
-                if (platform_sp->GetProcessInfo(attach_pid, instance_info))
+                // See if we can pre-verify if a process exists or not
+                if (platform_sp && platform_sp->IsConnected())
                 {
-                    attach_info.SetUserID(instance_info.GetEffectiveUserID());
+                    ProcessInstanceInfo instance_info;
+                    if (platform_sp->GetProcessInfo(attach_pid, instance_info))
+                    {
+                        attach_info.SetUserID(instance_info.GetEffectiveUserID());
+                    }
+                    else
+                    {
+                        error.ref().SetErrorStringWithFormat("no process found with process ID %llu", attach_pid);
+                        return sb_process;
+                    }
                 }
             }
             error.SetError (process_sp->Attach (attach_info));
@@ -953,10 +966,13 @@ SBTarget::AttachToProcessWithID
                 attach_info.SetUserID(instance_info.GetEffectiveUserID());
             }
             error.SetError (process_sp->Attach (attach_info));            
-            // If we are doing synchronous mode, then wait for the
-            // process to stop!
-            if (target_sp->GetDebugger().GetAsyncExecution () == false)
+            if (error.Success())
+            {
+                // If we are doing synchronous mode, then wait for the
+                // process to stop!
+                if (target_sp->GetDebugger().GetAsyncExecution () == false)
                 process_sp->WaitForProcessToStop (NULL);
+            }
         }
         else
         {
@@ -1071,7 +1087,7 @@ SBTarget::ConnectRemote
         if (process_sp)
         {
             sb_process.SetSP (process_sp);
-            error.SetError (process_sp->ConnectRemote (url));
+            error.SetError (process_sp->ConnectRemote (NULL, url));
         }
         else
         {
@@ -1182,9 +1198,9 @@ SBTarget::BreakpointCreateByLocation (const SBFileSpec &sb_file_spec, uint32_t l
     {
         Mutex::Locker api_locker (target_sp->GetAPIMutex());
         
-        const bool check_inlines = true;
-        const bool internal = false;
+        const LazyBool check_inlines = eLazyBoolCalculate;
         const LazyBool skip_prologue = eLazyBoolCalculate;
+        const bool internal = false;
         *sb_bp = target_sp->CreateBreakpoint (NULL, *sb_file_spec, line, check_inlines, skip_prologue, internal);
     }
 
@@ -1785,7 +1801,7 @@ SBTarget::AddModule (const char *path,
             module_spec.GetFileSpec().SetFile(path, false);
         
         if (uuid_cstr)
-            module_spec.GetUUID().SetfromCString(uuid_cstr);
+            module_spec.GetUUID().SetFromCString(uuid_cstr);
         
         if (triple)
             module_spec.GetArchitecture().SetTriple (triple, target_sp->GetPlatform ().get());

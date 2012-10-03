@@ -18,13 +18,19 @@ PYTHON_INSTALL_DIR=$4
 debug_flag=$5 
 SWIG=$6
 
-swig_output_file=${SRC_ROOT}/source/LLDBWrapPython.cpp
+os_name=`uname -s`
+if [ "$os_name" = "Darwin" ]
+then
+  swig_output_file=${SRC_ROOT}/source/LLDBWrapPython.cpp
+else
+  swig_output_file=${TARGET_DIR}/LLDBWrapPython.cpp
+fi
 swig_input_file=${SRC_ROOT}/scripts/lldb.swig
 swig_python_extensions=${SRC_ROOT}/scripts/Python/python-extensions.swig
 swig_python_wrapper=${SRC_ROOT}/scripts/Python/python-wrapper.swig
 swig_python_typemaps=${SRC_ROOT}/scripts/Python/python-typemaps.swig
 
-if [ $LLDB_DISABLE_PYTHON = "1" ] ; then
+if [ "$LLDB_DISABLE_PYTHON" = "1" ] ; then
     # We don't want Python for this build, but touch the output file so we don't have to
     # conditionalize the build on this as well.
     # Note, at present iOS doesn't have Python, so if you're building for iOS be sure to
@@ -34,7 +40,7 @@ if [ $LLDB_DISABLE_PYTHON = "1" ] ; then
 
 else
 
-if [ -n "$debug_flag" -a "$debug_flag" == "-debug" ]
+if [ -n "$debug_flag" -a "$debug_flag" = "-debug" ]
 then
     Debug=1
 else
@@ -98,7 +104,7 @@ HEADER_FILES="${SRC_ROOT}/include/lldb/lldb.h"\
 " ${SRC_ROOT}/include/lldb/API/SBTypeSynthetic.h"\
 " ${SRC_ROOT}/include/lldb/API/SBValue.h"\
 " ${SRC_ROOT}/include/lldb/API/SBValueList.h"\
-" ${SRC_ROOT}/include/lldb/API/SBWatchpoint.h"\
+" ${SRC_ROOT}/include/lldb/API/SBWatchpoint.h"
 
 INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBBlock.i"\
@@ -142,13 +148,13 @@ INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBValueList.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBWatchpoint.i"
 
-if [ $Debug == 1 ]
+if [ $Debug -eq 1 ]
 then
     echo "Header files are:"
     echo ${HEADER_FILES}
 fi
 
-if [ $Debug == 1 ]
+if [ $Debug -eq 1 ]
 then
     echo "SWIG interface files are:"
     echo ${INTERFACE_FILES}
@@ -160,20 +166,20 @@ NeedToUpdate=0
 if [ ! -f ${swig_output_file} ]
 then
     NeedToUpdate=1
-    if [ $Debug == 1 ]
+    if [ $Debug -eq 1 ]
     then
         echo "Failed to find LLDBWrapPython.cpp"
     fi
 fi
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     for hdrfile in ${HEADER_FILES}
     do
         if [ $hdrfile -nt ${swig_output_file} ]
         then
             NeedToUpdate=1
-            if [ $Debug == 1 ]
+            if [ $Debug -eq 1 ]
             then
                 echo "${hdrfile} is newer than ${swig_output_file}"
                 echo "swig file will need to be re-built."
@@ -183,14 +189,14 @@ then
     done
 fi
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     for intffile in ${INTERFACE_FILES}
     do
         if [ $intffile -nt ${swig_output_file} ]
         then
             NeedToUpdate=1
-            if [ $Debug == 1 ]
+            if [ $Debug -eq 1 ]
             then
                 echo "${intffile} is newer than ${swig_output_file}"
                 echo "swig file will need to be re-built."
@@ -200,12 +206,12 @@ then
     done
 fi
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     if [ ${swig_input_file} -nt ${swig_output_file} ]
     then
         NeedToUpdate=1
-        if [ $Debug == 1 ]
+        if [ $Debug -eq 1 ]
         then
             echo "${swig_input_file} is newer than ${swig_output_file}"
             echo "swig file will need to be re-built."
@@ -213,12 +219,12 @@ then
     fi
 fi
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     if [ ${swig_python_extensions} -nt ${swig_output_file} ]
     then
         NeedToUpdate=1
-        if [ $Debug == 1 ]
+        if [ $Debug -eq 1 ]
         then
             echo "${swig_python_extensions} is newer than ${swig_output_file}"
             echo "swig file will need to be re-built."
@@ -226,12 +232,12 @@ then
     fi
 fi
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     if [ ${swig_python_wrapper} -nt ${swig_output_file} ]
     then
         NeedToUpdate=1
-        if [ $Debug == 1 ]
+        if [ $Debug -eq 1 ]
         then
             echo "${swig_python_wrapper} is newer than ${swig_output_file}"
             echo "swig file will need to be re-built."
@@ -239,12 +245,12 @@ then
     fi
 fi
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     if [ ${swig_python_typemaps} -nt ${swig_output_file} ]
     then
         NeedToUpdate=1
-        if [ $Debug == 1 ]
+        if [ $Debug -eq 1 ]
         then
             echo "${swig_python_typemaps} is newer than ${swig_output_file}"
             echo "swig file will need to be re-built."
@@ -252,10 +258,9 @@ then
     fi
 fi
 
-os_name=`uname -s`
-python_version=`/usr/bin/python --version 2>&1 | sed -e 's,Python ,,' -e 's,[.][0-9],,2' -e 's,[a-z][a-z][0-9],,'`
+python_version=`/usr/bin/env python --version 2>&1 | sed -e 's,Python ,,' -e 's,[.][0-9],,2' -e 's,[a-z][a-z][0-9],,'`
 
-if [ "$os_name" == "Darwin" ]
+if [ "$os_name" = "Darwin" ]
 then
     framework_python_dir="${TARGET_DIR}/LLDB.framework/Resources/Python"
 else
@@ -274,7 +279,7 @@ then
 fi
 
 
-if [ $NeedToUpdate == 0 ]
+if [ $NeedToUpdate -eq 0 ]
 then
     echo "Everything is up-to-date."
     exit 0
@@ -289,7 +294,7 @@ fi
 
 # Build the SWIG C++ wrapper file for Python.
 
-$SWIG -c++ -shadow -python -I"/usr/include" -I"${SRC_ROOT}/include" -I./. -outdir "${CONFIG_BUILD_DIR}" -o "${swig_output_file}" "${swig_input_file}"
+$SWIG -c++ -shadow -python -threads -I"/usr/include" -I"${SRC_ROOT}/include" -I./. -outdir "${CONFIG_BUILD_DIR}" -o "${swig_output_file}" "${swig_input_file}"
 
 # Implement the iterator protocol and/or eq/ne operators for some lldb objects.
 # Append global variable to lldb Python module.

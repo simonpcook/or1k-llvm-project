@@ -39,6 +39,7 @@
 #include <dispatch/dispatch.h>
 #include <libproc.h>
 #include <mach-o/dyld.h>
+#include <mach/mach_port.h>
 #include <sys/sysctl.h>
 
 
@@ -339,6 +340,12 @@ Host::GetArchitecture (SystemDefaultArchitecture arch_kind)
             break;
 
         case llvm::Triple::x86_64:
+            g_host_arch_64.SetTriple(triple);
+            g_supports_64 = true;
+            g_host_arch_32.SetTriple(triple.get32BitArchVariant());
+            g_supports_32 = true;
+            break;
+
         case llvm::Triple::sparcv9:
         case llvm::Triple::ppc64:
         case llvm::Triple::cellspu:
@@ -424,7 +431,12 @@ lldb::tid_t
 Host::GetCurrentThreadID()
 {
 #if defined (__APPLE__)
-    return ::mach_thread_self();
+    // Calling "mach_port_deallocate()" bumps the reference count on the thread
+    // port, so we need to deallocate it. mach_task_self() doesn't bump the ref
+    // count.
+    thread_port_t thread_self = mach_thread_self();
+    mach_port_deallocate(mach_task_self(), thread_self);
+    return thread_self;
 #elif defined(__FreeBSD__)
     return lldb::tid_t(pthread_getthreadid_np());
 #else
@@ -1300,19 +1312,32 @@ Host::RunShellCommand (const char *command,
                        int *status_ptr,
                        int *signo_ptr,
                        std::string *command_output_ptr,
-                       uint32_t timeout_sec)
+                       uint32_t timeout_sec,
+                       const char *shell)
 {
     Error error;
     ProcessLaunchInfo launch_info;
-    launch_info.SetShell("/bin/bash");
-    launch_info.GetArguments().AppendArgument(command);
-    const bool localhost = true;
-    const bool will_debug = false;
-    const bool first_arg_is_full_shell_command = true;
-    launch_info.ConvertArgumentsForLaunchingInShell (error,
-                                                     localhost,
-                                                     will_debug,
-                                                     first_arg_is_full_shell_command);
+    if (shell && shell[0])
+    {
+        // Run the command in a shell
+        launch_info.SetShell(shell);
+        launch_info.GetArguments().AppendArgument(command);
+        const bool localhost = true;
+        const bool will_debug = false;
+        const bool first_arg_is_full_shell_command = true;
+        launch_info.ConvertArgumentsForLaunchingInShell (error,
+                                                         localhost,
+                                                         will_debug,
+                                                         first_arg_is_full_shell_command);
+    }
+    else
+    {
+        // No shell, just run it
+        Args args (command);
+        const bool first_arg_is_executable = true;
+        const bool first_arg_is_executable_and_argument = true;
+        launch_info.SetArguments(args, first_arg_is_executable, first_arg_is_executable_and_argument);
+    }
     
     if (working_dir)
         launch_info.SetWorkingDirectory(working_dir);
@@ -1326,7 +1351,7 @@ Host::RunShellCommand (const char *command,
         output_file_path = ::tmpnam(output_file_path_buffer);
         launch_info.AppendSuppressFileAction (STDIN_FILENO, true, false);
         launch_info.AppendOpenFileAction(STDOUT_FILENO, output_file_path, false, true);
-        launch_info.AppendDuplicateFileAction(STDERR_FILENO, STDOUT_FILENO);
+        launch_info.AppendDuplicateFileAction(STDOUT_FILENO, STDERR_FILENO);
     }
     else
     {

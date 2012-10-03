@@ -12,11 +12,14 @@
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/ModuleList.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/RegularExpression.h"
+#include "lldb/Core/Section.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Host/Host.h"
 #include "lldb/lldb-private-log.h"
+#include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/SymbolContext.h"
 #include "lldb/Symbol/SymbolVendor.h"
@@ -96,7 +99,7 @@ namespace lldb {
         Mutex::Locker locker (Module::GetAllocationModuleCollectionMutex());
         ModuleCollection &modules = GetModuleCollection();
         const size_t count = modules.size();
-        printf ("%s: %zu modules:\n", __PRETTY_FUNCTION__, count);
+        printf ("%s: %llu modules:\n", __PRETTY_FUNCTION__, (uint64_t)count);
         for (size_t i=0; i<count; ++i)
         {
             
@@ -1168,7 +1171,7 @@ Module::MatchesModuleSpec (const ModuleSpec &module_ref)
     const FileSpec &platform_file_spec = module_ref.GetPlatformFileSpec();
     if (platform_file_spec)
     {
-        if (!FileSpec::Equal (platform_file_spec, m_platform_file, platform_file_spec.GetDirectory()))
+        if (!FileSpec::Equal (platform_file_spec, GetPlatformFileSpec (), platform_file_spec.GetDirectory()))
             return false;
     }
     
@@ -1202,3 +1205,17 @@ Module::RemapSourceFile (const char *path, std::string &new_path) const
     return m_source_mappings.RemapPath(path, new_path);
 }
 
+uint32_t
+Module::GetVersion (uint32_t *versions, uint32_t num_versions)
+{
+    ObjectFile *obj_file = GetObjectFile();
+    if (obj_file)
+        return obj_file->GetVersion (versions, num_versions);
+        
+    if (versions && num_versions)
+    {
+        for (uint32_t i=0; i<num_versions; ++i)
+            versions[i] = UINT32_MAX;
+    }
+    return 0;
+}

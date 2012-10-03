@@ -16,7 +16,11 @@
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Error.h"
+#include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Host/Host.h"
+#include "lldb/Host/Symbols.h"
+#include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/Target.h"
 
 using namespace lldb;
@@ -165,6 +169,33 @@ PlatformDarwin::ResolveExecutable (const FileSpec &exe_file,
     }
 
     return error;
+}
+
+Error
+PlatformDarwin::ResolveSymbolFile (Target &target,
+                                   const ModuleSpec &sym_spec,
+                                   FileSpec &sym_file)
+{
+    Error error;
+    sym_file = sym_spec.GetSymbolFileSpec();
+    if (sym_file.Exists())
+    {
+        if (sym_file.GetFileType() == FileSpec::eFileTypeDirectory)
+        {
+            sym_file = Symbols::FindSymbolFileInBundle (sym_file,
+                                                        sym_spec.GetUUIDPtr(),
+                                                        sym_spec.GetArchitecturePtr());
+        }
+    }
+    else
+    {
+        if (sym_spec.GetUUID().IsValid())
+        {
+            
+        }
+    }
+    return error;
+    
 }
 
 
@@ -864,3 +895,14 @@ PlatformDarwin::SetThreadCreationBreakpoint (Target &target)
     return bp_sp;
 }
 
+size_t
+PlatformDarwin::GetEnvironment (StringList &env)
+{
+    if (IsRemote())
+    {
+        if (m_remote_platform_sp)
+            return m_remote_platform_sp->GetEnvironment(env);
+        return 0;
+    }
+    return Host::GetEnvironment(env);
+}

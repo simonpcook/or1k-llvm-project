@@ -43,14 +43,6 @@
 
 extern "C" int arch_prctl(int code, __sanitizer::uptr *addr);
 
-namespace __sanitizer {
-
-void Die() {
-  _exit(1);
-}
-
-}  // namespace __sanitizer
-
 namespace __tsan {
 
 #ifndef TSAN_GO
@@ -104,7 +96,7 @@ void InitializeShadowMemory() {
   if (shadow != kLinuxShadowBeg) {
     TsanPrintf("FATAL: ThreadSanitizer can not mmap the shadow memory\n");
     TsanPrintf("FATAL: Make sure to compile with -fPIE and "
-               "to link with -pie.\n");
+               "to link with -pie (%p, %p).\n", shadow, kLinuxShadowBeg);
     Die();
   }
 #ifndef TSAN_GO
@@ -132,10 +124,13 @@ void InitializeShadowMemory() {
   DPrintf("stack        %zx\n", (uptr)&shadow);
 }
 
+static uptr g_data_start;
+static uptr g_data_end;
+
 #ifndef TSAN_GO
 static void CheckPIE() {
   // Ensure that the binary is indeed compiled with -pie.
-  ProcessMaps proc_maps;
+  MemoryMappingLayout proc_maps;
   uptr start, end;
   if (proc_maps.Next(&start, &end,
                      /*offset*/0, /*filename*/0, /*filename_size*/0)) {
@@ -148,6 +143,30 @@ static void CheckPIE() {
       Die();
     }
   }
+}
+
+static void InitDataSeg() {
+  MemoryMappingLayout proc_maps;
+  uptr start, end, offset;
+  char name[128];
+  bool prev_is_data = false;
+  while (proc_maps.Next(&start, &end, &offset, name, ARRAY_SIZE(name))) {
+    DPrintf("%p-%p %p %s\n", start, end, offset, name);
+    bool is_data = offset != 0 && name[0] != 0;
+    // BSS may get merged with [heap] in /proc/self/maps. This is not very
+    // reliable.
+    bool is_bss = offset == 0 &&
+      (name[0] == 0 || internal_strcmp(name, "[heap]") == 0) && prev_is_data;
+    if (g_data_start == 0 && is_data)
+      g_data_start = start;
+    if (is_bss)
+      g_data_end = end;
+    prev_is_data = is_data;
+  }
+  DPrintf("guessed data_start=%p data_end=%p\n",  g_data_start, g_data_end);
+  CHECK_LT(g_data_start, g_data_end);
+  CHECK_GE((uptr)&g_data_start, g_data_start);
+  CHECK_LT((uptr)&g_data_start, g_data_end);
 }
 
 static uptr g_tls_size;
@@ -163,8 +182,12 @@ extern "C" void _dl_get_tls_static_info(size_t*, size_t*)
 static int InitTlsSize() {
   typedef void (*get_tls_func)(size_t*, size_t*) INTERNAL_FUNCTION;
   get_tls_func get_tls = &_dl_get_tls_static_info;
-  if (get_tls == 0)
-    get_tls = (get_tls_func)dlsym(RTLD_NEXT, "_dl_get_tls_static_info");
+  if (get_tls == 0) {
+    void *get_tls_static_info_ptr = dlsym(RTLD_NEXT, "_dl_get_tls_static_info");
+    CHECK_EQ(sizeof(get_tls), sizeof(get_tls_static_info_ptr));
+    internal_memcpy(&get_tls, &get_tls_static_info_ptr,
+                    sizeof(get_tls_static_info_ptr));
+  }
   CHECK_NE(get_tls, 0);
   size_t tls_size = 0;
   size_t tls_align = 0;
@@ -183,10 +206,22 @@ const char *InitializePlatform() {
     lim.rlim_max = 0;
     setrlimit(RLIMIT_CORE, (rlimit*)&lim);
   }
+  // TSan doesn't play well with unlimited stack size (as stack
+  // overlaps with shadow memory). If we detect unlimited stack size,
+  // we re-exec the program with limited stack size as a best effort.
+  if (StackSizeIsUnlimited()) {
+    const uptr kMaxStackSize = 32 * 1024 * 1024;  // 32 Mb
+    Report("WARNING: Program is run with unlimited stack size, which "
+           "wouldn't work with ThreadSanitizer.\n");
+    Report("Re-execing with stack size limited to %zd bytes.\n", kMaxStackSize);
+    SetStackSizeLimitInBytes(kMaxStackSize);
+    ReExec();
+  }
 
 #ifndef TSAN_GO
   CheckPIE();
   g_tls_size = (uptr)InitTlsSize();
+  InitDataSeg();
 #endif
   return getenv("TSAN_OPTIONS");
 }
@@ -232,6 +267,9 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
 #endif
 }
 
+bool IsGlobalVar(uptr addr) {
+  return g_data_start && addr >= g_data_start && addr < g_data_end;
+}
 
 }  // namespace __tsan
 

@@ -30,6 +30,7 @@
 #include "lldb/Expression/ClangUserExpression.h"
 #include "lldb/Expression/ExpressionSourceCode.h"
 #include "lldb/Host/Host.h"
+#include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
@@ -350,7 +351,7 @@ ClangUserExpression::Parse (Stream &error_stream,
     if (jit_error.Success())
     {
         if (process && m_jit_alloc != LLDB_INVALID_ADDRESS)
-            m_jit_process_sp = process->shared_from_this();        
+            m_jit_process_wp = lldb::ProcessWP(process->shared_from_this());
         return true;
     }
     else
@@ -557,7 +558,10 @@ ClangUserExpression::Execute (Stream &error_stream,
         lldb::addr_t cmd_ptr = 0;
         
         if (!PrepareToExecuteJITExpression (error_stream, exe_ctx, struct_address, object_ptr, cmd_ptr))
+        {
+            error_stream.Printf("Errored out in %s, couldn't PrepareToExecuteJITExpression", __FUNCTION__);
             return eExecutionSetupError;
+        }
         
         const bool stop_others = true;
         const bool try_all_threads = true;
@@ -630,7 +634,10 @@ ClangUserExpression::Execute (Stream &error_stream,
         if  (FinalizeJITExecution (error_stream, exe_ctx, result, function_stack_pointer))
             return eExecutionCompleted;
         else
+        {
+            error_stream.Printf("Errored out in %s: Couldn't FinalizeJITExpression", __FUNCTION__);
             return eExecutionSetupError;
+        }
     }
     else
     {

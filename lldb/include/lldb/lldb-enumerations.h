@@ -100,6 +100,7 @@ namespace lldb {
         eFormatDecimal,
         eFormatEnum,
         eFormatHex,
+        eFormatHexUppercase,
         eFormatFloat,
         eFormatOctal,
         eFormatOSType,          // OS character codes encoded into an integer 'PICT' 'text' etc...
@@ -136,6 +137,7 @@ namespace lldb {
         eDescriptionLevelBrief = 0,
         eDescriptionLevelFull,
         eDescriptionLevelVerbose,
+        eDescriptionLevelInitial,
         kNumDescriptionLevels
     } DescriptionLevel;
 
@@ -369,6 +371,7 @@ namespace lldb {
         eArgTypeFrameIndex,
         eArgTypeFullName,
         eArgTypeFunctionName,
+        eArgTypeFunctionOrSymbol,
         eArgTypeGDBFormat,
         eArgTypeIndex,
         eArgTypeLanguage,

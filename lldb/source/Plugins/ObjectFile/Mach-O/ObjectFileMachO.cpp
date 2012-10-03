@@ -12,9 +12,11 @@
 
 #include "ObjectFileMachO.h"
 
+#include "lldb/lldb-private-log.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/DataBuffer.h"
 #include "lldb/Core/FileSpecList.h"
+#include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/RangeMap.h"
@@ -1479,36 +1481,36 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             FileSpec dsc_filespec(dsc_path, false);
 
             // We need definitions of two structures in the on-disk DSC, copy them here manually
-struct lldb_copy_dyld_cache_header
-{
-	char		magic[16];
-	uint32_t	mappingOffset;
-	uint32_t	mappingCount;
-	uint32_t	imagesOffset;
-	uint32_t	imagesCount;
-	uint64_t	dyldBaseAddress;
-	uint64_t	codeSignatureOffset;
-	uint64_t	codeSignatureSize;
-	uint64_t	slideInfoOffset;
-	uint64_t	slideInfoSize;
-	uint64_t	localSymbolsOffset;
-	uint64_t	localSymbolsSize;
-};
-struct lldb_copy_dyld_cache_local_symbols_info
-{
-        uint32_t        nlistOffset;
-        uint32_t        nlistCount;
-        uint32_t        stringsOffset;
-        uint32_t        stringsSize;
-        uint32_t        entriesOffset;
-        uint32_t        entriesCount;
-};
-struct lldb_copy_dyld_cache_local_symbols_entry
-{
-        uint32_t        dylibOffset;
-        uint32_t        nlistStartIndex;
-        uint32_t        nlistCount;
-};
+            struct lldb_copy_dyld_cache_header
+            {
+                char		magic[16];
+                uint32_t	mappingOffset;
+                uint32_t	mappingCount;
+                uint32_t	imagesOffset;
+                uint32_t	imagesCount;
+                uint64_t	dyldBaseAddress;
+                uint64_t	codeSignatureOffset;
+                uint64_t	codeSignatureSize;
+                uint64_t	slideInfoOffset;
+                uint64_t	slideInfoSize;
+                uint64_t	localSymbolsOffset;
+                uint64_t	localSymbolsSize;
+            };
+            struct lldb_copy_dyld_cache_local_symbols_info
+            {
+                    uint32_t        nlistOffset;
+                    uint32_t        nlistCount;
+                    uint32_t        stringsOffset;
+                    uint32_t        stringsSize;
+                    uint32_t        entriesOffset;
+                    uint32_t        entriesCount;
+            };
+            struct lldb_copy_dyld_cache_local_symbols_entry
+            {
+                    uint32_t        dylibOffset;
+                    uint32_t        nlistStartIndex;
+                    uint32_t        nlistCount;
+            };
 
             /* The dyld_cache_header has a pointer to the dyld_cache_local_symbols_info structure (localSymbolsOffset).
                The dyld_cache_local_symbols_info structure gives us three things:
@@ -1820,6 +1822,24 @@ struct lldb_copy_dyld_cache_local_symbols_entry
                                                                 if (so_path && so_path[0])
                                                                 {
                                                                     std::string full_so_path (so_path);
+                                                                    const size_t double_slash_pos = full_so_path.find("//");
+                                                                    if (double_slash_pos != std::string::npos)
+                                                                    {
+                                                                        // The linker has been generating bad N_SO entries with doubled up paths
+                                                                        // in the format "%s%s" where the first stirng in the DW_AT_comp_dir,
+                                                                        // and the second is the directory for the source file so you end up with
+                                                                        // a path that looks like "/tmp/src//tmp/src/"
+                                                                        FileSpec so_dir(so_path, false);
+                                                                        if (!so_dir.Exists())
+                                                                        {
+                                                                            so_dir.SetFile(&full_so_path[double_slash_pos + 1], false);
+                                                                            if (so_dir.Exists())
+                                                                            {
+                                                                                // Trim off the incorrect path
+                                                                                full_so_path.erase(0, double_slash_pos + 1);
+                                                                            }
+                                                                        }
+                                                                    }
                                                                     if (*full_so_path.rbegin() != '/')
                                                                         full_so_path += '/';
                                                                     full_so_path += symbol_name;
@@ -1828,8 +1848,12 @@ struct lldb_copy_dyld_cache_local_symbols_entry
                                                                     m_nlist_idx_to_sym_idx[nlist_idx] = sym_idx - 1;
                                                                 }
                                                             }
+                                                            else
+                                                            {
+                                                                // This could be a relative path to a N_SO
+                                                                N_SO_index = sym_idx;
+                                                            }
                                                         }
-
                                                         break;
 
                                                     case StabObjectFileName:
@@ -2539,6 +2563,24 @@ struct lldb_copy_dyld_cache_local_symbols_entry
                             if (so_path && so_path[0])
                             {
                                 std::string full_so_path (so_path);
+                                const size_t double_slash_pos = full_so_path.find("//");
+                                if (double_slash_pos != std::string::npos)
+                                {
+                                    // The linker has been generating bad N_SO entries with doubled up paths
+                                    // in the format "%s%s" where the first stirng in the DW_AT_comp_dir,
+                                    // and the second is the directory for the source file so you end up with
+                                    // a path that looks like "/tmp/src//tmp/src/"
+                                    FileSpec so_dir(so_path, false);
+                                    if (!so_dir.Exists())
+                                    {
+                                        so_dir.SetFile(&full_so_path[double_slash_pos + 1], false);
+                                        if (so_dir.Exists())
+                                        {
+                                            // Trim off the incorrect path
+                                            full_so_path.erase(0, double_slash_pos + 1);
+                                        }
+                                    }
+                                }
                                 if (*full_so_path.rbegin() != '/')
                                     full_so_path += '/';
                                 full_so_path += symbol_name;
@@ -2546,6 +2588,11 @@ struct lldb_copy_dyld_cache_local_symbols_entry
                                 add_nlist = false;
                                 m_nlist_idx_to_sym_idx[nlist_idx] = sym_idx - 1;
                             }
+                        }
+                        else
+                        {
+                            // This could be a relative path to a N_SO
+                            N_SO_index = sym_idx;
                         }
                     }
                     
@@ -3139,7 +3186,6 @@ struct lldb_copy_dyld_cache_local_symbols_entry
                                     stub_symbol = symtab->FindSymbolByID (stub_sym_id);
                                 }
 
-                                assert (stub_symbol);
                                 if (stub_symbol)
                                 {
                                     Address so_addr(symbol_stub_addr, section_list);
@@ -3172,6 +3218,11 @@ struct lldb_copy_dyld_cache_local_symbols_entry
                                         sym[sym_idx].SetByteSize (symbol_stub_byte_size);
                                         ++sym_idx;
                                     }
+                                }
+                                else
+                                {
+                                    if (log)
+                                        log->Warning ("symbol stub referencing symbol table symbol %u that isn't in our minimal symbol table, fix this!!!", stub_sym_id);
                                 }
                             }
                         }

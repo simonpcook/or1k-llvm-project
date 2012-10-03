@@ -36,6 +36,7 @@
 #include <clc/math/exp.h>
 #include <clc/math/exp2.h>
 #include <clc/math/fabs.h>
+#include <clc/math/floor.h>
 #include <clc/math/fma.h>
 #include <clc/math/hypot.h>
 #include <clc/math/log.h>
@@ -52,6 +53,7 @@
 #include <clc/math/native_log2.h>
 #include <clc/math/native_sin.h>
 #include <clc/math/native_sqrt.h>
+#include <clc/math/rsqrt.h>
 
 /* 6.11.3 Integer Functions */
 #include <clc/integer/abs.h>

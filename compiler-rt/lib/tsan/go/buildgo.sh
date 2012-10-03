@@ -33,7 +33,6 @@ SRCS="
 	../../sanitizer_common/sanitizer_libc.cc
 	../../sanitizer_common/sanitizer_posix.cc
 	../../sanitizer_common/sanitizer_printf.cc
-	../../sanitizer_common/sanitizer_symbolizer.cc
 "
 
 if [ "$LINUX" != "" ]; then
@@ -42,10 +41,10 @@ if [ "$LINUX" != "" ]; then
 		../../sanitizer_common/sanitizer_linux.cc
 	"
 elif [ "$MAC" != "" ]; then
-        SRCS+="
-                ../rtl/tsan_platform_mac.cc
-                ../../sanitizer_common/sanitizer_mac.cc
-        "
+	SRCS+="
+		../rtl/tsan_platform_mac.cc
+		../../sanitizer_common/sanitizer_mac.cc
+	"
 fi
 
 SRCS+=$ADD_SRCS
@@ -56,7 +55,7 @@ for F in $SRCS; do
 	cat $F >> gotsan.cc
 done
 
-FLAGS=" -I../rtl -I../.. -I../../sanitizer_common -fPIC -g -Wall -Werror -fno-exceptions -DTSAN_GO -DSANITIZER_GO -DTSAN_SHADOW_COUNT=4"
+FLAGS=" -I../rtl -I../.. -I../../sanitizer_common -I../../../include -fPIC -Wall -Werror -fno-exceptions -DTSAN_GO -DSANITIZER_GO -DTSAN_SHADOW_COUNT=4"
 if [ "$DEBUG" == "" ]; then
 	FLAGS+=" -DTSAN_DEBUG=0 -O3 -fomit-frame-pointer"
 else

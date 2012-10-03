@@ -18,7 +18,7 @@
 
 // ----------- ATTENTION -------------
 // This header should NOT include any other headers from sanitizer runtime.
-#include "sanitizer_interface_defs.h"
+#include "sanitizer/common_interface_defs.h"
 
 namespace __sanitizer {
 
@@ -33,6 +33,7 @@ void *internal_memcpy(void *dest, const void *src, uptr n);
 void *internal_memset(void *s, int c, uptr n);
 char* internal_strchr(const char *s, int c);
 int internal_strcmp(const char *s1, const char *s2);
+uptr internal_strcspn(const char *s, const char *reject);
 char *internal_strdup(const char *s);
 uptr internal_strlen(const char *s);
 char *internal_strncat(char *dst, const char *src, uptr n);
@@ -59,6 +60,7 @@ uptr internal_read(fd_t fd, void *buf, uptr count);
 uptr internal_write(fd_t fd, const void *buf, uptr count);
 uptr internal_filesize(fd_t fd);  // -1 on error.
 int internal_dup2(int oldfd, int newfd);
+uptr internal_readlink(const char *path, char *buf, uptr bufsize);
 int internal_snprintf(char *buffer, uptr length, const char *format, ...);
 
 // Threading

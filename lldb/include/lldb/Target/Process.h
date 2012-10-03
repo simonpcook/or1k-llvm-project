@@ -49,73 +49,27 @@
 namespace lldb_private {
 
 //----------------------------------------------------------------------
-// ProcessInstanceSettings
+// ProcessProperties
 //----------------------------------------------------------------------
-class ProcessInstanceSettings : public InstanceSettings
+class ProcessProperties : public Properties
 {
 public:
-
-    ProcessInstanceSettings (const lldb::UserSettingsControllerSP &owner_sp, bool live_instance = true, const char *name = NULL);
-  
-    ProcessInstanceSettings (const ProcessInstanceSettings &rhs);
+    ProcessProperties(bool is_global);
 
     virtual
-    ~ProcessInstanceSettings ();
-  
-    ProcessInstanceSettings&
-    operator= (const ProcessInstanceSettings &rhs);
-  
-
-    void
-    UpdateInstanceSettingsVariable (const ConstString &var_name,
-                                    const char *index_value,
-                                    const char *value,
-                                    const ConstString &instance_name,
-                                    const SettingEntry &entry,
-                                    VarSetOperationType op,
-                                    Error &err,
-                                    bool pending);
-
+    ~ProcessProperties();
+    
     bool
-    GetInstanceSettingsValue (const SettingEntry &entry,
-                              const ConstString &var_name,
-                              StringList &value,
-                              Error *err);
+    GetDisableMemoryCache() const;
 
-    bool GetDisableMemoryCache() const
-    {
-        return m_disable_memory_cache;
-    }
-    
-    const Args &
-    GetExtraStartupCommands () const
-    {
-        return m_extra_startup_commands;
-    }
-    
-    void
-    SetExtraStartupCommands (const Args &args)
-    {
-        m_extra_startup_commands = args;
-    }
-    
-protected:
-    const ConstString &
-    GetDisableMemoryCacheVarName () const;
-    
-    const ConstString &
-    GetExtraStartupCommandVarName () const;
+    Args
+    GetExtraStartupCommands () const;
 
     void
-    CopyInstanceSettings (const lldb::InstanceSettingsSP &new_settings,
-                          bool pending);
-
-    const ConstString
-    CreateInstanceName ();
-    
-    bool        m_disable_memory_cache;
-    Args        m_extra_startup_commands;
+    SetExtraStartupCommands (const Args &args);
 };
+
+typedef STD_SHARED_PTR(ProcessProperties) ProcessPropertiesSP;
 
 //----------------------------------------------------------------------
 // ProcessInfo
@@ -1344,11 +1298,11 @@ protected:
 //----------------------------------------------------------------------
 class Process :
     public STD_ENABLE_SHARED_FROM_THIS(Process),
+    public ProcessProperties,
     public UserID,
     public Broadcaster,
     public ExecutionContextScope,
-    public PluginInterface,
-    public ProcessInstanceSettings
+    public PluginInterface
 {
 friend class ThreadList;
 friend class ClangFunction; // For WaitForStateChangeEventsPrivate
@@ -1507,31 +1461,6 @@ public:
 
     };
 
-    class SettingsController : public UserSettingsController
-    {
-    public:
-        
-        SettingsController ();
-
-        virtual
-        ~SettingsController ();
-
-        static SettingEntry global_settings_table[];
-        static SettingEntry instance_settings_table[];
-
-    protected:
-
-        lldb::InstanceSettingsSP
-        CreateInstanceSettings (const char *instance_name);
-
-    private:
-
-        // Class-wide settings.
-
-        DISALLOW_COPY_AND_ASSIGN (SettingsController);
-    };
-
-
 #endif
 
     static void
@@ -1539,14 +1468,10 @@ public:
 
     static void
     SettingsTerminate ();
-
-    static lldb::UserSettingsControllerSP &
-    GetSettingsController ();
-
-    void
-    UpdateInstanceName ();
-
     
+    static const ProcessPropertiesSP &
+    GetGlobalProperties();
+
     //------------------------------------------------------------------
     /// Construct with a shared pointer to a target, and the Process listener.
     //------------------------------------------------------------------
@@ -1638,6 +1563,20 @@ public:
     //------------------------------------------------------------------
     virtual void
     Finalize();
+    
+    
+    //------------------------------------------------------------------
+    /// Return whether this object is valid (i.e. has not been finalized.)
+    ///
+    /// @return
+    ///     Returns \b true if this Process has not been finalized
+    ///     and \b false otherwise.
+    //------------------------------------------------------------------
+    bool
+    IsValid() const
+    {
+        return !m_finalize_called;
+    }
 
     //------------------------------------------------------------------
     /// Launch a new process.
@@ -1734,8 +1673,22 @@ public:
     virtual Error
     Attach (ProcessAttachInfo &attach_info);
 
+    //------------------------------------------------------------------
+    /// Attach to a remote system via a URL
+    ///
+    /// @param[in] strm
+    ///     A stream where output intended for the user
+    ///     (if the driver has a way to display that) generated during
+    ///     the connection.  This may be NULL if no output is needed.A
+    ///
+    /// @param[in] remote_url
+    ///     The URL format that we are connecting to.
+    ///
+    /// @return
+    ///     Returns an error object.
+    //------------------------------------------------------------------
     virtual Error
-    ConnectRemote (const char *remote_url);
+    ConnectRemote (Stream *strm, const char *remote_url);
 
     bool
     GetShouldDetach () const
@@ -1957,8 +1910,22 @@ public:
         return Error(); 
     }
 
+    //------------------------------------------------------------------
+    /// Attach to a remote system via a URL
+    ///
+    /// @param[in] strm
+    ///     A stream where output intended for the user 
+    ///     (if the driver has a way to display that) generated during
+    ///     the connection.  This may be NULL if no output is needed.A
+    ///
+    /// @param[in] remote_url
+    ///     The URL format that we are connecting to.
+    ///
+    /// @return
+    ///     Returns an error object.
+    //------------------------------------------------------------------
     virtual Error
-    DoConnectRemote (const char *remote_url)
+    DoConnectRemote (Stream *strm, const char *remote_url)
     {
         Error error;
         error.SetErrorString ("remote connections are not supported");
@@ -2580,7 +2547,7 @@ public:
     /// Read a NULL terminated C string from memory
     ///
     /// This function will read a cache page at a time until the NULL
-    /// C stirng terminator is found. It will stop reading if the NULL
+    /// C string terminator is found. It will stop reading if the NULL
     /// termination byte isn't found before reading \a cstr_max_len
     /// bytes, and the results are always guaranteed to be NULL 
     /// terminated (at most cstr_max_len - 1 bytes will be read).
@@ -3094,7 +3061,7 @@ public:
     GetNextEvent (lldb::EventSP &event_sp);
 
     lldb::StateType
-    WaitForProcessToStop (const TimeValue *timeout);
+    WaitForProcessToStop (const TimeValue *timeout, lldb::EventSP *event_sp_ptr = NULL);
 
     lldb::StateType
     WaitForStateChangedEvents (const TimeValue *timeout, lldb::EventSP &event_sp);
@@ -3441,6 +3408,7 @@ protected:
     std::vector<PreResumeCallbackAndBaton> m_pre_resume_actions;
     ReadWriteLock               m_run_lock;
     Predicate<bool>             m_currently_handling_event;
+    bool                        m_finalize_called;
 
     enum {
         eCanJITDontKnow= 0,

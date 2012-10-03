@@ -26,12 +26,10 @@ typedef SizeClassAllocatorLocalCache<Allocator::kNumClasses, Allocator>
 TEST(SanitizerCommon, DefaultSizeClassMap) {
 #if 0
   for (uptr i = 0; i < SCMap::kNumClasses; i++) {
-    // printf("% 3ld: % 5ld (%4lx);   ", i, SCMap::Size(i), SCMap::Size(i));
-    printf("c%ld => %ld  ", i, SCMap::Size(i));
-    if ((i % 8) == 7)
-      printf("\n");
+    printf("c%ld => %ld cached=%ld(%ld)\n",
+        i, SCMap::Size(i), SCMap::MaxCached(i) * SCMap::Size(i),
+        SCMap::MaxCached(i));
   }
-  printf("\n");
 #endif
 
   for (uptr c = 0; c < SCMap::kNumClasses; c++) {
@@ -181,6 +179,19 @@ TEST(SanitizerCommon, LargeMmapAllocator) {
     a.Deallocate(p);
   }
   CHECK_EQ(a.TotalMemoryUsed(), 0);
+
+  for (uptr alignment = 8; alignment <= (1<<28); alignment *= 2) {
+    for (int i = 0; i < kNumAllocs; i++) {
+      uptr size = ((i % 10) + 1) * kPageSize;
+      allocated[i] = a.Allocate(size, alignment);
+      CHECK_EQ(0, (uptr)allocated[i] % alignment);
+      char *p = (char*)allocated[i];
+      p[0] = p[size - 1] = 0;
+    }
+    for (int i = 0; i < kNumAllocs; i++) {
+      a.Deallocate(allocated[i]);
+    }
+  }
 }
 
 TEST(SanitizerCommon, CombinedAllocator) {
@@ -193,6 +204,13 @@ TEST(SanitizerCommon, CombinedAllocator) {
   Allocator a;
   a.Init();
   cache.Init();
+
+  EXPECT_EQ(a.Allocate(&cache, -1, 1), (void*)0);
+  EXPECT_EQ(a.Allocate(&cache, -1, 1024), (void*)0);
+  EXPECT_EQ(a.Allocate(&cache, (uptr)-1 - 1024, 1), (void*)0);
+  EXPECT_EQ(a.Allocate(&cache, (uptr)-1 - 1024, 1024), (void*)0);
+  EXPECT_EQ(a.Allocate(&cache, (uptr)-1 - 1023, 1024), (void*)0);
+
   const uptr kNumAllocs = 100000;
   const uptr kNumIter = 10;
   for (uptr iter = 0; iter < kNumIter; iter++) {

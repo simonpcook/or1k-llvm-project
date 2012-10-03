@@ -13,15 +13,19 @@
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
+#include "lldb/Core/Section.h"
 #include "lldb/Core/State.h"
+#include "lldb/Host/Symbols.h"
 #include "lldb/Symbol/ObjectFile.h"
-#include "lldb/Target/ObjCLanguageRuntime.h"
 #include "lldb/Target/RegisterContext.h"
+#include "lldb/Target/StackFrame.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadPlanRunToAddress.h"
-#include "lldb/Target/StackFrame.h"
+
 
 #include "DynamicLoaderDarwinKernel.h"
 
@@ -35,11 +39,6 @@
 
 using namespace lldb;
 using namespace lldb_private;
-
-/// FIXME - The ObjC Runtime trampoline handler doesn't really belong here.
-/// I am putting it here so I can invoke it in the Trampoline code here, but
-/// it should be moved to the ObjC Runtime support when it is set up.
-
 
 //----------------------------------------------------------------------
 // Create an instance of this class. This function is filled into
@@ -186,6 +185,7 @@ DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::LoadImageUsingMemoryModule (
         return true;
 
     bool uuid_is_valid = uuid.IsValid();
+    bool memory_module_is_kernel = false;
 
     Target &target = process->GetTarget();
     ModuleSP memory_module_sp;
@@ -203,6 +203,12 @@ DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::LoadImageUsingMemoryModule (
         {
             uuid = memory_module_sp->GetUUID();
             uuid_is_valid = uuid.IsValid();
+        }
+        if (memory_module_sp->GetObjectFile() 
+            && memory_module_sp->GetObjectFile()->GetType() == ObjectFile::eTypeExecutable
+            && memory_module_sp->GetObjectFile()->GetStrata() == ObjectFile::eStrataKernel)
+        {
+            memory_module_is_kernel = true;
         }
     }
 
@@ -277,12 +283,45 @@ DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::LoadImageUsingMemoryModule (
                 module_sp.reset(); // UUID mismatch
         }
         
+        // Try to locate the kext/kernel binary on the local filesystem, maybe with additional 
+        // debug info/symbols still present, before we resort to copying it out of memory.
+        if (!module_sp)
+        {
+            ModuleSpec sym_spec;
+            sym_spec.GetUUID() = memory_module_sp->GetUUID();
+            if (Symbols::LocateExecutableObjectFile (sym_spec) 
+                && sym_spec.GetArchitecture().IsValid()
+                && sym_spec.GetFileSpec().Exists())
+            {
+                module_sp = target.GetSharedModule (sym_spec);
+                if (module_sp.get ())
+                {
+                    target.SetExecutableModule(module_sp, false);
+                    if (address != LLDB_INVALID_ADDRESS 
+                        && module_sp->GetObjectFile() 
+                        && module_sp->GetObjectFile()->GetHeaderAddress().IsValid())
+                    {
+                        addr_t slide = address - module_sp->GetObjectFile()->GetHeaderAddress().GetFileAddress();
+                        bool changed = false;
+                        module_sp->SetLoadAddress (target, slide, changed);
+                        if (changed)
+                        {
+                            ModuleList modlist;
+                            modlist.Append (module_sp);
+                            target.ModulesDidLoad (modlist);
+                        }
+                        load_process_stop_id = process->GetStopID();
+                    }
+                }
+            }
+        }
+
         // Use the memory module as the module if we didn't like the file
         // module we either found or were supplied with
         if (!module_sp)
         {
             module_sp = memory_module_sp;
-            // Load the memory image in the target as all adresses are already correct
+            // Load the memory image in the target as all addresses are already correct
             bool changed = false;
             target.GetImages().Append (memory_module_sp);
             if (module_sp->SetLoadAddress (target, 0, changed))
@@ -299,8 +338,55 @@ DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::LoadImageUsingMemoryModule (
             target.GetImages().ResolveFileAddress (address, so_address);
 
     }
+
+    if (is_loaded && module_sp && memory_module_is_kernel)
+    {
+        Stream *s = &target.GetDebugger().GetOutputStream();
+        if (s)
+        {
+            char uuidbuf[64];
+            s->Printf ("Kernel UUID: %s\n", module_sp->GetUUID().GetAsCString(uuidbuf, sizeof (uuidbuf)));
+            s->Printf ("Load Address: 0x%llx\n", address);
+            if (module_sp->GetFileSpec().GetDirectory().IsEmpty())
+            {
+                s->Printf ("Loaded kernel file %s\n", module_sp->GetFileSpec().GetFilename().AsCString());
+            }
+            else
+            {
+                s->Printf ("Loaded kernel file %s/%s\n",
+                              module_sp->GetFileSpec().GetDirectory().AsCString(),
+                              module_sp->GetFileSpec().GetFilename().AsCString());
+            }
+            s->Flush ();
+        }
+    }
     return is_loaded;
 }
+
+uint32_t
+DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::GetAddressByteSize ()
+{
+    if (module_sp)
+        return module_sp->GetArchitecture().GetAddressByteSize();
+    return 0;
+}
+
+lldb::ByteOrder
+DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::GetByteOrder()
+{
+    if (module_sp)
+        return module_sp->GetArchitecture().GetByteOrder();
+    return lldb::endian::InlHostByteOrder();
+}
+
+lldb_private::ArchSpec
+DynamicLoaderDarwinKernel::OSKextLoadedKextSummary::GetArchitecture () const
+{
+    if (module_sp)
+        return module_sp->GetArchitecture();
+    return lldb_private::ArchSpec ();
+}
+
 
 //----------------------------------------------------------------------
 // Load the kernel module and initialize the "m_kernel" member. Return
@@ -315,7 +401,16 @@ DynamicLoaderDarwinKernel::LoadKernelModuleIfNeeded()
     {
         m_kernel.Clear(false);
         m_kernel.module_sp = m_process->GetTarget().GetExecutableModule();
-        strncpy(m_kernel.name, "mach_kernel", sizeof(m_kernel.name));
+
+        ConstString kernel_name("mach_kernel");
+        if (m_kernel.module_sp.get() 
+            && m_kernel.module_sp->GetObjectFile()
+            && !m_kernel.module_sp->GetObjectFile()->GetFileSpec().GetFilename().IsEmpty())
+        {
+            kernel_name = m_kernel.module_sp->GetObjectFile()->GetFileSpec().GetFilename();
+        }
+        strlcpy (m_kernel.name, kernel_name.AsCString(), sizeof(m_kernel.name));
+
         if (m_kernel.address == LLDB_INVALID_ADDRESS)
         {
             m_kernel.address = m_process->GetImageInfoAddress ();
@@ -326,7 +421,25 @@ DynamicLoaderDarwinKernel::LoadKernelModuleIfNeeded()
                 // the file if we have one
                 ObjectFile *kernel_object_file = m_kernel.module_sp->GetObjectFile();
                 if (kernel_object_file)
-                    m_kernel.address = kernel_object_file->GetHeaderAddress().GetFileAddress();
+                {
+                    addr_t load_address = kernel_object_file->GetHeaderAddress().GetLoadAddress(&m_process->GetTarget());
+                    addr_t file_address = kernel_object_file->GetHeaderAddress().GetFileAddress();
+                    if (load_address != LLDB_INVALID_ADDRESS && load_address != 0)
+                    {
+                        m_kernel.address = load_address;
+                        if (load_address != file_address)
+                        {
+                            // Don't accidentally relocate the kernel to the File address -- 
+                            // the Load address has already been set to its actual in-memory address.  
+                            // Mark it as IsLoaded.
+                            m_kernel.load_process_stop_id = m_process->GetStopID();
+                        }
+                    }
+                    else
+                    {
+                        m_kernel.address = file_address;
+                    }
+                }
             }
         }
         
@@ -457,46 +570,25 @@ DynamicLoaderDarwinKernel::ParseKextSummaries (const Address &kext_summary_addr,
         return false;
 
     Stream *s = &m_process->GetTarget().GetDebugger().GetOutputStream();
+    if (s)
+        s->Printf ("Loading %d kext modules ", count);
     for (uint32_t i = 0; i < count; i++)
     {
-        if (s)
-        {
-            const uint8_t *u = (const uint8_t *)kext_summaries[i].uuid.GetBytes();
-            if (u)
-            {
-                s->Printf("Loading kext: %2.2X%2.2X%2.2X%2.2X-%2.2X%2.2X-%2.2X%2.2X-%2.2X%2.2X-%2.2X%2.2X%2.2X%2.2X%2.2X%2.2X 0x%16.16llx \"%s\"...",
-                          u[ 0], u[ 1], u[ 2], u[ 3], u[ 4], u[ 5], u[ 6], u[ 7],
-                          u[ 8], u[ 9], u[10], u[11], u[12], u[13], u[14], u[15],
-                          kext_summaries[i].address, kext_summaries[i].name);
-            }   
-            else
-            {
-                s->Printf("0x%16.16llx \"%s\"...", kext_summaries[i].address, kext_summaries[i].name);
-            }
-        }
-        
         if (!kext_summaries[i].LoadImageUsingMemoryModule (m_process))
             kext_summaries[i].LoadImageAtFileAddress (m_process);
 
         if (s)
-        {
-            if (kext_summaries[i].module_sp)
-            {
-                if (kext_summaries[i].module_sp->GetFileSpec().GetDirectory())
-                    s->Printf("\n  found kext: %s/%s\n", 
-                              kext_summaries[i].module_sp->GetFileSpec().GetDirectory().AsCString(),
-                              kext_summaries[i].module_sp->GetFileSpec().GetFilename().AsCString());
-                else
-                    s->Printf("\n  found kext: %s\n", 
-                              kext_summaries[i].module_sp->GetFileSpec().GetFilename().AsCString());
-            }
-            else
-                s->Printf (" failed to locate/load.\n");
-        }
-            
+            s->Printf (".");
+
         if (log)
             kext_summaries[i].PutToLog (log.get());
     }
+    if (s)
+    {
+        s->Printf (" done.\n");
+        s->Flush ();
+    }
+
     bool return_value = AddModulesUsingImageInfos (kext_summaries);
     return return_value;
 }
@@ -540,10 +632,6 @@ DynamicLoaderDarwinKernel::ReadKextSummaries (const Address &kext_summary_addr,
     DataBufferHeap data(count, 0);
     Error error;
     
-    Stream *s = &m_process->GetTarget().GetDebugger().GetOutputStream();
-
-    if (s)
-        s->Printf ("Reading %u kext summaries...\n", image_infos_count);
     const bool prefer_file_cache = false;
     const size_t bytes_read = m_process->GetTarget().ReadMemory (kext_summary_addr, 
                                                                  prefer_file_cache,
@@ -698,7 +786,6 @@ DynamicLoaderDarwinKernel::PrivateInitialize(Process *process)
     DEBUG_PRINTF("DynamicLoaderDarwinKernel::%s() process state = %s\n", __FUNCTION__, StateAsCString(m_process->GetState()));
     Clear(true);
     m_process = process;
-    m_process->GetTarget().GetSectionLoadList().Clear();
 }
 
 void
@@ -824,5 +911,27 @@ uint32_t
 DynamicLoaderDarwinKernel::GetPluginVersion()
 {
     return 1;
+}
+
+lldb::ByteOrder
+DynamicLoaderDarwinKernel::GetByteOrderFromMagic (uint32_t magic)
+{
+    switch (magic)
+    {
+        case llvm::MachO::HeaderMagic32:
+        case llvm::MachO::HeaderMagic64:
+            return lldb::endian::InlHostByteOrder();
+            
+        case llvm::MachO::HeaderMagic32Swapped:
+        case llvm::MachO::HeaderMagic64Swapped:
+            if (lldb::endian::InlHostByteOrder() == lldb::eByteOrderBig)
+                return lldb::eByteOrderLittle;
+            else
+                return lldb::eByteOrderBig;
+            
+        default:
+            break;
+    }
+    return lldb::eByteOrderInvalid;
 }
 

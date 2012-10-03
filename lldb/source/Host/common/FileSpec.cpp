@@ -28,6 +28,7 @@
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/DataBufferMemoryMap.h"
+#include "lldb/Core/RegularExpression.h"
 #include "lldb/Core/Stream.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Utility/CleanUp.h"
@@ -523,15 +524,9 @@ FileSpec::Equal (const FileSpec& a, const FileSpec& b, bool full)
 void
 FileSpec::Dump(Stream *s) const
 {
-    if (m_filename)
-        m_directory.Dump(s, "");    // Provide a default for m_directory when we dump it in case it is invalid
-
+    m_directory.Dump(s);
     if (m_directory)
-    {
-        // If dirname was valid, then we need to print a slash between
-        // the directory and the filename
         s->PutChar('/');
-    }
     m_filename.Dump(s);
 }
 
@@ -708,15 +703,14 @@ FileSpec::GetPath(char *path, size_t path_max_len) const
 ConstString
 FileSpec::GetFileNameExtension () const
 {
-    const char *filename = m_filename.GetCString();
-    if (filename == NULL)
-        return ConstString();
-    
-    const char* dot_pos = strrchr(filename, '.');
-    if (dot_pos == NULL)
-        return ConstString();
-    
-    return ConstString(dot_pos+1);
+    if (m_filename)
+    {
+        const char *filename = m_filename.GetCString();
+        const char* dot_pos = strrchr(filename, '.');
+        if (dot_pos && dot_pos[1] != '\0')
+            return ConstString(dot_pos+1);
+    }
+    return ConstString();
 }
 
 ConstString
@@ -818,7 +812,37 @@ FileSpec::ReadFileContents (off_t file_offset, size_t file_size, Error *error_pt
         File file;
         error = file.Open(resolved_path, File::eOpenOptionRead);
         if (error.Success())
-            error = file.Read (file_size, file_offset, data_sp);
+        {
+            const bool null_terminate = false;
+            error = file.Read (file_size, file_offset, null_terminate, data_sp);
+        }
+    }
+    else
+    {
+        error.SetErrorString("invalid file specification");
+    }
+    if (error_ptr)
+        *error_ptr = error;
+    return data_sp;
+}
+
+DataBufferSP
+FileSpec::ReadFileContentsAsCString(Error *error_ptr)
+{
+    Error error;
+    DataBufferSP data_sp;
+    char resolved_path[PATH_MAX];
+    if (GetPath(resolved_path, sizeof(resolved_path)))
+    {
+        File file;
+        error = file.Open(resolved_path, File::eOpenOptionRead);
+        if (error.Success())
+        {
+            off_t offset = 0;
+            size_t length = SIZE_MAX;
+            const bool null_terminate = true;
+            error = file.Read (length, offset, null_terminate, data_sp);
+        }
     }
     else
     {
@@ -949,4 +973,27 @@ FileSpec::EnumerateDirectory
     // to continue enumerating.
     return eEnumerateDirectoryResultNext;    
 }
+
+//------------------------------------------------------------------
+/// Returns true if the filespec represents an implementation source
+/// file (files with a ".c", ".cpp", ".m", ".mm" (many more)
+/// extension).
+///
+/// @return
+///     \b true if the filespec represents an implementation source
+///     file, \b false otherwise.
+//------------------------------------------------------------------
+bool
+FileSpec::IsSourceImplementationFile () const
+{
+    ConstString extension (GetFileNameExtension());
+    if (extension)
+    {
+        static RegularExpression g_source_file_regex ("^(c|m|mm|cpp|c\\+\\+|cxx|cc|cp|s|asm|f|f77|f90|f95|f03|for|ftn|fpp|ada|adb|ads)$",
+                                                      REG_EXTENDED | REG_ICASE);
+        return g_source_file_regex.Execute (extension.GetCString());
+    }
+    return false;
+}
+
 

@@ -13,8 +13,8 @@ E: hhinnant@apple.com
 D: Architect and primary author of libc++
 
 N: Marshall Clow
+E: mclow.lists@gmail.com
 E: marshall@idio.com
-E: mclow@qualcomm.com
 D: Minor patches and bug fixes.
 
 N: Bjorn Reese
@@ -54,3 +54,15 @@ D: Minor patches.
 N: Andrew Morrow
 E: andrew.c.morrow@gmail.com
 D: Minor patches and Linux fixes.
+
+N: Hyeon-bin Jeong
+E: tuhertz@gmail.com
+D: Minor patches and bug fixes.
+
+N: Michel Morin
+E: mimomorin@gmail.com
+D: Minor patches to is_convertible.
+
+N: Dimitry Andric
+E: dimitry@andric.com
+D: Visibility fixes, minor FreeBSD portability patches.

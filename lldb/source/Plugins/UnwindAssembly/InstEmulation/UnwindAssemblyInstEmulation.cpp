@@ -14,6 +14,7 @@
 #include "lldb/Core/Address.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/DataBufferHeap.h"
+#include "lldb/Core/DataExtractor.h"
 #include "lldb/Core/Disassembler.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Log.h"
@@ -343,13 +344,14 @@ UnwindAssemblyInstEmulation::ReadMemory (EmulateInstruction *instruction,
     if (log && log->GetVerbose ())
     {
         StreamString strm;
-        strm.Printf ("UnwindAssemblyInstEmulation::ReadMemory    (addr = 0x%16.16llx, dst = %p, dst_len = %zu, context = ", 
+        strm.Printf ("UnwindAssemblyInstEmulation::ReadMemory    (addr = 0x%16.16llx, dst = %p, dst_len = %llu, context = ", 
                      addr,
                      dst,
-                     dst_len);
+                     (uint64_t)dst_len);
         context.Dump(strm, instruction);
         log->PutCString (strm.GetData ());
     }
+    memset (dst, 0, dst_len);
     return dst_len;
 }
 

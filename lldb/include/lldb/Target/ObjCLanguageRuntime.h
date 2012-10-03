@@ -12,6 +12,7 @@
 
 // C Includes
 // C++ Includes
+#include <functional>
 #include <map>
 
 // Other libraries and framework includes
@@ -19,6 +20,7 @@
 #include "lldb/lldb-private.h"
 #include "lldb/Core/PluginInterface.h"
 #include "lldb/Symbol/Type.h"
+#include "lldb/Symbol/TypeVendor.h"
 #include "lldb/Target/LanguageRuntime.h"
 
 namespace lldb_private {
@@ -29,6 +31,163 @@ class ObjCLanguageRuntime :
     public LanguageRuntime
 {
 public:
+    
+    typedef lldb::addr_t ObjCISA;
+    
+    class ClassDescriptor;
+    typedef STD_SHARED_PTR(ClassDescriptor) ClassDescriptorSP;
+    
+    // the information that we want to support retrieving from an ObjC class
+    // this needs to be pure virtual since there are at least 2 different implementations
+    // of the runtime, and more might come
+    class ClassDescriptor
+    {
+    public:
+        
+        ClassDescriptor() :
+        m_is_kvo(eLazyBoolCalculate),
+        m_is_cf(eLazyBoolCalculate)
+        {}
+        
+        ClassDescriptor (ObjCISA isa, lldb::ProcessSP process)  :
+        m_is_kvo(eLazyBoolCalculate),
+        m_is_cf(eLazyBoolCalculate)
+        {}
+        
+        virtual ConstString
+        GetClassName () = 0;
+        
+        virtual ClassDescriptorSP
+        GetSuperclass () = 0;
+        
+        // virtual if any implementation has some other version-specific rules
+        // but for the known v1/v2 this is all that needs to be done
+        virtual bool
+        IsKVO ()
+        {
+            if (m_is_kvo == eLazyBoolCalculate)
+            {
+                const char* class_name = GetClassName().AsCString();
+                if (class_name && *class_name)
+                    m_is_kvo = (LazyBool)(strstr(class_name,"NSKVONotifying_") == class_name);
+            }
+            return (m_is_kvo == eLazyBoolYes);
+        }
+        
+        // virtual if any implementation has some other version-specific rules
+        // but for the known v1/v2 this is all that needs to be done
+        virtual bool
+        IsCFType ()
+        {
+            if (m_is_cf == eLazyBoolCalculate)
+            {
+                const char* class_name = GetClassName().AsCString();
+                if (class_name && *class_name)
+                    m_is_cf = (LazyBool)(strcmp(class_name,"__NSCFType") == 0 ||
+                                         strcmp(class_name,"NSCFType") == 0);
+            }
+            return (m_is_cf == eLazyBoolYes);
+        }
+        
+        virtual bool
+        IsValid () = 0;
+        
+        virtual bool
+        IsTagged () = 0;
+        
+        virtual uint64_t
+        GetInstanceSize () = 0;
+        
+        virtual bool
+        IsRealized ()
+        {
+            // anything other than some instances of v2 classes are always realized
+            return true;
+        }
+        
+        // use to implement version-specific additional constraints on pointers
+        virtual bool
+        CheckPointer (lldb::addr_t value,
+                      uint32_t ptr_size)
+        {
+            return true;
+        }
+        
+        virtual ObjCISA
+        GetISA () = 0;
+        
+        // This should return true iff the interface could be completed
+        virtual bool
+        Describe (std::function <void (ObjCISA)> const &superclass_func,
+                  std::function <void (const char*, const char*)> const &instance_method_func,
+                  std::function <void (const char*, const char*)> const &class_method_func)
+        {
+            return false;
+        }
+        
+        virtual
+        ~ClassDescriptor ()
+        {}
+        
+    protected:
+        bool
+        IsPointerValid (lldb::addr_t value,
+                        uint32_t ptr_size,
+                        bool allow_NULLs = false,
+                        bool allow_tagged = false,
+                        bool check_version_specific = false);
+        
+    private:
+        LazyBool m_is_kvo;
+        LazyBool m_is_cf;
+    };
+    
+    // a convenience subclass of ClassDescriptor meant to represent invalid objects
+    class ClassDescriptor_Invalid : public ClassDescriptor
+    {
+    public:
+        ClassDescriptor_Invalid() {}
+        
+        virtual ConstString
+        GetClassName () { return ConstString(""); }
+        
+        virtual ClassDescriptorSP
+        GetSuperclass () { return ClassDescriptorSP(new ClassDescriptor_Invalid()); }
+        
+        virtual bool
+        IsValid () { return false; }
+        
+        virtual bool
+        IsTagged () { return false; }
+        
+        virtual uint64_t
+        GetInstanceSize () { return 0; }
+        
+        virtual ObjCISA
+        GetISA () { return 0; }
+        
+        virtual bool
+        CheckPointer (lldb::addr_t value,
+                      uint32_t ptr_size) { return false; }
+        
+        virtual
+        ~ClassDescriptor_Invalid ()
+        {}
+        
+    };
+    
+    virtual ClassDescriptorSP
+    GetClassDescriptor (ValueObject& in_value)
+    {
+        return ClassDescriptorSP();
+    }
+    
+    virtual ClassDescriptorSP
+    GetClassDescriptor (ObjCISA isa)
+    {
+        return ClassDescriptorSP();
+    }
+    
     virtual
     ~ObjCLanguageRuntime();
     
@@ -77,22 +236,40 @@ public:
         return eObjC_VersionUnknown;
     }
         
-    typedef lldb::addr_t ObjCISA;
-    
     virtual bool
     IsValidISA(ObjCISA isa) = 0;
     
     virtual ObjCISA
     GetISA(ValueObject& valobj) = 0;
     
-    virtual ConstString
-    GetActualTypeName(ObjCISA isa) = 0;
+    virtual void
+    UpdateISAToDescriptorMap_Impl()
+    {
+        // to be implemented by runtimes if they support doing this
+    }
+    
+    void
+    UpdateISAToDescriptorMap()
+    {
+        if (m_isa_to_descriptor_cache_is_up_to_date)
+            return;
+        
+        m_isa_to_descriptor_cache_is_up_to_date = true;
+
+        UpdateISAToDescriptorMap_Impl();
+    }
     
     virtual ObjCISA
-    GetParentClass(ObjCISA isa) = 0;
+    GetISA(const ConstString &name);
     
-    virtual SymbolVendor *
-    GetSymbolVendor()
+    virtual ConstString
+    GetActualTypeName(ObjCISA isa);
+    
+    virtual ObjCISA
+    GetParentClass(ObjCISA isa);
+    
+    virtual TypeVendor *
+    GetTypeVendor()
     {
         return NULL;
     }
@@ -267,6 +444,11 @@ private:
     
     LazyBool m_has_new_literals_and_indexing;
 protected:
+    typedef std::map<ObjCISA, ClassDescriptorSP> ISAToDescriptorMap;
+    typedef ISAToDescriptorMap::iterator ISAToDescriptorIterator;
+    ISAToDescriptorMap                  m_isa_to_descriptor_cache;
+    bool                                m_isa_to_descriptor_cache_is_up_to_date;
+    
     typedef std::map<lldb::addr_t,TypeAndOrName> ClassNameMap;
     typedef ClassNameMap::iterator ClassNameIterator;
     ClassNameMap m_class_name_cache;

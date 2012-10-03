@@ -86,7 +86,7 @@ static int AppendPointer(char **buff, const char *buff_end, u64 ptr_value) {
 int VSNPrintf(char *buff, int buff_length,
               const char *format, va_list args) {
   static const char *kPrintfFormatsHelp = "Supported Printf formats: "
-                                          "%%[z]{d,u,x}; %%p; %%s\n";
+                                          "%%[z]{d,u,x}; %%p; %%s; %%c\n";
   RAW_CHECK(format);
   RAW_CHECK(buff_length > 0);
   const char *buff_end = &buff[buff_length - 1];
@@ -127,6 +127,11 @@ int VSNPrintf(char *buff, int buff_length,
         result += AppendString(&buff, buff_end, va_arg(args, char*));
         break;
       }
+      case 'c': {
+        RAW_CHECK_MSG(!have_z, kPrintfFormatsHelp);
+        result += AppendChar(&buff, buff_end, va_arg(args, int));
+        break;
+      }
       case '%' : {
         RAW_CHECK_MSG(!have_z, kPrintfFormatsHelp);
         result += AppendChar(&buff, buff_end, '%');
@@ -142,16 +147,22 @@ int VSNPrintf(char *buff, int buff_length,
   return result;
 }
 
+static void (*PrintfAndReportCallback)(const char *);
+void SetPrintfAndReportCallback(void (*callback)(const char *)) {
+  PrintfAndReportCallback = callback;
+}
+
 void Printf(const char *format, ...) {
   const int kLen = 1024 * 4;
-  char *buffer = (char*)MmapOrDie(kLen, __FUNCTION__);
+  InternalScopedBuffer<char> buffer(kLen);
   va_list args;
   va_start(args, format);
-  int needed_length = VSNPrintf(buffer, kLen, format, args);
+  int needed_length = VSNPrintf(buffer.data(), kLen, format, args);
   va_end(args);
   RAW_CHECK_MSG(needed_length < kLen, "Buffer in Printf is too short!\n");
-  RawWrite(buffer);
-  UnmapOrDie(buffer, kLen);
+  RawWrite(buffer.data());
+  if (PrintfAndReportCallback)
+    PrintfAndReportCallback(buffer.data());
 }
 
 // Writes at most "length" symbols to "buffer" (including trailing '\0').
@@ -169,17 +180,19 @@ int internal_snprintf(char *buffer, uptr length, const char *format, ...) {
 // Like Printf, but prints the current PID before the output string.
 void Report(const char *format, ...) {
   const int kLen = 1024 * 4;
-  char *buffer = (char*)MmapOrDie(kLen, __FUNCTION__);
-  int needed_length = internal_snprintf(buffer, kLen, "==%d== ", GetPid());
+  InternalScopedBuffer<char> buffer(kLen);
+  int needed_length = internal_snprintf(buffer.data(),
+                                        kLen, "==%d== ", GetPid());
   RAW_CHECK_MSG(needed_length < kLen, "Buffer in Report is too short!\n");
   va_list args;
   va_start(args, format);
-  needed_length += VSNPrintf(buffer + needed_length, kLen - needed_length,
-                             format, args);
+  needed_length += VSNPrintf(buffer.data() + needed_length,
+                             kLen - needed_length, format, args);
   va_end(args);
   RAW_CHECK_MSG(needed_length < kLen, "Buffer in Report is too short!\n");
-  RawWrite(buffer);
-  UnmapOrDie(buffer, kLen);
+  RawWrite(buffer.data());
+  if (PrintfAndReportCallback)
+    PrintfAndReportCallback(buffer.data());
 }
 
 }  // namespace __sanitizer

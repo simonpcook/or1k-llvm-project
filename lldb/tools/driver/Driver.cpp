@@ -75,34 +75,36 @@ typedef struct
 
 static OptionDefinition g_options[] =
 {
-    { LLDB_OPT_SET_1,    true , "help"           , 'h', no_argument      , NULL,  eArgTypeNone,         
+    { LLDB_OPT_SET_1,    true , "help"           , 'h', no_argument      , 0,  eArgTypeNone,
         "Prints out the usage information for the LLDB debugger." },
-    { LLDB_OPT_SET_2,    true , "version"        , 'v', no_argument      , NULL,  eArgTypeNone,         
+    { LLDB_OPT_SET_2,    true , "version"        , 'v', no_argument      , 0,  eArgTypeNone,
         "Prints out the current version number of the LLDB debugger." },
-    { LLDB_OPT_SET_3,    true , "arch"           , 'a', required_argument, NULL,  eArgTypeArchitecture, 
+    { LLDB_OPT_SET_3,    true , "arch"           , 'a', required_argument, 0,  eArgTypeArchitecture,
         "Tells the debugger to use the specified architecture when starting and running the program.  <architecture> must "
         "be one of the architectures for which the program was compiled." },
-    { LLDB_OPT_SET_3,    true , "file"           , 'f', required_argument, NULL,  eArgTypeFilename,     
+    { LLDB_OPT_SET_3,    true , "file"           , 'f', required_argument, 0,  eArgTypeFilename,
         "Tells the debugger to use the file <filename> as the program to be debugged." },
-    { LLDB_OPT_SET_4,    true , "attach-name"    , 'n', required_argument, NULL,  eArgTypeProcessName,  
+    { LLDB_OPT_SET_3,    false, "core"           , 'c', required_argument, 0,  eArgTypePath,
+        "Tells the debugger to use the fullpath to <path> as the core file." },
+    { LLDB_OPT_SET_4,    true , "attach-name"    , 'n', required_argument, 0,  eArgTypeProcessName,
         "Tells the debugger to attach to a process with the given name." },
-    { LLDB_OPT_SET_4,    true , "wait-for"       , 'w', no_argument      , NULL,  eArgTypeNone,         
+    { LLDB_OPT_SET_4,    true , "wait-for"       , 'w', no_argument      , 0,  eArgTypeNone,
         "Tells the debugger to wait for a process with the given pid or name to launch before attaching." },
-    { LLDB_OPT_SET_5,    true , "attach-pid"     , 'p', required_argument, NULL,  eArgTypePid,          
+    { LLDB_OPT_SET_5,    true , "attach-pid"     , 'p', required_argument, 0,  eArgTypePid,
         "Tells the debugger to attach to a process with the given pid." },
-    { LLDB_3_TO_5,       false, "script-language", 'l', required_argument, NULL,  eArgTypeScriptLang,   
+    { LLDB_3_TO_5,       false, "script-language", 'l', required_argument, 0,  eArgTypeScriptLang,
         "Tells the debugger to use the specified scripting language for user-defined scripts, rather than the default.  "
         "Valid scripting languages that can be specified include Python, Perl, Ruby and Tcl.  Currently only the Python "
         "extensions have been implemented." },
-    { LLDB_3_TO_5,       false, "debug"          , 'd', no_argument      , NULL,  eArgTypeNone,         
+    { LLDB_3_TO_5,       false, "debug"          , 'd', no_argument      , 0,  eArgTypeNone,
         "Tells the debugger to print out extra information for debugging itself." },
-    { LLDB_3_TO_5,       false, "source"         , 's', required_argument, NULL,  eArgTypeFilename,     
+    { LLDB_3_TO_5,       false, "source"         , 's', required_argument, 0,  eArgTypeFilename,
         "Tells the debugger to read in and execute the file <file>, which should contain lldb commands." },
-    { LLDB_3_TO_5,       false, "editor"         , 'e', no_argument      , NULL,  eArgTypeNone,         
+    { LLDB_3_TO_5,       false, "editor"         , 'e', no_argument      , 0,  eArgTypeNone,
         "Tells the debugger to open source files using the host's \"external editor\" mechanism." },
-    { LLDB_3_TO_5,       false, "no-lldbinit"    , 'x', no_argument      , NULL,  eArgTypeNone,         
+    { LLDB_3_TO_5,       false, "no-lldbinit"    , 'x', no_argument      , 0,  eArgTypeNone,
         "Do not automatically parse any '.lldbinit' files." },
-    { 0,                 false, NULL             , 0  , 0                , NULL,  eArgTypeNone,         NULL }
+    { 0,                 false, NULL             , 0  , 0                , 0,  eArgTypeNone,         NULL }
 };
 
 static const uint32_t last_option_set_with_args = 2;
@@ -379,6 +381,7 @@ BuildGetOptTable (OptionDefinition *expanded_option_table, std::vector<struct op
 Driver::OptionData::OptionData () :
     m_args(),
     m_script_lang (lldb::eScriptLanguageDefault),
+    m_core_file (),
     m_crash_log (),
     m_source_command_files (),
     m_debug_mode (false),
@@ -587,9 +590,17 @@ Driver::ParseArgs (int argc, const char *argv[], FILE *out_fh, bool &exit)
                         break;
 
                     case 'c':
-                        m_option_data.m_crash_log = optarg;
+                        {
+                            SBFileSpec file(optarg);
+                            if (file.Exists())
+                            {
+                                m_option_data.m_core_file = optarg;
+                            }
+                            else
+                                error.SetErrorStringWithFormat("file specified in --core (-c) option doesn't exist: '%s'", optarg);
+                        }
                         break;
-
+                    
                     case 'e':
                         m_option_data.m_use_external_editor = true;
                         break;
@@ -690,10 +701,6 @@ Driver::ParseArgs (int argc, const char *argv[], FILE *out_fh, bool &exit)
     {
         ::fprintf (out_fh, "%s\n", m_debugger.GetVersionString());
         exit = true;
-    }
-    else if (! m_option_data.m_crash_log.empty())
-    {
-        // Handle crash log stuff here.
     }
     else if (m_option_data.m_process_name.empty() && m_option_data.m_process_pid == LLDB_INVALID_PROCESS_ID)
     {
@@ -852,7 +859,7 @@ Driver::HandleBreakpointEvent (const SBEvent &event)
             SBBreakpoint breakpoint = SBBreakpoint::GetBreakpointFromEvent(event);
             int message_len = ::snprintf (message, sizeof(message), "%d location%s added to breakpoint %d\n", 
                                           num_new_locations,
-                                          num_new_locations == 1 ? " " : "s ",
+                                          num_new_locations == 1 ? "" : "s",
                                           breakpoint.GetID());
             m_io_channel_ap->OutWrite(message, message_len, ASYNC);
         }
@@ -1311,6 +1318,11 @@ Driver::MainLoop ()
                 }
             }
 
+            // Was there a core file specified?
+            std::string core_file_spec("");
+            if (!m_option_data.m_core_file.empty())
+                core_file_spec.append("--core ").append(m_option_data.m_core_file);
+
             const size_t num_args = m_option_data.m_args.size();
             if (num_args > 0)
             {
@@ -1318,13 +1330,15 @@ Driver::MainLoop ()
                 if (m_debugger.GetDefaultArchitecture (arch_name, sizeof (arch_name)))
                     ::snprintf (command_string, 
                                 sizeof (command_string), 
-                                "target create --arch=%s \"%s\"", 
+                                "target create --arch=%s %s \"%s\"", 
                                 arch_name,
+                                core_file_spec.c_str(),
                                 m_option_data.m_args[0].c_str());
                 else
                     ::snprintf (command_string, 
                                 sizeof(command_string), 
-                                "target create \"%s\"", 
+                                "target create %s \"%s\"", 
+                                core_file_spec.c_str(),
                                 m_option_data.m_args[0].c_str());
 
                 m_debugger.HandleCommand (command_string);
@@ -1342,6 +1356,14 @@ Driver::MainLoop ()
                         m_debugger.HandleCommand (arg_cstr);
                     }
                 }
+            }
+            else if (!core_file_spec.empty())
+            {
+                ::snprintf (command_string, 
+                            sizeof(command_string), 
+                            "target create %s", 
+                            core_file_spec.c_str());
+                m_debugger.HandleCommand (command_string);;
             }
 
             // Now that all option parsing is done, we try and parse the .lldbinit

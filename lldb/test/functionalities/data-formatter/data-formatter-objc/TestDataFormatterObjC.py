@@ -8,6 +8,7 @@ import unittest2
 import lldb
 from lldbtest import *
 import datetime
+import lldbutil
 
 class ObjCDataFormatterTestCase(TestBase):
 
@@ -84,20 +85,22 @@ class ObjCDataFormatterTestCase(TestBase):
         self.rdar11106605_commands()
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
-    @expectedFailurei386
     @dsym_test
     def test_expr_with_dsym_and_run_command(self):
         """Test common cases of expression parser <--> formatters interaction."""
         self.buildDsym()
         self.expr_objc_data_formatter_commands()
+        def getCategories(self):
+            return ['dataformatters','expression','objc']
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
-    @expectedFailurei386
     @dwarf_test
     def test_expr_with_dwarf_and_run_command(self):
         """Test common cases of expression parser <--> formatters interaction."""
         self.buildDwarf()
         self.expr_objc_data_formatter_commands()
+        def getCategories(self):
+            return ['dataformatters','expression','objc']
 
     def setUp(self):
         # Call super's setUp().
@@ -109,10 +112,7 @@ class ObjCDataFormatterTestCase(TestBase):
         """Check that Unicode characters come out of CFString summary correctly."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        self.expect("breakpoint set -f main.m -l %d" % self.line,
-                    BREAKPOINT_CREATED,
-            startstr = "Breakpoint created: 1: file ='main.m', line = %d, locations = 1" %
-                        self.line)
+        lldbutil.run_break_set_by_file_and_line (self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -143,10 +143,7 @@ class ObjCDataFormatterTestCase(TestBase):
         """Test basic ObjC formatting behavior."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        self.expect("breakpoint set -f main.m -l %d" % self.line,
-                    BREAKPOINT_CREATED,
-            startstr = "Breakpoint created: 1: file ='main.m', line = %d, locations = 1" %
-                        self.line)
+        lldbutil.run_break_set_by_file_and_line (self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -200,10 +197,7 @@ class ObjCDataFormatterTestCase(TestBase):
         """Test formatters for AppKit classes."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        self.expect("breakpoint set -f main.m -l %d" % self.line,
-                    BREAKPOINT_CREATED,
-            startstr = "Breakpoint created: 1: file ='main.m', line = %d, locations = 1" %
-                        self.line)
+        lldbutil.run_break_set_by_file_and_line (self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -340,7 +334,7 @@ class ObjCDataFormatterTestCase(TestBase):
         #self.runCmd("p (int)[imset count]")
 
         self.expect('frame variable iset1 iset2 imset',
-                    substrs = ['4 objects','512 objects','10 objects'])
+                    substrs = ['4 indexes','512 indexes','10 indexes'])
 
         self.expect('frame variable cupertino home europe',
                     substrs = ['@"America/Los_Angeles"',
@@ -372,10 +366,7 @@ class ObjCDataFormatterTestCase(TestBase):
         """Test common cases of expression parser <--> formatters interaction."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        self.expect("breakpoint set -f main.m -l %d" % self.line,
-                    BREAKPOINT_CREATED,
-            startstr = "Breakpoint created: 1: file ='main.m', line = %d, locations = 1" %
-                        self.line)
+        lldbutil.run_break_set_by_file_and_line (self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -418,10 +409,7 @@ class ObjCDataFormatterTestCase(TestBase):
         """Test formatters for Core OSX frameworks."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        self.expect("breakpoint set -f main.m -l %d" % self.line,
-                    BREAKPOINT_CREATED,
-            startstr = "Breakpoint created: 1: file ='main.m', line = %d, locations = 1" %
-                        self.line)
+        lldbutil.run_break_set_by_file_and_line (self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -475,10 +463,7 @@ class ObjCDataFormatterTestCase(TestBase):
         """Test the behavior of formatters when KVO is in use."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        self.expect("breakpoint set -f main.m -l %d" % self.line,
-                    BREAKPOINT_CREATED,
-            startstr = "Breakpoint created: 1: file ='main.m', line = %d, locations = 1" %
-                        self.line)
+        lldbutil.run_break_set_by_file_and_line (self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -512,7 +497,8 @@ class ObjCDataFormatterTestCase(TestBase):
         # check that NSMutableDictionary's formatter is not confused when dealing with a KVO'd dictionary
         self.expect('frame variable newMutableDictionary', substrs = ['(NSDictionary *) newMutableDictionary = ',' 21 key/value pairs'])
 
-        self.runCmd("breakpoint set -r setAtoms")
+        lldbutil.run_break_set_by_regexp (self, 'setAtoms')
+
         self.runCmd("continue")
         self.expect("frame variable _cmd",substrs = ['setAtoms:'])
 

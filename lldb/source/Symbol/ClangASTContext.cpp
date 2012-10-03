@@ -358,7 +358,7 @@ ParseLangArgs
     // inlining enabled.
     //
     // FIXME: This is affected by other options (-fno-inline).
-    Opts.NoInline = !Opt;
+    Opts.NoInlineDefine = !Opt;
 
 //    unsigned SSP = getLastArgIntValue(Args, OPT_stack_protector, 0, Diags);
 //    switch (SSP) {
@@ -1167,7 +1167,7 @@ ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type
 
 static TemplateParameterList *
 CreateTemplateParameterList (ASTContext *ast, 
-                             const ClangASTContext::TemplateParameterInfos &template_param_infos, 
+                             const ClangASTContext::TemplateParameterInfos &template_param_infos,
                              llvm::SmallVector<NamedDecl *, 8> &template_param_decls)
 {
     const bool parameter_pack = false;
@@ -1177,7 +1177,7 @@ CreateTemplateParameterList (ASTContext *ast,
     for (size_t i=0; i<num_template_params; ++i)
     {
         const char *name = template_param_infos.names[i];
-        if (template_param_infos.args[i].getAsIntegral())
+        if (template_param_infos.args[i].getKind() == TemplateArgument::Integral)
         {
             template_param_decls.push_back (NonTypeTemplateParmDecl::Create (*ast,
                                                                              ast->getTranslationUnitDecl(), // Is this the right decl context?, SourceLocation StartLoc,
@@ -1948,15 +1948,15 @@ ClangASTContext::AddFieldToRecordType
                 bit_width = new (*ast)IntegerLiteral (*ast, bitfield_bit_size_apint, ast->IntTy, SourceLocation());
             }
             field = FieldDecl::Create (*ast,
-                                                  record_decl,
-                                                  SourceLocation(),
-                                                  SourceLocation(),
-                                                  name ? &identifier_table->get(name) : NULL, // Identifier
-                                                  QualType::getFromOpaquePtr(field_type), // Field type
-                                                  NULL,       // TInfo *
-                                                  bit_width,  // BitWidth
-                                                  false,      // Mutable
-                                                  false);     // HasInit
+                                       record_decl,
+                                       SourceLocation(),
+                                       SourceLocation(),
+                                       name ? &identifier_table->get(name) : NULL, // Identifier
+                                       QualType::getFromOpaquePtr(field_type), // Field type
+                                       NULL,            // TInfo *
+                                       bit_width,       // BitWidth
+                                       false,           // Mutable
+                                       ICIS_NoInit);    // HasInit
             
             if (!name) {
                 // Determine whether this field corresponds to an anonymous
@@ -3698,6 +3698,7 @@ ClangASTContext::GetNumPointeeChildren (clang_type_t clang_type)
         case clang::BuiltinType::Half:          
         case clang::BuiltinType::ARCUnbridgedCast:          
         case clang::BuiltinType::PseudoObject:
+        case clang::BuiltinType::BuiltinFn:
             return 1;
         }
         break;
@@ -4497,8 +4498,6 @@ ClangASTContext::GetIndexOfChildMemberWithName
                                  named_decl_pos != path->Decls.second && parent_record_decl;
                                  ++named_decl_pos)
                             {
-                                //printf ("path[%zu] = %s\n", child_indexes.size(), (*named_decl_pos)->getNameAsCString());
-
                                 child_idx = GetIndexForRecordChild (parent_record_decl, *named_decl_pos, omit_empty_base_classes);
                                 if (child_idx == UINT32_MAX)
                                 {
@@ -5522,10 +5521,18 @@ ClangASTContext::IsPossibleDynamicType (clang::ASTContext *ast,
                 break;
                 
             case clang::Type::Typedef:
-                return ClangASTContext::IsPossibleDynamicType (ast, cast<TypedefType>(qual_type)->getDecl()->getUnderlyingType().getAsOpaquePtr(), dynamic_pointee_type);
+                return ClangASTContext::IsPossibleDynamicType (ast,
+                                                               cast<TypedefType>(qual_type)->getDecl()->getUnderlyingType().getAsOpaquePtr(),
+                                                               dynamic_pointee_type,
+                                                               check_cplusplus,
+                                                               check_objc);
             
             case clang::Type::Elaborated:
-                return ClangASTContext::IsPossibleDynamicType (ast, cast<ElaboratedType>(qual_type)->getNamedType().getAsOpaquePtr(), dynamic_pointee_type);
+                return ClangASTContext::IsPossibleDynamicType (ast,
+                                                               cast<ElaboratedType>(qual_type)->getNamedType().getAsOpaquePtr(),
+                                                               dynamic_pointee_type,
+                                                               check_cplusplus,
+                                                               check_objc);
             
             default:
                 break;
@@ -5580,6 +5587,7 @@ ClangASTContext::IsPossibleDynamicType (clang::ASTContext *ast,
                         case clang::BuiltinType::Half:          
                         case clang::BuiltinType::ARCUnbridgedCast:          
                         case clang::BuiltinType::PseudoObject:
+                        case clang::BuiltinType::BuiltinFn:
                             break;
                     }
                     break;
@@ -5590,23 +5598,19 @@ ClangASTContext::IsPossibleDynamicType (clang::ASTContext *ast,
                         CXXRecordDecl *cxx_record_decl = pointee_qual_type->getAsCXXRecordDecl();
                         if (cxx_record_decl)
                         {
-                            // Do NOT complete the type here like we used to do
-                            // otherwise EVERY "class *" variable we have will try
-                            // to fully complete itself and this will take a lot of
-                            // time, memory and slow down debugging. If we have a complete
-                            // type, then answer the question definitively, else we
-                            // just say that a C++ class can possibly be dynamic...
-                            if (cxx_record_decl->isCompleteDefinition())
+                            bool is_complete = cxx_record_decl->isCompleteDefinition();
+                            if (!is_complete)
+                                is_complete = ClangASTContext::GetCompleteType (ast, pointee_qual_type.getAsOpaquePtr());
+
+                            if (is_complete)
                             {
                                 success = cxx_record_decl->isDynamicClass();
                             }
                             else
                             {
-                                // We failed to get the complete type, so we have to 
-                                // treat this as a void * which we might possibly be
-                                // able to complete
-                                success = true;
+                                success = false;
                             }
+
                             if (success)
                             {
                                 if (dynamic_pointee_type)

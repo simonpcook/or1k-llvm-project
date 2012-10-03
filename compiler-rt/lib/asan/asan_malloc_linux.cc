@@ -20,12 +20,12 @@
 #include "asan_internal.h"
 #include "asan_stack.h"
 
-#ifdef ANDROID
-DECLARE_REAL_AND_INTERCEPTOR(void*, malloc, uptr size);
-DECLARE_REAL_AND_INTERCEPTOR(void, free, void *ptr);
-DECLARE_REAL_AND_INTERCEPTOR(void*, calloc, uptr nmemb, uptr size);
-DECLARE_REAL_AND_INTERCEPTOR(void*, realloc, void *ptr, uptr size);
-DECLARE_REAL_AND_INTERCEPTOR(void*, memalign, uptr boundary, uptr size);
+#if ASAN_ANDROID
+DECLARE_REAL_AND_INTERCEPTOR(void*, malloc, uptr size)
+DECLARE_REAL_AND_INTERCEPTOR(void, free, void *ptr)
+DECLARE_REAL_AND_INTERCEPTOR(void*, calloc, uptr nmemb, uptr size)
+DECLARE_REAL_AND_INTERCEPTOR(void*, realloc, void *ptr, uptr size)
+DECLARE_REAL_AND_INTERCEPTOR(void*, memalign, uptr boundary, uptr size)
 
 struct MallocDebug {
   void* (*malloc)(uptr bytes);

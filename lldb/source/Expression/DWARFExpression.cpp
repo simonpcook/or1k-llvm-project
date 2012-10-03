@@ -261,6 +261,18 @@ DWARFExpression::SetOpcodeData (const DataExtractor& data)
 }
 
 void
+DWARFExpression::CopyOpcodeData (const DataExtractor& data, uint32_t data_offset, uint32_t data_length)
+{
+    const uint8_t *bytes = data.PeekData(data_offset, data_length);
+    if (bytes)
+    {
+        m_data.SetData(DataBufferSP(new DataBufferHeap(bytes, data_length)));
+        m_data.SetByteOrder(data.GetByteOrder());
+        m_data.SetAddressByteSize(data.GetAddressByteSize());
+    }
+}
+
+void
 DWARFExpression::SetOpcodeData (const DataExtractor& data, uint32_t data_offset, uint32_t data_length)
 {
     m_data.SetData(data, data_offset, data_length);
@@ -1333,7 +1345,7 @@ DWARFExpression::Evaluate
             for (size_t i=0; i<count; ++i)
             {
                 StreamString new_value;
-                new_value.Printf("[%zu]", i);
+                new_value.Printf("[%llu]", (uint64_t)i);
                 stack[i].Dump(&new_value);
                 log->Printf("  %s", new_value.GetData());
             }
@@ -3174,7 +3186,7 @@ DWARFExpression::Evaluate
         for (size_t i=0; i<count; ++i)
         {
             StreamString new_value;
-            new_value.Printf("[%zu]", i);
+            new_value.Printf("[%llu]", (uint64_t)i);
             stack[i].Dump(&new_value);
             log->Printf("  %s", new_value.GetData());
         }

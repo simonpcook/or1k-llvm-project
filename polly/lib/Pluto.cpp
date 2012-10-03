@@ -18,6 +18,7 @@
 #include "polly/Dependences.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopInfo.h"
+#include "polly/Support/GICHelper.h"
 
 #define DEBUG_TYPE "polly-opt-pluto"
 #include "llvm/Support/Debug.h"
@@ -132,11 +133,18 @@ bool PlutoOptimizer::runOnScop(Scop &S) {
   Options->fuse = 0;
   Options->tile = EnableTiling;
 
+  DEBUG(
+    dbgs() << "Domain: " << stringFromIslObj(Domain) << "\n";
+    dbgs() << "Dependences: " << stringFromIslObj(Deps) << "\n";
+    );
   Schedule = pluto_schedule(Domain, Deps, Options);
   pluto_options_free(Options);
 
   isl_union_set_free(Domain);
   isl_union_map_free(Deps);
+
+  if (!Schedule)
+    return false;
 
   Schedule = isl_union_map_apply_domain(Schedule,
                                         isl_union_map_reverse(ToPlutoNames));

@@ -76,6 +76,20 @@ public:
     CreateSyntheticScriptedProvider (std::string class_name,
                                      lldb::ValueObjectSP valobj);
     
+    virtual lldb::ScriptInterpreterObjectSP
+    CreateOSPlugin (std::string class_name,
+                    lldb::ProcessSP process_sp);
+    
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_QueryForRegisterInfo (lldb::ScriptInterpreterObjectSP object);
+    
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_QueryForThreadsInfo (lldb::ScriptInterpreterObjectSP object);
+    
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_QueryForRegisterContextData (lldb::ScriptInterpreterObjectSP object,
+                                          lldb::tid_t thread_id);
+    
     virtual uint32_t
     CalculateNumChildren (const lldb::ScriptInterpreterObjectSP& implementor);
     
@@ -101,8 +115,18 @@ public:
     bool
     GenerateBreakpointCommandCallbackData (StringList &input, std::string& output);
 
+    bool
+    GenerateWatchpointCommandCallbackData (StringList &input, std::string& output);
+
     static size_t
     GenerateBreakpointOptionsCommandCallback (void *baton, 
+                                              InputReader &reader, 
+                                              lldb::InputReaderAction notification,
+                                              const char *bytes, 
+                                              size_t bytes_len);
+        
+    static size_t
+    GenerateWatchpointOptionsCommandCallback (void *baton, 
                                               InputReader &reader, 
                                               lldb::InputReaderAction notification,
                                               const char *bytes, 
@@ -114,14 +138,19 @@ public:
                                 lldb::user_id_t break_id,
                                 lldb::user_id_t break_loc_id);
     
+    static bool
+    WatchpointCallbackFunction (void *baton, 
+                                StoppointCallbackContext *context, 
+                                lldb::user_id_t watch_id);
+    
     virtual bool
     GetScriptedSummary (const char *function_name,
                         lldb::ValueObjectSP valobj,
                         lldb::ScriptInterpreterObjectSP& callee_wrapper_sp,
                         std::string& retval);
     
-    virtual std::string
-    GetDocumentationForItem (const char* item);
+    virtual bool
+    GetDocumentationForItem (const char* item, std::string& dest);
     
     virtual bool
     LoadScriptingModule (const char* filename,
@@ -135,9 +164,18 @@ public:
     CollectDataForBreakpointCommandCallback (BreakpointOptions *bp_options,
                                              CommandReturnObject &result);
 
+    void 
+    CollectDataForWatchpointCommandCallback (WatchpointOptions *wp_options,
+                                             CommandReturnObject &result);
+
     /// Set a Python one-liner as the callback for the breakpoint.
     void 
     SetBreakpointCommandCallback (BreakpointOptions *bp_options,
+                                  const char *oneliner);
+
+    /// Set a one-liner as the callback for the watchpoint.
+    void 
+    SetWatchpointCommandCallback (WatchpointOptions *wp_options,
                                   const char *oneliner);
 
     StringList
@@ -229,10 +267,7 @@ private:
                 FILE* wait_msg_handle = NULL);
         
     	~Locker ();
-    
-        static bool
-        CurrentThreadHasPythonLock ();
-        
+
 	private:
         
         bool
@@ -246,17 +281,14 @@ private:
         
         bool
         DoTearDownSession ();
-        
-        static bool
-        TryGetPythonLock (uint32_t seconds_to_wait);
-        
+
         static void
         ReleasePythonLock ();
         
     	bool                     m_need_session;
-    	bool                     m_release_lock;
     	ScriptInterpreterPython *m_python_interpreter;
     	FILE*                    m_tmp_fh;
+        PyGILState_STATE         m_GILState;
 	};
     
     class PythonInputReaderManager
@@ -297,8 +329,10 @@ private:
                          size_t bytes_len);
 
 
+    lldb_utility::PseudoTerminal m_embedded_thread_pty;
     lldb_utility::PseudoTerminal m_embedded_python_pty;
     lldb::InputReaderSP m_embedded_thread_input_reader_sp;
+    lldb::InputReaderSP m_embedded_python_input_reader_sp;
     FILE *m_dbg_stdout;
     PyObject *m_new_sysout;
     PyObject *m_old_sysout;
@@ -309,7 +343,6 @@ private:
     bool m_session_is_active;
     bool m_pty_slave_is_open;
     bool m_valid_session;
-                         
 };
 } // namespace lldb_private
 

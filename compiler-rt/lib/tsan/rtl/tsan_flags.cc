@@ -27,6 +27,7 @@ Flags *flags() {
 #ifdef TSAN_EXTERNAL_HOOKS
 void OverrideFlags(Flags *f);
 #else
+SANITIZER_INTERFACE_ATTRIBUTE
 void WEAK OverrideFlags(Flags *f) {
   (void)f;
 }
@@ -40,6 +41,7 @@ void InitializeFlags(Flags *f, const char *env) {
   f->suppress_equal_stacks = true;
   f->suppress_equal_addresses = true;
   f->report_thread_leaks = true;
+  f->report_destroy_locked = true;
   f->report_signal_unsafe = true;
   f->force_seq_cst_atomics = false;
   f->strip_path_prefix = "";
@@ -52,7 +54,7 @@ void InitializeFlags(Flags *f, const char *env) {
   f->flush_memory_ms = 0;
   f->stop_on_start = false;
   f->running_on_valgrind = false;
-  f->use_internal_symbolizer = false;
+  f->external_symbolizer_path = "";
 
   // Let a frontend override.
   OverrideFlags(f);
@@ -62,6 +64,7 @@ void InitializeFlags(Flags *f, const char *env) {
   ParseFlag(env, &f->suppress_equal_stacks, "suppress_equal_stacks");
   ParseFlag(env, &f->suppress_equal_addresses, "suppress_equal_addresses");
   ParseFlag(env, &f->report_thread_leaks, "report_thread_leaks");
+  ParseFlag(env, &f->report_destroy_locked, "report_destroy_locked");
   ParseFlag(env, &f->report_signal_unsafe, "report_signal_unsafe");
   ParseFlag(env, &f->force_seq_cst_atomics, "force_seq_cst_atomics");
   ParseFlag(env, &f->strip_path_prefix, "strip_path_prefix");
@@ -73,7 +76,7 @@ void InitializeFlags(Flags *f, const char *env) {
   ParseFlag(env, &f->profile_memory, "profile_memory");
   ParseFlag(env, &f->flush_memory_ms, "flush_memory_ms");
   ParseFlag(env, &f->stop_on_start, "stop_on_start");
-  ParseFlag(env, &f->use_internal_symbolizer, "use_internal_symbolizer");
+  ParseFlag(env, &f->external_symbolizer_path, "external_symbolizer_path");
 }
 
 }  // namespace __tsan

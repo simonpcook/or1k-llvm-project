@@ -13,14 +13,19 @@
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
+#include "lldb/Breakpoint/Breakpoint.h"
+#include "lldb/Breakpoint/BreakpointLocation.h"
+#include "lldb/Breakpoint/BreakpointSite.h"
+#include "lldb/Core/State.h"
+#include "lldb/Core/Module.h"
+#include "lldb/Host/Host.h"
 #include "lldb/Interpreter/Args.h"
 #include "lldb/Interpreter/Options.h"
-#include "lldb/Core/State.h"
-#include "lldb/Host/Host.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
+#include "lldb/Target/StopInfo.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 
@@ -59,6 +64,30 @@ public:
 
     ~CommandObjectProcessLaunch ()
     {
+    }
+
+    int
+    HandleArgumentCompletion (Args &input,
+                              int &cursor_index,
+                              int &cursor_char_position,
+                              OptionElementVector &opt_element_vector,
+                              int match_start_point,
+                              int max_return_elements,
+                              bool &word_complete,
+                              StringList &matches)
+    {
+        std::string completion_str (input.GetArgumentAtIndex(cursor_index));
+        completion_str.erase (cursor_char_position);
+        
+        CommandCompletions::InvokeCommonCompletionCallbacks (m_interpreter, 
+                                                             CommandCompletions::eDiskFileCompletion,
+                                                             completion_str.c_str(),
+                                                             match_start_point,
+                                                             max_return_elements,
+                                                             NULL,
+                                                             word_complete,
+                                                             matches);
+        return matches.GetSize();
     }
 
     Options *
@@ -140,9 +169,9 @@ protected:
         
         if (launch_args.GetArgumentCount() == 0)
         {
-            const Args &process_args = target->GetRunArguments();
-            if (process_args.GetArgumentCount() > 0)
-                m_options.launch_info.GetArguments().AppendArguments (process_args);
+            Args target_setting_args;
+            if (target->GetRunArguments(target_setting_args) > 0)
+                m_options.launch_info.GetArguments().AppendArguments (target_setting_args);
         }
         else
         {
@@ -601,12 +630,13 @@ protected:
             
             if (!old_arch_spec.IsValid())
             {
-                result.AppendMessageWithFormat ("Architecture set to: %s.\n", target->GetArchitecture().GetArchitectureName());
+                result.AppendMessageWithFormat ("Architecture set to: %s.\n", target->GetArchitecture().GetTriple().getTriple().c_str());
             }
             else if (old_arch_spec != target->GetArchitecture())
             {
                 result.AppendWarningWithFormat("Architecture changed from %s to %s.\n", 
-                                                old_arch_spec.GetArchitectureName(), target->GetArchitecture().GetArchitectureName());
+                                               old_arch_spec.GetTriple().getTriple().c_str(),
+                                               target->GetArchitecture().GetTriple().getTriple().c_str());
             }
 
             // This supports the use-case scenario of immediately continuing the process once attached.
@@ -646,7 +676,8 @@ public:
                              "process continue",
                              "Continue execution of all threads in the current process.",
                              "process continue",
-                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused)
+                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused),
+        m_options(interpreter)
     {
     }
 
@@ -656,6 +687,62 @@ public:
     }
 
 protected:
+
+    class CommandOptions : public Options
+    {
+    public:
+
+        CommandOptions (CommandInterpreter &interpreter) :
+            Options(interpreter)
+        {
+            // Keep default values of all options in one place: OptionParsingStarting ()
+            OptionParsingStarting ();
+        }
+
+        ~CommandOptions ()
+        {
+        }
+
+        Error
+        SetOptionValue (uint32_t option_idx, const char *option_arg)
+        {
+            Error error;
+            char short_option = (char) m_getopt_table[option_idx].val;
+            bool success = false;
+            switch (short_option)
+            {
+                case 'i':
+                    m_ignore = Args::StringToUInt32 (option_arg, 0, 0, &success);
+                    if (!success)
+                        error.SetErrorStringWithFormat ("invalid value for ignore option: \"%s\", should be a number.", option_arg);
+                    break;
+
+                default:
+                    error.SetErrorStringWithFormat("invalid short option character '%c'", short_option);
+                    break;
+            }
+            return error;
+        }
+
+        void
+        OptionParsingStarting ()
+        {
+            m_ignore = 0;
+        }
+
+        const OptionDefinition*
+        GetDefinitions ()
+        {
+            return g_option_table;
+        }
+
+        // Options table: Required for subclasses of Options.
+
+        static OptionDefinition g_option_table[];
+
+        uint32_t m_ignore;
+    };
+    
     bool
     DoExecute (Args& command,
              CommandReturnObject &result)
@@ -680,14 +767,43 @@ protected:
                 return false;
             }
 
-            const uint32_t num_threads = process->GetThreadList().GetSize();
-
-            // Set the actions that the threads should each take when resuming
-            for (uint32_t idx=0; idx<num_threads; ++idx)
+            if (m_options.m_ignore > 0)
             {
-                process->GetThreadList().GetThreadAtIndex(idx)->SetResumeState (eStateRunning);
+                ThreadSP sel_thread_sp(process->GetThreadList().GetSelectedThread());
+                if (sel_thread_sp)
+                {
+                    StopInfoSP stop_info_sp = sel_thread_sp->GetStopInfo();
+                    if (stop_info_sp && stop_info_sp->GetStopReason() == eStopReasonBreakpoint)
+                    {
+                        uint64_t bp_site_id = stop_info_sp->GetValue();
+                        BreakpointSiteSP bp_site_sp(process->GetBreakpointSiteList().FindByID(bp_site_id));
+                        if (bp_site_sp)
+                        {
+                            uint32_t num_owners = bp_site_sp->GetNumberOfOwners();
+                            for (uint32_t i = 0; i < num_owners; i++)
+                            {
+                                Breakpoint &bp_ref = bp_site_sp->GetOwnerAtIndex(i)->GetBreakpoint();
+                                if (!bp_ref.IsInternal())
+                                {
+                                    bp_ref.SetIgnoreCount(m_options.m_ignore);
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            
+            {  // Scope for thread list mutex:
+                Mutex::Locker locker (process->GetThreadList().GetMutex());
+                const uint32_t num_threads = process->GetThreadList().GetSize();
 
+                // Set the actions that the threads should each take when resuming
+                for (uint32_t idx=0; idx<num_threads; ++idx)
+                {
+                    process->GetThreadList().GetThreadAtIndex(idx)->SetResumeState (eStateRunning);
+                }
+            }
+            
             Error error(process->Resume());
             if (error.Success())
             {
@@ -719,6 +835,23 @@ protected:
         }
         return result.Succeeded();
     }
+
+    Options *
+    GetOptions ()
+    {
+        return &m_options;
+    }
+    
+    CommandOptions m_options;
+
+};
+
+OptionDefinition
+CommandObjectProcessContinue::CommandOptions::g_option_table[] =
+{
+{ LLDB_OPT_SET_ALL, false, "ignore-count",'i', required_argument,         NULL, 0, eArgTypeUnsignedInteger,
+                           "Ignore <N> crossings of the breakpoint (if it exists) for the currently selected thread."},
+{ 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
 //-------------------------------------------------------------------------
@@ -908,7 +1041,7 @@ protected:
             
             if (process)
             {
-                error = process->ConnectRemote (remote_url);
+                error = process->ConnectRemote (&process->GetTarget().GetDebugger().GetOutputStream(), remote_url);
 
                 if (error.Fail())
                 {

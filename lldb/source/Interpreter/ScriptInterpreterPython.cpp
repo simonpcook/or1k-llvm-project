@@ -31,6 +31,7 @@
 #include "lldb/API/SBValue.h"
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Breakpoint/StoppointCallbackContext.h"
+#include "lldb/Breakpoint/WatchpointOptions.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Host/Host.h"
@@ -44,6 +45,7 @@ using namespace lldb_private;
 
 static ScriptInterpreter::SWIGInitCallback g_swig_init_callback = NULL;
 static ScriptInterpreter::SWIGBreakpointCallbackFunction g_swig_breakpoint_callback = NULL;
+static ScriptInterpreter::SWIGWatchpointCallbackFunction g_swig_watchpoint_callback = NULL;
 static ScriptInterpreter::SWIGPythonTypeScriptCallbackFunction g_swig_typescript_callback = NULL;
 static ScriptInterpreter::SWIGPythonCreateSyntheticProvider g_swig_synthetic_script = NULL;
 static ScriptInterpreter::SWIGPythonCalculateNumChildren g_swig_calc_children = NULL;
@@ -53,6 +55,7 @@ static ScriptInterpreter::SWIGPythonCastPyObjectToSBValue g_swig_cast_to_sbvalue
 static ScriptInterpreter::SWIGPythonUpdateSynthProviderInstance g_swig_update_provider = NULL;
 static ScriptInterpreter::SWIGPythonCallCommand g_swig_call_command = NULL;
 static ScriptInterpreter::SWIGPythonCallModuleInit g_swig_call_module_init = NULL;
+static ScriptInterpreter::SWIGPythonCreateOSPlugin g_swig_create_os_plugin = NULL;
 
 // these are the Pythonic implementations of the required callbacks
 // these are scripting-language specific, which is why they belong here
@@ -66,6 +69,15 @@ LLDBSwigPythonBreakpointCallbackFunction
  const char *session_dictionary_name,
  const lldb::StackFrameSP& sb_frame, 
  const lldb::BreakpointLocationSP& sb_bp_loc
+ );
+
+extern "C" bool
+LLDBSwigPythonWatchpointCallbackFunction 
+(
+ const char *python_function_name,
+ const char *session_dictionary_name,
+ const lldb::StackFrameSP& sb_frame, 
+ const lldb::WatchpointSP& sb_wp
  );
 
 extern "C" bool
@@ -110,6 +122,13 @@ extern "C" bool           LLDBSwigPythonCallModuleInit
  lldb::DebuggerSP& debugger
  );
 
+extern "C" void*        LLDBSWIGPythonCreateOSPlugin
+(
+ const std::string python_class_name,
+ const char *session_dictionary_name,
+ const lldb::ProcessSP& process_sp
+);
+
 static int
 _check_and_flush (FILE *stream)
 {
@@ -117,73 +136,18 @@ _check_and_flush (FILE *stream)
   return fflush (stream) || prev_fail ? EOF : 0;
 }
 
-static Predicate<lldb::tid_t> &
-PythonMutexPredicate ()
-{
-    static lldb_private::Predicate<lldb::tid_t> g_interpreter_is_running (LLDB_INVALID_THREAD_ID);
-    return g_interpreter_is_running;
-}
-
-bool
-ScriptInterpreterPython::Locker::CurrentThreadHasPythonLock ()
-{
-    TimeValue timeout;
-
-    timeout = TimeValue::Now();  // Don't wait any time.
-
-    return PythonMutexPredicate().WaitForValueEqualTo (Host::GetCurrentThreadID(), &timeout, NULL);
-}
-
-bool
-ScriptInterpreterPython::Locker::TryGetPythonLock (uint32_t seconds_to_wait)
-{
-    
-    TimeValue timeout;
-    
-    if (seconds_to_wait != UINT32_MAX)
-    {
-        timeout = TimeValue::Now();
-        timeout.OffsetWithSeconds (seconds_to_wait);
-    }
-    
-    return PythonMutexPredicate().WaitForValueEqualToAndSetValueTo (LLDB_INVALID_THREAD_ID, 
-                                                                    Host::GetCurrentThreadID(), &timeout, NULL);
-}
-
-void
-ScriptInterpreterPython::Locker::ReleasePythonLock ()
-{
-    PythonMutexPredicate().SetValue (LLDB_INVALID_THREAD_ID, eBroadcastAlways);
-}
-
 ScriptInterpreterPython::Locker::Locker (ScriptInterpreterPython *py_interpreter,
                                          uint16_t on_entry,
                                          uint16_t on_leave,
                                          FILE* wait_msg_handle) :
     m_need_session( (on_leave & TearDownSession) == TearDownSession ),
-    m_release_lock ( false ), // decide in constructor body
     m_python_interpreter(py_interpreter),
     m_tmp_fh(wait_msg_handle)
 {
     if (m_python_interpreter && !m_tmp_fh)
         m_tmp_fh = (m_python_interpreter->m_dbg_stdout ? m_python_interpreter->m_dbg_stdout : stdout);
-    
-    if ( (on_entry & AcquireLock) == AcquireLock )
-    {
-        if (CurrentThreadHasPythonLock())
-        {
-            if ( (on_leave & FreeLock) == FreeLock )
-                m_release_lock = true;
-        }
-        else
-        {
-            DoAcquireLock();
-            if ( (on_leave & FreeLock) == FreeLock )
-                m_release_lock = true;
-            if ( (on_leave & FreeAcquiredLock) == FreeAcquiredLock )
-                m_release_lock = true;
-        }
-    }
+
+    DoAcquireLock();
     if ( (on_entry & InitSession) == InitSession )
         DoInitSession();
 }
@@ -191,13 +155,10 @@ ScriptInterpreterPython::Locker::Locker (ScriptInterpreterPython *py_interpreter
 bool
 ScriptInterpreterPython::Locker::DoAcquireLock()
 {
-    if (!CurrentThreadHasPythonLock())
-    {
-        while (!TryGetPythonLock (1))
-            if (m_tmp_fh)
-                fprintf (m_tmp_fh, 
-                         "Python interpreter locked on another thread; waiting to acquire lock...\n");
-    }
+    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
+    m_GILState = PyGILState_Ensure();
+    if (log)
+        log->Printf("Ensured PyGILState. Previous state = %slocked\n", m_GILState == PyGILState_UNLOCKED ? "un" : "");
     return true;
 }
 
@@ -213,7 +174,10 @@ ScriptInterpreterPython::Locker::DoInitSession()
 bool
 ScriptInterpreterPython::Locker::DoFreeLock()
 {
-    ReleasePythonLock ();
+    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
+    if (log)
+        log->Printf("Releasing PyGILState. Returning to state = %slocked\n", m_GILState == PyGILState_UNLOCKED ? "un" : "");
+    PyGILState_Release(m_GILState);
     return true;
 }
 
@@ -230,8 +194,7 @@ ScriptInterpreterPython::Locker::~Locker()
 {
     if (m_need_session)
         DoTearDownSession();
-    if (m_release_lock)
-        DoFreeLock();
+    DoFreeLock();
 }
 
 class ForceDisableSyntheticChildren
@@ -297,23 +260,20 @@ m_error(false)
 
 ScriptInterpreterPython::PythonInputReaderManager::~PythonInputReaderManager()
 {
-    if (m_interpreter)
+    // Nothing to do if either m_interpreter or m_reader_sp is invalid.
+    if (!m_interpreter || !m_reader_sp)
+        return;
+
+    m_reader_sp->SetIsDone (true);
+    if (m_debugger_sp)
+        m_debugger_sp->PopInputReader(m_reader_sp);
+
+    // Only mess with m_interpreter's counterpart if, indeed, they are the same object.
+    if (m_reader_sp.get() == m_interpreter->m_embedded_thread_input_reader_sp.get())
     {
-        if (m_interpreter->m_embedded_thread_input_reader_sp)
-            m_interpreter->m_embedded_thread_input_reader_sp->SetIsDone (true);
-        m_interpreter->m_embedded_python_pty.CloseSlaveFileDescriptor();
-    }
-    
-    
-    if (m_reader_sp)
-    {
-        m_reader_sp->SetIsDone (true);
-        if (m_debugger_sp)
-            m_debugger_sp->PopInputReader(m_reader_sp);
-    }
-    
-    if (m_interpreter)
+        m_interpreter->m_embedded_thread_pty.CloseSlaveFileDescriptor();
         m_interpreter->m_embedded_thread_input_reader_sp.reset();
+    }
 }
 
 size_t
@@ -349,26 +309,23 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback
                 input_fd = STDIN_FILENO;
             
             script_interpreter->SaveTerminalState(input_fd);
-            
-            {
-                ScriptInterpreterPython::Locker locker(script_interpreter,
-                                                       ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
-                                                       ScriptInterpreterPython::Locker::FreeAcquiredLock);
-            }
-            
+
             char error_str[1024];
-            if (script_interpreter->m_embedded_python_pty.OpenFirstAvailableMaster (O_RDWR|O_NOCTTY, error_str, 
+            if (script_interpreter->m_embedded_thread_pty.OpenFirstAvailableMaster (O_RDWR|O_NOCTTY, error_str, 
                                                                                     sizeof(error_str)))
             {
                 if (log)
                     log->Printf ("ScriptInterpreterPython::NonInteractiveInputReaderCallback, Activate, succeeded in opening master pty (fd = %d).",
-                                 script_interpreter->m_embedded_python_pty.GetMasterFileDescriptor());
+                                 script_interpreter->m_embedded_thread_pty.GetMasterFileDescriptor());
                 {
                     StreamString run_string;
                     char error_str[1024];
-                    const char *pty_slave_name = script_interpreter->m_embedded_python_pty.GetSlaveName (error_str, sizeof (error_str));
+                    const char *pty_slave_name = script_interpreter->m_embedded_thread_pty.GetSlaveName (error_str, sizeof (error_str));
                     if (pty_slave_name != NULL && PyThreadState_GetDict() != NULL)
                     {
+                        ScriptInterpreterPython::Locker locker(script_interpreter,
+                                                               ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
+                                                               ScriptInterpreterPython::Locker::FreeAcquiredLock);
                         run_string.Printf ("run_one_line (%s, 'save_stderr = sys.stderr')", script_interpreter->m_dictionary_name.c_str());
                         PyRun_SimpleString (run_string.GetData());
                         run_string.Clear ();
@@ -419,22 +376,11 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback
             break;
             
         case eInputReaderReactivate:
-        {
-            // Don't try and acquire the interpreter lock here because code like
-            // this:
-            //
-            // (lldb) script
-            // >>> v = lldb.frame.EvaluateExpression("collection->get_at_index(12)")
-            //
-            // This will cause the process to run. The interpreter lock is taken
-            // by the input reader for the "script" command. If we try and acquire
-            // the lock here, when the process runs it might deactivate this input
-            // reader (if STDIN is hooked up to the inferior process) and 
-            // reactivate it when the process stops which will deadlock.
-            //ScriptInterpreterPython::Locker locker(script_interpreter,
-            //                                       ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
-            //                                       ScriptInterpreterPython::Locker::FreeAcquiredLock);
-        }
+//        {
+//            ScriptInterpreterPython::Locker locker(script_interpreter,
+//                                                   ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
+//                                                   ScriptInterpreterPython::Locker::FreeAcquiredLock);
+//        }
             break;
             
         case eInputReaderAsynchronousOutputWritten:
@@ -449,14 +395,14 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback
             break;
             
         case eInputReaderGotToken:
-            if (script_interpreter->m_embedded_python_pty.GetMasterFileDescriptor() != -1)
+            if (script_interpreter->m_embedded_thread_pty.GetMasterFileDescriptor() != -1)
             {
                 if (log)
                     log->Printf ("ScriptInterpreterPython::NonInteractiveInputReaderCallback, GotToken, bytes='%s', byte_len = %lu", bytes,
                                  bytes_len);
                 if (bytes && bytes_len)
-                    ::write (script_interpreter->m_embedded_python_pty.GetMasterFileDescriptor(), bytes, bytes_len);
-                ::write (script_interpreter->m_embedded_python_pty.GetMasterFileDescriptor(), "\n", 1);
+                    ::write (script_interpreter->m_embedded_thread_pty.GetMasterFileDescriptor(), bytes, bytes_len);
+                ::write (script_interpreter->m_embedded_thread_pty.GetMasterFileDescriptor(), "\n", 1);
             }
             else
             {
@@ -473,9 +419,12 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback
         {
             StreamString run_string;
             char error_str[1024];
-            const char *pty_slave_name = script_interpreter->m_embedded_python_pty.GetSlaveName (error_str, sizeof (error_str));
+            const char *pty_slave_name = script_interpreter->m_embedded_thread_pty.GetSlaveName (error_str, sizeof (error_str));
             if (pty_slave_name != NULL && PyThreadState_GetDict() != NULL)
             {
+                ScriptInterpreterPython::Locker locker(script_interpreter,
+                                                       ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
+                                                       ScriptInterpreterPython::Locker::FreeAcquiredLock);
                 run_string.Printf ("run_one_line (%s, 'sys.stdin = save_stdin')", script_interpreter->m_dictionary_name.c_str());
                 PyRun_SimpleString (run_string.GetData());
                 run_string.Clear();
@@ -492,7 +441,7 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback
             
             script_interpreter->RestoreTerminalState ();
             
-            script_interpreter->m_embedded_python_pty.CloseMasterFileDescriptor();
+            script_interpreter->m_embedded_thread_pty.CloseMasterFileDescriptor();
             break;
     }
     
@@ -501,8 +450,10 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback
 
 ScriptInterpreterPython::ScriptInterpreterPython (CommandInterpreter &interpreter) :
     ScriptInterpreter (interpreter, eScriptLanguagePython),
+    m_embedded_thread_pty (),
     m_embedded_python_pty (),
     m_embedded_thread_input_reader_sp (),
+    m_embedded_python_input_reader_sp (),
     m_dbg_stdout (interpreter.GetDebugger().GetOutputFile().GetStream()),
     m_new_sysout (NULL),
     m_old_sysout (NULL),
@@ -521,14 +472,14 @@ ScriptInterpreterPython::ScriptInterpreterPython (CommandInterpreter &interprete
         g_initialized = true;
         ScriptInterpreterPython::InitializePrivate ();
     }
-    
-    Locker locker(this,
-                  ScriptInterpreterPython::Locker::AcquireLock,
-                  ScriptInterpreterPython::Locker::FreeAcquiredLock);
 
     m_dictionary_name.append("_dict");
     StreamString run_string;
     run_string.Printf ("%s = dict()", m_dictionary_name.c_str());
+
+    Locker locker(this,
+                  ScriptInterpreterPython::Locker::AcquireLock,
+                  ScriptInterpreterPython::Locker::FreeAcquiredLock);
     PyRun_SimpleString (run_string.GetData());
 
     run_string.Clear();
@@ -576,10 +527,19 @@ ScriptInterpreterPython::~ScriptInterpreterPython ()
     if (m_embedded_thread_input_reader_sp.get() != NULL)
     {
         m_embedded_thread_input_reader_sp->SetIsDone (true);
-        m_embedded_python_pty.CloseSlaveFileDescriptor();
+        m_embedded_thread_pty.CloseSlaveFileDescriptor();
         const InputReaderSP reader_sp = m_embedded_thread_input_reader_sp;
-        m_embedded_thread_input_reader_sp.reset();
         debugger.PopInputReader (reader_sp);
+        m_embedded_thread_input_reader_sp.reset();
+    }
+    
+    if (m_embedded_python_input_reader_sp.get() != NULL)
+    {
+        m_embedded_python_input_reader_sp->SetIsDone (true);
+        m_embedded_python_pty.CloseSlaveFileDescriptor();
+        const InputReaderSP reader_sp = m_embedded_python_input_reader_sp;
+        debugger.PopInputReader (reader_sp);
+        m_embedded_python_input_reader_sp.reset();
     }
     
     if (m_new_sysout)
@@ -938,20 +898,9 @@ ScriptInterpreterPython::InputReaderCallback
 
     case eInputReaderReactivate:
         {
-            // Don't try and acquire the interpreter lock here because code like
-            // this:
-            //
-            // (lldb) script
-            // >>> v = lldb.frame.EvaluateExpression("collection->get_at_index(12)")
-            //
-            // This will cause the process to run. The interpreter lock is taken
-            // by the input reader for the "script" command. If we try and acquire
-            // the lock here, when the process runs it might deactivate this input
-            // reader (if STDIN is hooked up to the inferior process) and 
-            // reactivate it when the process stops which will deadlock.
-            //ScriptInterpreterPython::Locker locker(script_interpreter,
-            //                                       ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
-            //                                       ScriptInterpreterPython::Locker::FreeAcquiredLock);
+            ScriptInterpreterPython::Locker locker(script_interpreter,
+                                                   ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
+                                                   ScriptInterpreterPython::Locker::FreeAcquiredLock);
         }
         break;
         
@@ -993,7 +942,12 @@ ScriptInterpreterPython::InputReaderCallback
         break;
         
     case eInputReaderDone:
-        script_interpreter->LeaveSession ();
+        {
+            Locker locker(script_interpreter,
+                          ScriptInterpreterPython::Locker::AcquireLock,
+                          ScriptInterpreterPython::Locker::FreeAcquiredLock);
+            script_interpreter->LeaveSession ();
+        }
 
         // Restore terminal settings if they were validly saved
         if (log)
@@ -1037,7 +991,7 @@ ScriptInterpreterPython::ExecuteInterpreterLoop ()
         if (error.Success())
         {
             debugger.PushInputReader (reader_sp);
-            m_embedded_thread_input_reader_sp = reader_sp;
+            m_embedded_python_input_reader_sp = reader_sp;
         }
     }
 }
@@ -1388,6 +1342,112 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
     return bytes_len;
 }
 
+size_t
+ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
+(
+    void *baton, 
+    InputReader &reader, 
+    InputReaderAction notification,
+    const char *bytes, 
+    size_t bytes_len
+)
+{
+    static StringList commands_in_progress;
+    
+    StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+    bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
+    
+    switch (notification)
+    {
+    case eInputReaderActivate:
+        {
+            commands_in_progress.Clear();
+            if (!batch_mode)
+            {
+                out_stream->Printf ("%s\n", g_reader_instructions);
+                if (reader.GetPrompt())
+                    out_stream->Printf ("%s", reader.GetPrompt());
+                out_stream->Flush ();
+            }
+        }
+        break;
+
+    case eInputReaderDeactivate:
+        break;
+
+    case eInputReaderReactivate:
+        if (reader.GetPrompt() && !batch_mode)
+        {
+            out_stream->Printf ("%s", reader.GetPrompt());
+            out_stream->Flush ();
+        }
+        break;
+
+    case eInputReaderAsynchronousOutputWritten:
+        break;
+        
+    case eInputReaderGotToken:
+        {
+            std::string temp_string (bytes, bytes_len);
+            commands_in_progress.AppendString (temp_string.c_str());
+            if (!reader.IsDone() && reader.GetPrompt() && !batch_mode)
+            {
+                out_stream->Printf ("%s", reader.GetPrompt());
+                out_stream->Flush ();
+            }
+        }
+        break;
+
+    case eInputReaderEndOfFile:
+    case eInputReaderInterrupt:
+        // Control-c (SIGINT) & control-d both mean finish & exit.
+        reader.SetIsDone(true);
+        
+        // Control-c (SIGINT) ALSO means cancel; do NOT create a breakpoint command.
+        if (notification == eInputReaderInterrupt)
+            commands_in_progress.Clear();  
+        
+        // Fall through here...
+
+    case eInputReaderDone:
+        {
+            WatchpointOptions *wp_options = (WatchpointOptions *)baton;
+            std::auto_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
+            data_ap->user_source.AppendList (commands_in_progress);
+            if (data_ap.get())
+            {
+                ScriptInterpreter *interpreter = reader.GetDebugger().GetCommandInterpreter().GetScriptInterpreter();
+                if (interpreter)
+                {
+                    if (interpreter->GenerateWatchpointCommandCallbackData (data_ap->user_source, 
+                                                                            data_ap->script_source))
+                    {
+                        BatonSP baton_sp (new WatchpointOptions::CommandBaton (data_ap.release()));
+                        wp_options->SetCallback (ScriptInterpreterPython::WatchpointCallbackFunction, baton_sp);
+                    }
+                    else if (!batch_mode)
+                    {
+                        out_stream->Printf ("Warning: No command attached to breakpoint.\n");
+                        out_stream->Flush();
+                    }
+                }
+                else
+                {
+		            if (!batch_mode)
+                    {
+                        out_stream->Printf ("Warning:  Unable to find script intepreter; no command attached to breakpoint.\n");
+                        out_stream->Flush();
+                    }
+                }
+            }
+        }
+        break;
+        
+    }
+
+    return bytes_len;
+}
+
 void
 ScriptInterpreterPython::CollectDataForBreakpointCommandCallback (BreakpointOptions *bp_options,
                                                                   CommandReturnObject &result)
@@ -1421,6 +1481,39 @@ ScriptInterpreterPython::CollectDataForBreakpointCommandCallback (BreakpointOpti
     }
 }
 
+void
+ScriptInterpreterPython::CollectDataForWatchpointCommandCallback (WatchpointOptions *wp_options,
+                                                                  CommandReturnObject &result)
+{
+    Debugger &debugger = GetCommandInterpreter().GetDebugger();
+    
+    InputReaderSP reader_sp (new InputReader (debugger));
+
+    if (reader_sp)
+    {
+        Error err = reader_sp->Initialize (
+                ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback,
+                wp_options,                 // baton
+                eInputReaderGranularityLine, // token size, for feeding data to callback function
+                "DONE",                     // end token
+                "> ",                       // prompt
+                true);                      // echo input
+    
+        if (err.Success())
+            debugger.PushInputReader (reader_sp);
+        else
+        {
+            result.AppendError (err.AsCString());
+            result.SetStatus (eReturnStatusFailed);
+        }
+    }
+    else
+    {
+        result.AppendError("out of memory");
+        result.SetStatus (eReturnStatusFailed);
+    }
+}
+
 // Set a Python one-liner as the callback for the breakpoint.
 void
 ScriptInterpreterPython::SetBreakpointCommandCallback (BreakpointOptions *bp_options,
@@ -1433,11 +1526,35 @@ ScriptInterpreterPython::SetBreakpointCommandCallback (BreakpointOptions *bp_opt
     // while the latter is used for Python to interpret during the actual callback.
 
     data_ap->user_source.AppendString (oneliner);
+    data_ap->script_source.assign (oneliner);
 
     if (GenerateBreakpointCommandCallbackData (data_ap->user_source, data_ap->script_source))
     {
         BatonSP baton_sp (new BreakpointOptions::CommandBaton (data_ap.release()));
         bp_options->SetCallback (ScriptInterpreterPython::BreakpointCallbackFunction, baton_sp);
+    }
+    
+    return;
+}
+
+// Set a Python one-liner as the callback for the watchpoint.
+void
+ScriptInterpreterPython::SetWatchpointCommandCallback (WatchpointOptions *wp_options,
+                                                       const char *oneliner)
+{
+    std::auto_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
+
+    // It's necessary to set both user_source and script_source to the oneliner.
+    // The former is used to generate callback description (as in watchpoint command list)
+    // while the latter is used for Python to interpret during the actual callback.
+
+    data_ap->user_source.AppendString (oneliner);
+    data_ap->script_source.assign (oneliner);
+
+    if (GenerateWatchpointCommandCallbackData (data_ap->user_source, data_ap->script_source))
+    {
+        BatonSP baton_sp (new WatchpointOptions::CommandBaton (data_ap.release()));
+        wp_options->SetCallback (ScriptInterpreterPython::WatchpointCallbackFunction, baton_sp);
     }
     
     return;
@@ -1588,6 +1705,207 @@ ScriptInterpreterPython::GenerateTypeSynthClass (StringList &user_input, std::st
 }
 
 lldb::ScriptInterpreterObjectSP
+ScriptInterpreterPython::CreateOSPlugin (std::string class_name,
+                lldb::ProcessSP process_sp)
+{
+    if (class_name.empty())
+        return lldb::ScriptInterpreterObjectSP();
+    
+    if (!process_sp)
+        return lldb::ScriptInterpreterObjectSP();
+        
+    void* ret_val;
+    
+    {
+        Locker py_lock(this,Locker::AcquireLock,Locker::FreeLock);
+        ret_val = g_swig_create_os_plugin    (class_name,
+                                              m_dictionary_name.c_str(),
+                                              process_sp);
+    }
+    
+    return MakeScriptObject(ret_val);
+}
+
+lldb::ScriptInterpreterObjectSP
+ScriptInterpreterPython::OSPlugin_QueryForRegisterInfo (lldb::ScriptInterpreterObjectSP object)
+{
+    Locker py_lock(this,Locker::AcquireLock,Locker::FreeLock);
+    
+    static char callee_name[] = "get_register_info";
+    
+    if (!object)
+        return lldb::ScriptInterpreterObjectSP();
+    
+    PyObject* implementor = (PyObject*)object->GetObject();
+    
+    if (implementor == NULL || implementor == Py_None)
+        return lldb::ScriptInterpreterObjectSP();
+    
+    PyObject* pmeth  = PyObject_GetAttrString(implementor, callee_name);
+    
+    if (PyErr_Occurred())
+    {
+        PyErr_Clear();
+    }
+    
+    if (pmeth == NULL || pmeth == Py_None)
+    {
+        Py_XDECREF(pmeth);
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    if (PyCallable_Check(pmeth) == 0)
+    {
+        if (PyErr_Occurred())
+        {
+            PyErr_Clear();
+        }
+        
+        Py_XDECREF(pmeth);
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    if (PyErr_Occurred())
+    {
+        PyErr_Clear();
+    }
+    
+    Py_XDECREF(pmeth);
+    
+    // right now we know this function exists and is callable..
+    PyObject* py_return = PyObject_CallMethod(implementor, callee_name, NULL);
+    
+    // if it fails, print the error but otherwise go on
+    if (PyErr_Occurred())
+    {
+        PyErr_Print();
+        PyErr_Clear();
+    }
+    
+    return MakeScriptObject(py_return);
+}
+
+lldb::ScriptInterpreterObjectSP
+ScriptInterpreterPython::OSPlugin_QueryForThreadsInfo (lldb::ScriptInterpreterObjectSP object)
+{
+    Locker py_lock(this,Locker::AcquireLock,Locker::FreeLock);
+
+    static char callee_name[] = "get_thread_info";
+    
+    if (!object)
+        return lldb::ScriptInterpreterObjectSP();
+    
+    PyObject* implementor = (PyObject*)object->GetObject();
+    
+    if (implementor == NULL || implementor == Py_None)
+        return lldb::ScriptInterpreterObjectSP();
+    
+    PyObject* pmeth  = PyObject_GetAttrString(implementor, callee_name);
+    
+    if (PyErr_Occurred())
+    {
+        PyErr_Clear();
+    }
+    
+    if (pmeth == NULL || pmeth == Py_None)
+    {
+        Py_XDECREF(pmeth);
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    if (PyCallable_Check(pmeth) == 0)
+    {
+        if (PyErr_Occurred())
+        {
+            PyErr_Clear();
+        }
+        
+        Py_XDECREF(pmeth);
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    if (PyErr_Occurred())
+    {
+        PyErr_Clear();
+    }
+    
+    Py_XDECREF(pmeth);
+    
+    // right now we know this function exists and is callable..
+    PyObject* py_return = PyObject_CallMethod(implementor, callee_name, NULL);
+    
+    // if it fails, print the error but otherwise go on
+    if (PyErr_Occurred())
+    {
+        PyErr_Print();
+        PyErr_Clear();
+    }
+    
+    return MakeScriptObject(py_return);
+}
+
+lldb::ScriptInterpreterObjectSP
+ScriptInterpreterPython::OSPlugin_QueryForRegisterContextData (lldb::ScriptInterpreterObjectSP object,
+                                                               lldb::tid_t thread_id)
+{
+    Locker py_lock(this,Locker::AcquireLock,Locker::FreeLock);
+
+    static char callee_name[] = "get_register_data";
+    static char param_format[] = "l";
+    
+    if (!object)
+        return lldb::ScriptInterpreterObjectSP();
+    
+    PyObject* implementor = (PyObject*)object->GetObject();
+    
+    if (implementor == NULL || implementor == Py_None)
+        return lldb::ScriptInterpreterObjectSP();
+
+    PyObject* pmeth  = PyObject_GetAttrString(implementor, callee_name);
+    
+    if (PyErr_Occurred())
+    {
+        PyErr_Clear();
+    }
+    
+    if (pmeth == NULL || pmeth == Py_None)
+    {
+        Py_XDECREF(pmeth);
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    if (PyCallable_Check(pmeth) == 0)
+    {
+        if (PyErr_Occurred())
+        {
+            PyErr_Clear();
+        }
+        
+        Py_XDECREF(pmeth);
+        return lldb::ScriptInterpreterObjectSP();
+    }
+    
+    if (PyErr_Occurred())
+    {
+        PyErr_Clear();
+    }
+    
+    Py_XDECREF(pmeth);
+    
+    // right now we know this function exists and is callable..
+    PyObject* py_return = PyObject_CallMethod(implementor, callee_name, param_format, thread_id);
+
+    // if it fails, print the error but otherwise go on
+    if (PyErr_Occurred())
+    {
+        PyErr_Print();
+        PyErr_Clear();
+    }
+    
+    return MakeScriptObject(py_return);
+}
+
+lldb::ScriptInterpreterObjectSP
 ScriptInterpreterPython::CreateSyntheticScriptedProvider (std::string class_name,
                                                           lldb::ValueObjectSP valobj)
 {
@@ -1652,6 +1970,27 @@ ScriptInterpreterPython::GenerateBreakpointCommandCallbackData (StringList &user
 
     std::string auto_generated_function_name(GenerateUniqueName("lldb_autogen_python_bp_callback_func_",num_created_functions));
     sstr.Printf ("def %s (frame, bp_loc, internal_dict):", auto_generated_function_name.c_str());
+    
+    if (!GenerateFunction(sstr.GetData(), user_input))
+        return false;
+    
+    // Store the name of the auto-generated function to be called.
+    output.assign(auto_generated_function_name);
+    return true;
+}
+
+bool
+ScriptInterpreterPython::GenerateWatchpointCommandCallbackData (StringList &user_input, std::string& output)
+{
+    static uint32_t num_created_functions = 0;
+    user_input.RemoveBlankLines ();
+    StreamString sstr;
+
+    if (user_input.GetSize() == 0)
+        return false;
+
+    std::string auto_generated_function_name(GenerateUniqueName("lldb_autogen_python_wp_callback_func_",num_created_functions));
+    sstr.Printf ("def %s (frame, wp, internal_dict):", auto_generated_function_name.c_str());
     
     if (!GenerateFunction(sstr.GetData(), user_input))
         return false;
@@ -1764,6 +2103,59 @@ ScriptInterpreterPython::BreakpointCallbackFunction
     return true;
 }
 
+bool
+ScriptInterpreterPython::WatchpointCallbackFunction 
+(
+    void *baton,
+    StoppointCallbackContext *context,
+    user_id_t watch_id
+)
+{
+    WatchpointOptions::CommandData *wp_option_data = (WatchpointOptions::CommandData *) baton;
+    const char *python_function_name = wp_option_data->script_source.c_str();
+
+    if (!context)
+        return true;
+        
+    ExecutionContext exe_ctx (context->exe_ctx_ref);
+    Target *target = exe_ctx.GetTargetPtr();
+    
+    if (!target)
+        return true;
+        
+    Debugger &debugger = target->GetDebugger();
+    ScriptInterpreter *script_interpreter = debugger.GetCommandInterpreter().GetScriptInterpreter();
+    ScriptInterpreterPython *python_interpreter = (ScriptInterpreterPython *) script_interpreter;
+    
+    if (!script_interpreter)
+        return true;
+    
+    if (python_function_name != NULL 
+        && python_function_name[0] != '\0')
+    {
+        const StackFrameSP stop_frame_sp (exe_ctx.GetFrameSP());
+        WatchpointSP wp_sp = target->GetWatchpointList().FindByID (watch_id);
+        if (wp_sp)
+        {
+            if (stop_frame_sp && wp_sp)
+            {
+                bool ret_val = true;
+                {
+                    Locker py_lock(python_interpreter);
+                    ret_val = g_swig_watchpoint_callback (python_function_name, 
+                                                          python_interpreter->m_dictionary_name.c_str(),
+                                                          stop_frame_sp, 
+                                                          wp_sp);
+                }
+                return ret_val;
+            }
+        }
+    }
+    // We currently always true so we stop in case anything goes wrong when
+    // trying to call the script function
+    return true;
+}
+
 lldb::thread_result_t
 ScriptInterpreterPython::RunEmbeddedPythonInterpreter (lldb::thread_arg_t baton)
 {
@@ -1777,14 +2169,18 @@ ScriptInterpreterPython::RunEmbeddedPythonInterpreter (lldb::thread_arg_t baton)
     char error_str[1024];
     const char *pty_slave_name = script_interpreter->m_embedded_python_pty.GetSlaveName (error_str, sizeof (error_str));
 
-    Locker locker(script_interpreter,
-                  ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
-                  ScriptInterpreterPython::Locker::FreeAcquiredLock | ScriptInterpreterPython::Locker::TearDownSession);
-
     if (pty_slave_name != NULL)
     {
         StreamString run_string;
-        
+
+        // Ensure we have the GIL before running any Python code.
+        // Since we're only running a few one-liners and then dropping to the interpreter (which will release the GIL when needed),
+        // we can just release the GIL after finishing our work.
+        // If finer-grained locking is desirable, we can lock and unlock the GIL only when calling a python function.
+        Locker locker(script_interpreter,
+                      ScriptInterpreterPython::Locker::AcquireLock | ScriptInterpreterPython::Locker::InitSession,
+                      ScriptInterpreterPython::Locker::FreeAcquiredLock | ScriptInterpreterPython::Locker::TearDownSession);
+
         run_string.Printf ("run_one_line (%s, 'save_stderr = sys.stderr')", script_interpreter->m_dictionary_name.c_str());
         PyRun_SimpleString (run_string.GetData());
         run_string.Clear ();
@@ -1804,40 +2200,29 @@ ScriptInterpreterPython::RunEmbeddedPythonInterpreter (lldb::thread_arg_t baton)
 
         // The following call drops into the embedded interpreter loop and stays there until the
         // user chooses to exit from the Python interpreter.
+        // This embedded interpreter will, as any Python code that performs I/O, unlock the GIL before
+        // a system call that can hang, and lock it when the syscall has returned.
 
-        // When in the embedded interpreter, the user can call arbitrary system and Python stuff, which may require
-        // the ability to run multi-threaded stuff, so we need to surround the call to the embedded interpreter with
-        // calls to Py_BEGIN_ALLOW_THREADS and Py_END_ALLOW_THREADS.
+        // We need to surround the call to the embedded interpreter with calls to PyGILState_Ensure and 
+        // PyGILState_Release (using the Locker above). This is because Python has a global lock which must be held whenever we want
+        // to touch any Python objects. Otherwise, if the user calls Python code, the interpreter state will be off,
+        // and things could hang (it's happened before).
 
-        // We ALSO need to surround the call to the embedded interpreter with calls to PyGILState_Ensure and 
-        // PyGILState_Release.  This is because this embedded interpreter is being run on a DIFFERENT THREAD than
-        // the thread on which the call to Py_Initialize (and PyEval_InitThreads) was called.  Those initializations 
-        // called PyGILState_Ensure on *that* thread, but it also needs to be called on *this* thread.  Otherwise,
-        // if the user calls Python code that does threading stuff, the interpreter state will be off, and things could
-        // hang (it's happened before).
-
-        Py_BEGIN_ALLOW_THREADS
-        PyGILState_STATE gstate = PyGILState_Ensure();
-        
         run_string.Printf ("run_python_interpreter (%s)", script_interpreter->m_dictionary_name.c_str());
         PyRun_SimpleString (run_string.GetData());
         run_string.Clear ();
-        
-        PyGILState_Release (gstate);
-        Py_END_ALLOW_THREADS
-        
+
         run_string.Printf ("run_one_line (%s, 'sys.stdin = save_stdin')", script_interpreter->m_dictionary_name.c_str());
         PyRun_SimpleString (run_string.GetData());
         run_string.Clear();
-        
+
         run_string.Printf ("run_one_line (%s, 'sys.stderr = save_stderr')", script_interpreter->m_dictionary_name.c_str());
         PyRun_SimpleString (run_string.GetData());
         run_string.Clear();
-        
     }
     
-    if (script_interpreter->m_embedded_thread_input_reader_sp)
-        script_interpreter->m_embedded_thread_input_reader_sp->SetIsDone (true);
+    if (script_interpreter->m_embedded_python_input_reader_sp)
+        script_interpreter->m_embedded_python_input_reader_sp->SetIsDone (true);
     
     script_interpreter->m_embedded_python_pty.CloseSlaveFileDescriptor();
 
@@ -1848,9 +2233,12 @@ ScriptInterpreterPython::RunEmbeddedPythonInterpreter (lldb::thread_arg_t baton)
 
     // Clean up the input reader and make the debugger pop it off the stack.
     Debugger &debugger = script_interpreter->GetCommandInterpreter().GetDebugger();
-    const InputReaderSP reader_sp = script_interpreter->m_embedded_thread_input_reader_sp;
-    script_interpreter->m_embedded_thread_input_reader_sp.reset();
-    debugger.PopInputReader (reader_sp);
+    const InputReaderSP reader_sp = script_interpreter->m_embedded_python_input_reader_sp;
+    if (reader_sp)
+    {
+        debugger.PopInputReader (reader_sp);
+        script_interpreter->m_embedded_python_input_reader_sp.reset();
+    }
     
     return NULL;
 }
@@ -2002,8 +2390,6 @@ ScriptInterpreterPython::LoadScriptingModule (const char* pathname,
     lldb::DebuggerSP debugger_sp = m_interpreter.GetDebugger().shared_from_this();
 
     {
-        Locker py_lock(this);
-        
         FileSpec target_file(pathname, true);
         
         // TODO: would we want to reject any other value?
@@ -2016,6 +2402,9 @@ ScriptInterpreterPython::LoadScriptingModule (const char* pathname,
         
         const char* directory = target_file.GetDirectory().GetCString();
         std::string basename(target_file.GetFilename().GetCString());
+
+        // Before executing Pyton code, lock the GIL.
+        Locker py_lock(this);
         
         // now make sure that Python has "directory" in the search path
         StreamString command_stream;
@@ -2153,9 +2542,12 @@ ScriptInterpreterPython::RunScriptBasedCommand(const char* impl_function,
 // in Python, a special attribute __doc__ contains the docstring
 // for an object (function, method, class, ...) if any is defined
 // Otherwise, the attribute's value is None
-std::string
-ScriptInterpreterPython::GetDocumentationForItem(const char* item)
+bool
+ScriptInterpreterPython::GetDocumentationForItem(const char* item, std::string& dest)
 {
+	dest.clear();
+	if (!item || !*item)
+		return false;
     std::string command(item);
     command += ".__doc__";
     
@@ -2163,12 +2555,19 @@ ScriptInterpreterPython::GetDocumentationForItem(const char* item)
     
     if (ExecuteOneLineWithReturn (command.c_str(),
                                  ScriptInterpreter::eScriptReturnTypeCharStrOrNone,
-                                 &result_ptr, false) && result_ptr)
+                                 &result_ptr, false))
     {
-        return std::string(result_ptr);
+        if (result_ptr)
+            dest.assign(result_ptr);
+        return true;
     }
     else
-        return std::string("");
+    {
+        StreamString str_stream;
+        str_stream.Printf("Function %s was not found. Containing module might be missing.",item);
+        dest.assign(str_stream.GetData());
+        return false;
+    }
 }
 
 void
@@ -2176,6 +2575,7 @@ ScriptInterpreterPython::InitializeInterpreter (SWIGInitCallback python_swig_ini
 {
     g_swig_init_callback = python_swig_init_callback;
     g_swig_breakpoint_callback = LLDBSwigPythonBreakpointCallbackFunction;
+    g_swig_watchpoint_callback = LLDBSwigPythonWatchpointCallbackFunction;
     g_swig_typescript_callback = LLDBSwigPythonCallTypeScript;
     g_swig_synthetic_script = LLDBSwigPythonCreateSyntheticProvider;
     g_swig_calc_children = LLDBSwigPython_CalculateNumChildren;
@@ -2185,6 +2585,7 @@ ScriptInterpreterPython::InitializeInterpreter (SWIGInitCallback python_swig_ini
     g_swig_update_provider = LLDBSwigPython_UpdateSynthProviderInstance;
     g_swig_call_command = LLDBSwigPythonCallCommand;
     g_swig_call_module_init = LLDBSwigPythonCallModuleInit;
+    g_swig_create_os_plugin = LLDBSWIGPythonCreateOSPlugin;
 }
 
 void
@@ -2197,7 +2598,18 @@ ScriptInterpreterPython::InitializePrivate ()
     TerminalState stdin_tty_state;
     stdin_tty_state.Save(STDIN_FILENO, false);
 
-    PyEval_InitThreads ();
+    PyGILState_STATE gstate;
+    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
+    bool threads_already_initialized = false;
+    if (PyEval_ThreadsInitialized ()) {
+        gstate = PyGILState_Ensure ();
+        if (log)
+            log->Printf("Ensured PyGILState. Previous state = %slocked\n", gstate == PyGILState_UNLOCKED ? "un" : "");
+        threads_already_initialized = true;
+    } else {
+        // InitThreads acquires the GIL if it hasn't been called before.
+        PyEval_InitThreads ();
+    }
     Py_InitializeEx (0);
 
     // Initialize SWIG after setting up python
@@ -2239,6 +2651,15 @@ ScriptInterpreterPython::InitializePrivate ()
     }
 
     PyRun_SimpleString ("sys.dont_write_bytecode = 1; import lldb.embedded_interpreter; from lldb.embedded_interpreter import run_python_interpreter; from lldb.embedded_interpreter import run_one_line; from termios import *");
+
+    if (threads_already_initialized) {
+        if (log)
+            log->Printf("Releasing PyGILState. Returning to state = %slocked\n", gstate == PyGILState_UNLOCKED ? "un" : "");
+        PyGILState_Release (gstate);
+    } else {
+        // We initialized the threads in this function, just unlock the GIL.
+        PyEval_SaveThread();
+    }
 
     stdin_tty_state.Restore();
 }

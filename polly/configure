@@ -2597,13 +2597,13 @@ else
 fi
 
   # Check for library and headers works
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for isl: isl/codegen.h in $given_inc_path, and libisl in $given_lib_path" >&5
-$as_echo_n "checking for isl: isl/codegen.h in $given_inc_path, and libisl in $given_lib_path... " >&6; }
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for isl: isl/ast.h in $given_inc_path, and libisl in $given_lib_path" >&5
+$as_echo_n "checking for isl: isl/ast.h in $given_inc_path, and libisl in $given_lib_path... " >&6; }
 
   # try to compile a file that includes a header of the library
   cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
-#include <isl/codegen.h>
+#include <isl/ast.h>
 int
 main ()
 {
@@ -3021,12 +3021,8 @@ case "$enableval" in
   yes)
 $as_echo "#define GPU_CODEGEN 1" >>confdefs.h
  ;;
-  no)
-$as_echo "#define GPU_CODEGEN 0" >>confdefs.h
- ;;
-  default)
-$as_echo "#define GPU_CODEGEN 0" >>confdefs.h
- ;;
+  no) ;;
+  default) ;;
   *) as_fn_error $? "Invalid setting for --enable-polly-gpu-codegen. Use \"yes\" or \"no\"" "$LINENO" 5 ;;
 esac
 

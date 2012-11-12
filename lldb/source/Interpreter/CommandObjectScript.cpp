@@ -55,6 +55,7 @@ CommandObjectScript::DoExecute
     {
         result.AppendError("no script interpreter");
         result.SetStatus (eReturnStatusFailed);
+        return false;
     }
 
     DataVisualization::ForceUpdate(); // script might change Python code we use for formatting.. make sure we keep up to date with it
@@ -67,7 +68,7 @@ CommandObjectScript::DoExecute
     }
 
     // We can do better when reporting the status of one-liner script execution.
-    if (script_interpreter->ExecuteOneLine (command, &result, true))
+    if (script_interpreter->ExecuteOneLine (command, &result))
         result.SetStatus(eReturnStatusSuccessFinishNoResult);
     else
         result.SetStatus(eReturnStatusFailed);

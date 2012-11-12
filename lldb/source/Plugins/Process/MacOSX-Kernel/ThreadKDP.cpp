@@ -37,8 +37,8 @@ using namespace lldb_private;
 // Thread Registers
 //----------------------------------------------------------------------
 
-ThreadKDP::ThreadKDP (const lldb::ProcessSP &process_sp, lldb::tid_t tid) :
-    Thread(process_sp, tid),
+ThreadKDP::ThreadKDP (Process &process, lldb::tid_t tid) :
+    Thread(process, tid),
     m_thread_name (),
     m_dispatch_queue_name (),
     m_thread_dispatch_qaddr (LLDB_INVALID_ADDRESS)
@@ -179,6 +179,9 @@ ThreadKDP::GetPrivateStopReason ()
         if (m_thread_stop_reason_stop_id != process_stop_id ||
             (m_actual_stop_info_sp && !m_actual_stop_info_sp->IsValid()))
         {
+            if (IsStillAtLastBreakpointHit())
+                return m_actual_stop_info_sp;
+
             if (m_cached_stop_info_sp)
                 SetStopInfo (m_cached_stop_info_sp);
             else

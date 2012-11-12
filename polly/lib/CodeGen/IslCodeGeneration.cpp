@@ -20,8 +20,6 @@
 //===----------------------------------------------------------------------===//
 #include "polly/Config/config.h"
 
-#ifdef ISL_CODEGEN_FOUND
-
 #include "polly/Dependences.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopInfo.h"
@@ -38,7 +36,7 @@
 #define DEBUG_TYPE "polly-codegen-isl"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include "isl/union_map.h"
@@ -380,8 +378,14 @@ Value *IslExprBuilder::createOpICmp(__isl_take isl_ast_expr *Expr) {
   case isl_ast_op_le:
     Res = Builder.CreateICmpSLE(LHS, RHS);
     break;
+  case isl_ast_op_lt:
+    Res = Builder.CreateICmpSLT(LHS, RHS);
+    break;
   case isl_ast_op_ge:
     Res = Builder.CreateICmpSGE(LHS, RHS);
+    break;
+  case isl_ast_op_gt:
+    Res = Builder.CreateICmpSGT(LHS, RHS);
     break;
   }
 
@@ -464,7 +468,9 @@ Value *IslExprBuilder::createOp(__isl_take isl_ast_expr *Expr) {
     return createOpBoolean(Expr);
   case isl_ast_op_eq:
   case isl_ast_op_le:
+  case isl_ast_op_lt:
   case isl_ast_op_ge:
+  case isl_ast_op_gt:
     return createOpICmp(Expr);
   }
 
@@ -570,7 +576,8 @@ private:
   //    of loop iterations.
   //
   // 3. With the existing code, upper bounds have been easier to implement.
-  __isl_give isl_ast_expr *getUpperBound(__isl_keep isl_ast_node *For);
+  __isl_give isl_ast_expr *getUpperBound(__isl_keep isl_ast_node *For,
+                                         CmpInst::Predicate &Predicate);
 
   void createFor(__isl_take isl_ast_node *For);
   void createIf(__isl_take isl_ast_node *If);
@@ -579,18 +586,28 @@ private:
 };
 
 __isl_give isl_ast_expr *IslNodeBuilder::getUpperBound(
-  __isl_keep isl_ast_node *For) {
+  __isl_keep isl_ast_node *For, ICmpInst::Predicate &Predicate) {
   isl_id *UBID, *IteratorID;
   isl_ast_expr *Cond, *Iterator, *UB, *Arg0;
+  isl_ast_op_type Type;
 
   Cond = isl_ast_node_for_get_cond(For);
   Iterator = isl_ast_node_for_get_iterator(For);
+  Type = isl_ast_expr_get_op_type(Cond);
 
   assert(isl_ast_expr_get_type(Cond) == isl_ast_expr_op
          && "conditional expression is not an atomic upper bound");
 
-  assert(isl_ast_expr_get_op_type(Cond) == isl_ast_op_le
-         && "conditional expression is not an atomic upper bound");
+  switch (Type) {
+    case isl_ast_op_le:
+      Predicate = ICmpInst::ICMP_SLE;
+      break;
+    case isl_ast_op_lt:
+      Predicate = ICmpInst::ICMP_SLT;
+      break;
+    default:
+      llvm_unreachable("Unexpected comparision type in loop conditon");
+  }
 
   Arg0 = isl_ast_expr_get_op_arg(Cond, 0);
 
@@ -626,6 +643,7 @@ void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
   Type *MaxType;
   BasicBlock *AfterBlock;
   Value *IV;
+  CmpInst::Predicate Predicate;
 
   Body = isl_ast_node_for_get_body(For);
 
@@ -639,7 +657,7 @@ void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
   Inc = isl_ast_node_for_get_inc(For);
   Iterator = isl_ast_node_for_get_iterator(For);
   IteratorID = isl_ast_expr_get_id(Iterator);
-  UB = getUpperBound(For);
+  UB = getUpperBound(For, Predicate);
 
   ValueLB = ExprBuilder.create(Init);
   ValueUB = ExprBuilder.create(UB);
@@ -663,7 +681,8 @@ void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
   //       executed at least once, which will enable a lot of loop invariant
   //       code motion.
 
-  IV = createLoop(ValueLB, ValueUB, ValueInc, Builder, P, AfterBlock);
+  IV = createLoop(ValueLB, ValueUB, ValueInc, Builder, P, AfterBlock,
+                  Predicate);
   IDToValue[IteratorID] = IV;
 
   create(Body);
@@ -876,5 +895,3 @@ INITIALIZE_PASS_END(IslCodeGeneration, "polly-codegen-isl",
 Pass *polly::createIslCodeGenerationPass() {
   return new IslCodeGeneration();
 }
-
-#endif /* ISL_CODEGEN_FOUND */

@@ -14,6 +14,7 @@
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
+#include "clang/Driver/Option.h"
 #include "clang/Driver/Options.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -32,6 +33,21 @@ const Driver &ToolChain::getDriver() const {
  return D;
 }
 
+std::string ToolChain::getDefaultUniversalArchName() const {
+  // In universal driver terms, the arch name accepted by -arch isn't exactly
+  // the same as the ones that appear in the triple. Roughly speaking, this is
+  // an inverse of the darwin::getArchTypeForDarwinArchName() function, but the
+  // only interesting special case is powerpc.
+  switch (Triple.getArch()) {
+  case llvm::Triple::ppc:
+    return "ppc";
+  case llvm::Triple::ppc64:
+    return "ppc64";
+  default:
+    return Triple.getArchName();
+  }
+}
+
 bool ToolChain::IsUnwindTablesDefault() const {
   return false;
 }
@@ -41,8 +57,8 @@ std::string ToolChain::GetFilePath(const char *Name) const {
 
 }
 
-std::string ToolChain::GetProgramPath(const char *Name, bool WantFile) const {
-  return D.GetProgramPath(Name, *this, WantFile);
+std::string ToolChain::GetProgramPath(const char *Name) const {
+  return D.GetProgramPath(Name, *this);
 }
 
 types::ID ToolChain::LookupTypeForExtension(const char *Ext) const {
@@ -70,13 +86,13 @@ static const char *getARMTargetCPU(const ArgList &Args,
     // FIXME: Warn on inconsistent use of -mcpu and -march.
     // If we have -mcpu=, use that.
     if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
-      return A->getValue(Args);
+      return A->getValue();
   }
 
   StringRef MArch;
   if (Arg *A = Args.getLastArg(options::OPT_march_EQ)) {
     // Otherwise, if we have -march= choose the base CPU for that arch.
-    MArch = A->getValue(Args);
+    MArch = A->getValue();
   } else {
     // Otherwise, use the Arch from the triple.
     MArch = Triple.getArchName();
@@ -188,7 +204,7 @@ ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(
   const ArgList &Args) const
 {
   if (Arg *A = Args.getLastArg(options::OPT_rtlib_EQ)) {
-    StringRef Value = A->getValue(Args);
+    StringRef Value = A->getValue();
     if (Value == "compiler-rt")
       return ToolChain::RLT_CompilerRT;
     if (Value == "libgcc")
@@ -202,7 +218,7 @@ ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(
 
 ToolChain::CXXStdlibType ToolChain::GetCXXStdlibType(const ArgList &Args) const{
   if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
-    StringRef Value = A->getValue(Args);
+    StringRef Value = A->getValue();
     if (Value == "libc++")
       return ToolChain::CST_Libcxx;
     if (Value == "libstdc++")
@@ -280,4 +296,25 @@ void ToolChain::AddCXXStdlibLibArgs(const ArgList &Args,
 void ToolChain::AddCCKextLibArgs(const ArgList &Args,
                                  ArgStringList &CmdArgs) const {
   CmdArgs.push_back("-lcc_kext");
+}
+
+bool ToolChain::AddFastMathRuntimeIfAvailable(const ArgList &Args,
+                                              ArgStringList &CmdArgs) const {
+  // Check if -ffast-math or -funsafe-math is enabled.
+  Arg *A = Args.getLastArg(options::OPT_ffast_math,
+                           options::OPT_fno_fast_math,
+                           options::OPT_funsafe_math_optimizations,
+                           options::OPT_fno_unsafe_math_optimizations);
+
+  if (!A || A->getOption().getID() == options::OPT_fno_fast_math ||
+      A->getOption().getID() == options::OPT_fno_unsafe_math_optimizations)
+    return false;
+
+  // If crtfastmath.o exists add it to the arguments.
+  std::string Path = GetFilePath("crtfastmath.o");
+  if (Path == "crtfastmath.o") // Not found.
+    return false;
+
+  CmdArgs.push_back(Args.MakeArgString(Path));
+  return true;
 }

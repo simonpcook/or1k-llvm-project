@@ -33,7 +33,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/Compiler.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/DataLayout.h"
 
 #include <cstdarg>
 
@@ -223,6 +223,25 @@ protected:
                                          =llvm::GlobalValue::InternalLinkage) {
     llvm::ArrayType *ArrayTy = llvm::ArrayType::get(Ty, V.size());
     return MakeGlobal(ArrayTy, V, Name, linkage);
+  }
+  /// Returns a property name and encoding string.
+  llvm::Constant *MakePropertyEncodingString(const ObjCPropertyDecl *PD,
+                                             const Decl *Container) {
+    ObjCRuntime R = CGM.getLangOpts().ObjCRuntime;
+    if ((R.getKind() == ObjCRuntime::GNUstep) &&
+        (R.getVersion() >= VersionTuple(1, 6))) {
+      std::string NameAndAttributes;
+      std::string TypeStr;
+      CGM.getContext().getObjCEncodingForPropertyDecl(PD, Container, TypeStr);
+      NameAndAttributes += '\0';
+      NameAndAttributes += TypeStr.length() + 3;
+      NameAndAttributes += TypeStr;
+      NameAndAttributes += '\0';
+      NameAndAttributes += PD->getNameAsString();
+      return llvm::ConstantExpr::getGetElementPtr(
+          CGM.GetAddrOfConstantString(NameAndAttributes), Zeros);
+    }
+    return MakeConstantString(PD->getNameAsString());
   }
   /// Ensures that the value has the required type, by inserting a bitcast if
   /// required.  This function lets us avoid inserting bitcasts that are
@@ -514,7 +533,10 @@ public:
                                              const CGBlockInfo &blockInfo) {
     return NULLPtr;
   }
-  
+  virtual llvm::Constant *BuildRCBlockLayout(CodeGenModule &CGM,
+                                             const CGBlockInfo &blockInfo) {
+    return NULLPtr;
+  }
   virtual llvm::GlobalVariable *GetClassGlobal(const std::string &Name) {
     return 0;
   }
@@ -1471,7 +1493,7 @@ llvm::Constant *CGObjCGNU::GenerateClassStructure(
   Elements.push_back(Zero);
   Elements.push_back(llvm::ConstantInt::get(LongTy, info));
   if (isMeta) {
-    llvm::TargetData td(&TheModule);
+    llvm::DataLayout td(&TheModule);
     Elements.push_back(
         llvm::ConstantInt::get(LongTy,
                                td.getTypeSizeInBits(ClassTy) /
@@ -1691,7 +1713,9 @@ void CGObjCGNU::GenerateProtocol(const ObjCProtocolDecl *PD) {
     std::vector<llvm::Constant*> Fields;
     ObjCPropertyDecl *property = *iter;
 
-    Fields.push_back(MakeConstantString(property->getNameAsString()));
+
+    Fields.push_back(MakePropertyEncodingString(property, PD));
+
     Fields.push_back(llvm::ConstantInt::get(Int8Ty,
                 property->getPropertyAttributes()));
     Fields.push_back(llvm::ConstantInt::get(Int8Ty, 0));
@@ -1944,7 +1968,7 @@ llvm::Constant *CGObjCGNU::GeneratePropertyList(const ObjCImplementationDecl *OI
     bool isSynthesized = (propertyImpl->getPropertyImplementation() == 
         ObjCPropertyImplDecl::Synthesize);
 
-    Fields.push_back(MakeConstantString(property->getNameAsString()));
+    Fields.push_back(MakePropertyEncodingString(property, OID));
     Fields.push_back(llvm::ConstantInt::get(Int8Ty,
                 property->getPropertyAttributes()));
     Fields.push_back(llvm::ConstantInt::get(Int8Ty, isSynthesized));
@@ -2046,7 +2070,7 @@ void CGObjCGNU::GenerateClass(const ObjCImplementationDecl *OID) {
     Context.getASTObjCInterfaceLayout(SuperClassDecl).getSize().getQuantity();
   // For non-fragile ivars, set the instance size to 0 - {the size of just this
   // class}.  The runtime will then set this to the correct value on load.
-  if (CGM.getContext().getLangOpts().ObjCRuntime.isNonFragile()) {
+  if (CGM.getLangOpts().ObjCRuntime.isNonFragile()) {
     instanceSize = 0 - (instanceSize - superInstanceSize);
   }
 
@@ -2061,7 +2085,7 @@ void CGObjCGNU::GenerateClass(const ObjCImplementationDecl *OID) {
       // Get the offset
       uint64_t BaseOffset = ComputeIvarBaseOffset(CGM, OID, IVD);
       uint64_t Offset = BaseOffset;
-      if (CGM.getContext().getLangOpts().ObjCRuntime.isNonFragile()) {
+      if (CGM.getLangOpts().ObjCRuntime.isNonFragile()) {
         Offset = BaseOffset - superInstanceSize;
       }
       llvm::Constant *OffsetValue = llvm::ConstantInt::get(IntTy, Offset);
@@ -2369,7 +2393,7 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
   // Runtime version, used for ABI compatibility checking.
   Elements.push_back(llvm::ConstantInt::get(LongTy, RuntimeVersion));
   // sizeof(ModuleTy)
-  llvm::TargetData td(&TheModule);
+  llvm::DataLayout td(&TheModule);
   Elements.push_back(
     llvm::ConstantInt::get(LongTy,
                            td.getTypeSizeInBits(ModuleTy) /
@@ -2523,7 +2547,7 @@ void CGObjCGNU::EmitTryStmt(CodeGenFunction &CGF,
   // Unlike the Apple non-fragile runtimes, which also uses
   // unwind-based zero cost exceptions, the GNU Objective C runtime's
   // EH support isn't a veneer over C++ EH.  Instead, exception
-  // objects are created by __objc_exception_throw and destroyed by
+  // objects are created by objc_exception_throw and destroyed by
   // the personality function; this avoids the need for bracketing
   // catch handlers with calls to __blah_begin_catch/__blah_end_catch
   // (or even _Unwind_DeleteException), but probably doesn't
@@ -2548,7 +2572,9 @@ void CGObjCGNU::EmitThrowStmt(CodeGenFunction &CGF,
     ExceptionAsObject = CGF.ObjCEHValueStack.back();
   }
   ExceptionAsObject = CGF.Builder.CreateBitCast(ExceptionAsObject, IdTy);
-  CGF.EmitCallOrInvoke(ExceptionThrowFn, ExceptionAsObject);
+  llvm::CallSite Throw =
+      CGF.EmitCallOrInvoke(ExceptionThrowFn, ExceptionAsObject);
+  Throw.setDoesNotReturn();
   CGF.Builder.CreateUnreachable();
   CGF.Builder.ClearInsertionPoint();
 }

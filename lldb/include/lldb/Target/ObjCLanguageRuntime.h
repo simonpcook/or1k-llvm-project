@@ -45,14 +45,16 @@ public:
     public:
         
         ClassDescriptor() :
-        m_is_kvo(eLazyBoolCalculate),
-        m_is_cf(eLazyBoolCalculate)
-        {}
-        
-        ClassDescriptor (ObjCISA isa, lldb::ProcessSP process)  :
-        m_is_kvo(eLazyBoolCalculate),
-        m_is_cf(eLazyBoolCalculate)
-        {}
+            m_is_kvo (eLazyBoolCalculate),
+            m_is_cf (eLazyBoolCalculate),
+            m_type_wp ()
+        {
+        }
+
+        virtual
+        ~ClassDescriptor ()
+        {
+        }
         
         virtual ConstString
         GetClassName () = 0;
@@ -98,17 +100,10 @@ public:
         virtual uint64_t
         GetInstanceSize () = 0;
         
-        virtual bool
-        IsRealized ()
-        {
-            // anything other than some instances of v2 classes are always realized
-            return true;
-        }
-        
         // use to implement version-specific additional constraints on pointers
         virtual bool
         CheckPointer (lldb::addr_t value,
-                      uint32_t ptr_size)
+                      uint32_t ptr_size) const
         {
             return true;
         }
@@ -125,9 +120,17 @@ public:
             return false;
         }
         
-        virtual
-        ~ClassDescriptor ()
-        {}
+        lldb::TypeSP
+        GetType ()
+        {
+            return m_type_wp.lock();
+        }
+        
+        void
+        SetType (const lldb::TypeSP &type_sp)
+        {
+            m_type_wp = type_sp;
+        }
         
     protected:
         bool
@@ -135,11 +138,12 @@ public:
                         uint32_t ptr_size,
                         bool allow_NULLs = false,
                         bool allow_tagged = false,
-                        bool check_version_specific = false);
+                        bool check_version_specific = false) const;
         
     private:
         LazyBool m_is_kvo;
         LazyBool m_is_cf;
+        lldb::TypeWP m_type_wp;
     };
     
     // a convenience subclass of ClassDescriptor meant to represent invalid objects
@@ -147,6 +151,10 @@ public:
     {
     public:
         ClassDescriptor_Invalid() {}
+        
+        virtual
+        ~ClassDescriptor_Invalid ()
+        {}
         
         virtual ConstString
         GetClassName () { return ConstString(""); }
@@ -167,26 +175,26 @@ public:
         GetISA () { return 0; }
         
         virtual bool
-        CheckPointer (lldb::addr_t value,
-                      uint32_t ptr_size) { return false; }
-        
-        virtual
-        ~ClassDescriptor_Invalid ()
-        {}
-        
+        CheckPointer (lldb::addr_t value, uint32_t ptr_size) const
+        {
+            return false;
+        }
     };
     
     virtual ClassDescriptorSP
-    GetClassDescriptor (ValueObject& in_value)
-    {
-        return ClassDescriptorSP();
-    }
+    GetClassDescriptor (ValueObject& in_value);
     
+    ClassDescriptorSP
+    GetNonKVOClassDescriptor (ValueObject& in_value);
+
     virtual ClassDescriptorSP
-    GetClassDescriptor (ObjCISA isa)
-    {
-        return ClassDescriptorSP();
-    }
+    GetClassDescriptor (const ConstString &class_name);
+
+    virtual ClassDescriptorSP
+    GetClassDescriptor (ObjCISA isa);
+
+    ClassDescriptorSP
+    GetNonKVOClassDescriptor (ObjCISA isa);
     
     virtual
     ~ObjCLanguageRuntime();
@@ -208,7 +216,7 @@ public:
     
     virtual lldb::ThreadPlanSP
     GetStepThroughTrampolinePlan (Thread &thread, bool stop_others) = 0;
-    
+
     lldb::addr_t
     LookupInMethodCache (lldb::addr_t class_addr, lldb::addr_t sel);
 
@@ -236,27 +244,24 @@ public:
         return eObjC_VersionUnknown;
     }
         
-    virtual bool
-    IsValidISA(ObjCISA isa) = 0;
-    
-    virtual ObjCISA
-    GetISA(ValueObject& valobj) = 0;
-    
-    virtual void
-    UpdateISAToDescriptorMap_Impl()
+    bool
+    IsValidISA(ObjCISA isa)
     {
-        // to be implemented by runtimes if they support doing this
+        UpdateISAToDescriptorMap();
+        return m_isa_to_descriptor_cache.count(isa) > 0;
     }
-    
+
+    virtual void
+    UpdateISAToDescriptorMapIfNeeded() = 0;
+
     void
     UpdateISAToDescriptorMap()
     {
-        if (m_isa_to_descriptor_cache_is_up_to_date)
-            return;
-        
-        m_isa_to_descriptor_cache_is_up_to_date = true;
-
-        UpdateISAToDescriptorMap_Impl();
+        if (m_process && m_process->GetStopID() != m_isa_to_descriptor_cache_stop_id)
+        {
+            UpdateISAToDescriptorMapIfNeeded ();
+            assert (m_process->GetStopID() == m_isa_to_descriptor_cache_stop_id); // REMOVE THIS PRIOR TO CHECKIN
+        }
     }
     
     virtual ObjCISA
@@ -446,13 +451,8 @@ private:
 protected:
     typedef std::map<ObjCISA, ClassDescriptorSP> ISAToDescriptorMap;
     typedef ISAToDescriptorMap::iterator ISAToDescriptorIterator;
-    ISAToDescriptorMap                  m_isa_to_descriptor_cache;
-    bool                                m_isa_to_descriptor_cache_is_up_to_date;
-    
-    typedef std::map<lldb::addr_t,TypeAndOrName> ClassNameMap;
-    typedef ClassNameMap::iterator ClassNameIterator;
-    ClassNameMap m_class_name_cache;
-    
+    ISAToDescriptorMap m_isa_to_descriptor_cache;
+    uint32_t m_isa_to_descriptor_cache_stop_id;
     typedef std::map<ConstString, lldb::TypeWP> CompleteClassMap;
     CompleteClassMap m_complete_class_cache;
 

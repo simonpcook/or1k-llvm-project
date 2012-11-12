@@ -19,6 +19,7 @@
 #include "lldb/Core/ValueObject.h"
 #include "lldb/Core/ValueObjectConstResult.h"
 #include "lldb/Host/Endian.h"
+#include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Target/ObjCLanguageRuntime.h"
 #include "lldb/Target/Target.h"
 
@@ -47,7 +48,7 @@ lldb_private::formatters::ExtractValueFromObjCExpression (ValueObject &valobj,
     if (!target || !stack_frame)
         return false;
     
-    Target::EvaluateExpressionOptions options;
+    EvaluateExpressionOptions options;
     options.SetCoerceToId(false)
     .SetUnwindOnError(true)
     .SetKeepInMemory(true)
@@ -85,7 +86,7 @@ lldb_private::formatters::CallSelectorOnObject (ValueObject &valobj,
     if (!target || !stack_frame)
         return valobj_sp;
     
-    Target::EvaluateExpressionOptions options;
+    EvaluateExpressionOptions options;
     options.SetCoerceToId(false)
     .SetUnwindOnError(true)
     .SetKeepInMemory(true)
@@ -122,7 +123,7 @@ lldb_private::formatters::CallSelectorOnObject (ValueObject &valobj,
     if (!target || !stack_frame)
         return valobj_sp;
     
-    Target::EvaluateExpressionOptions options;
+    EvaluateExpressionOptions options;
     options.SetCoerceToId(false)
     .SetUnwindOnError(true)
     .SetKeepInMemory(true)
@@ -459,7 +460,7 @@ lldb_private::formatters::NSNumberSummaryProvider (ValueObject& valobj, Stream& 
         if (!target || !stack_frame)
             return false;
         
-        Target::EvaluateExpressionOptions options;
+        EvaluateExpressionOptions options;
         options.SetCoerceToId(false)
         .SetUnwindOnError(true)
         .SetKeepInMemory(true)
@@ -474,6 +475,62 @@ lldb_private::formatters::NSNumberSummaryProvider (ValueObject& valobj, Stream& 
         stream.Printf("%s",result_sp->GetSummaryAsCString());
         return true;
     }
+}
+
+static bool
+ReadUTFBufferAndDumpToStream (uint64_t location,
+                              const ProcessSP& process_sp,
+                              Stream& stream)
+{
+    Error error;
+    lldb::DataBufferSP buffer_sp(new DataBufferHeap(1024,0));
+    size_t data_read = process_sp->ReadMemoryFromInferior(location, (char*)buffer_sp->GetBytes(), 1024, error);
+    if (error.Fail())
+    {
+        stream.Printf("unable to read data");
+        return true;
+    }
+    else
+        stream.Printf("@\"");
+    if (data_read)
+    {
+        UTF16 *data_ptr = (UTF16*)buffer_sp->GetBytes();
+        UTF16 *data_end_ptr = data_ptr + 256;
+        
+        while (data_ptr < data_end_ptr)
+        {
+            if (!*data_ptr)
+            {
+                data_end_ptr = data_ptr;
+                break;
+            }
+            data_ptr++;
+        }
+        
+        *data_ptr = 0;
+        data_ptr = (UTF16*)buffer_sp->GetBytes();
+        
+        lldb::DataBufferSP utf8_data_buffer_sp(new DataBufferHeap(1024,0));
+        UTF8* utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
+        UTF8* utf8_data_end_ptr = utf8_data_ptr + 1024;
+        
+        ConvertUTF16toUTF8	(	(const UTF16**)&data_ptr,
+                             data_end_ptr,
+                             &utf8_data_ptr,
+                             utf8_data_end_ptr,
+                             lenientConversion);
+        utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
+        for (;utf8_data_ptr != utf8_data_end_ptr; utf8_data_ptr++)
+        {
+            if (!*utf8_data_ptr)
+                break;
+            stream.Printf("%c",*utf8_data_ptr);
+        }
+        stream.Printf("\"");
+        return true;
+    }
+    stream.Printf("\"");
+    return true;
 }
 
 bool
@@ -541,56 +598,7 @@ lldb_private::formatters::NSStringSummaryProvider (ValueObject& valobj, Stream& 
         if (error.Fail())
             return false;
         if (has_explicit_length and is_unicode)
-        {
-            lldb::DataBufferSP buffer_sp(new DataBufferHeap(1024,0));
-            size_t data_read = process_sp->ReadMemoryFromInferior(location, (char*)buffer_sp->GetBytes(), 1024, error);
-            if (error.Fail())
-            {
-                stream.Printf("erorr reading pte");
-                return true;
-            }
-            else
-                stream.Printf("@\"");
-                if (data_read)
-                {
-                    UTF16 *data_ptr = (UTF16*)buffer_sp->GetBytes();
-                    UTF16 *data_end_ptr = data_ptr + 256;
-                    
-                    while (data_ptr < data_end_ptr)
-                    {
-                        if (!*data_ptr)
-                        {
-                            data_end_ptr = data_ptr;
-                            break;
-                        }
-                        data_ptr++;
-                    }
-                    
-                    *data_ptr = 0;
-                    data_ptr = (UTF16*)buffer_sp->GetBytes();
-                    
-                    lldb::DataBufferSP utf8_data_buffer_sp(new DataBufferHeap(1024,0));
-                    UTF8* utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
-                    UTF8* utf8_data_end_ptr = utf8_data_ptr + 1024;
-                    
-                    ConvertUTF16toUTF8	(	(const UTF16**)&data_ptr,
-                                         data_end_ptr,
-                                         &utf8_data_ptr,
-                                         utf8_data_end_ptr,
-                                         lenientConversion);
-                    utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
-                    for (;utf8_data_ptr != utf8_data_end_ptr; utf8_data_ptr++)
-                    {
-                        if (!*utf8_data_ptr)
-                            break;
-                        stream.Printf("%c",*utf8_data_ptr);
-                    }
-                    stream.Printf("\"");
-                    return true;
-                }
-            stream.Printf("\"");
-            return true;
-        }
+            return ReadUTFBufferAndDumpToStream (location, process_sp, stream);
         else
         {
             location++;
@@ -633,106 +641,12 @@ lldb_private::formatters::NSStringSummaryProvider (ValueObject& valobj, Stream& 
             if (error.Fail())
                 return false;
         }
-        lldb::DataBufferSP buffer_sp(new DataBufferHeap(1024,0));
-        size_t data_read = process_sp->ReadMemoryFromInferior(location, (char*)buffer_sp->GetBytes(), 1024, error);
-        if (error.Fail())
-        {
-            stream.Printf("erorr reading pte");
-            return true;
-        }
-        else
-            stream.Printf("@\"");
-            if (data_read)
-            {
-                UTF16 *data_ptr = (UTF16*)buffer_sp->GetBytes();
-                UTF16 *data_end_ptr = data_ptr + 256;
-                
-                while (data_ptr < data_end_ptr)
-                {
-                    if (!*data_ptr)
-                    {
-                        data_end_ptr = data_ptr;
-                        break;
-                    }
-                    data_ptr++;
-                }
-                
-                *data_ptr = 0;
-                data_ptr = (UTF16*)buffer_sp->GetBytes();
-                
-                lldb::DataBufferSP utf8_data_buffer_sp(new DataBufferHeap(1024,0));
-                UTF8* utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
-                UTF8* utf8_data_end_ptr = utf8_data_ptr + 1024;
-                
-                ConvertUTF16toUTF8	(	(const UTF16**)&data_ptr,
-                                     data_end_ptr,
-                                     &utf8_data_ptr,
-                                     utf8_data_end_ptr,
-                                     lenientConversion);
-                utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
-                for (;utf8_data_ptr != utf8_data_end_ptr; utf8_data_ptr++)
-                {
-                    if (!*utf8_data_ptr)
-                        break;
-                    stream.Printf("%c",*utf8_data_ptr);
-                }
-                stream.Printf("\"");
-                return true;
-            }
-        stream.Printf("\"");
-        return true;
+        return ReadUTFBufferAndDumpToStream (location, process_sp, stream);
     }
     else if (is_special)
     {
         uint64_t location = valobj_addr + (ptr_size == 8 ? 12 : 8);
-        lldb::DataBufferSP buffer_sp(new DataBufferHeap(1024,0));
-        size_t data_read = process_sp->ReadMemoryFromInferior(location, (char*)buffer_sp->GetBytes(), 1024, error);
-        if (error.Fail())
-        {
-            stream.Printf("erorr reading pte");
-            return true;
-        }
-        else
-            stream.Printf("@\"");
-            if (data_read)
-            {
-                UTF16 *data_ptr = (UTF16*)buffer_sp->GetBytes();
-                UTF16 *data_end_ptr = data_ptr + 256;
-                
-                while (data_ptr < data_end_ptr)
-                {
-                    if (!*data_ptr)
-                    {
-                        data_end_ptr = data_ptr;
-                        break;
-                    }
-                    data_ptr++;
-                }
-                
-                *data_ptr = 0;
-                data_ptr = (UTF16*)buffer_sp->GetBytes();
-                
-                lldb::DataBufferSP utf8_data_buffer_sp(new DataBufferHeap(1024,0));
-                UTF8* utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
-                UTF8* utf8_data_end_ptr = utf8_data_ptr + 1024;
-                
-                ConvertUTF16toUTF8	(	(const UTF16**)&data_ptr,
-                                     data_end_ptr,
-                                     &utf8_data_ptr,
-                                     utf8_data_end_ptr,
-                                     lenientConversion);
-                utf8_data_ptr = (UTF8*)utf8_data_buffer_sp->GetBytes();
-                for (;utf8_data_ptr != utf8_data_end_ptr; utf8_data_ptr++)
-                {
-                    if (!*utf8_data_ptr)
-                        break;
-                    stream.Printf("%c",*utf8_data_ptr);
-                }
-                stream.Printf("\"");
-                return true;
-            }
-        stream.Printf("\"");
-        return true;
+        return ReadUTFBufferAndDumpToStream (location, process_sp, stream);
     }
     else if (is_inline)
     {
@@ -767,6 +681,70 @@ lldb_private::formatters::NSStringSummaryProvider (ValueObject& valobj, Stream& 
     
 }
 
+bool
+lldb_private::formatters::RuntimeSpecificDescriptionSummaryProvider (ValueObject& valobj, Stream& stream)
+{
+    stream.Printf("%s",valobj.GetObjectDescription());
+    return true;
+}
+
+bool
+lldb_private::formatters::ObjCBOOLSummaryProvider (ValueObject& valobj, Stream& stream)
+{
+    const uint32_t type_info = ClangASTContext::GetTypeInfo(valobj.GetClangType(),
+                                                            valobj.GetClangAST(),
+                                                            NULL);
+    
+    ValueObjectSP real_guy_sp = valobj.GetSP();
+    
+    if (type_info & ClangASTContext::eTypeIsPointer)
+    {
+        Error err;
+        real_guy_sp = valobj.Dereference(err);
+        if (err.Fail() || !real_guy_sp)
+            return false;
+    }
+    else if (type_info & ClangASTContext::eTypeIsReference)
+    {
+        real_guy_sp =  valobj.GetChildAtIndex(0, true);
+        if (!real_guy_sp)
+            return false;
+    }
+    uint64_t value = real_guy_sp->GetValueAsUnsigned(0);
+    if (value == 0)
+    {
+        stream.Printf("NO");
+        return true;
+    }
+    stream.Printf("YES");
+    return true;
+}
+
+template <bool is_sel_ptr>
+bool
+lldb_private::formatters::ObjCSELSummaryProvider (ValueObject& valobj, Stream& stream)
+{
+    lldb::addr_t data_address = LLDB_INVALID_ADDRESS;
+    
+    if (is_sel_ptr)
+        data_address = valobj.GetValueAsUnsigned(LLDB_INVALID_ADDRESS);
+    else
+        data_address = valobj.GetAddressOf();
+
+    if (data_address == LLDB_INVALID_ADDRESS)
+        return false;
+    
+    ExecutionContext exe_ctx(valobj.GetExecutionContextRef());
+    
+    void* char_opaque_type = valobj.GetClangAST()->CharTy.getAsOpaquePtr();
+    ClangASTType charstar(valobj.GetClangAST(),ClangASTType::GetPointerType(valobj.GetClangAST(), char_opaque_type));
+    
+    ValueObjectSP valobj_sp(ValueObject::CreateValueObjectFromAddress("text", data_address, exe_ctx, charstar));
+    
+    stream.Printf("%s",valobj_sp->GetSummaryAsCString());
+    return true;
+}
+
 lldb_private::formatters::NSArrayMSyntheticFrontEnd::NSArrayMSyntheticFrontEnd (lldb::ValueObjectSP valobj_sp) :
 SyntheticChildrenFrontEnd(*valobj_sp.get()),
 m_exe_ctx_ref(),
@@ -774,39 +752,11 @@ m_ptr_size(8),
 m_data_32(NULL),
 m_data_64(NULL)
 {
-    if (!valobj_sp)
-        return;
-    if (valobj_sp->IsDynamic())
-        valobj_sp = valobj_sp->GetStaticValue();
-    if (!valobj_sp)
-        return;
-    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
-    Error error;
-    if (valobj_sp->IsPointerType())
+    if (valobj_sp)
     {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return;
+        m_id_type = ClangASTType(valobj_sp->GetClangAST(),valobj_sp->GetClangAST()->ObjCBuiltinIdTy.getAsOpaquePtr());
+        Update();
     }
-    error.Clear();
-    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
-    if (!process_sp)
-        return;
-    m_ptr_size = process_sp->GetAddressByteSize();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
-    if (m_ptr_size == 4)
-    {
-        m_data_32 = new DataDescriptor_32();
-        process_sp->ReadMemory (data_location, m_data_32, sizeof(DataDescriptor_32), error);
-    }
-    else
-    {
-        m_data_64 = new DataDescriptor_64();
-        process_sp->ReadMemory (data_location, m_data_64, sizeof(DataDescriptor_64), error);
-    }
-    if (error.Fail())
-        return;
-    m_id_type = ClangASTType(valobj_sp->GetClangAST(),valobj_sp->GetClangAST()->ObjCBuiltinIdTy.getAsOpaquePtr());
 }
 
 uint32_t
@@ -842,7 +792,51 @@ bool
 lldb_private::formatters::NSArrayMSyntheticFrontEnd::Update()
 {
     m_children.clear();
+    ValueObjectSP valobj_sp = m_backend.GetSP();
+    m_ptr_size = 0;
+    delete m_data_32;
+    m_data_32 = NULL;
+    delete m_data_64;
+    m_data_64 = NULL;
+    if (valobj_sp->IsDynamic())
+        valobj_sp = valobj_sp->GetStaticValue();
+    if (!valobj_sp)
+        return false;
+    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
+    Error error;
+    if (valobj_sp->IsPointerType())
+    {
+        valobj_sp = valobj_sp->Dereference(error);
+        if (error.Fail() || !valobj_sp)
+            return false;
+    }
+    error.Clear();
+    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
+    if (!process_sp)
+        return false;
+    m_ptr_size = process_sp->GetAddressByteSize();
+    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    if (m_ptr_size == 4)
+    {
+        m_data_32 = new DataDescriptor_32();
+        process_sp->ReadMemory (data_location, m_data_32, sizeof(DataDescriptor_32), error);
+    }
+    else
+    {
+        m_data_64 = new DataDescriptor_64();
+        process_sp->ReadMemory (data_location, m_data_64, sizeof(DataDescriptor_64), error);
+    }
+    if (error.Fail())
+        return false;
     return false;
+}
+
+bool
+lldb_private::formatters::NSArrayMSyntheticFrontEnd::MightHaveChildren ()
+{
+    if (!m_data_32 && !m_data_64)
+        Update ();
+    return CalculateNumChildren();
 }
 
 static uint32_t
@@ -894,31 +888,11 @@ m_ptr_size(8),
 m_items(0),
 m_data_ptr(0)
 {
-    if (!valobj_sp)
-        return;
-    if (valobj_sp->IsDynamic())
-        valobj_sp = valobj_sp->GetStaticValue();
-    if (!valobj_sp)
-        return;
-    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
-    Error error;
-    if (valobj_sp->IsPointerType())
+    if (valobj_sp)
     {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return;
+        m_id_type = ClangASTType(valobj_sp->GetClangAST(),valobj_sp->GetClangAST()->ObjCBuiltinIdTy.getAsOpaquePtr());
+        Update();
     }
-    error.Clear();
-    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
-    if (!process_sp)
-        return;
-    m_ptr_size = process_sp->GetAddressByteSize();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
-    m_items = process_sp->ReadPointerFromMemory(data_location, error);
-    if (error.Fail())
-        return;
-    m_data_ptr = data_location+m_ptr_size;
-    m_id_type = ClangASTType(valobj_sp->GetClangAST(),valobj_sp->GetClangAST()->ObjCBuiltinIdTy.getAsOpaquePtr());
 }
 
 lldb_private::formatters::NSArrayISyntheticFrontEnd::~NSArrayISyntheticFrontEnd ()
@@ -944,8 +918,42 @@ lldb_private::formatters::NSArrayISyntheticFrontEnd::CalculateNumChildren ()
 bool
 lldb_private::formatters::NSArrayISyntheticFrontEnd::Update()
 {
+    m_ptr_size = 0;
+    m_items = 0;
+    m_data_ptr = 0;
     m_children.clear();
+    ValueObjectSP valobj_sp = m_backend.GetSP();
+    if (valobj_sp->IsDynamic())
+        valobj_sp = valobj_sp->GetStaticValue();
+    if (!valobj_sp)
+        return false;
+    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
+    Error error;
+    if (valobj_sp->IsPointerType())
+    {
+        valobj_sp = valobj_sp->Dereference(error);
+        if (error.Fail() || !valobj_sp)
+            return false;
+    }
+    error.Clear();
+    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
+    if (!process_sp)
+        return false;
+    m_ptr_size = process_sp->GetAddressByteSize();
+    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    m_items = process_sp->ReadPointerFromMemory(data_location, error);
+    if (error.Fail())
+        return false;
+    m_data_ptr = data_location+m_ptr_size;
     return false;
+}
+
+bool
+lldb_private::formatters::NSArrayISyntheticFrontEnd::MightHaveChildren ()
+{
+    if (!m_data_ptr)
+        Update ();
+    return CalculateNumChildren();
 }
 
 lldb::ValueObjectSP
@@ -1042,6 +1050,12 @@ lldb_private::formatters::NSArrayCodeRunningSyntheticFrontEnd::Update()
     return false;
 }
 
+bool
+lldb_private::formatters::NSArrayCodeRunningSyntheticFrontEnd::MightHaveChildren ()
+{
+    return CalculateNumChildren() > 0;
+}
+
 uint32_t
 lldb_private::formatters::NSArrayCodeRunningSyntheticFrontEnd::GetIndexOfChildWithName (const ConstString &name)
 {
@@ -1121,7 +1135,7 @@ lldb_private::formatters::NSDictionaryCodeRunningSyntheticFrontEnd::GetChildAtIn
     object_fetcher_expr.Printf("struct __lldb_autogen_nspair { id key; id value; } _lldb_valgen_item; _lldb_valgen_item.key = %s; _lldb_valgen_item.value = %s; _lldb_valgen_item;",key_fetcher_expr.GetData(),value_fetcher_expr.GetData());
     lldb::ValueObjectSP child_sp;
     m_backend.GetTargetSP()->EvaluateExpression(object_fetcher_expr.GetData(), m_backend.GetFrameSP().get(), child_sp,
-                                                Target::EvaluateExpressionOptions().SetKeepInMemory(true));
+                                                EvaluateExpressionOptions().SetKeepInMemory(true));
     if (child_sp)
         child_sp->SetName(ConstString(idx_name.GetData()));
     return child_sp;
@@ -1131,6 +1145,12 @@ bool
 lldb_private::formatters::NSDictionaryCodeRunningSyntheticFrontEnd::Update()
 {
     return false;
+}
+
+bool
+lldb_private::formatters::NSDictionaryCodeRunningSyntheticFrontEnd::MightHaveChildren ()
+{
+    return CalculateNumChildren() > 0;
 }
 
 uint32_t
@@ -1149,39 +1169,8 @@ lldb_private::formatters::NSDictionaryISyntheticFrontEnd::NSDictionaryISynthetic
     m_data_32(NULL),
     m_data_64(NULL)
 {
-    if (!valobj_sp)
-        return;
-    if (valobj_sp->IsDynamic())
-        valobj_sp = valobj_sp->GetStaticValue();
-    if (!valobj_sp)
-        return;
-    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
-    Error error;
-    if (valobj_sp->IsPointerType())
-    {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return;
-    }
-    error.Clear();
-    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
-    if (!process_sp)
-        return;
-    m_ptr_size = process_sp->GetAddressByteSize();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
-    if (m_ptr_size == 4)
-    {
-        m_data_32 = new DataDescriptor_32();
-        process_sp->ReadMemory (data_location, m_data_32, sizeof(DataDescriptor_32), error);
-    }
-    else
-    {
-        m_data_64 = new DataDescriptor_64();
-        process_sp->ReadMemory (data_location, m_data_64, sizeof(DataDescriptor_64), error);
-    }
-    if (error.Fail())
-        return;
-    m_data_ptr = data_location + m_ptr_size;
+    if (valobj_sp)
+        Update();
 }
 
 lldb_private::formatters::NSDictionaryISyntheticFrontEnd::~NSDictionaryISyntheticFrontEnd ()
@@ -1214,7 +1203,54 @@ bool
 lldb_private::formatters::NSDictionaryISyntheticFrontEnd::Update()
 {
     m_children.clear();
+    delete m_data_32;
+    m_data_32 = NULL;
+    delete m_data_64;
+    m_data_64 = NULL;
+    m_ptr_size = 0;
+    ValueObjectSP valobj_sp = m_backend.GetSP();
+    if (!valobj_sp)
+        return false;
+    if (valobj_sp->IsDynamic())
+        valobj_sp = valobj_sp->GetStaticValue();
+    if (!valobj_sp)
+        return false;
+    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
+    Error error;
+    if (valobj_sp->IsPointerType())
+    {
+        valobj_sp = valobj_sp->Dereference(error);
+        if (error.Fail() || !valobj_sp)
+            return false;
+    }
+    error.Clear();
+    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
+    if (!process_sp)
+        return false;
+    m_ptr_size = process_sp->GetAddressByteSize();
+    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    if (m_ptr_size == 4)
+    {
+        m_data_32 = new DataDescriptor_32();
+        process_sp->ReadMemory (data_location, m_data_32, sizeof(DataDescriptor_32), error);
+    }
+    else
+    {
+        m_data_64 = new DataDescriptor_64();
+        process_sp->ReadMemory (data_location, m_data_64, sizeof(DataDescriptor_64), error);
+    }
+    if (error.Fail())
+        return false;
+    m_data_ptr = data_location + m_ptr_size;
     return false;
+}
+
+bool
+lldb_private::formatters::NSDictionaryISyntheticFrontEnd::MightHaveChildren ()
+{
+    if (!m_data_32 && !m_data_64)
+        Update ();
+    return CalculateNumChildren();
 }
 
 lldb::ValueObjectSP
@@ -1283,38 +1319,8 @@ lldb_private::formatters::NSDictionaryMSyntheticFrontEnd::NSDictionaryMSynthetic
     m_data_32(NULL),
     m_data_64(NULL)
 {
-    if (!valobj_sp)
-        return;
-    if (valobj_sp->IsDynamic())
-        valobj_sp = valobj_sp->GetStaticValue();
-    if (!valobj_sp)
-        return;
-    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
-    Error error;
-    if (valobj_sp->IsPointerType())
-    {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return;
-    }
-    error.Clear();
-    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
-    if (!process_sp)
-        return;
-    m_ptr_size = process_sp->GetAddressByteSize();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
-    if (m_ptr_size == 4)
-    {
-        m_data_32 = new DataDescriptor_32();
-        process_sp->ReadMemory (data_location, m_data_32, sizeof(DataDescriptor_32), error);
-    }
-    else
-    {
-        m_data_64 = new DataDescriptor_64();
-        process_sp->ReadMemory (data_location, m_data_64, sizeof(DataDescriptor_64), error);
-    }
-    if (error.Fail())
-        return;
+    if (valobj_sp)
+        Update ();
 }
 
 lldb_private::formatters::NSDictionaryMSyntheticFrontEnd::~NSDictionaryMSyntheticFrontEnd ()
@@ -1347,7 +1353,53 @@ bool
 lldb_private::formatters::NSDictionaryMSyntheticFrontEnd::Update()
 {
     m_children.clear();
+    ValueObjectSP valobj_sp = m_backend.GetSP();
+    m_ptr_size = 0;
+    delete m_data_32;
+    m_data_32 = NULL;
+    delete m_data_64;
+    m_data_64 = NULL;
+    if (!valobj_sp)
+        return false;
+    if (valobj_sp->IsDynamic())
+        valobj_sp = valobj_sp->GetStaticValue();
+    if (!valobj_sp)
+        return false;
+    m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
+    Error error;
+    if (valobj_sp->IsPointerType())
+    {
+        valobj_sp = valobj_sp->Dereference(error);
+        if (error.Fail() || !valobj_sp)
+            return false;
+    }
+    error.Clear();
+    lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
+    if (!process_sp)
+        return false;
+    m_ptr_size = process_sp->GetAddressByteSize();
+    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    if (m_ptr_size == 4)
+    {
+        m_data_32 = new DataDescriptor_32();
+        process_sp->ReadMemory (data_location, m_data_32, sizeof(DataDescriptor_32), error);
+    }
+    else
+    {
+        m_data_64 = new DataDescriptor_64();
+        process_sp->ReadMemory (data_location, m_data_64, sizeof(DataDescriptor_64), error);
+    }
+    if (error.Fail())
+        return false;
     return false;
+}
+
+bool
+lldb_private::formatters::NSDictionaryMSyntheticFrontEnd::MightHaveChildren ()
+{
+    if (!m_data_32 && !m_data_64)
+        Update ();
+    return CalculateNumChildren();
 }
 
 lldb::ValueObjectSP
@@ -1423,3 +1475,9 @@ lldb_private::formatters::NSDataSummaryProvider<true> (ValueObject&, Stream&) ;
 
 template bool
 lldb_private::formatters::NSDataSummaryProvider<false> (ValueObject&, Stream&) ;
+
+template bool
+lldb_private::formatters::ObjCSELSummaryProvider<true> (ValueObject&, Stream&) ;
+
+template bool
+lldb_private::formatters::ObjCSELSummaryProvider<false> (ValueObject&, Stream&) ;

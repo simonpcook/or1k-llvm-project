@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/Core/Error.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/DataBuffer.h"
 #include "lldb/Core/DataBufferHeap.h"
@@ -18,6 +19,9 @@
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Host/Host.h"
+#include "lldb/Host/Symbols.h"
+#include "lldb/Interpreter/CommandInterpreter.h"
+#include "lldb/Interpreter/ScriptInterpreter.h"
 #include "lldb/lldb-private-log.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/ObjectFile.h"
@@ -117,7 +121,7 @@ namespace lldb {
 }
 
 #endif
-    
+
 Module::Module (const ModuleSpec &module_spec) :
     m_mutex (Mutex::eMutexTypeRecursive),
     m_mod_time (module_spec.GetFileSpec().GetModificationTime()),
@@ -146,7 +150,7 @@ Module::Module (const ModuleSpec &module_spec) :
         GetModuleCollection().push_back(this);
     }
     
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_OBJECT|LIBLLDB_LOG_MODULES));
     if (log)
         log->Printf ("%p Module::Module((%s) '%s/%s%s%s%s')",
                      this,
@@ -191,7 +195,7 @@ Module::Module(const FileSpec& file_spec,
 
     if (object_name)
         m_object_name = *object_name;
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_OBJECT|LIBLLDB_LOG_MODULES));
     if (log)
         log->Printf ("%p Module::Module((%s) '%s/%s%s%s%s')",
                      this,
@@ -211,10 +215,10 @@ Module::~Module()
         ModuleCollection &modules = GetModuleCollection();
         ModuleCollection::iterator end = modules.end();
         ModuleCollection::iterator pos = std::find(modules.begin(), end, this);
-        if (pos != end)
-            modules.erase(pos);
+        assert (pos != end);
+        modules.erase(pos);
     }
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_OBJECT|LIBLLDB_LOG_MODULES));
     if (log)
         log->Printf ("%p Module::~Module((%s) '%s/%s%s%s%s')",
                      this,
@@ -314,6 +318,22 @@ Module::GetClangASTContext ()
         if (objfile && objfile->GetArchitecture(object_arch))
         {
             m_did_init_ast = true;
+
+            // LLVM wants this to be set to iOS or MacOSX; if we're working on
+            // a bare-boards type image, change the triple for llvm's benefit.
+            if (object_arch.GetTriple().getVendor() == llvm::Triple::Apple 
+                && object_arch.GetTriple().getOS() == llvm::Triple::UnknownOS)
+            {
+                if (object_arch.GetTriple().getArch() == llvm::Triple::arm || 
+                    object_arch.GetTriple().getArch() == llvm::Triple::thumb)
+                {
+                    object_arch.GetTriple().setOS(llvm::Triple::IOS);
+                }
+                else
+                {
+                    object_arch.GetTriple().setOS(llvm::Triple::MacOSX);
+                }
+            }
             m_ast.SetArchitecture (object_arch);
         }
     }
@@ -680,7 +700,8 @@ Module::FindTypes (const SymbolContext& sc,
     std::string type_scope;
     std::string type_basename;
     const bool append = true;
-    if (Type::GetTypeScopeAndBasename (type_name_cstr, type_scope, type_basename))
+    TypeClass type_class = eTypeClassAny;
+    if (Type::GetTypeScopeAndBasename (type_name_cstr, type_scope, type_basename, type_class))
     {
         // Check if "name" starts with "::" which means the qualified type starts
         // from the root namespace and implies and exact match. The typenames we
@@ -695,14 +716,25 @@ Module::FindTypes (const SymbolContext& sc,
         ConstString type_basename_const_str (type_basename.c_str());
         if (FindTypes_Impl(sc, type_basename_const_str, NULL, append, max_matches, types))
         {
-            types.RemoveMismatchedTypes (type_scope, type_basename, exact_match);
+            types.RemoveMismatchedTypes (type_scope, type_basename, type_class, exact_match);
             num_matches = types.GetSize();
         }
     }
     else
     {
         // The type is not in a namespace/class scope, just search for it by basename
-        num_matches = FindTypes_Impl(sc, name, NULL, append, max_matches, types);
+        if (type_class != eTypeClassAny)
+        {
+            // The "type_name_cstr" will have been modified if we have a valid type class
+            // prefix (like "struct", "class", "union", "typedef" etc).
+            num_matches = FindTypes_Impl(sc, ConstString(type_name_cstr), NULL, append, max_matches, types);
+            types.RemoveMismatchedTypes (type_class);
+            num_matches = types.GetSize();
+        }
+        else
+        {
+            num_matches = FindTypes_Impl(sc, name, NULL, append, max_matches, types);
+        }
     }
     
     return num_matches;
@@ -1104,7 +1136,48 @@ Module::IsLoadedInTarget (Target *target)
     }
     return false;
 }
-bool 
+
+bool
+Module::LoadScriptingResourceInTarget (Target *target, Error& error)
+{
+    if (!target)
+    {
+        error.SetErrorString("invalid destination Target");
+        return false;
+    }
+    
+    PlatformSP platform_sp(target->GetPlatform());
+    
+    if (!platform_sp)
+    {
+        error.SetErrorString("invalid Platform");
+        return false;
+    }
+
+    ModuleSpec module_spec(GetFileSpec());
+    FileSpec scripting_fspec = platform_sp->LocateExecutableScriptingResource(module_spec);
+    Debugger &debugger(target->GetDebugger());
+    if (scripting_fspec && scripting_fspec.Exists())
+    {
+        ScriptInterpreter *script_interpreter = debugger.GetCommandInterpreter().GetScriptInterpreter();
+        if (script_interpreter)
+        {
+            StreamString scripting_stream;
+            scripting_fspec.Dump(&scripting_stream);
+            bool did_load = script_interpreter->LoadScriptingModule(scripting_stream.GetData(), false, true, error);
+            if (!did_load)
+                return false;
+        }
+        else
+        {
+            error.SetErrorString("invalid ScriptInterpreter");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
 Module::SetArchitecture (const ArchSpec &new_arch)
 {
     if (!m_arch.IsValid())

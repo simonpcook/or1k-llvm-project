@@ -377,23 +377,19 @@ CommandObject::HandleCompletion
 bool
 CommandObject::HelpTextContainsWord (const char *search_word)
 {
-    const char *short_help;
-    const char *long_help;
-    const char *syntax_help;
     std::string options_usage_help;
-
 
     bool found_word = false;
 
-    short_help = GetHelp();
-    long_help = GetHelpLong();
-    syntax_help = GetSyntax();
+    const char *short_help = GetHelp();
+    const char *long_help = GetHelpLong();
+    const char *syntax_help = GetSyntax();
     
-    if (strcasestr (short_help, search_word))
+    if (short_help && strcasestr (short_help, search_word))
         found_word = true;
-    else if (strcasestr (long_help, search_word))
+    else if (long_help && strcasestr (long_help, search_word))
         found_word = true;
-    else if (strcasestr (syntax_help, search_word))
+    else if (syntax_help && strcasestr (syntax_help, search_word))
         found_word = true;
 
     if (!found_word
@@ -746,6 +742,33 @@ FormatHelpTextCallback ()
 }
 
 static const char *
+LanguageTypeHelpTextCallback ()
+{
+    static char* help_text_ptr = NULL;
+    
+    if (help_text_ptr)
+        return help_text_ptr;
+    
+    StreamString sstr;
+    sstr << "One of the following languages:\n";
+    
+    for (LanguageType l = eLanguageTypeUnknown; l < eNumLanguageTypes; ++l)
+    {
+        sstr << "  " << LanguageRuntime::GetNameForLanguageType(l) << "\n";
+    }
+    
+    sstr.Flush();
+    
+    std::string data = sstr.GetString();
+    
+    help_text_ptr = new char[data.length()+1];
+    
+    data.copy(help_text_ptr, data.length());
+    
+    return help_text_ptr;
+}
+
+static const char *
 SummaryStringHelpTextCallback()
 {
     return
@@ -927,6 +950,7 @@ CommandObject::g_arguments_data[] =
     { eArgTypeClassName, "class-name", CommandCompletions::eNoCompletion, { NULL, false }, "Then name of a class from the debug information in the program." },
     { eArgTypeCommandName, "cmd-name", CommandCompletions::eNoCompletion, { NULL, false }, "A debugger command (may be multiple words), without any options or arguments." },
     { eArgTypeCount, "count", CommandCompletions::eNoCompletion, { NULL, false }, "An unsigned integer." },
+    { eArgTypeDirectoryName, "directory", CommandCompletions::eDiskDirectoryCompletion, { NULL, false }, "A directory name." },
     { eArgTypeEndAddress, "end-address", CommandCompletions::eNoCompletion, { NULL, false }, "Help text goes here." },
     { eArgTypeExpression, "expr", CommandCompletions::eNoCompletion, { NULL, false }, "Help text goes here." },
     { eArgTypeExpressionPath, "expr-path", CommandCompletions::eNoCompletion, { ExprPathHelpTextCallback, true }, NULL },
@@ -939,7 +963,7 @@ CommandObject::g_arguments_data[] =
     { eArgTypeFunctionOrSymbol, "function-or-symbol", CommandCompletions::eNoCompletion, { NULL, false }, "The name of a function or symbol." },
     { eArgTypeGDBFormat, "gdb-format", CommandCompletions::eNoCompletion, { GDBFormatHelpTextCallback, true }, NULL },
     { eArgTypeIndex, "index", CommandCompletions::eNoCompletion, { NULL, false }, "An index into a list." },
-    { eArgTypeLanguage, "language", CommandCompletions::eNoCompletion, { NULL, false }, "A source language name." },
+    { eArgTypeLanguage, "language", CommandCompletions::eNoCompletion, { LanguageTypeHelpTextCallback, true }, NULL },
     { eArgTypeLineNum, "linenum", CommandCompletions::eNoCompletion, { NULL, false }, "Line number in a source file." },
     { eArgTypeLogCategory, "log-category", CommandCompletions::eNoCompletion, { NULL, false }, "The name of a category within a log channel, e.g. all (try \"log list\" to see a list of all channels and their categories." },
     { eArgTypeLogChannel, "log-channel", CommandCompletions::eNoCompletion, { NULL, false }, "The name of a log channel, e.g. process.gdb-remote (try \"log list\" to see a list of all channels and their categories)." },
@@ -951,7 +975,6 @@ CommandObject::g_arguments_data[] =
     { eArgTypeOffset, "offset", CommandCompletions::eNoCompletion, { NULL, false }, "Help text goes here." },
     { eArgTypeOldPathPrefix, "old-path-prefix", CommandCompletions::eNoCompletion, { NULL, false }, "Help text goes here." },
     { eArgTypeOneLiner, "one-line-command", CommandCompletions::eNoCompletion, { NULL, false }, "A command that is entered as a single line of text." },
-    { eArgTypePath, "path", CommandCompletions::eNoCompletion, { NULL, false }, "Help text goes here." },
     { eArgTypePid, "pid", CommandCompletions::eNoCompletion, { NULL, false }, "The process ID number." },
     { eArgTypePlugin, "plugin", CommandCompletions::eNoCompletion, { NULL, false }, "Help text goes here." },
     { eArgTypeProcessName, "process-name", CommandCompletions::eNoCompletion, { NULL, false }, "The name of the process." },

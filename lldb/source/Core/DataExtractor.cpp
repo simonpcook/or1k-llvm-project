@@ -11,6 +11,8 @@
 #include <stddef.h>
 
 #include <bitset>
+#include <limits>
+#include <sstream>
 #include <string>
 
 #include "llvm/ADT/APFloat.h"
@@ -715,10 +717,10 @@ DataExtractor::GetMaxS64Bitfield (uint32_t *offset_ptr, uint32_t size, uint32_t 
     {
         if (bitfield_bit_offset > 0)
             sval64 >>= bitfield_bit_offset;
-        uint64_t bitfield_mask = ((1 << bitfield_bit_size) - 1);
+        uint64_t bitfield_mask = (((uint64_t)1) << bitfield_bit_size) - 1;
         sval64 &= bitfield_mask;
         // sign extend if needed
-        if (sval64 & (1 << (bitfield_bit_size - 1)))
+        if (sval64 & (((uint64_t)1) << (bitfield_bit_size - 1)))
             sval64 |= ~bitfield_mask;
     }
     return sval64;
@@ -1706,22 +1708,30 @@ DataExtractor::Dump (Stream *s,
             break;
 
         case eFormatFloat:
-            if (sizeof(float) == item_byte_size)
             {
-                s->Printf ("%g", GetFloat (&offset));
-            }
-            else if (sizeof(double) == item_byte_size)
-            {
-                s->Printf ("%lg", GetDouble(&offset));
-            }
-            else if (sizeof(long double) == item_byte_size)
-            {
-                s->Printf ("%Lg", GetLongDouble(&offset));
-            }
-            else
-            {
-                s->Printf("error: unsupported byte size (%u) for float format", item_byte_size);
-                return offset;
+                std::ostringstream ss;
+                if (item_byte_size == sizeof(float))
+                {
+                    ss.precision(std::numeric_limits<float>::digits10);
+                    ss << GetFloat(&offset);
+                } 
+                else if (item_byte_size == sizeof(double))
+                {
+                    ss.precision(std::numeric_limits<double>::digits10);
+                    ss << GetDouble(&offset);
+                }
+                else if (item_byte_size == sizeof(long double))
+                {
+                    ss.precision(std::numeric_limits<long double>::digits10);
+                    ss << GetLongDouble(&offset);
+                }
+                else
+                {
+                    s->Printf("error: unsupported byte size (%u) for float format", item_byte_size);
+                    return offset;
+                }
+                ss.flush();
+                s->Printf("%s", ss.str().c_str());
             }
             break;
 

@@ -420,7 +420,7 @@ FileSpec::operator== (const FileSpec& rhs) const
                 // rhs's path wasn't resolved but now it is. Check if the resolved
                 // directory is the same as rhs's unresolved directory, and if so, 
                 // we can mark this object as resolved to avoid more future resolves
-                rhs.m_is_resolved = (m_directory == resolved_rhs.m_directory);
+                rhs.m_is_resolved = (rhs.m_directory == resolved_rhs.m_directory);
             }
             else
                 return false;
@@ -524,10 +524,13 @@ FileSpec::Equal (const FileSpec& a, const FileSpec& b, bool full)
 void
 FileSpec::Dump(Stream *s) const
 {
-    m_directory.Dump(s);
-    if (m_directory)
-        s->PutChar('/');
-    m_filename.Dump(s);
+    if (s)
+    {
+        m_directory.Dump(s);
+        if (m_directory)
+            s->PutChar('/');
+        m_filename.Dump(s);
+    }
 }
 
 //------------------------------------------------------------------
@@ -992,6 +995,30 @@ FileSpec::IsSourceImplementationFile () const
         static RegularExpression g_source_file_regex ("^(c|m|mm|cpp|c\\+\\+|cxx|cc|cp|s|asm|f|f77|f90|f95|f03|for|ftn|fpp|ada|adb|ads)$",
                                                       REG_EXTENDED | REG_ICASE);
         return g_source_file_regex.Execute (extension.GetCString());
+    }
+    return false;
+}
+
+bool
+FileSpec::IsRelativeToCurrentWorkingDirectory () const
+{
+    const char *directory = m_directory.GetCString();
+    if (directory && directory[0])
+    {
+        // If the path doesn't start with '/' or '~', return true
+        switch (directory[0])
+        {
+        case '/':
+        case '~':
+            return false;
+        default:
+            return true;
+        }
+    }
+    else if (m_filename)
+    {
+        // No directory, just a basename, return true
+        return true;
     }
     return false;
 }

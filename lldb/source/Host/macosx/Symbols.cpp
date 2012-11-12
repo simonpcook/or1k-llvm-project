@@ -11,6 +11,7 @@
 
 // C Includes
 #include <dirent.h>
+#include <pwd.h>
 #include "llvm/Support/MachO.h"
 
 // C++ Includes
@@ -356,7 +357,7 @@ LocateMacOSXFilesUsingDebugSymbols
                     {
                         if (::CFURLGetFileSystemRepresentation (dsym_url.get(), true, (UInt8*)path, sizeof(path)-1))
                         {
-                            out_dsym_fspec->SetFile(path, false);
+                            out_dsym_fspec->SetFile(path, path[0] == '~');
 
                             if (out_dsym_fspec->GetFileType () == FileSpec::eFileTypeDirectory)
                             {
@@ -643,11 +644,41 @@ GetModuleSpecInfoFromUUIDDictionary (CFDictionaryRef uuid_dict, ModuleSpec &modu
 
 
 bool
-Symbols::DownloadObjectAndSymbolFile (ModuleSpec &module_spec)
+Symbols::DownloadObjectAndSymbolFile (ModuleSpec &module_spec, bool force_lookup)
 {
     bool success = false;
     const UUID *uuid_ptr = module_spec.GetUUIDPtr();
     const FileSpec *file_spec_ptr = module_spec.GetFileSpecPtr();
+
+    // It's expensive to check for the DBGShellCommands defaults setting, only do it once per
+    // lldb run and cache the result.  
+    static bool g_have_checked_for_dbgshell_command = false;
+    static const char *g_dbgshell_command = NULL;
+    if (g_have_checked_for_dbgshell_command == false)
+    {
+        g_have_checked_for_dbgshell_command = true;
+        CFTypeRef defaults_setting = CFPreferencesCopyAppValue (CFSTR ("DBGShellCommands"), CFSTR ("com.apple.DebugSymbols"));
+        if (defaults_setting && CFGetTypeID (defaults_setting) == CFStringGetTypeID())
+        { 
+            char cstr_buf[PATH_MAX];
+            if (CFStringGetCString ((CFStringRef) defaults_setting, cstr_buf, sizeof (cstr_buf), kCFStringEncodingUTF8))
+            {
+                g_dbgshell_command = strdup (cstr_buf);  // this malloc'ed memory will never be freed
+            }
+        }
+        if (defaults_setting)
+        {
+            CFRelease (defaults_setting);
+        }
+    }
+
+    // When g_dbgshell_command is NULL, the user has not enabled the use of an external program
+    // to find the symbols, don't run it for them.
+    if (force_lookup == false && g_dbgshell_command == NULL)
+    {
+        return false;
+    }
+
     if (uuid_ptr || (file_spec_ptr && file_spec_ptr->Exists()))
     {
         static bool g_located_dsym_for_uuid_exe = false;
@@ -666,14 +697,35 @@ Symbols::DownloadObjectAndSymbolFile (ModuleSpec &module_spec)
             
             if (!g_dsym_for_uuid_exe_exists)
             {
-                dsym_for_uuid_exe_spec.SetFile("~rc/bin/dsymForUUID", true);
+                dsym_for_uuid_exe_spec.SetFile("/usr/local/bin/dsymForUUID", false);
                 g_dsym_for_uuid_exe_exists = dsym_for_uuid_exe_spec.Exists();
                 if (!g_dsym_for_uuid_exe_exists)
                 {
-                    dsym_for_uuid_exe_spec.SetFile("/usr/local/bin/dsymForUUID", false);
+                    int bufsize;
+                    if ((bufsize = sysconf(_SC_GETPW_R_SIZE_MAX)) != -1)
+                    {
+                        char buffer[bufsize];
+                        struct passwd pwd;
+                        struct passwd *tilde_rc = NULL;
+                        // we are a library so we need to use the reentrant version of getpwnam()
+                        if (getpwnam_r ("rc", &pwd, buffer, bufsize, &tilde_rc) == 0 
+                            && tilde_rc 
+                            && tilde_rc->pw_dir)
+                        {
+                            std::string dsymforuuid_path(tilde_rc->pw_dir);
+                            dsymforuuid_path += "/bin/dsymForUUID";
+                            dsym_for_uuid_exe_spec.SetFile(dsymforuuid_path.c_str(), false);
+                            g_dsym_for_uuid_exe_exists = dsym_for_uuid_exe_spec.Exists();
+                        }
+                    }
                 }
             }
-            
+            if (!g_dsym_for_uuid_exe_exists && g_dbgshell_command != NULL)
+            {
+                dsym_for_uuid_exe_spec.SetFile(g_dbgshell_command, true);
+                g_dsym_for_uuid_exe_exists = dsym_for_uuid_exe_spec.Exists();
+            }
+
             if (g_dsym_for_uuid_exe_exists)
                 dsym_for_uuid_exe_spec.GetPath (g_dsym_for_uuid_exe_path, sizeof(g_dsym_for_uuid_exe_path));
         }

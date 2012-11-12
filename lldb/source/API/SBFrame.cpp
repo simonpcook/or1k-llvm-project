@@ -40,6 +40,7 @@
 #include "lldb/API/SBDebugger.h"
 #include "lldb/API/SBValue.h"
 #include "lldb/API/SBAddress.h"
+#include "lldb/API/SBExpressionOptions.h"
 #include "lldb/API/SBStream.h"
 #include "lldb/API/SBSymbolContext.h"
 #include "lldb/API/SBThread.h"
@@ -548,12 +549,12 @@ SBFrame::GetValueForVariablePath (const char *var_path, DynamicValueType use_dyn
         {
             VariableSP var_sp;
             Error error;
-            ValueObjectSP value_sp (frame->GetValueForVariableExpressionPath (var_path, 
-                                                                              use_dynamic,
+            ValueObjectSP value_sp (frame->GetValueForVariableExpressionPath (var_path,
+                                                                              eNoDynamicValues,
                                                                               StackFrame::eExpressionPathOptionCheckPtrVsMember | StackFrame::eExpressionPathOptionsAllowDirectIVarAccess,
                                                                               var_sp,
                                                                               error));
-            sb_value.SetSP(value_sp);
+            sb_value.SetSP(value_sp, use_dynamic);
         }
         else
         {
@@ -618,8 +619,8 @@ SBFrame::FindVariable (const char *name, lldb::DynamicValueType use_dynamic)
 
             if (var_sp)
             {
-                value_sp = frame->GetValueObjectForFrameVariable(var_sp, use_dynamic);
-                sb_value.SetSP(value_sp);
+                value_sp = frame->GetValueObjectForFrameVariable(var_sp, eNoDynamicValues);
+                sb_value.SetSP(value_sp, use_dynamic);
             }
         }
         else
@@ -696,8 +697,8 @@ SBFrame::FindValue (const char *name, ValueType value_type, lldb::DynamicValueTy
                                 variable_sp->GetScope() == value_type &&
                                 variable_sp->GetName() == const_name)
                             {
-                                value_sp = frame->GetValueObjectForFrameVariable (variable_sp, use_dynamic);
-                                sb_value.SetSP (value_sp);
+                                value_sp = frame->GetValueObjectForFrameVariable (variable_sp, eNoDynamicValues);
+                                sb_value.SetSP (value_sp, use_dynamic);
                                 break;
                             }
                         }
@@ -756,7 +757,7 @@ SBFrame::FindValue (const char *name, ValueType value_type, lldb::DynamicValueTy
                     if (expr_var_sp)
                     {
                         value_sp = expr_var_sp->GetValueObject();
-                        sb_value.SetSP (value_sp);
+                        sb_value.SetSP (value_sp, use_dynamic);
                     }
                 }
                 break;
@@ -938,7 +939,10 @@ SBFrame::GetVariables (bool arguments,
                                 if (in_scope_only && !variable_sp->IsInScope(frame))
                                     continue;
 
-                                value_list.Append(frame->GetValueObjectForFrameVariable (variable_sp, use_dynamic));
+                                ValueObjectSP valobj_sp(frame->GetValueObjectForFrameVariable (variable_sp, eNoDynamicValues));
+                                SBValue value_sb;
+                                value_sb.SetSP(valobj_sp,use_dynamic);
+                                value_list.Append(value_sb);
                             }
                         }
                     }
@@ -1040,8 +1044,11 @@ SBFrame::EvaluateExpression (const char *expr)
     Target *target = exe_ctx.GetTargetPtr();
     if (frame && target)
     {
-        lldb::DynamicValueType use_dynamic = frame->CalculateTarget()->GetPreferDynamicValue();
-        result = EvaluateExpression (expr, use_dynamic);
+        SBExpressionOptions options;
+        lldb::DynamicValueType fetch_dynamic_value = frame->CalculateTarget()->GetPreferDynamicValue();
+        options.SetFetchDynamicValue (fetch_dynamic_value);
+        options.SetUnwindOnError (true);
+        return EvaluateExpression (expr, options);
     }
     return result;
 }
@@ -1049,11 +1056,23 @@ SBFrame::EvaluateExpression (const char *expr)
 SBValue
 SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dynamic_value)
 {
-    return EvaluateExpression (expr, fetch_dynamic_value, true);
+    SBExpressionOptions options;
+    options.SetFetchDynamicValue (fetch_dynamic_value);
+    options.SetUnwindOnError (true);
+    return EvaluateExpression (expr, options);
 }
 
 SBValue
 SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dynamic_value, bool unwind_on_error)
+{
+    SBExpressionOptions options;
+    options.SetFetchDynamicValue (fetch_dynamic_value);
+    options.SetUnwindOnError (unwind_on_error);
+    return EvaluateExpression (expr, options);
+}
+
+lldb::SBValue
+SBFrame::EvaluateExpression (const char *expr, const SBExpressionOptions &options)
 {
     LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
     
@@ -1080,17 +1099,13 @@ SBFrame::EvaluateExpression (const char *expr, lldb::DynamicValueType fetch_dyna
             StreamString frame_description;
             frame->DumpUsingSettingsFormat (&frame_description);
             Host::SetCrashDescriptionWithFormat ("SBFrame::EvaluateExpression (expr = \"%s\", fetch_dynamic_value = %u) %s",
-                                                 expr, fetch_dynamic_value, frame_description.GetString().c_str());
+                                                 expr, options.GetFetchDynamicValue(), frame_description.GetString().c_str());
 #endif
-            Target::EvaluateExpressionOptions options;
-            options.SetUnwindOnError(unwind_on_error)
-            .SetUseDynamic(fetch_dynamic_value);
-            
             exe_results = target->EvaluateExpression (expr, 
                                                       frame,
                                                       expr_value_sp,
-                                                      options);
-            expr_result.SetSP(expr_value_sp);
+                                                      options.ref());
+            expr_result.SetSP(expr_value_sp,options.GetFetchDynamicValue());
 #ifdef LLDB_CONFIGURATION_DEBUG
             Host::SetCrashDescription (NULL);
 #endif

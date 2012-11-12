@@ -37,12 +37,7 @@ Windows::Windows(const Driver &D, const llvm::Triple& Triple)
 
 Tool &Windows::SelectTool(const Compilation &C, const JobAction &JA,
                           const ActionList &Inputs) const {
-  Action::ActionClass Key;
-  if (getDriver().ShouldUseClangCompiler(C, JA, getTriple()))
-    Key = Action::AnalyzeJobClass;
-  else
-    Key = JA.getKind();
-
+  Action::ActionClass Key = JA.getKind();
   bool UseIntegratedAs = C.getArgs().hasFlag(options::OPT_integrated_as,
                                              options::OPT_no_integrated_as,
                                              IsIntegratedAssemblerDefault());
@@ -81,9 +76,7 @@ bool Windows::IsIntegratedAssemblerDefault() const {
 }
 
 bool Windows::IsUnwindTablesDefault() const {
-  // FIXME: Gross; we should probably have some separate target
-  // definition, possibly even reusing the one in clang.
-  return getArchName() == "x86_64";
+  return getArch() == llvm::Triple::x86_64;
 }
 
 const char *Windows::GetDefaultRelocationModel() const {
@@ -91,7 +84,7 @@ const char *Windows::GetDefaultRelocationModel() const {
 }
 
 const char *Windows::GetForcedPicModel() const {
-  if (getArchName() == "x86_64")
+  if (getArch() == llvm::Triple::x86_64)
     return "pic";
   return 0;
 }

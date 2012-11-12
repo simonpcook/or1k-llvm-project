@@ -71,8 +71,8 @@ public:
     CanDebug (lldb_private::Target &target,
               bool plugin_specified_by_name);
 
-//    virtual uint32_t
-//    ListProcessesMatchingName (const char *name, lldb_private::StringList &matches, std::vector<lldb::pid_t> &pids);
+    virtual lldb_private::CommandObject *
+    GetPluginCommandObject();
 
     //------------------------------------------------------------------
     // Creating a new process, or attaching to an existing one
@@ -307,6 +307,13 @@ protected:
         eBroadcastBitAsyncThreadDidExit             = (1 << 2)
     };
 
+    typedef enum AsyncThreadState
+    {
+        eAsyncThreadNotStarted,
+        eAsyncThreadRunning,
+        eAsyncThreadDone
+    } AsyncThreadState;
+    
     lldb_private::Flags m_flags;            // Process specific flags (see eFlags enums)
     GDBRemoteCommunicationClient m_gdb_comm;
     lldb::pid_t m_debugserver_pid;
@@ -315,6 +322,8 @@ protected:
     GDBRemoteDynamicRegisterInfo m_register_info;
     lldb_private::Broadcaster m_async_broadcaster;
     lldb::thread_t m_async_thread;
+    AsyncThreadState m_async_thread_state;
+    lldb_private::Mutex m_async_thread_state_mutex;
     typedef std::vector<lldb::tid_t> tid_collection;
     typedef std::vector< std::pair<lldb::tid_t,int> > tid_sig_collection;
     typedef std::map<lldb::addr_t, lldb::addr_t> MMapMap;
@@ -331,6 +340,7 @@ protected:
     bool m_destroy_tried_resuming;
     std::string m_dyld_plugin_name;
     lldb::addr_t m_kernel_load_addr;
+    lldb::CommandObjectSP m_command_sp;
     
     bool
     StartAsyncThread ();

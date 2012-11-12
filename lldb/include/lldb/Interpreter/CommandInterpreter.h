@@ -365,7 +365,7 @@ public:
     GetOptionArgumentPosition (const char *in_string);
 
     ScriptInterpreter *
-    GetScriptInterpreter ();
+    GetScriptInterpreter (bool can_create = true);
 
     void
     SkipLLDBInitFiles (bool skip_lldbinit_files)
@@ -412,13 +412,6 @@ public:
     FindCommandsForApropos (const char *word, 
                             StringList &commands_found, 
                             StringList &commands_help);
-
-    void
-    AproposAllSubCommands (CommandObject *cmd_obj, 
-                           const char *prefix, 
-                           const char *search_word, 
-                           StringList &commands_found, 
-                           StringList &commands_help);
                            
     bool
     GetBatchCommandMode () { return m_batch_command_mode; }

@@ -81,6 +81,29 @@ SBProcess::GetBroadcasterClassName ()
     return Process::GetStaticBroadcasterClass().AsCString();
 }
 
+const char *
+SBProcess::GetPluginName ()
+{
+    ProcessSP process_sp(GetSP());
+    if (process_sp)
+    {
+        return process_sp->GetPluginName();
+    }
+    return "<Unknown>";
+}
+
+const char *
+SBProcess::GetShortPluginName ()
+{
+    ProcessSP process_sp(GetSP());
+    if (process_sp)
+    {
+        return process_sp->GetShortPluginName();
+    }
+    return "<Unknown>";
+}
+
+
 lldb::ProcessSP
 SBProcess::GetSP() const
 {
@@ -396,7 +419,7 @@ SBProcess::SetSelectedThread (const SBThread &thread)
 }
 
 bool
-SBProcess::SetSelectedThreadByID (uint32_t tid)
+SBProcess::SetSelectedThreadByID (lldb::tid_t tid)
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
 
@@ -409,7 +432,7 @@ SBProcess::SetSelectedThreadByID (uint32_t tid)
     }
 
     if (log)
-        log->Printf ("SBProcess(%p)::SetSelectedThreadByID (tid=0x%4.4x) => %s", 
+        log->Printf ("SBProcess(%p)::SetSelectedThreadByID (tid=0x%4.4llx) => %s", 
                      process_sp.get(), tid, (ret_val ? "true" : "false"));
 
     return ret_val;
@@ -1078,7 +1101,6 @@ SBProcess::GetNumSupportedHardwareWatchpoints (lldb::SBError &sb_error) const
     {
         Mutex::Locker api_locker (process_sp->GetTarget().GetAPIMutex());
         sb_error.SetError(process_sp->GetWatchpointSupportInfo (num));
-        LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
         if (log)
             log->Printf ("SBProcess(%p)::GetNumSupportedHardwareWatchpoints () => %u",
                          process_sp.get(), num);

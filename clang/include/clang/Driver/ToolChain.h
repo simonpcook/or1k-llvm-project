@@ -85,6 +85,10 @@ public:
   StringRef getPlatform() const { return Triple.getVendorName(); }
   StringRef getOS() const { return Triple.getOSName(); }
 
+  /// \brief Provide the default architecture name (as expected by -arch) for
+  /// this toolchain. Note t
+  std::string getDefaultUniversalArchName() const;
+
   std::string getTripleString() const {
     return Triple.getTriple();
   }
@@ -115,7 +119,7 @@ public:
   // Helper methods
 
   std::string GetFilePath(const char *Name) const;
-  std::string GetProgramPath(const char *Name, bool WantFile = false) const;
+  std::string GetProgramPath(const char *Name) const;
 
   // Platform defaults information
 
@@ -252,6 +256,13 @@ public:
   /// for kernel extensions (Darwin-specific).
   virtual void AddCCKextLibArgs(const ArgList &Args,
                                 ArgStringList &CmdArgs) const;
+
+  /// AddFastMathRuntimeIfAvailable - If a runtime library exists that sets
+  /// global flags for unsafe floating point math, add it and return true.
+  ///
+  /// This checks for presence of the -ffast-math or -funsafe-math flags.
+  virtual bool AddFastMathRuntimeIfAvailable(const ArgList &Args,
+                                             ArgStringList &CmdArgs) const;
 };
 
 } // end namespace driver

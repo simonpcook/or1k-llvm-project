@@ -9,7 +9,7 @@ from lldbtest import *
 import lldbutil
 
 class AbbreviationsTestCase(TestBase):
-    
+
     mydir = os.path.join("functionalities", "abbreviation")
 
     def test_nonrunning_command_abbreviations (self):
@@ -35,7 +35,13 @@ class AbbreviationsTestCase(TestBase):
         self.expect("h",
                     startstr = "The following is a list of built-in, permanent debugger commands:")
 
+        # Execute cleanup function during test tear down
+        def cleanup():
+            self.runCmd("command alias t thread select")
+        self.addTearDownHook(cleanup)
+
         # Several matching commands: list them and error out.
+        self.runCmd("command unalias t")
         self.expect("t",
                     COMMAND_FAILED_AS_EXPECTED, error = True,
                     substrs = ["Ambiguous command 't'. Possible matches:",
@@ -88,7 +94,7 @@ class AbbreviationsTestCase(TestBase):
                     patterns = [ "Current executable set to .*a.out.*" ])
 
         # By default, the setting interpreter.expand-regex-aliases is false.
-        self.expect("_regexp-b product", matching=False,
+        self.expect("_regexp-br product", matching=False,
                     substrs = [ "breakpoint set --name" ])
 
         match_object = lldbutil.run_break_set_command (self, "br s -n sum")
@@ -135,7 +141,7 @@ class AbbreviationsTestCase(TestBase):
                                  "thread #1:",
                                  "a.out",
                                  "sum\(a=1238, b=78392\)",
-                                 "at main.cpp\:25", 
+                                 "at main.cpp\:25",
                                  "stop reason = breakpoint 2.1" ])
 
         # ARCH, if not specified, defaults to x86_64.
@@ -146,7 +152,7 @@ class AbbreviationsTestCase(TestBase):
                                    ' mov',
                                    ' addl ',
                                    'ret'],
-                        patterns = ['(leave|popq|popl)'])                               
+                        patterns = ['(leave|popq|popl)'])
 
         self.expect("i d l main.cpp",
                     patterns = ["Line table for .*main.cpp in `a.out"])

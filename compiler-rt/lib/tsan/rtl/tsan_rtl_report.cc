@@ -28,9 +28,9 @@ namespace __tsan {
 void TsanCheckFailed(const char *file, int line, const char *cond,
                      u64 v1, u64 v2) {
   ScopedInRtl in_rtl;
-  TsanPrintf("FATAL: ThreadSanitizer CHECK failed: "
-             "%s:%d \"%s\" (0x%zx, 0x%zx)\n",
-             file, line, cond, (uptr)v1, (uptr)v2);
+  Printf("FATAL: ThreadSanitizer CHECK failed: "
+         "%s:%d \"%s\" (0x%zx, 0x%zx)\n",
+         file, line, cond, (uptr)v1, (uptr)v2);
   Die();
 }
 
@@ -354,18 +354,39 @@ static void AddRacyStacks(ThreadState *thr, const StackTrace (&traces)[2],
   }
 }
 
-bool OutputReport(const ScopedReport &srep, const ReportStack *suppress_stack) {
+bool OutputReport(Context *ctx,
+                  const ScopedReport &srep,
+                  const ReportStack *suppress_stack) {
   const ReportDesc *rep = srep.GetReport();
-  bool suppressed = IsSuppressed(rep->typ, suppress_stack);
-  suppressed = OnReport(rep, suppressed);
-  if (suppressed)
+  const uptr suppress_pc = IsSuppressed(rep->typ, suppress_stack);
+  if (suppress_pc != 0) {
+    FiredSuppression supp = {srep.GetReport()->typ, suppress_pc};
+    ctx->fired_suppressions.PushBack(supp);
+  }
+  if (OnReport(rep, suppress_pc != 0))
     return false;
   PrintReport(rep);
   CTX()->nreported++;
   return true;
 }
 
+bool IsFiredSuppression(Context *ctx,
+                        const ScopedReport &srep,
+                        const StackTrace &trace) {
+  for (uptr k = 0; k < ctx->fired_suppressions.Size(); k++) {
+    if (ctx->fired_suppressions[k].type != srep.GetReport()->typ)
+      continue;
+    for (uptr j = 0; j < trace.Size(); j++) {
+      if (trace.Get(j) == ctx->fired_suppressions[k].pc)
+        return true;
+    }
+  }
+  return false;
+}
+
 void ReportRace(ThreadState *thr) {
+  if (!flags()->report_bugs)
+    return;
   ScopedInRtl in_rtl;
 
   bool freed = false;
@@ -395,15 +416,13 @@ void ReportRace(ThreadState *thr) {
   ScopedReport rep(freed ? ReportTypeUseAfterFree : ReportTypeRace);
   const uptr kMop = 2;
   StackTrace traces[kMop];
-  for (uptr i = 0; i < kMop; i++) {
-    Shadow s(thr->racy_state[i]);
-    RestoreStack(s.tid(), s.epoch(), &traces[i]);
-  }
-  // Failure to restore stack of the current thread
-  // was observed on free() interceptor called from pthread.
-  // Just get the current shadow stack instead.
-  if (traces[0].IsEmpty())
-    traces[0].ObtainCurrent(thr, 0);
+  const uptr toppc = thr->trace.events[thr->fast_state.epoch() % kTraceSize]
+      & ((1ull << 61) - 1);
+  traces[0].ObtainCurrent(thr, toppc);
+  if (IsFiredSuppression(ctx, rep, traces[0]))
+    return;
+  Shadow s2(thr->racy_state[1]);
+  RestoreStack(s2.tid(), s2.epoch(), &traces[1]);
 
   if (HandleRacyStacks(thr, traces, addr_min, addr_max))
     return;
@@ -431,7 +450,7 @@ void ReportRace(ThreadState *thr) {
   }
 #endif
 
-  if (!OutputReport(rep, rep.GetReport()->mops[0]->stack))
+  if (!OutputReport(ctx, rep, rep.GetReport()->mops[0]->stack))
     return;
 
   AddRacyStacks(thr, traces, addr_min, addr_max);

@@ -313,7 +313,7 @@ __vector_base_common<__b>::__throw_out_of_range() const
 #pragma warning( push )
 #pragma warning( disable: 4231 )
 #endif // _MSC_VER
-extern template class __vector_base_common<true>;
+_LIBCPP_EXTERN_TEMPLATE(class __vector_base_common<true>)
 #ifdef _MSC_VER
 #pragma warning( pop )
 #endif // _MSC_VER
@@ -2700,6 +2700,7 @@ vector<bool, _Allocator>::operator=(vector&& __v)
 {
     __move_assign(__v, integral_constant<bool,
           __storage_traits::propagate_on_container_move_assignment::value>());
+    return *this;
 }
 
 template <class _Allocator>

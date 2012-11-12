@@ -599,8 +599,7 @@ protected:
                      {
                          const std::string sub_command = args.GetArgumentAtIndex(0);
                          assert (sub_command.length() != 0);
-                         subcommand_obj_sp =
-                                           (((CommandObjectMultiword *) cmd_obj)->GetSubcommandSP (sub_command.c_str()));
+                         subcommand_obj_sp = cmd_obj->GetSubcommandSP (sub_command.c_str());
                          if (subcommand_obj_sp.get())
                          {
                              sub_cmd_obj = subcommand_obj_sp.get();
@@ -1186,7 +1185,7 @@ public:
     }
     
     virtual bool
-    IsRemovable ()
+    IsRemovable () const
     {
         return true;
     }
@@ -1395,8 +1394,10 @@ protected:
         std::string path = command.GetArgumentAtIndex(0);
         Error error;
         
+        const bool init_session = true;
         if (m_interpreter.GetScriptInterpreter()->LoadScriptingModule(path.c_str(),
                                                                       m_options.m_allow_reload,
+                                                                      init_session,
                                                                       error))
         {
             result.SetStatus (eReturnStatusSuccessFinishNoResult);

@@ -33,7 +33,7 @@ using namespace lldb;
 using namespace lldb_private;
 
 
-POSIXThread::POSIXThread(ProcessSP &process, lldb::tid_t tid)
+POSIXThread::POSIXThread(Process &process, lldb::tid_t tid)
     : Thread(process, tid),
       m_frame_ap(0)
 {
@@ -146,11 +146,14 @@ POSIXThread::WillResume(lldb::StateType resume_state)
 {
     SetResumeState(resume_state);
 
-    ClearStackFrames();
+    if (!Thread::WillResume(resume_state))
+        return false;
+
     if (m_unwinder_ap.get())
         m_unwinder_ap->Clear();
+    Thread::ClearStackFrames();
 
-    return Thread::WillResume(resume_state);
+    return true;
 }
 
 bool

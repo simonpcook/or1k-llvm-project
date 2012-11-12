@@ -155,7 +155,7 @@ public:
         m_option_group (interpreter),
         m_arch_option (),
         m_platform_options(true), // Do include the "--platform" option in the platform settings by passing true
-        m_core_file (LLDB_OPT_SET_1, false, "core", 'c', 0, eArgTypePath, "Fullpath to a core file to use for this target.")
+        m_core_file (LLDB_OPT_SET_1, false, "core", 'c', 0, eArgTypeFilename, "Fullpath to a core file to use for this target.")
     {
         CommandArgumentEntry arg;
         CommandArgumentData file_arg;
@@ -221,17 +221,12 @@ protected:
         {
             const char *file_path = command.GetArgumentAtIndex(0);
             Timer scoped_timer(__PRETTY_FUNCTION__, "(lldb) target create '%s'", file_path);
-            FileSpec file_spec;
-            
-            if (file_path)
-                file_spec.SetFile (file_path, true);
-
             TargetSP target_sp;
             Debugger &debugger = m_interpreter.GetDebugger();
             const char *arch_cstr = m_arch_option.GetArchitectureName();
             const bool get_dependent_files = true;
             Error error (debugger.GetTargetList().CreateTarget (debugger,
-                                                                file_spec,
+                                                                file_path,
                                                                 arch_cstr,
                                                                 get_dependent_files,
                                                                 &m_platform_options,
@@ -576,14 +571,14 @@ public:
     CommandObjectTargetVariable (CommandInterpreter &interpreter) :
         CommandObjectParsed (interpreter,
                              "target variable",
-                             "Read global variable(s) prior to running your binary.",
+                             "Read global variable(s) prior to, or while running your binary.",
                              NULL,
                              0),
         m_option_group (interpreter),
         m_option_variable (false), // Don't include frame options
         m_option_format (eFormatDefault),
-        m_option_compile_units    (LLDB_OPT_SET_1, false, "file", 'f', 0, eArgTypePath, "A basename or fullpath to a file that contains global variables. This option can be specified multiple times."),
-        m_option_shared_libraries (LLDB_OPT_SET_1, false, "shlib",'s', 0, eArgTypePath, "A basename or fullpath to a shared library to use in the search for global variables. This option can be specified multiple times."),
+        m_option_compile_units    (LLDB_OPT_SET_1, false, "file", 'f', 0, eArgTypeFilename, "A basename or fullpath to a file that contains global variables. This option can be specified multiple times."),
+        m_option_shared_libraries (LLDB_OPT_SET_1, false, "shlib",'s', 0, eArgTypeFilename, "A basename or fullpath to a shared library to use in the search for global variables. This option can be specified multiple times."),
         m_varobj_options()
     {
         CommandArgumentEntry arg;
@@ -1157,7 +1152,7 @@ public:
         CommandArgumentData path_arg;
         
         // Define the first (and only) variant of this arg.
-        path_arg.arg_type = eArgTypePath;
+        path_arg.arg_type = eArgTypeDirectoryName;
         path_arg.arg_repetition = eArgRepeatPlain;
         
         // There is only one variant this argument could be; put it into the argument entry.
@@ -1227,21 +1222,18 @@ DumpModuleArchitecture (Stream &strm, Module *module, bool full_triple, uint32_t
 static void
 DumpModuleUUID (Stream &strm, Module *module)
 {
-    if (module->GetUUID().IsValid())
+    if (module && module->GetUUID().IsValid())
         module->GetUUID().Dump (&strm);
     else
         strm.PutCString("                                    ");
 }
 
 static uint32_t
-DumpCompileUnitLineTable
-(
- CommandInterpreter &interpreter,
- Stream &strm,
- Module *module,
- const FileSpec &file_spec,
- bool load_addresses
- )
+DumpCompileUnitLineTable (CommandInterpreter &interpreter,
+                          Stream &strm,
+                          Module *module,
+                          const FileSpec &file_spec,
+                          bool load_addresses)
 {
     uint32_t num_matches = 0;
     if (module)
@@ -2263,7 +2255,7 @@ protected:
             if (command.GetArgumentCount() == 0)
             {
                 // Dump all sections for all modules images
-                ModuleList &target_modules = target->GetImages();
+                const ModuleList &target_modules = target->GetImages();
                 Mutex::Locker modules_locker (target_modules.GetMutex());
                 const uint32_t num_modules = target_modules.GetSize();
                 if (num_modules > 0)
@@ -2376,7 +2368,7 @@ protected:
                 {
                     FileSpec file_spec(arg_cstr, false);
                     
-                    ModuleList &target_modules = target->GetImages();
+                    const ModuleList &target_modules = target->GetImages();
                     Mutex::Locker modules_locker(target_modules.GetMutex());
                     const uint32_t num_modules = target_modules.GetSize();
                     if (num_modules > 0)
@@ -2557,7 +2549,7 @@ public:
                                                       "Set the load addresses for one or more sections in a target module.",
                                                       "target modules load [--file <module> --uuid <uuid>] <sect-name> <address> [<sect-name> <address> ....]"),
         m_option_group (interpreter),
-        m_file_option (LLDB_OPT_SET_1, false, "file", 'f', 0, eArgTypePath, "Fullpath or basename for module to load."),
+        m_file_option (LLDB_OPT_SET_1, false, "file", 'f', 0, eArgTypeFilename, "Fullpath or basename for module to load."),
         m_slide_option(LLDB_OPT_SET_1, false, "slide", 's', 0, eArgTypeOffset, "Set the load address for all sections to be the virtual address in the file plus the offset.", 0)
     {
         m_option_group.Append (&m_uuid_option_group, LLDB_OPT_SET_ALL, LLDB_OPT_SET_1);
@@ -2720,8 +2712,14 @@ protected:
                     }
                     else
                     {
-                        module->GetFileSpec().GetPath (path, sizeof(path));
-                        result.AppendErrorWithFormat ("invalid module '%s'.\n", path);
+                        FileSpec *module_spec_file = module_spec.GetFileSpecPtr();
+                        if (module_spec_file)
+                        {
+                            module_spec_file->GetPath (path, sizeof(path));
+                            result.AppendErrorWithFormat ("invalid module '%s'.\n", path);
+                        }
+                        else
+                            result.AppendError ("no module spec");
                         result.SetStatus (eReturnStatusFailed);
                     }
                 }
@@ -2942,7 +2940,7 @@ protected:
             Mutex::Locker locker;      // This locker will be locked on the mutex in module_list_ptr if it is non-NULL.
                                        // Otherwise it will lock the AllocationModuleCollectionMutex when accessing
                                        // the global module list directly.
-            ModuleList *module_list_ptr = NULL;
+            const ModuleList *module_list_ptr = NULL;
             const size_t argc = command.GetArgumentCount();
             if (argc == 0)
             {
@@ -3033,6 +3031,12 @@ protected:
     PrintModule (Target *target, Module *module, uint32_t idx, int indent, Stream &strm)
     {
 
+        if (module == NULL)
+        {
+            strm.PutCString("Null module");
+            return;
+        }
+        
         bool dump_object_name = false;
         if (m_options.m_format_array.empty())
         {
@@ -3821,7 +3825,7 @@ protected:
                 
                 // Dump all sections for all other modules
                 
-                ModuleList &target_modules = target->GetImages();
+                const ModuleList &target_modules = target->GetImages();
                 Mutex::Locker modules_locker(target_modules.GetMutex());
                 const uint32_t num_modules = target_modules.GetSize();
                 if (num_modules > 0)
@@ -3855,9 +3859,9 @@ protected:
                     const size_t num_matches = FindModulesByName (target, arg_cstr, module_list, false);
                     if (num_matches > 0)
                     {
-                        for (size_t i=0; i<num_matches; ++i)
+                        for (size_t j=0; j<num_matches; ++j)
                         {
-                            Module *module = module_list.GetModulePointerAtIndex(i);
+                            Module *module = module_list.GetModulePointerAtIndex(j);
                             if (module)
                             {
                                 if (LookupInModule (m_interpreter, module, result, syntax_error))

@@ -47,6 +47,14 @@ void *MmapOrDie(uptr size, const char *mem_type) {
                             PROT_READ | PROT_WRITE,
                             MAP_PRIVATE | MAP_ANON, -1, 0);
   if (res == (void*)-1) {
+    static int recursion_count;
+    if (recursion_count) {
+      // The Report() and CHECK calls below may call mmap recursively and fail.
+      // If we went into recursion, just die.
+      RawWrite("AddressSanitizer is unable to mmap\n");
+      Die();
+    }
+    recursion_count++;
     Report("ERROR: Failed to allocate 0x%zx (%zd) bytes of %s: %s\n",
            size, size, mem_type, strerror(errno));
     DumpProcessMap();
@@ -66,10 +74,15 @@ void UnmapOrDie(void *addr, uptr size) {
 }
 
 void *MmapFixedNoReserve(uptr fixed_addr, uptr size) {
-  return internal_mmap((void*)fixed_addr, size,
-                      PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,
-                      -1, 0);
+  void *p = internal_mmap((void*)(fixed_addr & ~(kPageSize - 1)),
+      RoundUpTo(size, kPageSize),
+      PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,
+      -1, 0);
+  if (p == (void*)-1)
+    Report("ERROR: Failed to allocate 0x%zx (%zd) bytes at address %p (%d)\n",
+           size, size, fixed_addr, errno);
+  return p;
 }
 
 void *Mprotect(uptr fixed_addr, uptr size) {
@@ -174,6 +187,10 @@ int Atexit(void (*function)(void)) {
 #else
   return 0;
 #endif
+}
+
+int internal_isatty(fd_t fd) {
+  return isatty(fd);
 }
 
 }  // namespace __sanitizer

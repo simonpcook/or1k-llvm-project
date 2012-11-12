@@ -40,22 +40,27 @@
 #include "../Commands/CommandObjectVersion.h"
 #include "../Commands/CommandObjectWatchpoint.h"
 
-#include "lldb/Interpreter/Args.h"
-#include "lldb/Interpreter/Options.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/InputReader.h"
+#include "lldb/Core/Log.h"
 #include "lldb/Core/Stream.h"
 #include "lldb/Core/Timer.h"
+
 #include "lldb/Host/Host.h"
+
+#include "lldb/Interpreter/Args.h"
+#include "lldb/Interpreter/CommandReturnObject.h"
+#include "lldb/Interpreter/CommandInterpreter.h"
+#include "lldb/Interpreter/Options.h"
+#include "lldb/Interpreter/ScriptInterpreterNone.h"
+#include "lldb/Interpreter/ScriptInterpreterPython.h"
+
+
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/TargetList.h"
-#include "lldb/Utility/CleanUp.h"
 
-#include "lldb/Interpreter/CommandReturnObject.h"
-#include "lldb/Interpreter/CommandInterpreter.h"
-#include "lldb/Interpreter/ScriptInterpreterNone.h"
-#include "lldb/Interpreter/ScriptInterpreterPython.h"
+#include "lldb/Utility/CleanUp.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -156,9 +161,9 @@ CommandInterpreter::Initialize ()
     if (cmd_obj_sp)
         AddAlias ("b", cmd_obj_sp);
 
-    cmd_obj_sp = GetCommandSPExact ("thread backtrace", false);
+    cmd_obj_sp = GetCommandSPExact ("_regexp-tbreak",false);
     if (cmd_obj_sp)
-        AddAlias ("bt", cmd_obj_sp);
+        AddAlias ("tbreak", cmd_obj_sp);
 
     cmd_obj_sp = GetCommandSPExact ("thread step-inst", false);
     if (cmd_obj_sp)
@@ -200,6 +205,12 @@ CommandInterpreter::Initialize ()
         AddAlias ("f", cmd_obj_sp);
     }
 
+    cmd_obj_sp = GetCommandSPExact ("thread select", false);
+    if (cmd_obj_sp)
+    {
+        AddAlias ("t", cmd_obj_sp);
+    }
+
     cmd_obj_sp = GetCommandSPExact ("source list", false);
     if (cmd_obj_sp)
     {
@@ -237,6 +248,10 @@ CommandInterpreter::Initialize ()
     if (cmd_obj_sp)
         AddAlias ("undisplay", cmd_obj_sp);
 
+    cmd_obj_sp = GetCommandSPExact ("_regexp-bt", false);
+    if (cmd_obj_sp)
+        AddAlias ("bt", cmd_obj_sp);
+
     cmd_obj_sp = GetCommandSPExact ("target create", false);
     if (cmd_obj_sp)
         AddAlias ("file", cmd_obj_sp);
@@ -271,7 +286,6 @@ CommandInterpreter::Initialize ()
     if (cmd_obj_sp)
     {
         AddAlias ("kill", cmd_obj_sp);
-        AddAlias ("k", cmd_obj_sp);
     }
     
     cmd_obj_sp = GetCommandSPExact ("process launch", false);
@@ -300,8 +314,8 @@ CommandInterpreter::Initialize ()
     {
         alias_arguments_vector_sp.reset (new OptionArgVector);
         ProcessAliasOptionsArgs (cmd_obj_sp, "--func-regex %1", alias_arguments_vector_sp);
-        AddAlias ("rb", cmd_obj_sp);
-        AddOrReplaceAliasOptions("rb", alias_arguments_vector_sp);
+        AddAlias ("rbreak", cmd_obj_sp);
+        AddOrReplaceAliasOptions("rbreak", alias_arguments_vector_sp);
     }
 }
 
@@ -370,24 +384,65 @@ CommandInterpreter::LoadCommandDictionary ()
     m_command_dict["version"]   = CommandObjectSP (new CommandObjectVersion (*this));
     m_command_dict["watchpoint"]= CommandObjectSP (new CommandObjectMultiwordWatchpoint (*this));
 
+    const char *break_regexes[][2] = {{"^(.*[^[:space:]])[[:space:]]*:[[:space:]]*([[:digit:]]+)[[:space:]]*$", "breakpoint set --file '%1' --line %2"},
+                                      {"^([[:digit:]]+)[[:space:]]*$", "breakpoint set --line %1"},
+                                      {"^(0x[[:xdigit:]]+)[[:space:]]*$", "breakpoint set --address %1"},
+                                      {"^[\"']?([-+]\\[.*\\])[\"']?[[:space:]]*$", "breakpoint set --name '%1'"},
+                                      {"^(-.*)$", "breakpoint set %1"},
+                                      {"^(.*[^[:space:]])`(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%2' --shlib '%1'"},
+                                      {"^(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%1'"}};
+    
+    size_t num_regexes = sizeof break_regexes/sizeof(char *[2]);
+        
     std::auto_ptr<CommandObjectRegexCommand>
     break_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                       "_regexp-break",
                                                       "Set a breakpoint using a regular expression to specify the location, where <linenum> is in decimal and <address> is in hex.",
                                                       "_regexp-break [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>", 2));
+
     if (break_regex_cmd_ap.get())
     {
-        if (break_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])[[:space:]]*:[[:space:]]*([[:digit:]]+)[[:space:]]*$", "breakpoint set --file '%1' --line %2") &&
-            break_regex_cmd_ap->AddRegexCommand("^([[:digit:]]+)[[:space:]]*$", "breakpoint set --line %1") &&
-            break_regex_cmd_ap->AddRegexCommand("^(0x[[:xdigit:]]+)[[:space:]]*$", "breakpoint set --address %1") &&
-            break_regex_cmd_ap->AddRegexCommand("^[\"']?([-+]\\[.*\\])[\"']?[[:space:]]*$", "breakpoint set --name '%1'") &&
-            break_regex_cmd_ap->AddRegexCommand("^$", "breakpoint list --full") &&
-            break_regex_cmd_ap->AddRegexCommand("^(-.*)$", "breakpoint set %1") &&
-            break_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])`(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%2' --shlib '%1'") &&
-            break_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%1'"))
+        bool success = true;
+        for (size_t i = 0; i < num_regexes; i++)
+        {
+            success = break_regex_cmd_ap->AddRegexCommand (break_regexes[i][0], break_regexes[i][1]);
+            if (!success)
+                break;
+        }
+        success = break_regex_cmd_ap->AddRegexCommand("^$", "breakpoint list --full");
+
+        if (success)
         {
             CommandObjectSP break_regex_cmd_sp(break_regex_cmd_ap.release());
             m_command_dict[break_regex_cmd_sp->GetCommandName ()] = break_regex_cmd_sp;
+        }
+    }
+
+    std::auto_ptr<CommandObjectRegexCommand>
+    tbreak_regex_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                      "_regexp-tbreak",
+                                                      "Set a one shot breakpoint using a regular expression to specify the location, where <linenum> is in decimal and <address> is in hex.",
+                                                      "_regexp-tbreak [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>", 2));
+
+    if (tbreak_regex_cmd_ap.get())
+    {
+        bool success = true;
+        for (size_t i = 0; i < num_regexes; i++)
+        {
+            // If you add a resultant command string longer than 1024 characters be sure to increase the size of this buffer.
+            char buffer[1024];
+            int num_printed = snprintf(buffer, 1024, "%s %s", break_regexes[i][1], "-o");
+            assert (num_printed < 1024);
+            success = tbreak_regex_cmd_ap->AddRegexCommand (break_regexes[i][0], buffer);
+            if (!success)
+                break;
+        }
+        success = tbreak_regex_cmd_ap->AddRegexCommand("^$", "breakpoint list --full");
+
+        if (success)
+        {
+            CommandObjectSP tbreak_regex_cmd_sp(tbreak_regex_cmd_ap.release());
+            m_command_dict[tbreak_regex_cmd_sp->GetCommandName ()] = tbreak_regex_cmd_sp;
         }
     }
 
@@ -467,8 +522,8 @@ CommandInterpreter::LoadCommandDictionary ()
     std::auto_ptr<CommandObjectRegexCommand>
     connect_gdb_remote_cmd_ap(new CommandObjectRegexCommand (*this,
                                                       "gdb-remote",
-                                                      "Connect to a remote GDB server.",
-                                                      "gdb-remote [<host>:<port>]\ngdb-remote [<port>]", 2));
+                                                      "Connect to a remote GDB server.  If no hostname is provided, localhost is assumed.",
+                                                      "gdb-remote [<hostname>:]<portnum>", 2));
     if (connect_gdb_remote_cmd_ap.get())
     {
         if (connect_gdb_remote_cmd_ap->AddRegexCommand("^([^:]+:[[:digit:]]+)$", "process connect --plugin gdb-remote connect://%1") &&
@@ -482,14 +537,34 @@ CommandInterpreter::LoadCommandDictionary ()
     std::auto_ptr<CommandObjectRegexCommand>
     connect_kdp_remote_cmd_ap(new CommandObjectRegexCommand (*this,
                                                              "kdp-remote",
-                                                             "Connect to a remote KDP server.",
-                                                             "kdp-remote [<host>]\nkdp-remote [<host>:<port>]", 2));
+                                                             "Connect to a remote KDP server.  udp port 41139 is the default port number.",
+                                                             "kdp-remote <hostname>[:<portnum>]", 2));
     if (connect_kdp_remote_cmd_ap.get())
     {
         if (connect_kdp_remote_cmd_ap->AddRegexCommand("^([^:]+:[[:digit:]]+)$", "process connect --plugin kdp-remote udp://%1") &&
             connect_kdp_remote_cmd_ap->AddRegexCommand("^(.+)$", "process connect --plugin kdp-remote udp://%1:41139"))
         {
             CommandObjectSP command_sp(connect_kdp_remote_cmd_ap.release());
+            m_command_dict[command_sp->GetCommandName ()] = command_sp;
+        }
+    }
+
+    std::auto_ptr<CommandObjectRegexCommand>
+    bt_regex_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                     "_regexp-bt",
+                                                     "Show a backtrace.  An optional argument is accepted; if that argument is a number, it specifies the number of frames to display.  If that argument is 'all', full backtraces of all threads are displayed.",
+                                                     "bt [<digit>|all]", 2));
+    if (bt_regex_cmd_ap.get())
+    {
+        // accept but don't document "bt -c <number>" -- before bt was a regex command if you wanted to backtrace
+        // three frames you would do "bt -c 3" but the intention is to have this emulate the gdb "bt" command and
+        // so now "bt 3" is the preferred form, in line with gdb.
+        if (bt_regex_cmd_ap->AddRegexCommand("^([[:digit:]]+)$", "thread backtrace -c %1") &&
+            bt_regex_cmd_ap->AddRegexCommand("^-c ([[:digit:]]+)$", "thread backtrace -c %1") &&
+            bt_regex_cmd_ap->AddRegexCommand("^all$", "thread backtrace all") &&
+            bt_regex_cmd_ap->AddRegexCommand("^$", "thread backtrace"))
+        {
+            CommandObjectSP command_sp(bt_regex_cmd_ap.release());
             m_command_dict[command_sp->GetCommandName ()] = command_sp;
         }
     }
@@ -693,8 +768,7 @@ CommandInterpreter::GetCommandSPExact (const char *cmd_cstr, bool include_aliase
             {
                 if (cmd_obj_sp->IsMultiwordObject())
                 {
-                    cmd_obj_sp = ((CommandObjectMultiword *) cmd_obj_sp.get())->GetSubcommandSP 
-                    (cmd_words.GetArgumentAtIndex (j));
+                    cmd_obj_sp = cmd_obj_sp->GetSubcommandSP (cmd_words.GetArgumentAtIndex (j));
                     if (cmd_obj_sp.get() == NULL)
                         // The sub-command name was invalid.  Fail and return the empty 'ret_val'.
                         return ret_val;
@@ -979,8 +1053,7 @@ CommandInterpreter::GetCommandObjectForCommand (std::string &command_string)
             else if (cmd_obj->IsMultiwordObject ())
             {
                 // Our current object is a multi-word object; see if the cmd_word is a valid sub-command for our object.
-                CommandObject *sub_cmd_obj = 
-                                         ((CommandObjectMultiword *) cmd_obj)->GetSubcommandObject (cmd_word.c_str());
+                CommandObject *sub_cmd_obj = cmd_obj->GetSubcommandObject (cmd_word.c_str());
                 if (sub_cmd_obj)
                     cmd_obj = sub_cmd_obj;
                 else // cmd_word was not a valid sub-command word, so we are donee
@@ -1240,11 +1313,12 @@ CommandInterpreter::PreprocessCommand (std::string &command)
                 {
                     ValueObjectSP expr_result_valobj_sp;
                     
-                    Target::EvaluateExpressionOptions options;
+                    EvaluateExpressionOptions options;
                     options.SetCoerceToId(false)
                     .SetUnwindOnError(true)
                     .SetKeepInMemory(false)
-                    .SetSingleThreadTimeoutUsec(0);
+                    .SetRunOthers(true)
+                    .SetTimeoutUsec(0);
                     
                     ExecutionResults expr_result = target->EvaluateExpression (expr_str.c_str(), 
                                                                                exe_ctx.GetFramePtr(),
@@ -1477,7 +1551,7 @@ CommandInterpreter::HandleCommand (const char *command_line,
         {
             if (cmd_obj->IsMultiwordObject ())
             {
-                CommandObject *sub_cmd_obj = ((CommandObjectMultiword *) cmd_obj)->GetSubcommandObject (next_word.c_str());
+                CommandObject *sub_cmd_obj = cmd_obj->GetSubcommandObject (next_word.c_str());
                 if (sub_cmd_obj)
                 {
                     actual_cmd_name_len += next_word.length() + 1;
@@ -2478,8 +2552,14 @@ CommandInterpreter::HandleCommandsFromFile (FileSpec &cmd_file,
 }
 
 ScriptInterpreter *
-CommandInterpreter::GetScriptInterpreter ()
+CommandInterpreter::GetScriptInterpreter (bool can_create)
 {
+    if (m_script_interpreter_ap.get() != NULL)
+        return m_script_interpreter_ap.get();
+    
+    if (!can_create)
+        return NULL;
+ 
     // <rdar://problem/11751427>
     // we need to protect the initialization of the script interpreter
     // otherwise we could end up with two threads both trying to create
@@ -2490,8 +2570,9 @@ CommandInterpreter::GetScriptInterpreter ()
     static Mutex g_interpreter_mutex(Mutex::eMutexTypeRecursive);
     Mutex::Locker interpreter_lock(g_interpreter_mutex);
     
-    if (m_script_interpreter_ap.get() != NULL)
-        return m_script_interpreter_ap.get();
+    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    if (log)
+        log->Printf("Initializing the ScriptInterpreter now\n");
     
     lldb::ScriptLanguage script_lang = GetDebugger().GetScriptLanguage();
     switch (script_lang)
@@ -2652,35 +2733,6 @@ CommandInterpreter::OutputHelpText (Stream &strm,
 }
 
 void
-CommandInterpreter::AproposAllSubCommands (CommandObject *cmd_obj, const char *prefix, const char *search_word,
-                                           StringList &commands_found, StringList &commands_help)
-{
-    CommandObject::CommandMap::const_iterator pos;
-    CommandObject::CommandMap sub_cmd_dict = ((CommandObjectMultiword *) cmd_obj)->m_subcommand_dict;
-    CommandObject *sub_cmd_obj;
-
-    for (pos = sub_cmd_dict.begin(); pos != sub_cmd_dict.end(); ++pos)
-    {
-          const char * command_name = pos->first.c_str();
-          sub_cmd_obj = pos->second.get();
-          StreamString complete_command_name;
-          
-          complete_command_name.Printf ("%s %s", prefix, command_name);
-
-          if (sub_cmd_obj->HelpTextContainsWord (search_word))
-          {
-              commands_found.AppendString (complete_command_name.GetData());
-              commands_help.AppendString (sub_cmd_obj->GetHelp());
-          }
-
-          if (sub_cmd_obj->IsMultiwordObject())
-              AproposAllSubCommands (sub_cmd_obj, complete_command_name.GetData(), search_word, commands_found,
-                                     commands_help);
-    }
-
-}
-
-void
 CommandInterpreter::FindCommandsForApropos (const char *search_word, StringList &commands_found,
                                             StringList &commands_help)
 {
@@ -2698,7 +2750,10 @@ CommandInterpreter::FindCommandsForApropos (const char *search_word, StringList 
         }
 
         if (cmd_obj->IsMultiwordObject())
-          AproposAllSubCommands (cmd_obj, command_name, search_word, commands_found, commands_help);
+            cmd_obj->AproposAllSubCommands (command_name,
+                                            search_word,
+                                            commands_found,
+                                            commands_help);
       
     }
 }

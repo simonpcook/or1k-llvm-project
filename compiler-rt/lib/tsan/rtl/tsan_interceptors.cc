@@ -238,7 +238,6 @@ static void finalize(void *arg) {
   {
     ScopedInRtl in_rtl;
     DestroyAndFree(atexit_ctx);
-    REAL(usleep)(flags()->atexit_sleep_ms * 1000);
   }
   int status = Finalize(cur_thread());
   if (status)
@@ -253,13 +252,13 @@ TSAN_INTERCEPTOR(int, atexit, void (*f)()) {
 
 TSAN_INTERCEPTOR(void, longjmp, void *env, int val) {
   SCOPED_TSAN_INTERCEPTOR(longjmp, env, val);
-  TsanPrintf("ThreadSanitizer: longjmp() is not supported\n");
+  Printf("ThreadSanitizer: longjmp() is not supported\n");
   Die();
 }
 
 TSAN_INTERCEPTOR(void, siglongjmp, void *env, int val) {
   SCOPED_TSAN_INTERCEPTOR(siglongjmp, env, val);
-  TsanPrintf("ThreadSanitizer: siglongjmp() is not supported\n");
+  Printf("ThreadSanitizer: siglongjmp() is not supported\n");
   Die();
 }
 
@@ -590,7 +589,7 @@ static void thread_finalize(void *v) {
   uptr iter = (uptr)v;
   if (iter > 1) {
     if (pthread_setspecific(g_thread_finalize_key, (void*)(iter - 1))) {
-      TsanPrintf("ThreadSanitizer: failed to set thread key\n");
+      Printf("ThreadSanitizer: failed to set thread key\n");
       Die();
     }
     return;
@@ -623,7 +622,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
     ThreadState *thr = cur_thread();
     ScopedInRtl in_rtl;
     if (pthread_setspecific(g_thread_finalize_key, (void*)4)) {
-      TsanPrintf("ThreadSanitizer: failed to set thread key\n");
+      Printf("ThreadSanitizer: failed to set thread key\n");
       Die();
     }
     while ((tid = atomic_load(&p->tid, memory_order_acquire)) == 0)
@@ -1324,6 +1323,7 @@ static void process_pending_signals(ThreadState *thr) {
   SignalContext *sctx = SigCtx(thr);
   if (sctx == 0 || sctx->pending_signal_count == 0 || thr->in_signal_handler)
     return;
+  Context *ctx = CTX();
   thr->in_signal_handler = true;
   sctx->pending_signal_count = 0;
   // These are too big for stack.
@@ -1343,7 +1343,7 @@ static void process_pending_signals(ThreadState *thr) {
           sigactions[sig].sa_sigaction(sig, &signal->siginfo, &signal->ctx);
         else
           sigactions[sig].sa_handler(sig);
-        if (errno != 0) {
+        if (flags()->report_bugs && errno != 0) {
           ScopedInRtl in_rtl;
           __tsan::StackTrace stack;
           uptr pc = signal->sigaction ?
@@ -1351,8 +1351,10 @@ static void process_pending_signals(ThreadState *thr) {
               (uptr)sigactions[sig].sa_handler;
           stack.Init(&pc, 1);
           ScopedReport rep(ReportTypeErrnoInSignal);
-          rep.AddStack(&stack);
-          OutputReport(rep, rep.GetReport()->stacks[0]);
+          if (!IsFiredSuppression(ctx, rep, stack)) {
+            rep.AddStack(&stack);
+            OutputReport(ctx, rep, rep.GetReport()->stacks[0]);
+          }
         }
         errno = saved_errno;
       }
@@ -1361,6 +1363,12 @@ static void process_pending_signals(ThreadState *thr) {
   pthread_sigmask(SIG_SETMASK, &oldset, 0);
   CHECK_EQ(thr->in_signal_handler, true);
   thr->in_signal_handler = false;
+}
+
+TSAN_INTERCEPTOR(int, gettimeofday, void *tv, void *tz) {
+  SCOPED_TSAN_INTERCEPTOR(gettimeofday, tv, tz);
+  // It's intercepted merely to process pending signals.
+  return REAL(gettimeofday)(tv, tz);
 }
 
 namespace __tsan {
@@ -1490,17 +1498,18 @@ void InitializeInterceptors() {
   TSAN_INTERCEPT(sleep);
   TSAN_INTERCEPT(usleep);
   TSAN_INTERCEPT(nanosleep);
+  TSAN_INTERCEPT(gettimeofday);
 
   atexit_ctx = new(internal_alloc(MBlockAtExit, sizeof(AtExitContext)))
       AtExitContext();
 
   if (__cxa_atexit(&finalize, 0, 0)) {
-    TsanPrintf("ThreadSanitizer: failed to setup atexit callback\n");
+    Printf("ThreadSanitizer: failed to setup atexit callback\n");
     Die();
   }
 
   if (pthread_key_create(&g_thread_finalize_key, &thread_finalize)) {
-    TsanPrintf("ThreadSanitizer: failed to create thread key\n");
+    Printf("ThreadSanitizer: failed to create thread key\n");
     Die();
   }
 }

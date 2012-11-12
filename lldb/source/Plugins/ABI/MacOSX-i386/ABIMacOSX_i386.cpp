@@ -894,6 +894,7 @@ ABIMacOSX_i386::CreateFunctionEntryUnwindPlan (UnwindPlan &unwind_plan)
     row->SetRegisterLocationToAtCFAPlusOffset(pc_reg_num, -4, false);
     unwind_plan.AppendRow (row);
     unwind_plan.SetSourceName ("i386 at-func-entry default");
+    unwind_plan.SetSourcedFromCompiler (eLazyBoolNo);
     return true;
 }
 
@@ -919,6 +920,8 @@ ABIMacOSX_i386::CreateDefaultUnwindPlan (UnwindPlan &unwind_plan)
 
     unwind_plan.AppendRow (row);
     unwind_plan.SetSourceName ("i386 default unwind plan");
+    unwind_plan.SetSourcedFromCompiler (eLazyBoolNo);
+    unwind_plan.SetUnwindPlanValidAtAllInstructions (eLazyBoolNo);
     return true;
 }
 
@@ -940,7 +943,7 @@ ABIMacOSX_i386::RegisterIsCalleeSaved (const RegisterInfo *reg_info)
             switch (name[1])
             {
             case 'b': 
-                if (name[2] == 'x' || name[2] == 'p')
+                if (name[2] == 'x') // ebp is volatile in the ABI, but the unwinders can find it
                     return name[3] == '\0';
                 break;
             case 'd':

@@ -283,7 +283,7 @@ ClangASTType::GetMinimumLanguage (clang::ASTContext *ctx,
             return lldb::eLanguageTypeObjC;
         
         clang::QualType pointee_type (qual_type->getPointeeType());
-        if (pointee_type->getCXXRecordDeclForPointerType() != NULL)
+        if (pointee_type->getPointeeCXXRecordDecl() != NULL)
             return lldb::eLanguageTypeC_plus_plus;
         if (pointee_type->isObjCObjectOrInterfaceType())
             return lldb::eLanguageTypeObjC;
@@ -1765,6 +1765,13 @@ ClangASTType::RemoveFastQualifiers (lldb::clang_type_t clang_type)
     return qual_type.getAsOpaquePtr();
 }
 
+clang::CXXRecordDecl *
+ClangASTType::GetAsCXXRecordDecl (lldb::clang_type_t opaque_clang_qual_type)
+{
+    if (opaque_clang_qual_type)
+        return clang::QualType::getFromOpaquePtr(opaque_clang_qual_type)->getAsCXXRecordDecl();
+    return NULL;
+}
 
 bool
 lldb_private::operator == (const lldb_private::ClangASTType &lhs, const lldb_private::ClangASTType &rhs)

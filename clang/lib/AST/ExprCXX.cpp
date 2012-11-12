@@ -51,6 +51,26 @@ QualType CXXUuidofExpr::getTypeOperand() const {
                                                         .getUnqualifiedType();
 }
 
+// static
+UuidAttr *CXXUuidofExpr::GetUuidAttrOfType(QualType QT) {
+  // Optionally remove one level of pointer, reference or array indirection.
+  const Type *Ty = QT.getTypePtr();
+  if (QT->isPointerType() || QT->isReferenceType())
+    Ty = QT->getPointeeType().getTypePtr();
+  else if (QT->isArrayType())
+    Ty = cast<ArrayType>(QT)->getElementType().getTypePtr();
+
+  // Loop all record redeclaration looking for an uuid attribute.
+  CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
+  for (CXXRecordDecl::redecl_iterator I = RD->redecls_begin(),
+       E = RD->redecls_end(); I != E; ++I) {
+    if (UuidAttr *Uuid = I->getAttr<UuidAttr>())
+      return Uuid;
+  }
+
+  return 0;
+}
+
 // CXXScalarValueInitExpr
 SourceRange CXXScalarValueInitExpr::getSourceRange() const {
   SourceLocation Start = RParenLoc;
@@ -68,14 +88,14 @@ CXXNewExpr::CXXNewExpr(ASTContext &C, bool globalNew, FunctionDecl *operatorNew,
                        InitializationStyle initializationStyle,
                        Expr *initializer, QualType ty,
                        TypeSourceInfo *allocatedTypeInfo,
-                       SourceLocation startLoc, SourceRange directInitRange)
+                       SourceRange Range, SourceRange directInitRange)
   : Expr(CXXNewExprClass, ty, VK_RValue, OK_Ordinary,
          ty->isDependentType(), ty->isDependentType(),
          ty->isInstantiationDependentType(),
          ty->containsUnexpandedParameterPack()),
     SubExprs(0), OperatorNew(operatorNew), OperatorDelete(operatorDelete),
     AllocatedTypeInfo(allocatedTypeInfo), TypeIdParens(typeIdParens),
-    StartLoc(startLoc), DirectInitRange(directInitRange),
+    Range(Range), DirectInitRange(directInitRange),
     GlobalNew(globalNew), UsualArrayDeleteWantsSize(usualArrayDeleteWantsSize) {
   assert((initializer != 0 || initializationStyle == NoInit) &&
          "Only NoInit can have no initializer.");
@@ -110,6 +130,14 @@ CXXNewExpr::CXXNewExpr(ASTContext &C, bool globalNew, FunctionDecl *operatorNew,
 
     SubExprs[i++] = placementArgs[j];
   }
+
+  switch (getInitializationStyle()) {
+  case CallInit:
+    this->Range.setEnd(DirectInitRange.getEnd()); break;
+  case ListInit:
+    this->Range.setEnd(getInitializer()->getSourceRange().getEnd()); break;
+  default: break;
+  }
 }
 
 void CXXNewExpr::AllocateArgsArray(ASTContext &C, bool isArray,
@@ -125,18 +153,6 @@ void CXXNewExpr::AllocateArgsArray(ASTContext &C, bool isArray,
 bool CXXNewExpr::shouldNullCheckAllocation(ASTContext &Ctx) const {
   return getOperatorNew()->getType()->
     castAs<FunctionProtoType>()->isNothrow(Ctx);
-}
-
-SourceLocation CXXNewExpr::getEndLoc() const {
-  switch (getInitializationStyle()) {
-  case NoInit:
-    return AllocatedTypeInfo->getTypeLoc().getEndLoc();
-  case CallInit:
-    return DirectInitRange.getEnd();
-  case ListInit:
-    return getInitializer()->getSourceRange().getEnd();
-  }
-  llvm_unreachable("bogus initialization style");
 }
 
 // CXXDeleteExpr
@@ -227,7 +243,7 @@ UnresolvedLookupExpr::Create(ASTContext &C,
   return new (Mem) UnresolvedLookupExpr(C, NamingClass, QualifierLoc,
                                         TemplateKWLoc, NameInfo,
                                         ADL, /*Overload*/ true, Args,
-                                        Begin, End, /*StdIsAssociated=*/false);
+                                        Begin, End);
 }
 
 UnresolvedLookupExpr *

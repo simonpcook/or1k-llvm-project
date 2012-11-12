@@ -43,7 +43,8 @@ public:
     //------------------------------------------------------------------
     // Class Methods
     //------------------------------------------------------------------
-    OperatingSystemPython (lldb_private::Process *process);
+    OperatingSystemPython (lldb_private::Process *process,
+                           const lldb_private::FileSpec &python_module_path);
     
     virtual
     ~OperatingSystemPython ();
@@ -71,13 +72,18 @@ public:
     ThreadWasSelected (lldb_private::Thread *thread);
 
     virtual lldb::RegisterContextSP
-    CreateRegisterContextForThread (lldb_private::Thread *thread);
+    CreateRegisterContextForThread (lldb_private::Thread *thread,
+                                    lldb::addr_t reg_data_addr);
 
     virtual lldb::StopInfoSP
     CreateThreadStopReason (lldb_private::Thread *thread);
 
 protected:
     
+    bool IsValid() const
+    {
+        return m_python_object != NULL;
+    }
     DynamicRegisterInfo *
     GetDynamicRegisterInfo ();
 

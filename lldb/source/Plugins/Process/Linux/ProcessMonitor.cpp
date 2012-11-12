@@ -843,7 +843,7 @@ WAIT_AGAIN:
     // Check that the launch was a success.
     if (!args->m_error.Success())
     {
-        StopLaunchOpThread();
+        StopOpThread();
         error = args->m_error;
         return;
     }
@@ -898,10 +898,10 @@ WAIT_AGAIN:
         }
     }
 
-    // Check that the launch was a success.
+    // Check that the attach was a success.
     if (!args->m_error.Success())
     {
-        StopAttachOpThread();
+        StopOpThread();
         error = args->m_error;
         return;
     }
@@ -936,18 +936,6 @@ ProcessMonitor::StartLaunchOpThread(LaunchArgs *args, Error &error)
         Host::ThreadCreate(g_thread_name, LaunchOpThread, args, &error);
 }
 
-void
-ProcessMonitor::StopLaunchOpThread()
-{
-    lldb::thread_result_t result;
-
-    if (!IS_VALID_LLDB_HOST_THREAD(m_operation_thread))
-        return;
-
-    Host::ThreadCancel(m_operation_thread, NULL);
-    Host::ThreadJoin(m_operation_thread, &result, NULL);
-}
-
 void *
 ProcessMonitor::LaunchOpThread(void *arg)
 {
@@ -967,7 +955,6 @@ ProcessMonitor::Launch(LaunchArgs *args)
 {
     ProcessMonitor *monitor = args->m_monitor;
     ProcessLinux &process = monitor->GetProcess();
-    lldb::ProcessSP processSP = process.shared_from_this();
     const char **argv = args->m_argv;
     const char **envp = args->m_envp;
     const char *stdin_path = args->m_stdin_path;
@@ -1106,7 +1093,7 @@ ProcessMonitor::Launch(LaunchArgs *args)
     // Update the process thread list with this new thread.
     // FIXME: should we be letting UpdateThreadList handle this?
     // FIXME: by using pids instead of tids, we can only support one thread.
-    inferior.reset(new POSIXThread(processSP, pid));
+    inferior.reset(new POSIXThread(process, pid));
     if (log)
         log->Printf ("ProcessMonitor::%s() adding pid = %i", __FUNCTION__, pid);
     process.GetThreadList().AddThread(inferior);
@@ -1143,19 +1130,15 @@ ProcessMonitor::StartAttachOpThread(AttachArgs *args, lldb_private::Error &error
         Host::ThreadCreate(g_thread_name, AttachOpThread, args, &error);
 }
 
-void
-ProcessMonitor::StopAttachOpThread()
-{
-    assert(!"Not implemented yet!!!");
-}
-
 void *
 ProcessMonitor::AttachOpThread(void *arg)
 {
     AttachArgs *args = static_cast<AttachArgs*>(arg);
 
-    if (!Attach(args))
+    if (!Attach(args)) {
+        sem_post(&args->m_semaphore);
         return NULL;
+    }
 
     ServeOperation(args);
     return NULL;
@@ -1168,7 +1151,6 @@ ProcessMonitor::Attach(AttachArgs *args)
 
     ProcessMonitor *monitor = args->m_monitor;
     ProcessLinux &process = monitor->GetProcess();
-    lldb::ProcessSP processSP = process.shared_from_this();
     lldb::ThreadSP inferior;
     LogSP log (ProcessPOSIXLog::GetLogIfAllCategoriesSet (POSIX_LOG_PROCESS));
 
@@ -1193,8 +1175,10 @@ ProcessMonitor::Attach(AttachArgs *args)
         goto FINISH;
     }
 
+    monitor->m_pid = pid;
+
     // Update the process thread list with the attached thread.
-    inferior.reset(new POSIXThread(processSP, pid));
+    inferior.reset(new POSIXThread(process, pid));
     if (log)
         log->Printf ("ProcessMonitor::%s() adding tid = %i", __FUNCTION__, pid);
     process.GetThreadList().AddThread(inferior);
@@ -1665,16 +1649,16 @@ ProcessMonitor::GetEventMessage(lldb::tid_t tid, unsigned long *message)
     return result;
 }
 
-bool
+lldb_private::Error
 ProcessMonitor::Detach()
 {
-    bool result;
     lldb_private::Error error;
-    DetachOperation op(error);
-    result = error.Success();
-    DoOperation(&op);
+    if (m_pid != LLDB_INVALID_PROCESS_ID) {
+        DetachOperation op(error);
+        DoOperation(&op);
+    }
     StopMonitor();
-    return result;
+    return error;
 }
 
 bool
@@ -1705,10 +1689,22 @@ void
 ProcessMonitor::StopMonitor()
 {
     StopMonitoringChildProcess();
-    StopLaunchOpThread();
+    StopOpThread();
     CloseFD(m_terminal_fd);
     CloseFD(m_client_fd);
     CloseFD(m_server_fd);
+}
+
+void
+ProcessMonitor::StopOpThread()
+{
+    lldb::thread_result_t result;
+
+    if (!IS_VALID_LLDB_HOST_THREAD(m_operation_thread))
+        return;
+
+    Host::ThreadCancel(m_operation_thread, NULL);
+    Host::ThreadJoin(m_operation_thread, &result, NULL);
 }
 
 void

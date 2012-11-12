@@ -40,6 +40,10 @@
 #include "lldb/Core/Value.h"
 #include "lldb/Host/Symbols.h"
 #include "lldb/Host/TimeValue.h"
+#include "lldb/Interpreter/CommandInterpreter.h"
+#include "lldb/Interpreter/CommandObject.h"
+#include "lldb/Interpreter/CommandObjectMultiword.h"
+#include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/DynamicLoader.h"
 #include "lldb/Target/Target.h"
@@ -184,6 +188,8 @@ ProcessGDBRemote::ProcessGDBRemote(Target& target, Listener &listener) :
     m_register_info (),
     m_async_broadcaster (NULL, "lldb.process.gdb-remote.async-broadcaster"),
     m_async_thread (LLDB_INVALID_HOST_THREAD),
+    m_async_thread_state(eAsyncThreadNotStarted),
+    m_async_thread_state_mutex(Mutex::eMutexTypeRecursive),
     m_thread_ids (),
     m_continue_c_tids (),
     m_continue_C_tids (),
@@ -196,7 +202,8 @@ ProcessGDBRemote::ProcessGDBRemote(Target& target, Listener &listener) :
     m_waiting_for_attach (false),
     m_destroy_tried_resuming (false),
     m_dyld_plugin_name(),
-    m_kernel_load_addr (LLDB_INVALID_ADDRESS)
+    m_kernel_load_addr (LLDB_INVALID_ADDRESS),
+    m_command_sp ()
 {
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncThreadShouldExit,   "async thread should exit");
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncContinue,           "async thread continue");
@@ -215,6 +222,12 @@ ProcessGDBRemote::~ProcessGDBRemote()
     // destruct this class, then Process::~Process() might have problems
     // trying to fully destroy the broadcaster.
     Finalize();
+    
+    // The general Finalize is going to try to destroy the process and that SHOULD
+    // shut down the async thread.  However, if we don't kill it it will get stranded and
+    // its connection will go away so when it wakes up it will crash.  So kill it for sure here.
+    StopAsyncThread();
+    KillDebugserverProcess();
 }
 
 //----------------------------------------------------------------------
@@ -511,6 +524,7 @@ ProcessGDBRemote::CheckForKernel (Stream *strm)
         {
             m_kernel_load_addr = exe_objfile->GetHeaderAddress().GetFileAddress();
             m_dyld_plugin_name = DynamicLoaderDarwinKernel::GetPluginNameStatic();
+            SetCanJIT(false);
             return;
         }
     }
@@ -569,6 +583,7 @@ ProcessGDBRemote::CheckForKernel (Stream *strm)
     {
         m_kernel_load_addr = kernel_addr;
         m_dyld_plugin_name = DynamicLoaderDarwinKernel::GetPluginNameStatic();
+        SetCanJIT(false);
         return;
     }
 }
@@ -830,7 +845,6 @@ ProcessGDBRemote::ConnectToDebugserver (const char *connect_url)
     for (size_t idx = 0; idx < num_cmds; idx++)
     {
         StringExtractorGDBRemote response;
-        printf ("Sending command: \%s.\n", GetExtraStartupCommands().GetArgumentAtIndex(idx));
         m_gdb_comm.SendPacketAndWaitForResponse (GetExtraStartupCommands().GetArgumentAtIndex(idx), response, false);
     }
     return error;
@@ -1336,7 +1350,7 @@ ProcessGDBRemote::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new
             tid_t tid = m_thread_ids[i];
             ThreadSP thread_sp (old_thread_list.FindThreadByID (tid, false));
             if (!thread_sp)
-                thread_sp.reset (new ThreadGDBRemote (shared_from_this(), tid));
+                thread_sp.reset (new ThreadGDBRemote (*this, tid));
             new_thread_list.AddThread(thread_sp);
         }
     }
@@ -1403,7 +1417,7 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                     if (!thread_sp)
                     {
                         // Create the thread if we need to
-                        thread_sp.reset (new ThreadGDBRemote (shared_from_this(), tid));
+                        thread_sp.reset (new ThreadGDBRemote (*this, tid));
                         m_thread_list.AddThread(thread_sp);
                     }
                 }
@@ -1581,9 +1595,13 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                             }
                             else
                             {
-                                // TODO: check for breakpoint or trap opcode in case there is a hard 
-                                // coded software trap
-                                gdb_thread->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
+                                // If we were stepping then assume the stop was the result of the trace.  If we were
+                                // not stepping then report the SIGTRAP.
+                                // FIXME: We are still missing the case where we single step over a trap instruction.
+                                if (gdb_thread->GetTemporaryResumeState() == eStateStepping)
+                                    gdb_thread->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
+                                else
+                                    gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithSignal(*thread_sp, signo));
                             }
                         }
                         if (!handled)
@@ -1981,6 +1999,9 @@ ProcessGDBRemote::IsAlive ()
     return m_gdb_comm.IsConnected() && m_private_state.GetValue() != eStateExited;
 }
 
+// For kernel debugging, we return the load address of the kernel binary as the
+// ImageInfoAddress and we return the DynamicLoaderDarwinKernel as the GetDynamicLoader()
+// name so the correct DynamicLoader plugin is chosen.
 addr_t
 ProcessGDBRemote::GetImageInfoAddress()
 {
@@ -2497,8 +2518,8 @@ ProcessGDBRemote::StartDebugserverProcess (const char *debugserver_url, const Pr
                 ::snprintf (arg_cstr, sizeof(arg_cstr), "--log-flags=%s", env_debugserver_log_flags);
                 debugserver_args.AppendArgument(arg_cstr);
             }
-            debugserver_args.AppendArgument("--log-file=/tmp/debugserver.txt");
-            debugserver_args.AppendArgument("--log-flags=0x802e0e");
+//            debugserver_args.AppendArgument("--log-file=/tmp/debugserver.txt");
+//            debugserver_args.AppendArgument("--log-flags=0x802e0e");
 
             // We currently send down all arguments, attach pids, or attach 
             // process names in dedicated GDB server packets, so we don't need
@@ -2699,11 +2720,32 @@ ProcessGDBRemote::StartAsyncThread ()
 
     if (log)
         log->Printf ("ProcessGDBRemote::%s ()", __FUNCTION__);
-
-    // Create a thread that watches our internal state and controls which
-    // events make it to clients (into the DCProcess event queue).
-    m_async_thread = Host::ThreadCreate ("<lldb.process.gdb-remote.async>", ProcessGDBRemote::AsyncThread, this, NULL);
-    return IS_VALID_LLDB_HOST_THREAD(m_async_thread);
+    
+    Mutex::Locker start_locker(m_async_thread_state_mutex);
+    if (m_async_thread_state == eAsyncThreadNotStarted)
+    {
+        // Create a thread that watches our internal state and controls which
+        // events make it to clients (into the DCProcess event queue).
+        m_async_thread = Host::ThreadCreate ("<lldb.process.gdb-remote.async>", ProcessGDBRemote::AsyncThread, this, NULL);
+        if (IS_VALID_LLDB_HOST_THREAD(m_async_thread))
+        {
+            m_async_thread_state = eAsyncThreadRunning;
+            return true;
+        }
+        else
+            return false;
+    }
+    else
+    {
+        // Somebody tried to start the async thread while it was either being started or stopped.  If the former, and
+        // it started up successfully, then say all's well.  Otherwise it is an error, since we aren't going to restart it.
+        if (log)
+            log->Printf ("ProcessGDBRemote::%s () - Called when Async thread was in state: %d.", __FUNCTION__, m_async_thread_state);
+        if (m_async_thread_state == eAsyncThreadRunning)
+            return true;
+        else
+            return false;
+    }
 }
 
 void
@@ -2714,15 +2756,25 @@ ProcessGDBRemote::StopAsyncThread ()
     if (log)
         log->Printf ("ProcessGDBRemote::%s ()", __FUNCTION__);
 
-    m_async_broadcaster.BroadcastEvent (eBroadcastBitAsyncThreadShouldExit);
-    
-    //  This will shut down the async thread.
-    m_gdb_comm.Disconnect();    // Disconnect from the debug server.
-
-    // Stop the stdio thread
-    if (IS_VALID_LLDB_HOST_THREAD(m_async_thread))
+    Mutex::Locker start_locker(m_async_thread_state_mutex);
+    if (m_async_thread_state == eAsyncThreadRunning)
     {
-        Host::ThreadJoin (m_async_thread, NULL, NULL);
+        m_async_broadcaster.BroadcastEvent (eBroadcastBitAsyncThreadShouldExit);
+        
+        //  This will shut down the async thread.
+        m_gdb_comm.Disconnect();    // Disconnect from the debug server.
+
+        // Stop the stdio thread
+        if (IS_VALID_LLDB_HOST_THREAD(m_async_thread))
+        {
+            Host::ThreadJoin (m_async_thread, NULL, NULL);
+        }
+        m_async_thread_state = eAsyncThreadDone;
+    }
+    else
+    {
+        if (log)
+            log->Printf ("ProcessGDBRemote::%s () - Called when Async thread was in state: %d.", __FUNCTION__, m_async_thread_state);
     }
 }
 
@@ -2894,8 +2946,8 @@ ProcessGDBRemote::GetDispatchQueueNameForThread
         struct dispatch_queue_offsets_s
         {
             uint16_t dqo_version;
-            uint16_t dqo_label;
-            uint16_t dqo_label_size;
+            uint16_t dqo_label;      // in version 1-3, offset to string; in version 4+, offset to a pointer to a string
+            uint16_t dqo_label_size; // in version 1-3, length of string; in version 4+, size of a (void*) in this process
         } dispatch_queue_offsets;
 
 
@@ -2909,11 +2961,28 @@ ProcessGDBRemote::GetDispatchQueueNameForThread
                 {
                     data_offset = 0;
                     lldb::addr_t queue_addr = data.GetAddress(&data_offset);
-                    lldb::addr_t label_addr = queue_addr + dispatch_queue_offsets.dqo_label;
-                    dispatch_queue_name.resize(dispatch_queue_offsets.dqo_label_size, '\0');
-                    size_t bytes_read = ReadMemory (label_addr, &dispatch_queue_name[0], dispatch_queue_offsets.dqo_label_size, error);
-                    if (bytes_read < dispatch_queue_offsets.dqo_label_size)
-                        dispatch_queue_name.erase (bytes_read);
+                    if (dispatch_queue_offsets.dqo_version >= 4)
+                    {
+                        // libdispatch versions 4+, pointer to dispatch name is in the 
+                        // queue structure.
+                        lldb::addr_t pointer_to_label_address = queue_addr + dispatch_queue_offsets.dqo_label;
+                        if (ReadMemory (pointer_to_label_address, &memory_buffer, data.GetAddressByteSize(), error) == data.GetAddressByteSize())
+                        {
+                            data_offset = 0;
+                            lldb::addr_t label_addr = data.GetAddress(&data_offset);
+                            ReadCStringFromMemory (label_addr, dispatch_queue_name, error);
+                        }
+                    }
+                    else
+                    {
+                        // libdispatch versions 1-3, dispatch name is a fixed width char array
+                        // in the queue structure.
+                        lldb::addr_t label_addr = queue_addr + dispatch_queue_offsets.dqo_label;
+                        dispatch_queue_name.resize(dispatch_queue_offsets.dqo_label_size, '\0');
+                        size_t bytes_read = ReadMemory (label_addr, &dispatch_queue_name[0], dispatch_queue_offsets.dqo_label_size, error);
+                        if (bytes_read < dispatch_queue_offsets.dqo_label_size)
+                            dispatch_queue_name.erase (bytes_read);
+                    }
                 }
             }
         }
@@ -3008,3 +3077,152 @@ ProcessGDBRemote::GetDynamicLoader ()
     return m_dyld_ap.get();
 }
 
+
+class CommandObjectProcessGDBRemotePacketHistory : public CommandObjectParsed
+{
+private:
+    
+public:
+    CommandObjectProcessGDBRemotePacketHistory(CommandInterpreter &interpreter) :
+    CommandObjectParsed (interpreter,
+                         "process plugin packet history",
+                         "Dumps the packet history buffer. ",
+                         NULL)
+    {
+    }
+    
+    ~CommandObjectProcessGDBRemotePacketHistory ()
+    {
+    }
+    
+    bool
+    DoExecute (Args& command, CommandReturnObject &result)
+    {
+        const size_t argc = command.GetArgumentCount();
+        if (argc == 0)
+        {
+            ProcessGDBRemote *process = (ProcessGDBRemote *)m_interpreter.GetExecutionContext().GetProcessPtr();
+            if (process)
+            {
+                process->GetGDBRemote().DumpHistory(result.GetOutputStream());
+                result.SetStatus (eReturnStatusSuccessFinishResult);
+                return true;
+            }
+        }
+        else
+        {
+            result.AppendErrorWithFormat ("'%s' takes no arguments", m_cmd_name.c_str());
+        }
+        result.SetStatus (eReturnStatusFailed);
+        return false;
+    }
+};
+
+class CommandObjectProcessGDBRemotePacketSend : public CommandObjectParsed
+{
+private:
+    
+public:
+    CommandObjectProcessGDBRemotePacketSend(CommandInterpreter &interpreter) :
+        CommandObjectParsed (interpreter,
+                             "process plugin packet send",
+                             "Send a custom packet through the GDB remote protocol and print the answer. "
+                             "The packet header and footer will automatically be added to the packet prior to sending and stripped from the result.",
+                             NULL)
+    {
+    }
+    
+    ~CommandObjectProcessGDBRemotePacketSend ()
+    {
+    }
+    
+    bool
+    DoExecute (Args& command, CommandReturnObject &result)
+    {
+        const size_t argc = command.GetArgumentCount();
+        if (argc == 0)
+        {
+            result.AppendErrorWithFormat ("'%s' takes a one or more packet content arguments", m_cmd_name.c_str());
+            result.SetStatus (eReturnStatusFailed);
+            return false;
+        }
+        
+        ProcessGDBRemote *process = (ProcessGDBRemote *)m_interpreter.GetExecutionContext().GetProcessPtr();
+        if (process)
+        {
+            const StateType state = process->GetState();
+
+            if (StateIsStoppedState (state, true))
+            {
+                for (size_t i=0; i<argc; ++ i)
+                {
+                    const char *packet_cstr = command.GetArgumentAtIndex(0);
+                    bool send_async = false;
+                    StringExtractorGDBRemote response;
+                    process->GetGDBRemote().SendPacketAndWaitForResponse(packet_cstr, response, send_async);
+                    result.SetStatus (eReturnStatusSuccessFinishResult);
+                    Stream &output_strm = result.GetOutputStream();
+                    output_strm.Printf ("  packet: %s\n", packet_cstr);
+                    const std::string &response_str = response.GetStringRef();
+                    if (response_str.empty())
+                        output_strm.PutCString ("response: \nerror: UNIMPLEMENTED\n");
+                    else
+                        output_strm.Printf ("response: %s\n", response.GetStringRef().c_str());
+                }
+            }
+            else
+            {
+                result.AppendErrorWithFormat ("process must be stopped in order to send GDB remote packets, state is %s", StateAsCString (state));
+                result.SetStatus (eReturnStatusFailed);
+                return false;
+            }
+
+        }
+        return true;
+    }
+};
+
+class CommandObjectProcessGDBRemotePacket : public CommandObjectMultiword
+{
+private:
+    
+public:
+    CommandObjectProcessGDBRemotePacket(CommandInterpreter &interpreter) :
+        CommandObjectMultiword (interpreter,
+                                "process plugin packet",
+                                "Commands that deal with GDB remote packets.",
+                                NULL)
+    {
+        LoadSubCommand ("history", CommandObjectSP (new CommandObjectProcessGDBRemotePacketHistory (interpreter)));
+        LoadSubCommand ("send", CommandObjectSP (new CommandObjectProcessGDBRemotePacketSend (interpreter)));
+    }
+    
+    ~CommandObjectProcessGDBRemotePacket ()
+    {
+    }    
+};
+
+class CommandObjectMultiwordProcessGDBRemote : public CommandObjectMultiword
+{
+public:
+    CommandObjectMultiwordProcessGDBRemote (CommandInterpreter &interpreter) :
+        CommandObjectMultiword (interpreter,
+                                "process plugin",
+                                "A set of commands for operating on a ProcessGDBRemote process.",
+                                "process plugin <subcommand> [<subcommand-options>]")
+    {
+        LoadSubCommand ("packet", CommandObjectSP (new CommandObjectProcessGDBRemotePacket    (interpreter)));
+    }
+
+    ~CommandObjectMultiwordProcessGDBRemote ()
+    {
+    }
+};
+
+CommandObject *
+ProcessGDBRemote::GetPluginCommandObject()
+{
+    if (!m_command_sp)
+        m_command_sp.reset (new CommandObjectMultiwordProcessGDBRemote (GetTarget().GetDebugger().GetCommandInterpreter()));
+    return m_command_sp.get();
+}

@@ -36,8 +36,8 @@ using namespace lldb_private;
 // Thread Registers
 //----------------------------------------------------------------------
 
-ThreadMachCore::ThreadMachCore (const lldb::ProcessSP &process_sp, lldb::tid_t tid) :
-    Thread(process_sp, tid),
+ThreadMachCore::ThreadMachCore (Process &process, lldb::tid_t tid) :
+    Thread(process, tid),
     m_thread_name (),
     m_dispatch_queue_name (),
     m_thread_dispatch_qaddr (LLDB_INVALID_ADDRESS),
@@ -136,6 +136,9 @@ ThreadMachCore::GetPrivateStopReason ()
         if (m_thread_stop_reason_stop_id != process_stop_id ||
             (m_actual_stop_info_sp && !m_actual_stop_info_sp->IsValid()))
         {
+            if (IsStillAtLastBreakpointHit())
+                return m_actual_stop_info_sp;
+
             // TODO: can we query the initial state of the thread here?
             // For now I am just going to pretend that a SIGSTOP happened.
 

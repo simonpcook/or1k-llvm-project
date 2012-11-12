@@ -146,28 +146,11 @@ private:
   /// jobs.
   unsigned CheckInputsExist : 1;
 
-  /// Use the clang compiler where possible.
-  unsigned CCCUseClang : 1;
-
-  /// Use clang for handling C++ and Objective-C++ inputs.
-  unsigned CCCUseClangCXX : 1;
-
-  /// Use clang as a preprocessor (clang's preprocessor will still be
-  /// used where an integrated CPP would).
-  unsigned CCCUseClangCPP : 1;
-
-  /// \brief Force use of clang frontend.
-  unsigned ForcedClangUse : 1;
-
 public:
   /// Use lazy precompiled headers for PCH support.
   unsigned CCCUsePCH : 1;
 
 private:
-  /// Only use clang for the given architectures (only used when
-  /// non-empty).
-  std::set<llvm::Triple::ArchType> CCCClangArchs;
-
   /// Certain options suppress the 'no input files' warning.
   bool SuppressMissingInputWarning : 1;
 
@@ -231,9 +214,6 @@ public:
   void setInstalledDir(StringRef Value) {
     InstalledDir = Value;
   }
-
-  bool shouldForceClangUse() const { return ForcedClangUse; }
-  void setForcedClangUse(bool V = true) { ForcedClangUse = V; }
 
   /// @}
   /// @name Primary Functionality
@@ -335,13 +315,9 @@ public:
   ///
   /// \param TC - The provided tool chain for additional information on
   /// directories to search.
-  ///
-  /// \param WantFile - False when searching for an executable file, otherwise
-  /// true.  Defaults to false.
   //
   // FIXME: This should be in CompilationInfo.
-  std::string GetProgramPath(const char *Name, const ToolChain &TC,
-                              bool WantFile = false) const;
+  std::string GetProgramPath(const char *Name, const ToolChain &TC) const;
 
   /// HandleImmediateArgs - Handle any arguments which should be
   /// treated before building actions or binding tools.
@@ -386,11 +362,6 @@ public:
   ///
   /// GCC goes to extra lengths here to be a bit more robust.
   std::string GetTemporaryPath(StringRef Prefix, const char *Suffix) const;
-
-  /// ShouldUseClangCompilar - Should the clang compiler be used to
-  /// handle this action.
-  bool ShouldUseClangCompiler(const Compilation &C, const JobAction &JA,
-                              const llvm::Triple &ArchName) const;
 
   bool IsUsingLTO(const ArgList &Args) const;
 

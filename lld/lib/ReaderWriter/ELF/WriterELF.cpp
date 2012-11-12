@@ -131,7 +131,7 @@ protected:
 template<support::endianness target_endianness, bool is64Bits>
 class StockSectionChunk : public SectionChunk<target_endianness, is64Bits> {
 public:
-  virtual StringRef   segmentName() { return this->_segmentName; }
+  virtual StringRef segmentName() const { return this->_segmentName; }
   void                appendAtom(const DefinedAtom*);
   virtual void        write(uint8_t *filebuffer);
   const               ArrayRef<AtomInfo> atoms() const;
@@ -397,6 +397,7 @@ StockSectionChunk<target_endianness, is64Bits>::
     break;
   case DefinedAtom::typeZeroFill:
     this->_type        = ELF::SHT_NOBITS;
+    break;
   case DefinedAtom::typeConstant:
     this->_type        = ELF::SHT_PROGBITS;
     break;
@@ -600,14 +601,28 @@ void ELFSymbolTableChunk<target_endianness, is64Bits>
       b = ELF::STB_WEAK;
     else
       b = ELF::STB_GLOBAL;
- } else if (const AbsoluteAtom *aa = llvm::dyn_cast<const AbsoluteAtom>(a)){
+  } else if (const AbsoluteAtom *aa = llvm::dyn_cast<const AbsoluteAtom>(a)){
 //FIXME: Absolute atoms need more properties to differentiate each other
 // based on binding and type of symbol
- symbol->st_value = aa->value();
+    t = ELF::STT_OBJECT;
+
+    switch (aa->scope()) {
+    case AbsoluteAtom::scopeLinkageUnit:
+      symbol->st_other = ELF::STV_HIDDEN;
+      b = ELF::STB_LOCAL;
+      break;
+    case AbsoluteAtom::scopeTranslationUnit:
+      b = ELF::STB_LOCAL;
+      break;
+    case AbsoluteAtom::scopeGlobal:
+      b = ELF::STB_GLOBAL;
+      break;
+    }
+    symbol->st_value = aa->value();
  } else {
- symbol->st_value = 0;
- t = ELF::STT_NOTYPE;
- b = ELF::STB_LOCAL;
+   symbol->st_value = 0;
+   t = ELF::STT_NOTYPE;
+   b = ELF::STB_LOCAL;
  }
  symbol->setBindingAndType(b, t);
 
@@ -663,7 +678,9 @@ ELFHeaderChunk<target_endianness, is64Bits>
   e_ident(ELF::EI_MAG3, 'F');
   e_ident(ELF::EI_CLASS, (options.is64Bit() ? ELF::ELFCLASS64
                                             : ELF::ELFCLASS32));
-  e_ident(ELF::EI_DATA, options.endianness());
+  e_ident(ELF::EI_DATA, (options.endianness() == llvm::support::big)
+                         ? ELF::ELFDATA2MSB
+                         : ELF::ELFDATA2LSB);
   e_ident(ELF::EI_VERSION, 1);
   e_ident(ELF::EI_OSABI, ELF::ELFOSABI_NONE);
 
@@ -852,7 +869,8 @@ template<support::endianness target_endianness, bool is64Bits>
 ELFWriter<target_endianness, is64Bits>
          ::ELFWriter(const WriterOptionsELF &options)
   : _options(options)
-  , _referenceKindHandler(KindHandler::makeHandler(_options.machine()))
+  , _referenceKindHandler(KindHandler::makeHandler(_options.machine(),
+                                                   target_endianness))
 {}
 
 template<support::endianness target_endianness, bool is64Bits>
@@ -912,9 +930,7 @@ void ELFWriter<target_endianness, is64Bits>
     StringRef sectionName = a->customSectionName();
     if (a->sectionChoice() == 
         DefinedAtom::SectionChoice::sectionBasedOnContent) {
-      if (a->size() <8)
-         sectionName = ".sbss";
-      else
+      if (a->contentType() == DefinedAtom::typeZeroFill)
          sectionName = ".bss";
     }
     auto pos = sectionMap.find(sectionName);

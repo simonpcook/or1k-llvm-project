@@ -1,5 +1,28 @@
-; ModuleID = 'simple_nested_loop.s'
-; RUN: opt %loadPolly %defaultOpts -polly-codegen -enable-polly-openmp -verify-dom-info -S %s | FileCheck %s
+; RUN: opt %loadPolly %defaultOpts -polly-codegen -enable-polly-openmp -verify-dom-info -S < %s | FileCheck %s
+
+;#include <string.h>
+;#define N 10
+;
+;double A[N];
+;double B[N];
+;
+;void loop_openmp() {
+;  for (int i = 0; i < N; i++) {
+;    for (int j = 0; j < N; j++) {
+;      A[j] += j;
+;    }
+;  }
+;}
+;
+;int main () {
+;  memset(A, 0, sizeof(float) * N);
+;
+;  loop_openmp();
+;
+;  return 0;
+;}
+;
+
 target datalayout = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f32:32:32-f64:32:64-v64:64:64-v128:128:128-a0:0:64-f80:32:32-n8:16:32"
 target triple = "i386-pc-linux-gnu"
 
@@ -55,12 +78,10 @@ entry:
 
 declare void @llvm.memset.p0i8.i32(i8* nocapture, i8, i32, i32, i1) nounwind
 
-; CHECK: %omp.userContext = alloca { i32, [10 x double]* }
-; CHECK: getelementptr inbounds { i32, [10 x double]* }* %omp.userContext, i32 0, i32 0
+; CHECK: %omp.userContext = alloca { i32 }
+; CHECK: getelementptr inbounds { i32 }* %omp.userContext, i32 0, i32 0
 ; CHECK: store i32 %polly.loopiv, i32* %1
-; CHECK: getelementptr inbounds { i32, [10 x double]* }* %omp.userContext, i32 0, i32 1
-; CHECK: store [10 x double]* @A, [10 x double]** %2
-; CHECK: %omp_data = bitcast { i32, [10 x double]* }* %omp.userContext to i8*
+; CHECK: %omp_data = bitcast { i32 }* %omp.userContext to i8*
 ; CHECK: call void @GOMP_parallel_loop_runtime_start(void (i8*)* @loop_openmp.omp_subfn, i8* %omp_data, i32 0, i32 0, i32 10, i32 1)
 ; CHECK: call void @loop_openmp.omp_subfn(i8* %omp_data)
 ; CHECK: call void @GOMP_parallel_end()

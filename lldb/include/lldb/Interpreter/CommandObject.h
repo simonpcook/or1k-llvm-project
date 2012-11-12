@@ -133,7 +133,7 @@ public:
     // the Command object from the Command dictionary (aliases have their own
     // deletion scheme, so they do not need to care about this)
     virtual bool
-    IsRemovable() { return false; }
+    IsRemovable() const { return false; }
     
     bool
     IsAlias () { return m_is_alias; }
@@ -143,6 +143,31 @@ public:
 
     virtual bool
     IsMultiwordObject () { return false; }
+
+    virtual lldb::CommandObjectSP
+    GetSubcommandSP (const char *sub_cmd, StringList *matches = NULL)
+    {
+        return lldb::CommandObjectSP();
+    }
+    
+    virtual CommandObject *
+    GetSubcommandObject (const char *sub_cmd, StringList *matches = NULL)
+    {
+        return NULL;
+    }
+    
+    virtual void
+    AproposAllSubCommands (const char *prefix,
+                           const char *search_word,
+                           StringList &commands_found,
+                           StringList &commands_help)
+    {
+    }
+
+    virtual void
+    GenerateHelpText (CommandReturnObject &result)
+    {
+    }
 
     // this is needed in order to allow the SBCommand class to
     // transparently try and load subcommands - it will fail on

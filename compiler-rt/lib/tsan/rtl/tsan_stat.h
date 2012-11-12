@@ -73,6 +73,7 @@ enum StatType {
   StatAtomicStore,
   StatAtomicExchange,
   StatAtomicFetchAdd,
+  StatAtomicFetchSub,
   StatAtomicFetchAnd,
   StatAtomicFetchOr,
   StatAtomicFetchXor,
@@ -202,6 +203,7 @@ enum StatType {
   StatInt_sleep,
   StatInt_usleep,
   StatInt_nanosleep,
+  StatInt_gettimeofday,
 
   // Dynamic annotations.
   StatAnnotation,

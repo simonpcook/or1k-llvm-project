@@ -58,13 +58,13 @@ Target::GetStaticBroadcasterClass ()
 //----------------------------------------------------------------------
 Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::PlatformSP &platform_sp) :
     TargetProperties (this),
-    Broadcaster (&debugger, "lldb.target"),
+    Broadcaster (&debugger, Target::GetStaticBroadcasterClass().AsCString()),
     ExecutionContextScope (),
     m_debugger (debugger),
     m_platform_sp (platform_sp),
     m_mutex (Mutex::eMutexTypeRecursive), 
     m_arch (target_arch),
-    m_images (),
+    m_images (this),
     m_section_load_list (),
     m_breakpoint_list (false),
     m_internal_breakpoint_list (true),
@@ -523,12 +523,12 @@ CheckIfWatchpointsExhausted(Target *target, Error &error)
 // See also Watchpoint::SetWatchpointType(uint32_t type) and
 // the OptionGroupWatchpoint::WatchType enum type.
 WatchpointSP
-Target::CreateWatchpoint(lldb::addr_t addr, size_t size, uint32_t type, Error &error)
+Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *type, uint32_t kind, Error &error)
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf("Target::%s (addr = 0x%8.8llx size = %llu type = %u)\n",
-                    __FUNCTION__, addr, (uint64_t)size, type);
+                    __FUNCTION__, addr, (uint64_t)size, kind);
 
     WatchpointSP wp_sp;
     if (!ProcessIsValid())
@@ -559,7 +559,7 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, uint32_t type, Error &e
             (matched_sp->WatchpointRead() ? LLDB_WATCH_TYPE_READ : 0) |
             (matched_sp->WatchpointWrite() ? LLDB_WATCH_TYPE_WRITE : 0);
         // Return the existing watchpoint if both size and type match.
-        if (size == old_size && type == old_type) {
+        if (size == old_size && kind == old_type) {
             wp_sp = matched_sp;
             wp_sp->SetEnabled(false);
         } else {
@@ -570,13 +570,12 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, uint32_t type, Error &e
     }
 
     if (!wp_sp) {
-        Watchpoint *new_wp = new Watchpoint(addr, size);
+        Watchpoint *new_wp = new Watchpoint(*this, addr, size, type);
         if (!new_wp) {
             printf("Watchpoint ctor failed, out of memory?\n");
             return wp_sp;
         }
-        new_wp->SetWatchpointType(type);
-        new_wp->SetTarget(this);
+        new_wp->SetWatchpointType(kind);
         wp_sp.reset(new_wp);
         m_watchpoint_list.Add(wp_sp);
     }
@@ -955,6 +954,18 @@ Target::GetExecutableModulePointer ()
     return m_images.GetModulePointerAtIndex(0);
 }
 
+static void
+LoadScriptingResourceForModule (const ModuleSP &module_sp, Target *target)
+{
+    Error error;
+    if (module_sp && !module_sp->LoadScriptingResourceInTarget(target, error))
+    {
+        target->GetDebugger().GetOutputStream().Printf("unable to load scripting data for module %s - error reported was %s\n",
+                                                       module_sp->GetFileSpec().GetFileNameStrippingExtension().GetCString(),
+                                                       error.AsCString());
+    }
+}
+
 void
 Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
 {
@@ -1048,16 +1059,31 @@ Target::SetArchitecture (const ArchSpec &arch_spec)
 }
 
 void
-Target::ModuleAdded (ModuleSP &module_sp)
+Target::WillClearList (const ModuleList& module_list)
 {
-    // A module is being added to this target for the first time
-    ModuleList module_list;
-    module_list.Append(module_sp);
-    ModulesDidLoad (module_list);
 }
 
 void
-Target::ModuleUpdated (ModuleSP &old_module_sp, ModuleSP &new_module_sp)
+Target::ModuleAdded (const ModuleList& module_list, const ModuleSP &module_sp)
+{
+    // A module is being added to this target for the first time
+    ModuleList my_module_list;
+    my_module_list.Append(module_sp);
+    LoadScriptingResourceForModule(module_sp, this);
+    ModulesDidLoad (my_module_list);
+}
+
+void
+Target::ModuleRemoved (const ModuleList& module_list, const ModuleSP &module_sp)
+{
+    // A module is being added to this target for the first time
+    ModuleList my_module_list;
+    my_module_list.Append(module_sp);
+    ModulesDidUnload (my_module_list);
+}
+
+void
+Target::ModuleUpdated (const ModuleList& module_list, const ModuleSP &old_module_sp, const ModuleSP &new_module_sp)
 {
     // A module is replacing an already added module
     m_breakpoint_list.UpdateBreakpointsWhenModuleIsReplaced(old_module_sp, new_module_sp);
@@ -1066,28 +1092,28 @@ Target::ModuleUpdated (ModuleSP &old_module_sp, ModuleSP &new_module_sp)
 void
 Target::ModulesDidLoad (ModuleList &module_list)
 {
-    m_breakpoint_list.UpdateBreakpoints (module_list, true);
-    // TODO: make event data that packages up the module_list
-    BroadcastEvent (eBroadcastBitModulesLoaded, NULL);
+    if (module_list.GetSize())
+    {
+        m_breakpoint_list.UpdateBreakpoints (module_list, true);
+        // TODO: make event data that packages up the module_list
+        BroadcastEvent (eBroadcastBitModulesLoaded, NULL);
+    }
 }
 
 void
 Target::ModulesDidUnload (ModuleList &module_list)
 {
-    m_breakpoint_list.UpdateBreakpoints (module_list, false);
-
-    // Remove the images from the target image list
-    m_images.Remove(module_list);
-
-    // TODO: make event data that packages up the module_list
-    BroadcastEvent (eBroadcastBitModulesUnloaded, NULL);
+    if (module_list.GetSize())
+    {
+        m_breakpoint_list.UpdateBreakpoints (module_list, false);
+        // TODO: make event data that packages up the module_list
+        BroadcastEvent (eBroadcastBitModulesUnloaded, NULL);
+    }
 }
-
 
 bool
 Target::ModuleIsExcludedForNonModuleSpecificSearches (const FileSpec &module_file_spec)
 {
-
     if (GetBreakpointsConsultPlatformAvoidList())
     {
         ModuleList matchingModules;
@@ -1457,17 +1483,15 @@ Target::GetSharedModule (const ModuleSpec &module_spec, Error *error_ptr)
                 }
             }
             
-            m_images.Append (module_sp);
             if (old_module_sp && m_images.GetIndexForModule (old_module_sp.get()) != LLDB_INVALID_INDEX32)
             {
-                ModuleUpdated(old_module_sp, module_sp);
-                m_images.Remove (old_module_sp);
+                m_images.ReplaceModule(old_module_sp, module_sp);
                 Module *old_module_ptr = old_module_sp.get();
                 old_module_sp.reset();
                 ModuleList::RemoveSharedModuleIfOrphaned (old_module_ptr);
             }
             else
-                ModuleAdded(module_sp);
+                m_images.Append(module_sp);
         }
     }
     if (error_ptr)
@@ -1712,6 +1736,7 @@ Target::EvaluateExpression
             // we don't do anything with these for now
             break;
         case Value::eValueTypeScalar:
+        case Value::eValueTypeVector:
             clang_expr_variable_sp->m_flags |= ClangExpressionVariable::EVIsLLDBAllocated;
             clang_expr_variable_sp->m_flags |= ClangExpressionVariable::EVNeedsAllocation;
             break;
@@ -1747,7 +1772,8 @@ Target::EvaluateExpression
                                                                expr_cstr, 
                                                                prefix, 
                                                                result_valobj_sp,
-                                                               options.GetSingleThreadTimeoutUsec());
+                                                               options.GetRunOthers(),
+                                                               options.GetTimeoutUsec());
         }
     }
     
@@ -2150,7 +2176,8 @@ g_properties[] =
     { "max-children-count"                 , OptionValue::eTypeSInt64    , false, 256                       , NULL, NULL, "Maximum number of children to expand in any level of depth." },
     { "max-string-summary-length"          , OptionValue::eTypeSInt64    , false, 1024                      , NULL, NULL, "Maximum number of characters to show when using %s in summary strings." },
     { "breakpoints-use-platform-avoid-list", OptionValue::eTypeBoolean   , false, true                      , NULL, NULL, "Consult the platform module avoid list when setting non-module specific breakpoints." },
-    { "run-args"                           , OptionValue::eTypeArgs      , false, 0                         , NULL, NULL, "A list containing all the arguments to be passed to the executable when it is run." },
+    { "arg0"                               , OptionValue::eTypeString    , false, 0                         , NULL, NULL, "The first argument passed to the program in the argument array which can be different from the executable itself." },
+    { "run-args"                           , OptionValue::eTypeArgs      , false, 0                         , NULL, NULL, "A list containing all the arguments to be passed to the executable when it is run. Note that this does NOT include the argv[0] which is in target.arg0." },
     { "env-vars"                           , OptionValue::eTypeDictionary, false, OptionValue::eTypeString  , NULL, NULL, "A list of all the environment variables to be passed to the executable's environment, and their values." },
     { "inherit-env"                        , OptionValue::eTypeBoolean   , false, true                      , NULL, NULL, "Inherit the environment from the process that is running LLDB." },
     { "input-path"                         , OptionValue::eTypeFileSpec  , false, 0                         , NULL, NULL, "The file/path to be used by the executable program for reading its standard input." },
@@ -2179,6 +2206,7 @@ enum
     ePropertyMaxChildrenCount,
     ePropertyMaxSummaryLength,
     ePropertyBreakpointUseAvoidList,
+    ePropertyArg0,
     ePropertyRunArgs,
     ePropertyEnvVars,
     ePropertyInheritEnv,
@@ -2368,6 +2396,20 @@ TargetProperties::GetInlineStrategy () const
 {
     const uint32_t idx = ePropertyInlineStrategy;
     return (InlineStrategy)m_collection_sp->GetPropertyAtIndexAsEnumeration (NULL, idx, g_properties[idx].default_uint_value);
+}
+
+const char *
+TargetProperties::GetArg0 () const
+{
+    const uint32_t idx = ePropertyArg0;
+    return m_collection_sp->GetPropertyAtIndexAsString (NULL, idx, NULL);
+}
+
+void
+TargetProperties::SetArg0 (const char *arg)
+{
+    const uint32_t idx = ePropertyArg0;
+    m_collection_sp->SetPropertyAtIndexAsString (NULL, idx, arg);
 }
 
 bool

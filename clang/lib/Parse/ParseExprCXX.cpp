@@ -96,6 +96,45 @@ void Parser::CheckForTemplateAndDigraph(Token &Next, ParsedType ObjectType,
              /*AtDigraph*/false);
 }
 
+/// \brief Emits an error for a left parentheses after a double colon.
+///
+/// When a '(' is found after a '::', emit an error.  Attempt to fix the token
+/// stream by removing the '(', and the matching ')' if it found.
+void Parser::CheckForLParenAfterColonColon() {
+  if (!Tok.is(tok::l_paren))
+    return;
+
+  SourceLocation l_parenLoc = ConsumeParen(), r_parenLoc;
+  Token Tok1 = getCurToken();
+  if (!Tok1.is(tok::identifier) && !Tok1.is(tok::star))
+    return;
+
+  if (Tok1.is(tok::identifier)) {
+    Token Tok2 = GetLookAheadToken(1);
+    if (Tok2.is(tok::r_paren)) {
+      ConsumeToken();
+      PP.EnterToken(Tok1);
+      r_parenLoc = ConsumeParen();
+    }
+  } else if (Tok1.is(tok::star)) {
+    Token Tok2 = GetLookAheadToken(1);
+    if (Tok2.is(tok::identifier)) {
+      Token Tok3 = GetLookAheadToken(2);
+      if (Tok3.is(tok::r_paren)) {
+        ConsumeToken();
+        ConsumeToken();
+        PP.EnterToken(Tok2);
+        PP.EnterToken(Tok1);
+        r_parenLoc = ConsumeParen();
+      }
+    }
+  }
+
+  Diag(l_parenLoc, diag::err_paren_after_colon_colon)
+      << FixItHint::CreateRemoval(l_parenLoc)
+      << FixItHint::CreateRemoval(r_parenLoc);
+}
+
 /// \brief Parse global scope or nested-name-specifier if present.
 ///
 /// Parses a C++ global scope specifier ('::') or nested-name-specifier (which
@@ -160,7 +199,9 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     // '::' - Global scope qualifier.
     if (Actions.ActOnCXXGlobalScopeSpecifier(getCurScope(), ConsumeToken(), SS))
       return true;
-    
+
+    CheckForLParenAfterColonColon();
+
     HasScopeSpecifier = true;
   }
 
@@ -370,6 +411,8 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
       assert((Tok.is(tok::coloncolon) || Tok.is(tok::colon)) &&
              "NextToken() not working properly!");
       SourceLocation CCLoc = ConsumeToken();
+
+      CheckForLParenAfterColonColon();
 
       HasScopeSpecifier = true;
       if (Actions.ActOnCXXNestedNameSpecifier(getCurScope(), II, IdLoc, CCLoc,
@@ -756,10 +799,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                               Scope::FunctionPrototypeScope |
                               Scope::DeclScope);
 
-    SourceLocation DeclLoc, DeclEndLoc;
+    SourceLocation DeclEndLoc;
     BalancedDelimiterTracker T(*this, tok::l_paren);
     T.consumeOpen();
-    DeclLoc = T.getOpenLocation();
+    SourceLocation LParenLoc = T.getOpenLocation();
 
     // Parse parameter-declaration-clause.
     ParsedAttributes Attr(AttrFactory);
@@ -770,7 +813,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
       ParseParameterDeclarationClause(D, Attr, ParamInfo, EllipsisLoc);
 
     T.consumeClose();
-    DeclEndLoc = T.getCloseLocation();
+    SourceLocation RParenLoc = T.getCloseLocation();
+    DeclEndLoc = RParenLoc;
 
     // Parse 'mutable'[opt].
     SourceLocation MutableLoc;
@@ -796,9 +840,12 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     // Parse attribute-specifier[opt].
     MaybeParseCXX0XAttributes(Attr, &DeclEndLoc);
 
+    SourceLocation FunLocalRangeEnd = DeclEndLoc;
+
     // Parse trailing-return-type[opt].
     TypeResult TrailingReturnType;
     if (Tok.is(tok::arrow)) {
+      FunLocalRangeEnd = Tok.getLocation();
       SourceRange Range;
       TrailingReturnType = ParseTrailingReturnType(Range);
       if (Range.getEnd().isValid())
@@ -807,15 +854,17 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 
     PrototypeScope.Exit();
 
+    SourceLocation NoLoc;
     D.AddTypeInfo(DeclaratorChunk::getFunction(/*hasProto=*/true,
-                                           /*isVariadic=*/EllipsisLoc.isValid(),
-                                           /*isAmbiguous=*/false, EllipsisLoc,
+                                           /*isAmbiguous=*/false,
+                                           LParenLoc,
                                            ParamInfo.data(), ParamInfo.size(),
+                                           EllipsisLoc, RParenLoc,
                                            DS.getTypeQualifiers(),
                                            /*RefQualifierIsLValueRef=*/true,
-                                           /*RefQualifierLoc=*/SourceLocation(),
-                                         /*ConstQualifierLoc=*/SourceLocation(),
-                                      /*VolatileQualifierLoc=*/SourceLocation(),
+                                           /*RefQualifierLoc=*/NoLoc,
+                                           /*ConstQualifierLoc=*/NoLoc,
+                                           /*VolatileQualifierLoc=*/NoLoc,
                                            MutableLoc,
                                            ESpecType, ESpecRange.getBegin(),
                                            DynamicExceptions.data(),
@@ -823,7 +872,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                            DynamicExceptions.size(),
                                            NoexceptExpr.isUsable() ?
                                              NoexceptExpr.get() : 0,
-                                           DeclLoc, DeclEndLoc, D,
+                                           LParenLoc, FunLocalRangeEnd, D,
                                            TrailingReturnType),
                   Attr, DeclEndLoc);
   } else if (Tok.is(tok::kw_mutable) || Tok.is(tok::arrow)) {
@@ -852,25 +901,28 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     }
 
     ParsedAttributes Attr(AttrFactory);
+    SourceLocation NoLoc;
     D.AddTypeInfo(DeclaratorChunk::getFunction(/*hasProto=*/true,
-                     /*isVariadic=*/false,
-                     /*isAmbiguous=*/false,
-                     /*EllipsisLoc=*/SourceLocation(),
-                     /*Params=*/0, /*NumParams=*/0,
-                     /*TypeQuals=*/0,
-                     /*RefQualifierIsLValueRef=*/true,
-                     /*RefQualifierLoc=*/SourceLocation(),
-                     /*ConstQualifierLoc=*/SourceLocation(),
-                     /*VolatileQualifierLoc=*/SourceLocation(),
-                     MutableLoc,
-                     EST_None, 
-                     /*ESpecLoc=*/SourceLocation(),
-                     /*Exceptions=*/0,
-                     /*ExceptionRanges=*/0,
-                     /*NumExceptions=*/0,
-                     /*NoexceptExpr=*/0,
-                     DeclLoc, DeclEndLoc, D,
-                     TrailingReturnType),
+                                               /*isAmbiguous=*/false,
+                                               /*LParenLoc=*/NoLoc,
+                                               /*Params=*/0,
+                                               /*NumParams=*/0,
+                                               /*EllipsisLoc=*/NoLoc,
+                                               /*RParenLoc=*/NoLoc,
+                                               /*TypeQuals=*/0,
+                                               /*RefQualifierIsLValueRef=*/true,
+                                               /*RefQualifierLoc=*/NoLoc,
+                                               /*ConstQualifierLoc=*/NoLoc,
+                                               /*VolatileQualifierLoc=*/NoLoc,
+                                               MutableLoc,
+                                               EST_None,
+                                               /*ESpecLoc=*/NoLoc,
+                                               /*Exceptions=*/0,
+                                               /*ExceptionRanges=*/0,
+                                               /*NumExceptions=*/0,
+                                               /*NoexceptExpr=*/0,
+                                               DeclLoc, DeclEndLoc, D,
+                                               TrailingReturnType),
                   Attr, DeclEndLoc);
   }
   
@@ -1872,8 +1924,9 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
 
   // Parse a literal-operator-id.
   //
-  //   literal-operator-id: [C++0x 13.5.8]
-  //     operator "" identifier
+  //   literal-operator-id: C++11 [over.literal]
+  //     operator string-literal identifier
+  //     operator user-defined-string-literal
 
   if (getLangOpts().CPlusPlus0x && isTokenStringLiteral()) {
     Diag(Tok.getLocation(), diag::warn_cxx98_compat_literal_operator);
@@ -1887,6 +1940,9 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
     llvm::SmallVector<SourceLocation, 4> TokLocs;
     while (isTokenStringLiteral()) {
       if (!Tok.is(tok::string_literal) && !DiagId) {
+        // C++11 [over.literal]p1:
+        //   The string-literal or user-defined-string-literal in a
+        //   literal-operator-id shall have no encoding-prefix [...].
         DiagLoc = Tok.getLocation();
         DiagId = diag::err_literal_operator_string_prefix;
       }
@@ -1908,9 +1964,6 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
         Lexer::AdvanceToTokenCharacter(TokLocs[Literal.getUDSuffixToken()],
                                        Literal.getUDSuffixOffset(),
                                        PP.getSourceManager(), getLangOpts());
-      // This form is not permitted by the standard (yet).
-      DiagLoc = SuffixLoc;
-      DiagId = diag::err_literal_operator_missing_space;
     } else if (Tok.is(tok::identifier)) {
       II = Tok.getIdentifierInfo();
       SuffixLoc = ConsumeToken();
@@ -1922,6 +1975,10 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
 
     // The string literal must be empty.
     if (!Literal.GetString().empty() || Literal.Pascal) {
+      // C++11 [over.literal]p1:
+      //   The string-literal or user-defined-string-literal in a
+      //   literal-operator-id shall [...] contain no characters
+      //   other than the implicit terminating '\0'.
       DiagLoc = TokLocs.front();
       DiagId = diag::err_literal_operator_string_not_empty;
     }

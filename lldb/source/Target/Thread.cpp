@@ -136,13 +136,112 @@ ThreadProperties::GetTraceEnabledState() const
     return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
 }
 
+//------------------------------------------------------------------
+// Thread Event Data
+//------------------------------------------------------------------
 
-Thread::Thread (const ProcessSP &process_sp, lldb::tid_t tid) :
+
+const ConstString &
+Thread::ThreadEventData::GetFlavorString ()
+{
+    static ConstString g_flavor ("Thread::ThreadEventData");
+    return g_flavor;
+}
+
+Thread::ThreadEventData::ThreadEventData (const lldb::ThreadSP thread_sp) :
+    m_thread_sp (thread_sp),
+    m_stack_id ()
+{
+}
+
+Thread::ThreadEventData::ThreadEventData (const lldb::ThreadSP thread_sp, const StackID &stack_id) :
+    m_thread_sp (thread_sp),
+    m_stack_id (stack_id)
+{
+}
+
+Thread::ThreadEventData::ThreadEventData () :
+    m_thread_sp (),
+    m_stack_id ()
+{
+}
+
+Thread::ThreadEventData::~ThreadEventData ()
+{
+}
+
+void
+Thread::ThreadEventData::Dump (Stream *s) const
+{
+
+}
+
+const Thread::ThreadEventData *
+Thread::ThreadEventData::GetEventDataFromEvent (const Event *event_ptr)
+{
+    if (event_ptr)
+    {
+        const EventData *event_data = event_ptr->GetData();
+        if (event_data && event_data->GetFlavor() == ThreadEventData::GetFlavorString())
+            return static_cast <const ThreadEventData *> (event_ptr->GetData());
+    }
+    return NULL;
+}
+
+ThreadSP
+Thread::ThreadEventData::GetThreadFromEvent (const Event *event_ptr)
+{
+    ThreadSP thread_sp;
+    const ThreadEventData *event_data = GetEventDataFromEvent (event_ptr);
+    if (event_data)
+        thread_sp = event_data->GetThread();
+    return thread_sp;
+}
+
+StackID
+Thread::ThreadEventData::GetStackIDFromEvent (const Event *event_ptr)
+{
+    StackID stack_id;
+    const ThreadEventData *event_data = GetEventDataFromEvent (event_ptr);
+    if (event_data)
+        stack_id = event_data->GetStackID();
+    return stack_id;
+}
+
+StackFrameSP
+Thread::ThreadEventData::GetStackFrameFromEvent (const Event *event_ptr)
+{
+    const ThreadEventData *event_data = GetEventDataFromEvent (event_ptr);
+    StackFrameSP frame_sp;
+    if (event_data)
+    {
+        ThreadSP thread_sp = event_data->GetThread();
+        if (thread_sp)
+        {
+            frame_sp = thread_sp->GetStackFrameList()->GetFrameWithStackID (event_data->GetStackID());
+        }
+    }
+    return frame_sp;
+}
+
+//------------------------------------------------------------------
+// Thread class
+//------------------------------------------------------------------
+
+ConstString &
+Thread::GetStaticBroadcasterClass ()
+{
+    static ConstString class_name ("lldb.thread");
+    return class_name;
+}
+
+Thread::Thread (Process &process, lldb::tid_t tid) :
     ThreadProperties (false),
     UserID (tid),
-    m_process_wp (process_sp),
+    Broadcaster(&process.GetTarget().GetDebugger(), Thread::GetStaticBroadcasterClass().AsCString()),
+    m_process_wp (process.shared_from_this()),
     m_actual_stop_info_sp (),
-    m_index_id (process_sp->GetNextThreadIndexID ()),
+    m_index_id (process.GetNextThreadIndexID ()),
     m_reg_context_sp (),
     m_state (eStateUnloaded),
     m_state_mutex (Mutex::eMutexTypeRecursive),
@@ -163,6 +262,7 @@ Thread::Thread (const ProcessSP &process_sp, lldb::tid_t tid) :
     if (log)
         log->Printf ("%p Thread::Thread(tid = 0x%4.4llx)", this, GetID());
 
+    CheckInWithManager();
     QueueFundamentalPlan(true);
 }
 
@@ -179,12 +279,49 @@ Thread::~Thread()
 void 
 Thread::DestroyThread ()
 {
+    m_destroy_called = true;
     m_plan_stack.clear();
     m_discarded_plan_stack.clear();
     m_completed_plan_stack.clear();
     m_actual_stop_info_sp.reset();
-    m_destroy_called = true;
+    m_reg_context_sp.reset();
+    m_unwinder_ap.reset();
+    Mutex::Locker locker(m_frame_mutex);
+    m_curr_frames_sp.reset();
+    m_prev_frames_sp.reset();
 }
+
+void
+Thread::BroadcastSelectedFrameChange(StackID &new_frame_id)
+{
+    if (EventTypeHasListeners(eBroadcastBitSelectedFrameChanged))
+        BroadcastEvent(eBroadcastBitSelectedFrameChanged, new ThreadEventData (this->shared_from_this(), new_frame_id));
+}
+
+uint32_t
+Thread::SetSelectedFrame (lldb_private::StackFrame *frame, bool broadcast)
+{
+    uint32_t ret_value = GetStackFrameList()->SetSelectedFrame(frame);
+    if (broadcast)
+        BroadcastSelectedFrameChange(frame->GetStackID());
+    return ret_value;
+}
+
+bool
+Thread::SetSelectedFrameByIndex (uint32_t frame_idx, bool broadcast)
+{
+    StackFrameSP frame_sp(GetStackFrameList()->GetFrameAtIndex (frame_idx));
+    if (frame_sp)
+    {
+        GetStackFrameList()->SetSelectedFrame(frame_sp.get());
+        if (broadcast)
+            BroadcastSelectedFrameChange(frame_sp->GetStackID());
+        return true;
+    }
+    else
+        return false;
+}
+
 
 lldb::StopInfoSP
 Thread::GetStopInfo ()
@@ -308,9 +445,11 @@ Thread::SetupForResume ()
         // telling the current plan it will resume, since we might change what the current
         // plan is.
 
-        lldb::addr_t pc = GetRegisterContext()->GetPC();
-        BreakpointSiteSP bp_site_sp = GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
-        if (bp_site_sp && bp_site_sp->IsEnabled())
+        StopReason stop_reason = lldb::eStopReasonInvalid;
+        StopInfoSP stop_info_sp = GetStopInfo();
+        if (stop_info_sp.get())
+            stop_reason = stop_info_sp->GetStopReason();
+        if (stop_reason == lldb::eStopReasonBreakpoint)
         {
             // Note, don't assume there's a ThreadPlanStepOverBreakpoint, the target may not require anything
             // special to step over a breakpoint.
@@ -374,7 +513,7 @@ Thread::WillResume (StateType resume_state)
     // If the WillResume for the plan says we are faking a resume, then it will have set an appropriate stop info.
     // In that case, don't reset it here.
     
-    if (need_to_resume)
+    if (need_to_resume && resume_state != eStateSuspended)
     {
         m_actual_stop_info_sp.reset();
     }
@@ -1285,7 +1424,7 @@ Thread::GetFrameWithConcreteFrameIndex (uint32_t unwind_idx)
 
 
 Error
-Thread::ReturnFromFrameWithIndex (uint32_t frame_idx, lldb::ValueObjectSP return_value_sp)
+Thread::ReturnFromFrameWithIndex (uint32_t frame_idx, lldb::ValueObjectSP return_value_sp, bool broadcast)
 {
     StackFrameSP frame_sp = GetStackFrameAtIndex (frame_idx);
     Error return_error;
@@ -1295,11 +1434,11 @@ Thread::ReturnFromFrameWithIndex (uint32_t frame_idx, lldb::ValueObjectSP return
         return_error.SetErrorStringWithFormat("Could not find frame with index %d in thread 0x%llx.", frame_idx, GetID());
     }
     
-    return ReturnFromFrame(frame_sp, return_value_sp);
+    return ReturnFromFrame(frame_sp, return_value_sp, broadcast);
 }
 
 Error
-Thread::ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return_value_sp)
+Thread::ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return_value_sp, bool broadcast)
 {
     Error return_error;
     
@@ -1319,6 +1458,7 @@ Thread::ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return
         if (!abi)
         {
             return_error.SetErrorString("Could not find ABI to set return value.");
+            return return_error;
         }
         SymbolContext sc = frame_sp->GetSymbolContext(eSymbolContextFunction);
         
@@ -1358,6 +1498,8 @@ Thread::ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return
     {
         thread->DiscardThreadPlans(true);
         thread->ClearStackFrames();
+        if (broadcast && EventTypeHasListeners(eBroadcastBitStackChanged))
+            BroadcastEvent(eBroadcastBitStackChanged, new ThreadEventData (this->shared_from_this()));
         return return_error;
     }
     else
@@ -1577,4 +1719,23 @@ Thread::Flush ()
 {
     ClearStackFrames ();
     m_reg_context_sp.reset();
+}
+
+const bool
+Thread::IsStillAtLastBreakpointHit ()
+{
+    // If we are currently stopped at a breakpoint, always return that stopinfo and don't reset it.
+    // This allows threads to maintain their breakpoint stopinfo, such as when thread-stepping in
+    // multithreaded programs.
+    if (m_actual_stop_info_sp) {
+        StopReason stop_reason = m_actual_stop_info_sp->GetStopReason();
+        if (stop_reason == lldb::eStopReasonBreakpoint) {
+            uint64_t value = m_actual_stop_info_sp->GetValue();
+            lldb::addr_t pc = GetRegisterContext()->GetPC();
+            BreakpointSiteSP bp_site_sp = GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
+            if (bp_site_sp && value == bp_site_sp->GetID())
+                return true;
+        }
+    }
+    return false;
 }

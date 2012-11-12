@@ -42,7 +42,7 @@
 #include "llvm/Analysis/ScalarEvolutionExpander.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #define CLOOG_INT_GMP 1
@@ -283,14 +283,12 @@ private:
   ///
   /// Create a list of values that has to be stored into the OpenMP subfuncition
   /// structure.
-  SetVector<Value*> getOMPValues();
+  SetVector<Value*> getOMPValues(const clast_stmt *Body);
 
-  /// @brief Update the internal structures according to a Value Map.
+  /// @brief Update ClastVars and ValueMap according to a value map.
   ///
-  /// @param VMap     A map from old to new values.
-  /// @param Reverse  If true, we assume the update should be reversed.
-  void updateWithValueMap(OMPGenerator::ValueToValueMapTy &VMap,
-                          bool Reverse);
+  /// @param VMap A map from old to new values.
+  void updateWithValueMap(OMPGenerator::ValueToValueMapTy &VMap);
 
   /// @brief Create an OpenMP parallel for loop.
   ///
@@ -358,7 +356,7 @@ private:
 }
 
 IntegerType *ClastStmtCodeGen::getIntPtrTy() {
-  return P->getAnalysis<TargetData>().getIntPtrType(Builder.getContext());
+  return P->getAnalysis<DataLayout>().getIntPtrType(Builder.getContext());
 }
 
 const std::vector<std::string> &ClastStmtCodeGen::getParallelLoops() {
@@ -448,7 +446,8 @@ void ClastStmtCodeGen::codegenForSequential(const clast_for *f) {
   UpperBound = ExpGen.codegen(f->UB, IntPtrTy);
   Stride = Builder.getInt(APInt_from_MPZ(f->stride));
 
-  IV = createLoop(LowerBound, UpperBound, Stride, Builder, P, AfterBB);
+  IV = createLoop(LowerBound, UpperBound, Stride, Builder, P, AfterBB,
+                  CmpInst::ICMP_SLE);
 
   // Add loop iv to symbols.
   ClastVars[f->iterator] = IV;
@@ -461,7 +460,42 @@ void ClastStmtCodeGen::codegenForSequential(const clast_for *f) {
   Builder.SetInsertPoint(AfterBB->begin());
 }
 
-SetVector<Value*> ClastStmtCodeGen::getOMPValues() {
+// Helper class to determine all scalar parameters used in the basic blocks of a
+// clast. Scalar parameters are scalar variables defined outside of the SCoP.
+class ParameterVisitor : public ClastVisitor {
+  std::set<Value *> Values;
+public:
+  ParameterVisitor() : ClastVisitor(), Values() { }
+
+  void visitUser(const clast_user_stmt *Stmt) {
+    const ScopStmt *S = static_cast<const ScopStmt *>(Stmt->statement->usr);
+    const BasicBlock *BB = S->getBasicBlock();
+
+    // Check all the operands of instructions in the basic block.
+    for (BasicBlock::const_iterator BI = BB->begin(), BE = BB->end(); BI != BE;
+         ++BI) {
+      const Instruction &Inst = *BI;
+      for (Instruction::const_op_iterator II = Inst.op_begin(),
+           IE = Inst.op_end(); II != IE; ++II) {
+        Value *SrcVal = *II;
+
+        if (Instruction *OpInst = dyn_cast<Instruction>(SrcVal))
+          if (S->getParent()->getRegion().contains(OpInst))
+            continue;
+
+        if (isa<Instruction>(SrcVal) || isa<Argument>(SrcVal))
+          Values.insert(SrcVal);
+      }
+    }
+  }
+
+  // Iterator to iterate over the values found.
+  typedef std::set<Value *>::const_iterator const_iterator;
+  inline const_iterator begin() const { return Values.begin(); }
+  inline const_iterator end()   const { return Values.end();   }
+};
+
+SetVector<Value*> ClastStmtCodeGen::getOMPValues(const clast_stmt *Body) {
   SetVector<Value*> Values;
 
   // The clast variables
@@ -469,41 +503,26 @@ SetVector<Value*> ClastStmtCodeGen::getOMPValues() {
        I != E; I++)
     Values.insert(I->second);
 
-  // The memory reference base addresses
-  for (Scop::iterator SI = S->begin(), SE = S->end(); SI != SE; ++SI) {
-    ScopStmt *Stmt = *SI;
-    for (SmallVector<MemoryAccess*, 8>::iterator I = Stmt->memacc_begin(),
-         E = Stmt->memacc_end(); I != E; ++I) {
-      Value *BaseAddr = const_cast<Value*>((*I)->getBaseAddr());
-      Values.insert((BaseAddr));
-    }
+  // Find the temporaries that are referenced in the clast statements'
+  // basic blocks but are not defined by these blocks (e.g., references
+  // to function arguments or temporaries defined before the start of
+  // the SCoP).
+  ParameterVisitor Params;
+  Params.visit(Body);
+
+  for (ParameterVisitor::const_iterator PI = Params.begin(), PE = Params.end();
+       PI != PE; ++PI) {
+    Value *V = *PI;
+    Values.insert(V);
+    DEBUG(dbgs() << "Adding temporary for OMP copy-in: " << *V << "\n");
   }
 
   return Values;
 }
 
-void ClastStmtCodeGen::updateWithValueMap(OMPGenerator::ValueToValueMapTy &VMap,
-                                          bool Reverse) {
+void ClastStmtCodeGen::updateWithValueMap(
+  OMPGenerator::ValueToValueMapTy &VMap) {
   std::set<Value*> Inserted;
-
-  if (Reverse) {
-    OMPGenerator::ValueToValueMapTy ReverseMap;
-
-    for (std::map<Value*, Value*>::iterator I = VMap.begin(), E = VMap.end();
-         I != E; ++I)
-       ReverseMap.insert(std::make_pair(I->second, I->first));
-
-    for (CharMapT::iterator I = ClastVars.begin(), E = ClastVars.end();
-         I != E; I++) {
-      ClastVars[I->first] = ReverseMap[I->second];
-      Inserted.insert(I->second);
-    }
-
-    /// FIXME: At the moment we do not reverse the update of the ValueMap.
-    ///        This is incomplet, but the failure should be obvious, such that
-    ///        we can fix this later.
-    return;
-  }
 
   for (CharMapT::iterator I = ClastVars.begin(), E = ClastVars.end();
        I != E; I++) {
@@ -511,8 +530,8 @@ void ClastStmtCodeGen::updateWithValueMap(OMPGenerator::ValueToValueMapTy &VMap,
     Inserted.insert(I->second);
   }
 
-  for (std::map<Value*, Value*>::iterator I = VMap.begin(), E = VMap.end();
-       I != E; ++I) {
+  for (OMPGenerator::ValueToValueMapTy::iterator I = VMap.begin(),
+       E = VMap.end(); I != E; ++I) {
     if (Inserted.count(I->first))
       continue;
 
@@ -544,20 +563,25 @@ void ClastStmtCodeGen::codegenForOpenMP(const clast_for *For) {
   LB = ExpGen.codegen(For->LB, IntPtrTy);
   UB = ExpGen.codegen(For->UB, IntPtrTy);
 
-  Values = getOMPValues();
+  Values = getOMPValues(For->body);
 
   IV = OMPGen.createParallelLoop(LB, UB, Stride, Values, VMap, &LoopBody);
   BasicBlock::iterator AfterLoop = Builder.GetInsertPoint();
   Builder.SetInsertPoint(LoopBody);
 
-  updateWithValueMap(VMap, /* reverse */ false);
+  // Save the current values.
+  const ValueMapT ValueMapCopy = ValueMap;
+  const CharMapT ClastVarsCopy = ClastVars;
+
+  updateWithValueMap(VMap);
   ClastVars[For->iterator] = IV;
 
   if (For->body)
     codegen(For->body);
 
-  ClastVars.erase(For->iterator);
-  updateWithValueMap(VMap, /* reverse */ true);
+  // Restore the original values.
+  ValueMap = ValueMapCopy;
+  ClastVars = ClastVarsCopy;
 
   clearDomtree((*LoopBody).getParent()->getParent(),
                P->getAnalysis<DominatorTree>());
@@ -696,9 +720,16 @@ void ClastStmtCodeGen::codegenForGPGPU(const clast_for *F) {
     VMap.insert(std::make_pair<Value*, Value*>(OldIV, IV));
   }
 
-  updateWithValueMap(VMap, /* reverse */ false);
+  // Preserve the current values.
+  const ValueMapT ValueMapCopy = ValueMap;
+  const CharMapT ClastVarsCopy = ClastVars;
+  updateWithVMap(VMap);
+
   BlockGenerator::generate(Builder, *Statement, ValueMap, P);
-  updateWithValueMap(VMap, /* reverse */ true);
+
+  // Restore the original values.
+  ValueMap = ValueMapCopy;
+  ClastVars = ClastVarsCopy;
 
   if (AfterBB)
     Builder.SetInsertPoint(AfterBB->begin());
@@ -998,7 +1029,7 @@ class CodeGeneration : public ScopPass {
     AU.addRequired<ScalarEvolution>();
     AU.addRequired<ScopDetection>();
     AU.addRequired<ScopInfo>();
-    AU.addRequired<TargetData>();
+    AU.addRequired<DataLayout>();
 
     AU.addPreserved<CloogInfo>();
     AU.addPreserved<Dependences>();
@@ -1029,7 +1060,7 @@ INITIALIZE_PASS_DEPENDENCY(DominatorTree)
 INITIALIZE_PASS_DEPENDENCY(RegionInfo)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
 INITIALIZE_PASS_DEPENDENCY(ScopDetection)
-INITIALIZE_PASS_DEPENDENCY(TargetData)
+INITIALIZE_PASS_DEPENDENCY(DataLayout)
 INITIALIZE_PASS_END(CodeGeneration, "polly-codegen",
                       "Polly - Create LLVM-IR from SCoPs", false, false)
 

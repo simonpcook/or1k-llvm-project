@@ -341,6 +341,11 @@ def Final : InheritableAttr {
   let SemaHandler = 0;
 }
 
+def MinSize : InheritableAttr {
+  let Spellings = [GNU<"minsize">];
+  let Subjects = [Function];
+}
+
 def Format : InheritableAttr {
   let Spellings = [GNU<"format">];
   let Args = [StringArgument<"Type">, IntArgument<"FormatIdx">,
@@ -559,6 +564,10 @@ def Ownership : InheritableAttr {
 
 def Packed : InheritableAttr {
   let Spellings = [GNU<"packed">];
+}
+
+def PnaclCall : InheritableAttr {
+  let Spellings = [GNU<"pnaclcall">];
 }
 
 def Pcs : InheritableAttr {

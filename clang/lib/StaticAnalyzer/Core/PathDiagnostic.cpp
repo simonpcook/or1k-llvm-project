@@ -586,8 +586,8 @@ PathDiagnosticLocation
     const CFGBlock *BSrc = BE->getSrc();
     S = BSrc->getTerminatorCondition();
   }
-  else if (const PostStmt *PS = dyn_cast<PostStmt>(&P)) {
-    S = PS->getStmt();
+  else if (const StmtPoint *SP = dyn_cast<StmtPoint>(&P)) {
+    S = SP->getStmt();
   }
   else if (const PostImplicitCall *PIE = dyn_cast<PostImplicitCall>(&P)) {
     return PathDiagnosticLocation(PIE->getLocation(), SMng);
@@ -602,6 +602,9 @@ PathDiagnosticLocation
                                 CEE->getLocationContext(),
                                 SMng);
   }
+  else {
+    llvm_unreachable("Unexpected ProgramPoint");
+  }
 
   return PathDiagnosticLocation(S, SMng, P.getLocationContext());
 }
@@ -612,19 +615,24 @@ PathDiagnosticLocation
   assert(N && "Cannot create a location with a null node.");
 
   const ExplodedNode *NI = N;
+  const Stmt *S = 0;
 
   while (NI) {
     ProgramPoint P = NI->getLocation();
-    const LocationContext *LC = P.getLocationContext();
     if (const StmtPoint *PS = dyn_cast<StmtPoint>(&P))
-      return PathDiagnosticLocation(PS->getStmt(), SM, LC);
-    else if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P)) {
-      const Stmt *Term = BE->getSrc()->getTerminator();
-      if (Term) {
-        return PathDiagnosticLocation(Term, SM, LC);
-      }
-    }
+      S = PS->getStmt();
+    else if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P))
+      S = BE->getSrc()->getTerminator();
+    if (S)
+      break;
     NI = NI->succ_empty() ? 0 : *(NI->succ_begin());
+  }
+
+  if (S) {
+    const LocationContext *LC = NI->getLocationContext();
+    if (S->getLocStart().isValid())
+      return PathDiagnosticLocation(S, SM, LC);
+    return PathDiagnosticLocation(getValidSourceLocation(S, LC), SM);
   }
 
   return createDeclEnd(N->getLocationContext(), SM);

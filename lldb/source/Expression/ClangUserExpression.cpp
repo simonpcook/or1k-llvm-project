@@ -31,6 +31,10 @@
 #include "lldb/Expression/ExpressionSourceCode.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Symbol/Block.h"
+#include "lldb/Symbol/ClangASTContext.h"
+#include "lldb/Symbol/Function.h"
+#include "lldb/Symbol/Type.h"
+#include "lldb/Symbol/ClangExternalASTSourceCommon.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
@@ -190,6 +194,29 @@ ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Error &err)
             
             if (!method_decl->isInstanceMethod())
                 m_static_method = true;
+        }
+    }
+    else if (clang::FunctionDecl *function_decl = llvm::dyn_cast<clang::FunctionDecl>(decl_context))
+    {
+        // We might also have a function that said in the debug information that it captured an
+        // object pointer.  The best way to deal with getting to the ivars at present it by pretending
+        // that this is a method of a class in whatever runtime the debug info says the object pointer
+        // belongs to.  Do that here.
+        
+        ClangASTMetadata *metadata = ClangASTContext::GetMetadata (&decl_context->getParentASTContext(), (uintptr_t) function_decl);
+        if (metadata && metadata->HasObjectPtr())
+        {
+            lldb::LanguageType language = metadata->GetObjectPtrLanguage();
+            if (language == lldb::eLanguageTypeC_plus_plus)
+            {
+                m_cplusplus = true;
+                m_needs_object_ptr = true;
+            }
+            else if (language == lldb::eLanguageTypeObjC)
+            {
+                m_objectivec = true;
+                m_needs_object_ptr = true;
+            }
         }
     }
 }
@@ -544,7 +571,8 @@ ClangUserExpression::Execute (Stream &error_stream,
                               bool discard_on_error,
                               ClangUserExpression::ClangUserExpressionSP &shared_ptr_to_me,
                               lldb::ClangExpressionVariableSP &result,
-                              uint32_t single_thread_timeout_usec)
+                              bool run_others,
+                              uint32_t timeout_usec)
 {
     // The expression log is quite verbose, and if you're just tracking the execution of the
     // expression, it's quite convenient to have these logs come out with the STEP log as well.
@@ -552,7 +580,7 @@ ClangUserExpression::Execute (Stream &error_stream,
 
     if (m_jit_start_addr != LLDB_INVALID_ADDRESS)
     {
-        lldb::addr_t struct_address;
+        lldb::addr_t struct_address = LLDB_INVALID_ADDRESS;
                 
         lldb::addr_t object_ptr = 0;
         lldb::addr_t cmd_ptr = 0;
@@ -594,7 +622,7 @@ ClangUserExpression::Execute (Stream &error_stream,
                                                                                    stop_others, 
                                                                                    try_all_threads, 
                                                                                    discard_on_error,
-                                                                                   single_thread_timeout_usec, 
+                                                                                   timeout_usec, 
                                                                                    error_stream);
         
         if (exe_ctx.GetProcessPtr())
@@ -655,10 +683,21 @@ ClangUserExpression::Evaluate (ExecutionContext &exe_ctx,
                                const char *expr_cstr,
                                const char *expr_prefix,
                                lldb::ValueObjectSP &result_valobj_sp,
-                               uint32_t single_thread_timeout_usec)
+                               bool run_others,
+                               uint32_t timeout_usec)
 {
     Error error;
-    return EvaluateWithError (exe_ctx, execution_policy, language, desired_type, discard_on_error, expr_cstr, expr_prefix, result_valobj_sp, error, single_thread_timeout_usec);
+    return EvaluateWithError (exe_ctx,
+                              execution_policy,
+                              language,
+                              desired_type,
+                              discard_on_error,
+                              expr_cstr,
+                              expr_prefix,
+                              result_valobj_sp,
+                              error,
+                              run_others,
+                              timeout_usec);
 }
 
 ExecutionResults
@@ -671,7 +710,8 @@ ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
                                         const char *expr_prefix,
                                         lldb::ValueObjectSP &result_valobj_sp,
                                         Error &error,
-                                        uint32_t single_thread_timeout_usec)
+                                        bool run_others,
+                                        uint32_t timeout_usec)
 {
     lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
 
@@ -747,7 +787,8 @@ ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
                                                              discard_on_error,
                                                              user_expression_sp, 
                                                              expr_result,
-                                                             single_thread_timeout_usec);
+                                                             run_others,
+                                                             timeout_usec);
             
             if (execution_results != eExecutionCompleted)
             {

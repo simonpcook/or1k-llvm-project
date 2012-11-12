@@ -1071,6 +1071,25 @@ public:
         m_did_calculate_complete_objc_class_type = true;
     }
     
+    //------------------------------------------------------------------
+    /// Find out if a SBValue might have children.
+    ///
+    /// This call is much more efficient than CalculateNumChildren() as
+    /// it doesn't need to complete the underlying type. This is designed
+    /// to be used in a UI environment in order to detect if the
+    /// disclosure triangle should be displayed or not.
+    ///
+    /// This function returns true for class, union, structure,
+    /// pointers, references, arrays and more. Again, it does so without
+    /// doing any expensive type completion.
+    ///
+    /// @return
+    ///     Returns \b true if the SBValue might have children, or \b
+    ///     false otherwise.
+    //------------------------------------------------------------------
+    virtual bool
+    MightHaveChildren();
+
 protected:
     typedef ClusterManager<ValueObject> ValueObjectManager;
     
@@ -1086,7 +1105,7 @@ protected:
         bool
         HasChildAtIndex (uint32_t idx)
         {
-            Mutex::Locker(m_mutex);
+            Mutex::Locker locker(m_mutex);
             ChildrenIterator iter = m_children.find(idx);
             ChildrenIterator end = m_children.end();
             return (iter != end);
@@ -1095,7 +1114,7 @@ protected:
         ValueObject*
         GetChildAtIndex (uint32_t idx)
         {
-            Mutex::Locker(m_mutex);
+            Mutex::Locker locker(m_mutex);
             ChildrenIterator iter = m_children.find(idx);
             ChildrenIterator end = m_children.end();
             if (iter == end)
@@ -1108,7 +1127,7 @@ protected:
         SetChildAtIndex (uint32_t idx, ValueObject* valobj)
         {
             ChildrenPair pair(idx,valobj); // we do not need to be mutex-protected to make a pair
-            Mutex::Locker(m_mutex);
+            Mutex::Locker locker(m_mutex);
             m_children.insert(pair);
         }
         
@@ -1128,7 +1147,7 @@ protected:
         Clear()
         {
             m_children_count = 0;
-            Mutex::Locker(m_mutex);
+            Mutex::Locker locker(m_mutex);
             m_children.clear();
         }
         
@@ -1264,6 +1283,9 @@ protected:
     
     DataExtractor &
     GetDataExtractor ();
+    
+    void
+    ClearDynamicTypeInformation ();
     
     //------------------------------------------------------------------
     // Sublasses must implement the functions below.

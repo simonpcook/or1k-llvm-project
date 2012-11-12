@@ -227,7 +227,7 @@ PlatformFreeBSD::ResolveExecutable (const FileSpec &exe_file,
                                                  NULL,
                                                  NULL);
 
-            if (exe_module_sp->GetObjectFile() == NULL)
+            if (!exe_module_sp || exe_module_sp->GetObjectFile() == NULL)
             {
                 exe_module_sp.reset();
                 error.SetErrorStringWithFormat ("'%s%s%s' doesn't contain the architecture %s",
@@ -498,11 +498,10 @@ PlatformFreeBSD::Attach(ProcessAttachInfo &attach_info,
         if (target == NULL)
         {
             TargetSP new_target_sp;
-            FileSpec emptyFileSpec;
             ArchSpec emptyArchSpec;
 
             error = debugger.GetTargetList().CreateTarget (debugger,
-                                                           emptyFileSpec,
+                                                           NULL,
                                                            emptyArchSpec,
                                                            false,
                                                            m_remote_platform_sp,

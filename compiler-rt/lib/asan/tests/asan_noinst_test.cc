@@ -370,20 +370,20 @@ TEST(AddressSanitizerInterface, GetAllocatedSizeAndOwnershipTest) {
   // We cannot call GetAllocatedSize from the memory we didn't map,
   // and from the interior pointers (not returned by previous malloc).
   void *wild_addr = (void*)0x1;
-  EXPECT_EQ(false, __asan_get_ownership(wild_addr));
+  EXPECT_FALSE(__asan_get_ownership(wild_addr));
   EXPECT_DEATH(__asan_get_allocated_size(wild_addr), kGetAllocatedSizeErrorMsg);
-  EXPECT_EQ(false, __asan_get_ownership(array + kArraySize / 2));
+  EXPECT_FALSE(__asan_get_ownership(array + kArraySize / 2));
   EXPECT_DEATH(__asan_get_allocated_size(array + kArraySize / 2),
                kGetAllocatedSizeErrorMsg);
 
   // NULL is not owned, but is a valid argument for __asan_get_allocated_size().
-  EXPECT_EQ(false, __asan_get_ownership(NULL));
+  EXPECT_FALSE(__asan_get_ownership(NULL));
   EXPECT_EQ(0U, __asan_get_allocated_size(NULL));
 
   // When memory is freed, it's not owned, and call to GetAllocatedSize
   // is forbidden.
   free(array);
-  EXPECT_EQ(false, __asan_get_ownership(array));
+  EXPECT_FALSE(__asan_get_ownership(array));
   EXPECT_DEATH(__asan_get_allocated_size(array), kGetAllocatedSizeErrorMsg);
 
   delete int_ptr;
@@ -460,21 +460,26 @@ static void DoLargeMallocForGetFreeBytesTestAndDie() {
 }
 
 TEST(AddressSanitizerInterface, GetFreeBytesTest) {
-  static const size_t kNumOfChunks = 100;
-  static const size_t kChunkSize = 100;
-  char *chunks[kNumOfChunks];
-  size_t i;
-  size_t old_free_bytes, new_free_bytes;
   // Allocate a small chunk. Now allocator probably has a lot of these
   // chunks to fulfill future requests. So, future requests will decrease
-  // the number of free bytes.
-  chunks[0] = Ident((char*)malloc(kChunkSize));
-  old_free_bytes = __asan_get_free_bytes();
-  for (i = 1; i < kNumOfChunks; i++) {
-    chunks[i] = Ident((char*)malloc(kChunkSize));
-    new_free_bytes = __asan_get_free_bytes();
-    EXPECT_LT(new_free_bytes, old_free_bytes);
-    old_free_bytes = new_free_bytes;
+  // the number of free bytes. Do this only on systems where there
+  // is enough memory for such assumptions.
+  if (__WORDSIZE == 64 && !ASAN_LOW_MEMORY) {
+    static const size_t kNumOfChunks = 100;
+    static const size_t kChunkSize = 100;
+    char *chunks[kNumOfChunks];
+    size_t i;
+    size_t old_free_bytes, new_free_bytes;
+    chunks[0] = Ident((char*)malloc(kChunkSize));
+    old_free_bytes = __asan_get_free_bytes();
+    for (i = 1; i < kNumOfChunks; i++) {
+      chunks[i] = Ident((char*)malloc(kChunkSize));
+      new_free_bytes = __asan_get_free_bytes();
+      EXPECT_LT(new_free_bytes, old_free_bytes);
+      old_free_bytes = new_free_bytes;
+    }
+    for (i = 0; i < kNumOfChunks; i++)
+      free(chunks[i]);
   }
   EXPECT_DEATH(DoLargeMallocForGetFreeBytesTestAndDie(), "double-free");
 }

@@ -127,11 +127,6 @@ protected:
             return false;
         }
         
-        exe_module->GetFileSpec().GetPath (filename, sizeof(filename));
-
-        const bool add_exe_file_as_first_arg = true;
-        m_options.launch_info.SetExecutableFile(exe_module->GetPlatformFileSpec(), add_exe_file_as_first_arg);
-        
         StateType state = eStateInvalid;
         Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
         if (process)
@@ -167,18 +162,32 @@ protected:
             }
         }
         
+        const char *target_settings_argv0 = target->GetArg0();
+        
+        exe_module->GetFileSpec().GetPath (filename, sizeof(filename));
+        
+        if (target_settings_argv0)
+        {
+            m_options.launch_info.GetArguments().AppendArgument (target_settings_argv0);
+            m_options.launch_info.SetExecutableFile(exe_module->GetPlatformFileSpec(), false);
+        }
+        else
+        {
+            m_options.launch_info.SetExecutableFile(exe_module->GetPlatformFileSpec(), true);
+        }
+
         if (launch_args.GetArgumentCount() == 0)
         {
             Args target_setting_args;
-            if (target->GetRunArguments(target_setting_args) > 0)
+            if (target->GetRunArguments(target_setting_args))
                 m_options.launch_info.GetArguments().AppendArguments (target_setting_args);
         }
         else
         {
+            m_options.launch_info.GetArguments().AppendArguments (launch_args);
+
             // Save the arguments for subsequent runs in the current target.
             target->SetRunArguments (launch_args);
-
-            m_options.launch_info.GetArguments().AppendArguments (launch_args);
         }
         
         if (target->GetDisableASLR())
@@ -305,13 +314,13 @@ protected:
 //CommandObjectProcessLaunch::CommandOptions::g_option_table[] =
 //{
 //{ SET1 | SET2 | SET3, false, "stop-at-entry", 's', no_argument,       NULL, 0, eArgTypeNone,    "Stop at the entry point of the program when launching a process."},
-//{ SET1              , false, "stdin",         'i', required_argument, NULL, 0, eArgTypePath,    "Redirect stdin for the process to <path>."},
-//{ SET1              , false, "stdout",        'o', required_argument, NULL, 0, eArgTypePath,    "Redirect stdout for the process to <path>."},
-//{ SET1              , false, "stderr",        'e', required_argument, NULL, 0, eArgTypePath,    "Redirect stderr for the process to <path>."},
+//{ SET1              , false, "stdin",         'i', required_argument, NULL, 0, eArgTypeDirectoryName,    "Redirect stdin for the process to <path>."},
+//{ SET1              , false, "stdout",        'o', required_argument, NULL, 0, eArgTypeDirectoryName,    "Redirect stdout for the process to <path>."},
+//{ SET1              , false, "stderr",        'e', required_argument, NULL, 0, eArgTypeDirectoryName,    "Redirect stderr for the process to <path>."},
 //{ SET1 | SET2 | SET3, false, "plugin",        'p', required_argument, NULL, 0, eArgTypePlugin,  "Name of the process plugin you want to use."},
-//{        SET2       , false, "tty",           't', optional_argument, NULL, 0, eArgTypePath,    "Start the process in a terminal. If <path> is specified, look for a terminal whose name contains <path>, else start the process in a new terminal."},
+//{        SET2       , false, "tty",           't', optional_argument, NULL, 0, eArgTypeDirectoryName,    "Start the process in a terminal. If <path> is specified, look for a terminal whose name contains <path>, else start the process in a new terminal."},
 //{               SET3, false, "no-stdio",      'n', no_argument,       NULL, 0, eArgTypeNone,    "Do not set up for terminal I/O to go to running process."},
-//{ SET1 | SET2 | SET3, false, "working-dir",   'w', required_argument, NULL, 0, eArgTypePath,    "Set the current working directory to <path> when running the inferior."},
+//{ SET1 | SET2 | SET3, false, "working-dir",   'w', required_argument, NULL, 0, eArgTypeDirectoryName,    "Set the current working directory to <path> when running the inferior."},
 //{ 0,                  false, NULL,             0,  0,                 NULL, 0, eArgTypeNone,    NULL }
 //};
 //
@@ -512,11 +521,10 @@ protected:
         {
             // If there isn't a current target create one.
             TargetSP new_target_sp;
-            FileSpec emptyFileSpec;
             Error error;
             
             error = m_interpreter.GetDebugger().GetTargetList().CreateTarget (m_interpreter.GetDebugger(), 
-                                                                              emptyFileSpec,
+                                                                              NULL,
                                                                               NULL, 
                                                                               false,
                                                                               NULL, // No platform options
@@ -1013,10 +1021,9 @@ protected:
         if (!target_sp)
         {
             // If there isn't a current target create one.
-            FileSpec emptyFileSpec;
             
             error = m_interpreter.GetDebugger().GetTargetList().CreateTarget (m_interpreter.GetDebugger(), 
-                                                                              emptyFileSpec,
+                                                                              NULL,
                                                                               NULL, 
                                                                               false,
                                                                               NULL, // No platform options
@@ -1071,13 +1078,45 @@ protected:
     CommandOptions m_options;
 };
 
-
 OptionDefinition
 CommandObjectProcessConnect::CommandOptions::g_option_table[] =
 {
     { LLDB_OPT_SET_ALL, false, "plugin", 'p', required_argument, NULL, 0, eArgTypePlugin, "Name of the process plugin you want to use."},
     { 0,                false, NULL,      0 , 0,                 NULL, 0, eArgTypeNone,   NULL }
 };
+
+//-------------------------------------------------------------------------
+// CommandObjectProcessPlugin
+//-------------------------------------------------------------------------
+#pragma mark CommandObjectProcessPlugin
+
+class CommandObjectProcessPlugin : public CommandObjectProxy
+{
+public:
+    
+    CommandObjectProcessPlugin (CommandInterpreter &interpreter) :
+        CommandObjectProxy (interpreter,
+                            "process plugin",
+                            "Send a custom command to the current process plug-in.",
+                            "process plugin <args>",
+                            0)
+    {
+    }
+    
+    ~CommandObjectProcessPlugin ()
+    {
+    }
+
+    virtual CommandObject *
+    GetProxyCommandObject()
+    {
+        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        if (process)
+            return process->GetPluginCommandObject();
+        return NULL;
+    }
+};
+
 
 //-------------------------------------------------------------------------
 // CommandObjectProcessLoad
@@ -1794,6 +1833,7 @@ CommandObjectMultiwordProcess::CommandObjectMultiwordProcess (CommandInterpreter
     LoadSubCommand ("status",      CommandObjectSP (new CommandObjectProcessStatus    (interpreter)));
     LoadSubCommand ("interrupt",   CommandObjectSP (new CommandObjectProcessInterrupt (interpreter)));
     LoadSubCommand ("kill",        CommandObjectSP (new CommandObjectProcessKill      (interpreter)));
+    LoadSubCommand ("plugin",      CommandObjectSP (new CommandObjectProcessPlugin    (interpreter)));
 }
 
 CommandObjectMultiwordProcess::~CommandObjectMultiwordProcess ()

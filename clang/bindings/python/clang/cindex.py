@@ -654,7 +654,7 @@ CursorKind.TEMPLATE_TYPE_PARAMETER = CursorKind(27)
 CursorKind.TEMPLATE_NON_TYPE_PARAMETER = CursorKind(28)
 
 # A C++ template template parameter.
-CursorKind.TEMPLATE_TEMPLATE_PARAMTER = CursorKind(29)
+CursorKind.TEMPLATE_TEMPLATE_PARAMETER = CursorKind(29)
 
 # A C++ function template.
 CursorKind.FUNCTION_TEMPLATE = CursorKind(30)
@@ -1271,6 +1271,12 @@ class Cursor(Structure):
         # created.
         return self._tu
 
+    def get_arguments(self):
+        """Return an iterator for accessing the arguments of this cursor."""
+        num_args = conf.lib.clang_Cursor_getNumArguments(self)
+        for i in range(0, num_args):
+            yield conf.lib.clang_Cursor_getArgument(self, i)
+
     def get_children(self):
         """Return an iterator for accessing the children of this cursor."""
 
@@ -1750,7 +1756,8 @@ class CompletionString(ClangObject):
 availabilityKinds = {
             0: CompletionChunk.Kind("Available"),
             1: CompletionChunk.Kind("Deprecated"),
-            2: CompletionChunk.Kind("NotAvailable")}
+            2: CompletionChunk.Kind("NotAvailable"),
+            3: CompletionChunk.Kind("NotAccessible")}
 
 class CodeCompletionResult(Structure):
     _fields_ = [('cursorKind', c_int), ('completionString', c_object_p)]
@@ -2972,6 +2979,15 @@ functionList = [
   ("clang_visitChildren",
    [Cursor, callbacks['cursor_visit'], py_object],
    c_uint),
+
+  ("clang_Cursor_getNumArguments",
+   [Cursor],
+   c_int),
+
+  ("clang_Cursor_getArgument",
+   [Cursor, c_uint],
+   Cursor,
+   Cursor.from_result),
 ]
 
 class LibclangError(Exception):

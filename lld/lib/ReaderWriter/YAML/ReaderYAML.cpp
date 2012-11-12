@@ -419,14 +419,19 @@ private:
 ///
 class YAMLAbsoluteAtom : public AbsoluteAtom {
 public:
-  YAMLAbsoluteAtom(YAMLFile &f, int32_t, StringRef name, uint64_t v)
+  YAMLAbsoluteAtom(YAMLFile &f, int32_t, StringRef name, uint64_t v, Atom::Scope scope)
     : _file(f)
     , _name(name)
-    , _value(v) {
+    , _value(v) 
+    , _scope(scope){
   }
 
   virtual const class File &file() const {
     return _file;
+  }
+
+  virtual Scope scope() const {
+    return _scope;
   }
 
   virtual StringRef name() const {
@@ -441,6 +446,7 @@ private:
   YAMLFile &_file;
   StringRef _name;
   uint64_t  _value;
+  Atom::Scope _scope;
 };
 
 
@@ -775,7 +781,8 @@ void YAMLState::makeAbsoluteAtom(Node *node) {
                     + "' has attributes only allowed on shared library atoms");
     _error = make_error_code(yaml_reader_error::illegal_value);
   }
-  AbsoluteAtom *a = new YAMLAbsoluteAtom(*_file, _ordinal, _name, _value);
+  AbsoluteAtom *a = new YAMLAbsoluteAtom(*_file, _ordinal, _name, _value, 
+                                         _scope);
   _file->addAbsoluteAtom(a);
 }
 
@@ -935,7 +942,6 @@ void YAMLState::parseAtomScope(ScalarNode *node) {
     _stream->printError(node, "Invalid value for 'scope:'");
     _error = make_error_code(yaml_reader_error::illegal_value);
   }
-  _hasDefinedAtomAttributes = true;
 }
 
 void YAMLState::parseAtomDefinition(ScalarNode *node) {

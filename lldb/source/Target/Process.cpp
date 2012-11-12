@@ -94,12 +94,14 @@ g_properties[] =
 {
     { "disable-memory-cache" , OptionValue::eTypeBoolean, false, DISABLE_MEM_CACHE_DEFAULT, NULL, NULL, "Disable reading and caching of memory in fixed-size units." },
     { "extra-startup-command", OptionValue::eTypeArray  , false, OptionValue::eTypeString, NULL, NULL, "A list containing extra commands understood by the particular process plugin used." },
+    { "python-os-plugin-path", OptionValue::eTypeFileSpec, false, 0, NULL, NULL, "A path to a python OS plug-in module file that contains a OperatingSystemPlugIn class." },
     {  NULL                  , OptionValue::eTypeInvalid, false, 0, NULL, NULL, NULL  }
 };
 
 enum {
     ePropertyDisableMemCache,
-    ePropertyExtraStartCommand
+    ePropertyExtraStartCommand,
+    ePropertyPythonOSPluginPath
 };
 
 ProcessProperties::ProcessProperties (bool is_global) :
@@ -143,6 +145,20 @@ ProcessProperties::SetExtraStartupCommands (const Args &args)
 {
     const uint32_t idx = ePropertyExtraStartCommand;
     m_collection_sp->SetPropertyAtIndexFromArgs(NULL, idx, args);
+}
+
+FileSpec
+ProcessProperties::GetPythonOSPluginPath () const
+{
+    const uint32_t idx = ePropertyPythonOSPluginPath;
+    return m_collection_sp->GetPropertyAtIndexAsFileSpec(NULL, idx);
+}
+
+void
+ProcessProperties::SetPythonOSPluginPath (const FileSpec &file)
+{
+    const uint32_t idx = ePropertyPythonOSPluginPath;
+    m_collection_sp->SetPropertyAtIndexAsFileSpec(NULL, idx, file);
 }
 
 void
@@ -302,9 +318,7 @@ ProcessInstanceInfo::DumpAsTableRow (Stream &s, Platform *platform, bool show_ar
 
 
 void
-ProcessInfo::SetArguments (char const **argv,
-                           bool first_arg_is_executable,
-                           bool first_arg_is_executable_and_argument)
+ProcessInfo::SetArguments (char const **argv, bool first_arg_is_executable)
 {
     m_arguments.SetArguments (argv);
         
@@ -319,18 +333,11 @@ ProcessInfo::SetArguments (char const **argv,
             // could be a remote platform path
             const bool resolve = false;
             m_executable.SetFile(first_arg, resolve); 
-            
-            // If argument zero is an executable and shouldn't be included
-            // in the arguments, remove it from the front of the arguments
-            if (first_arg_is_executable_and_argument == false)
-                m_arguments.DeleteArgumentAtIndex (0);
         }
     }
 }
 void
-ProcessInfo::SetArguments (const Args& args, 
-                           bool first_arg_is_executable,
-                           bool first_arg_is_executable_and_argument)
+ProcessInfo::SetArguments (const Args& args, bool first_arg_is_executable)
 {
     // Copy all arguments
     m_arguments = args;
@@ -346,11 +353,6 @@ ProcessInfo::SetArguments (const Args& args,
             // could be a remote platform path
             const bool resolve = false;
             m_executable.SetFile(first_arg, resolve); 
-    
-            // If argument zero is an executable and shouldn't be included
-            // in the arguments, remove it from the front of the arguments
-            if (first_arg_is_executable_and_argument == false)
-                m_arguments.DeleteArgumentAtIndex (0);
         }
     }
 }
@@ -443,19 +445,57 @@ ProcessLaunchInfo::ConvertArgumentsForLaunchingInShell (Error &error,
                 shell_executable = shell_resolved_path;
             }
             
+            const char **argv = GetArguments().GetConstArgumentVector ();
+            if (argv == NULL || argv[0] == NULL)
+                return false;
             Args shell_arguments;
             std::string safe_arg;
             shell_arguments.AppendArgument (shell_executable);
             shell_arguments.AppendArgument ("-c");
-
             StreamString shell_command;
             if (will_debug)
             {
+                // Add a modified PATH environment variable in case argv[0]
+                // is a relative path
+                const char *argv0 = argv[0];
+                if (argv0 && (argv0[0] != '/' && argv0[0] != '~'))
+                {
+                    // We have a relative path to our executable which may not work if
+                    // we just try to run "a.out" (without it being converted to "./a.out")
+                    const char *working_dir = GetWorkingDirectory();
+                    std::string new_path("PATH=");
+                    const size_t empty_path_len = new_path.size();
+                    
+                    if (working_dir && working_dir[0])
+                    {
+                        new_path += working_dir;
+                    }
+                    else
+                    {
+                        char current_working_dir[PATH_MAX];
+                        const char *cwd = getcwd(current_working_dir, sizeof(current_working_dir));
+                        if (cwd && cwd[0])
+                            new_path += cwd;
+                    }
+                    const char *curr_path = getenv("PATH");
+                    if (curr_path)
+                    {
+                        if (new_path.size() > empty_path_len)
+                            new_path += ':';
+                        new_path += curr_path;
+                    }
+                    new_path += ' ';
+                    shell_command.PutCString(new_path.c_str());
+                }
+
                 shell_command.PutCString ("exec");
+
+#if defined(__APPLE__)
+                // Only Apple supports /usr/bin/arch being able to specify the architecture
                 if (GetArchitecture().IsValid())
                 {
                     shell_command.Printf(" /usr/bin/arch -arch %s", GetArchitecture().GetArchitectureName());
-                    // Set the resume count to 2: 
+                    // Set the resume count to 2:
                     // 1 - stop in shell
                     // 2 - stop in /usr/bin/arch
                     // 3 - then we will stop in our program
@@ -463,39 +503,36 @@ ProcessLaunchInfo::ConvertArgumentsForLaunchingInShell (Error &error,
                 }
                 else
                 {
-                    // Set the resume count to 1: 
+                    // Set the resume count to 1:
                     // 1 - stop in shell
                     // 2 - then we will stop in our program
                     SetResumeCount(1);
                 }
+#else
+                // Set the resume count to 1:
+                // 1 - stop in shell
+                // 2 - then we will stop in our program
+                SetResumeCount(1);
+#endif
             }
-            
-            const char **argv = GetArguments().GetConstArgumentVector ();
-            if (argv)
+        
+            if (first_arg_is_full_shell_command)
             {
-                if (first_arg_is_full_shell_command)
-                {
-                    // There should only be one argument that is the shell command itself to be used as is
-                    if (argv[0] && !argv[1])
-                        shell_command.Printf("%s", argv[0]);
-                    else
-                        return false;
-                }
+                // There should only be one argument that is the shell command itself to be used as is
+                if (argv[0] && !argv[1])
+                    shell_command.Printf("%s", argv[0]);
                 else
-                {
-                    for (size_t i=0; argv[i] != NULL; ++i)
-                    {
-                        const char *arg = Args::GetShellSafeArgument (argv[i], safe_arg);
-                        shell_command.Printf(" %s", arg);
-                    }
-                }
-                shell_arguments.AppendArgument (shell_command.GetString().c_str());
+                    return false;
             }
             else
             {
-                return false;
+                for (size_t i=0; argv[i] != NULL; ++i)
+                {
+                    const char *arg = Args::GetShellSafeArgument (argv[i], safe_arg);
+                    shell_command.Printf(" %s", arg);
+                }
             }
-
+            shell_arguments.AppendArgument (shell_command.GetString().c_str());
             m_executable.SetFile(shell_executable, false);
             m_arguments = shell_arguments;
             return true;
@@ -734,14 +771,14 @@ ProcessLaunchCommandOptions::g_option_table[] =
 { LLDB_OPT_SET_ALL, false, "stop-at-entry", 's', no_argument,       NULL, 0, eArgTypeNone,          "Stop at the entry point of the program when launching a process."},
 { LLDB_OPT_SET_ALL, false, "disable-aslr",  'A', no_argument,       NULL, 0, eArgTypeNone,          "Disable address space layout randomization when launching a process."},
 { LLDB_OPT_SET_ALL, false, "plugin",        'p', required_argument, NULL, 0, eArgTypePlugin,        "Name of the process plugin you want to use."},
-{ LLDB_OPT_SET_ALL, false, "working-dir",   'w', required_argument, NULL, 0, eArgTypePath,          "Set the current working directory to <path> when running the inferior."},
+{ LLDB_OPT_SET_ALL, false, "working-dir",   'w', required_argument, NULL, 0, eArgTypeDirectoryName,          "Set the current working directory to <path> when running the inferior."},
 { LLDB_OPT_SET_ALL, false, "arch",          'a', required_argument, NULL, 0, eArgTypeArchitecture,  "Set the architecture for the process to launch when ambiguous."},
 { LLDB_OPT_SET_ALL, false, "environment",   'v', required_argument, NULL, 0, eArgTypeNone,          "Specify an environment variable name/value stirng (--environement NAME=VALUE). Can be specified multiple times for subsequent environment entries."},
-{ LLDB_OPT_SET_ALL, false, "shell",         'c', optional_argument, NULL, 0, eArgTypePath,          "Run the process in a shell (not supported on all platforms)."},
+{ LLDB_OPT_SET_ALL, false, "shell",         'c', optional_argument, NULL, 0, eArgTypeFilename,          "Run the process in a shell (not supported on all platforms)."},
 
-{ LLDB_OPT_SET_1  , false, "stdin",         'i', required_argument, NULL, 0, eArgTypePath,    "Redirect stdin for the process to <path>."},
-{ LLDB_OPT_SET_1  , false, "stdout",        'o', required_argument, NULL, 0, eArgTypePath,    "Redirect stdout for the process to <path>."},
-{ LLDB_OPT_SET_1  , false, "stderr",        'e', required_argument, NULL, 0, eArgTypePath,    "Redirect stderr for the process to <path>."},
+{ LLDB_OPT_SET_1  , false, "stdin",         'i', required_argument, NULL, 0, eArgTypeFilename,    "Redirect stdin for the process to <filename>."},
+{ LLDB_OPT_SET_1  , false, "stdout",        'o', required_argument, NULL, 0, eArgTypeFilename,    "Redirect stdout for the process to <filename>."},
+{ LLDB_OPT_SET_1  , false, "stderr",        'e', required_argument, NULL, 0, eArgTypeFilename,    "Redirect stderr for the process to <filename>."},
 
 { LLDB_OPT_SET_2  , false, "tty",           't', no_argument,       NULL, 0, eArgTypeNone,    "Start the process in a terminal (not supported on all platforms)."},
 
@@ -936,6 +973,10 @@ Process::Process(Target &target, Listener &listener) :
     SetEventName (eBroadcastBitSTDOUT, "stdout-available");
     SetEventName (eBroadcastBitSTDERR, "stderr-available");
     
+    m_private_state_control_broadcaster.SetEventName (eBroadcastInternalStateControlStop  , "control-stop"  );
+    m_private_state_control_broadcaster.SetEventName (eBroadcastInternalStateControlPause , "control-pause" );
+    m_private_state_control_broadcaster.SetEventName (eBroadcastInternalStateControlResume, "control-resume");
+
     listener.StartListeningForEvents (this,
                                       eBroadcastBitStateChanged |
                                       eBroadcastBitInterrupt |
@@ -1018,6 +1059,19 @@ Process::Finalize()
     m_allocated_memory_cache.Clear();
     m_language_runtimes.clear();
     m_next_event_action_ap.reset();
+//#ifdef LLDB_CONFIGURATION_DEBUG
+//    StreamFile s(stdout, false);
+//    EventSP event_sp;
+//    while (m_private_state_listener.GetNextEvent(event_sp))
+//    {
+//        event_sp->Dump (&s);
+//        s.EOL();
+//    }
+//#endif
+    // We have to be very careful here as the m_private_state_listener might
+    // contain events that have ProcessSP values in them which can keep this
+    // process around forever. These events need to be cleared out.
+    m_private_state_listener.Clear();
     m_finalize_called = true;
 }
 
@@ -1513,7 +1567,10 @@ Process::SetPrivateState (StateType new_state)
                 log->Printf("Process::SetPrivateState (%s) stop_id = %u", StateAsCString(new_state), m_mod_id.GetStopID());
         }
         // Use our target to get a shared pointer to ourselves...
-        m_private_state_broadcaster.BroadcastEvent (eBroadcastBitStateChanged, new ProcessEventData (GetTarget().GetProcessSP(), new_state));
+        if (m_finalize_called && PrivateStateThreadIsValid() == false)
+            BroadcastEvent (eBroadcastBitStateChanged, new ProcessEventData (shared_from_this(), new_state));
+        else
+            m_private_state_broadcaster.BroadcastEvent (eBroadcastBitStateChanged, new ProcessEventData (shared_from_this(), new_state));
     }
     else
     {
@@ -1573,7 +1630,16 @@ Process::LoadImage (const FileSpec &image_spec, Error &error)
                 expr.Printf("dlopen (\"%s\", 2)", path);
                 const char *prefix = "extern \"C\" void* dlopen (const char *path, int mode);\n";
                 lldb::ValueObjectSP result_valobj_sp;
-                ClangUserExpression::Evaluate (exe_ctx, eExecutionPolicyAlways, lldb::eLanguageTypeUnknown, ClangUserExpression::eResultTypeAny, unwind_on_error, expr.GetData(), prefix, result_valobj_sp);
+                ClangUserExpression::Evaluate (exe_ctx,
+                                               eExecutionPolicyAlways,
+                                               lldb::eLanguageTypeUnknown,
+                                               ClangUserExpression::eResultTypeAny,
+                                               unwind_on_error,
+                                               expr.GetData(),
+                                               prefix,
+                                               result_valobj_sp,
+                                               true,
+                                               ClangUserExpression::kDefaultTimeout);
                 error = result_valobj_sp->GetError();
                 if (error.Success())
                 {
@@ -1639,7 +1705,16 @@ Process::UnloadImage (uint32_t image_token)
                         expr.Printf("dlclose ((void *)0x%llx)", image_addr);
                         const char *prefix = "extern \"C\" int dlclose(void* handle);\n";
                         lldb::ValueObjectSP result_valobj_sp;
-                        ClangUserExpression::Evaluate (exe_ctx, eExecutionPolicyAlways, lldb::eLanguageTypeUnknown, ClangUserExpression::eResultTypeAny, unwind_on_error, expr.GetData(), prefix, result_valobj_sp);
+                        ClangUserExpression::Evaluate (exe_ctx,
+                                                       eExecutionPolicyAlways,
+                                                       lldb::eLanguageTypeUnknown,
+                                                       ClangUserExpression::eResultTypeAny,
+                                                       unwind_on_error,
+                                                       expr.GetData(),
+                                                       prefix,
+                                                       result_valobj_sp,
+                                                       true,
+                                                       ClangUserExpression::kDefaultTimeout);
                         if (result_valobj_sp->GetError().Success())
                         {
                             Scalar scalar;
@@ -2750,10 +2825,19 @@ Process::Attach (ProcessAttachInfo &attach_info)
                 error = WillAttachToProcessWithName(process_name, wait_for_launch);
                 if (error.Success())
                 {
-                    m_should_detach = true;
+                    if (m_run_lock.WriteTryLock())
+                    {
+                        m_should_detach = true;
+                        SetPublicState (eStateAttaching);
+                        // Now attach using these arguments.
+                        error = DoAttachToProcessWithName (process_name, wait_for_launch, attach_info);
+                    }
+                    else
+                    {
+                        // This shouldn't happen
+                        error.SetErrorString("failed to acquire process run lock");
+                    }
 
-                    SetPublicState (eStateAttaching);
-                    error = DoAttachToProcessWithName (process_name, wait_for_launch, attach_info);
                     if (error.Fail())
                     {
                         if (GetID() != LLDB_INVALID_PROCESS_ID)
@@ -2817,10 +2901,20 @@ Process::Attach (ProcessAttachInfo &attach_info)
         error = WillAttachToProcessWithID(attach_pid);
         if (error.Success())
         {
-            m_should_detach = true;
-            SetPublicState (eStateAttaching);
 
-            error = DoAttachToProcessWithID (attach_pid, attach_info);
+            if (m_run_lock.WriteTryLock())
+            {
+                // Now attach using these arguments.
+                m_should_detach = true;
+                SetPublicState (eStateAttaching);
+                error = DoAttachToProcessWithID (attach_pid, attach_info);
+            }
+            else
+            {
+                // This shouldn't happen
+                error.SetErrorString("failed to acquire process run lock");
+            }
+
             if (error.Success())
             {
                 
@@ -2886,7 +2980,7 @@ Process::CompleteAttach ()
 
     m_os_ap.reset (OperatingSystem::FindPlugin (this, NULL));
     // Figure out which one is the executable, and set that in our target:
-    ModuleList &target_modules = m_target.GetImages();
+    const ModuleList &target_modules = m_target.GetImages();
     Mutex::Locker modules_locker(target_modules.GetMutex());
     size_t num_modules = target_modules.GetSize();
     ModuleSP new_executable_module_sp;
@@ -3131,7 +3225,6 @@ Process::Destroy ()
         
                 if (state != eStateStopped)
                 {
-                    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
                     if (log)
                         log->Printf("Process::Destroy() Halt failed to stop, state is: %s", StateAsCString(state));
                     // If we really couldn't stop the process then we should just error out here, but if the
@@ -3147,7 +3240,6 @@ Process::Destroy ()
             }
             else
             {
-                LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
                 if (log)
                     log->Printf("Process::Destroy() Halt got error: %s", error.AsCString());
                 return error;
@@ -3724,7 +3816,7 @@ Process::ProcessEventData::DoOnRemoval (Event *event_ptr)
             }
             
             StopInfoSP stop_info_sp = thread_sp->GetStopInfo ();
-            if (stop_info_sp)
+            if (stop_info_sp && stop_info_sp->IsValid())
             {
                 stop_info_sp->PerformAction(event_ptr);
                 // The stop action might restart the target.  If it does, then we want to mark that in the
@@ -3896,7 +3988,7 @@ Process::AppendSTDOUT (const char * s, size_t len)
 {
     Mutex::Locker locker (m_stdio_communication_mutex);
     m_stdout_data.append (s, len);
-    BroadcastEventIfUnique (eBroadcastBitSTDOUT, new ProcessEventData (GetTarget().GetProcessSP(), GetState()));
+    BroadcastEventIfUnique (eBroadcastBitSTDOUT, new ProcessEventData (shared_from_this(), GetState()));
 }
 
 void
@@ -3904,7 +3996,7 @@ Process::AppendSTDERR (const char * s, size_t len)
 {
     Mutex::Locker locker (m_stdio_communication_mutex);
     m_stderr_data.append (s, len);
-    BroadcastEventIfUnique (eBroadcastBitSTDERR, new ProcessEventData (GetTarget().GetProcessSP(), GetState()));
+    BroadcastEventIfUnique (eBroadcastBitSTDERR, new ProcessEventData (shared_from_this(), GetState()));
 }
 
 //------------------------------------------------------------------
@@ -4116,9 +4208,9 @@ ExecutionResults
 Process::RunThreadPlan (ExecutionContext &exe_ctx,
                         lldb::ThreadPlanSP &thread_plan_sp,
                         bool stop_others,
-                        bool try_all_threads,
+                        bool run_others,
                         bool discard_on_error,
-                        uint32_t single_thread_timeout_usec,
+                        uint32_t timeout_usec,
                         Stream &errors)
 {
     ExecutionResults return_value = eExecutionSetupError;
@@ -4243,6 +4335,8 @@ Process::RunThreadPlan (ExecutionContext &exe_ctx,
         
         bool first_timeout = true;
         bool do_resume = true;
+        const uint64_t default_one_thread_timeout_usec = 250000;
+        uint64_t computed_timeout = 0;
         
         while (1)
         {
@@ -4281,9 +4375,12 @@ Process::RunThreadPlan (ExecutionContext &exe_ctx,
                 if (stop_state != eStateRunning)
                 {
                     if (log)
-                        log->Printf("Process::RunThreadPlan(): didn't get running event after initial resume, got %s instead.", StateAsCString(stop_state));
+                        log->Printf("Process::RunThreadPlan(): didn't get running event after "
+                                    "initial resume, got %s instead.",
+                                    StateAsCString(stop_state));
 
-                    errors.Printf("Didn't get running event after initial resume, got %s instead.", StateAsCString(stop_state));
+                    errors.Printf("Didn't get running event after initial resume, got %s instead.",
+                                  StateAsCString(stop_state));
                     return_value = eExecutionSetupError;
                     break;
                 }
@@ -4296,28 +4393,45 @@ Process::RunThreadPlan (ExecutionContext &exe_ctx,
                 // We set the timeout AFTER the resume, since the resume takes some time and we
                 // don't want to charge that to the timeout.
                 
-                if (single_thread_timeout_usec != 0)
+                if (first_timeout)
+                {
+                    if (run_others)
+                    {
+                        // If we are running all threads then we take half the time to run all threads, bounded by
+                        // .25 sec.
+                        if (timeout_usec == 0)
+                            computed_timeout = default_one_thread_timeout_usec;
+                        else
+                        {
+                            computed_timeout = timeout_usec / 2;
+                            if (computed_timeout > default_one_thread_timeout_usec)
+                            {
+                                computed_timeout = default_one_thread_timeout_usec;
+                            }
+                            timeout_usec -= computed_timeout;
+                        }
+                    }
+                    else
+                    {
+                        computed_timeout = timeout_usec;
+                    }
+                }
+                else
+                {
+                    computed_timeout = timeout_usec;
+                }
+                
+                if (computed_timeout != 0)
                 {
                     // we have a > 0 timeout, let us set it so that we stop after the deadline
                     real_timeout = TimeValue::Now();
-                    real_timeout.OffsetWithMicroSeconds(single_thread_timeout_usec);
+                    real_timeout.OffsetWithMicroSeconds(computed_timeout);
                         
-                    timeout_ptr = &real_timeout;
-                }
-                else if (first_timeout)
-                {
-                    // if we are willing to wait "forever" we still need to have an initial timeout
-                    // this timeout is going to induce all threads to run when hit. we do this so that
-                    // we can avoid ending locked up because of multithreaded contention issues
-                    real_timeout = TimeValue::Now();
-                    real_timeout.OffsetWithNanoSeconds(500000000UL);
                     timeout_ptr = &real_timeout;
                 }
                 else
                 {
-                    timeout_ptr = NULL; // if we are in a no-timeout scenario, then we only need a fake timeout the first time through
-                    // at this point in the code, all threads will be running so we are willing to wait forever, and do not
-                    // need a timeout
+                    timeout_ptr = NULL;
                 }
             }
             else
@@ -4454,21 +4568,21 @@ Process::RunThreadPlan (ExecutionContext &exe_ctx,
                 // Not really sure what to do if Halt fails here...
                 
                 if (log) {
-                    if (try_all_threads)
+                    if (run_others)
                     {
                         if (first_timeout)
-                            log->Printf ("Process::RunThreadPlan(): Running function with timeout: %d timed out, "
-                                         "trying with all threads enabled.",
-                                         single_thread_timeout_usec);
+                            log->Printf ("Process::RunThreadPlan(): Running function with timeout: %lld timed out, "
+                                         "trying  for %d usec with all threads enabled.",
+                                         computed_timeout, timeout_usec);
                         else
                             log->Printf ("Process::RunThreadPlan(): Restarting function with all threads enabled "
-                                         "and timeout: %d timed out.",
-                                         single_thread_timeout_usec);
+                                         "and timeout: %d timed out, abandoning execution.",
+                                         timeout_usec);
                     }
                     else
                         log->Printf ("Process::RunThreadPlan(): Running function with timeout: %d timed out, "
-                                     "halt and abandoning execution.", 
-                                     single_thread_timeout_usec);
+                                     "abandoning execution.", 
+                                     timeout_usec);
                 }
                 
                 Error halt_error = Halt();
@@ -4509,7 +4623,7 @@ Process::RunThreadPlan (ExecutionContext &exe_ctx,
                                 break;
                             }
 
-                            if (!try_all_threads)
+                            if (!run_others)
                             {
                                 if (log)
                                     log->PutCString ("Process::RunThreadPlan(): try_all_threads was false, we stopped so now we're quitting.");
@@ -4888,7 +5002,8 @@ Process::GetThreadStatus (Stream &strm,
         {
             if (only_threads_with_stop_reason)
             {
-                if (thread->GetStopInfo().get() == NULL)
+                StopInfoSP stop_info_sp = thread->GetStopInfo();
+                if (stop_info_sp.get() == NULL || !stop_info_sp->IsValid())
                     continue;
             }
             thread->GetStatus (strm, 

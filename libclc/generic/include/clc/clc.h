@@ -51,6 +51,7 @@
 #include <clc/math/native_exp2.h>
 #include <clc/math/native_log.h>
 #include <clc/math/native_log2.h>
+#include <clc/math/native_powr.h>
 #include <clc/math/native_sin.h>
 #include <clc/math/native_sqrt.h>
 #include <clc/math/rsqrt.h>
@@ -68,6 +69,7 @@
 #include <clc/geometric/normalize.h>
 
 /* 6.11.6 Relational Functions */
+#include <clc/relational/any.h>
 #include <clc/relational/select.h>
 
 /* 6.11.8 Synchronization Functions */

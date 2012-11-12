@@ -21,7 +21,6 @@
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/Support/PointerLikeTypeTraits.h"
 #include <cassert>
 #include <string>
@@ -146,6 +145,9 @@ public:
   /// macro history table in Preprocessor.
   bool hadMacroDefinition() const {
     return HadMacro;
+  }
+  void setHadMacroDefinition(bool Val) {
+    HadMacro = Val;
   }
 
   /// getTokenID - If this is a source-language token (e.g. 'for'), this API

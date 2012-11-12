@@ -24,6 +24,7 @@
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/StreamString.h"
+#include "lldb/Core/ValueObjectCast.h"
 #include "lldb/Core/ValueObjectChild.h"
 #include "lldb/Core/ValueObjectConstResult.h"
 #include "lldb/Core/ValueObjectDynamicValue.h"
@@ -239,8 +240,9 @@ ValueObject::UpdateFormatsIfNeeded(DynamicValueType use_dynamic)
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TYPES));
     if (log)
-        log->Printf("checking for FormatManager revisions. VO named %s is at revision %d, while the format manager is at revision %d",
+        log->Printf("[%s %p] checking for FormatManager revisions. ValueObject rev: %d - Global rev: %d",
            GetName().GetCString(),
+           this,
            m_last_format_mgr_revision,
            DataVisualization::GetCurrentRevision());
     
@@ -272,6 +274,17 @@ ValueObject::SetNeedsUpdate ()
     // We have to clear the value string here so ConstResult children will notice if their values are
     // changed by hand (i.e. with SetValueAsCString).
     ClearUserVisibleData(eClearUserVisibleDataItemsValue);
+}
+
+void
+ValueObject::ClearDynamicTypeInformation ()
+{
+    m_did_calculate_complete_objc_class_type = false;
+    m_last_format_mgr_revision = 0;
+    m_override_type = ClangASTType();
+    SetValueFormat(lldb::TypeFormatImplSP());
+    SetSummaryFormat(lldb::TypeSummaryImplSP());
+    SetSyntheticChildren(lldb::SyntheticChildrenSP());
 }
 
 ClangASTType
@@ -409,6 +422,7 @@ ValueObject::GetLocationAsCString ()
                 break;
 
             case Value::eValueTypeScalar:
+            case Value::eValueTypeVector:
                 if (m_value.GetContextType() == Value::eContextTypeRegisterInfo)
                 {
                     RegisterInfo *reg_info = m_value.GetRegisterInfo();
@@ -418,10 +432,10 @@ ValueObject::GetLocationAsCString ()
                             m_location_str = reg_info->name;
                         else if (reg_info->alt_name)
                             m_location_str = reg_info->alt_name;
-                        break;
+
+                        m_location_str = (reg_info->encoding == lldb::eEncodingVector) ? "vector" : "scalar";
                     }
                 }
-                m_location_str = "scalar";
                 break;
 
             case Value::eValueTypeLoadAddress:
@@ -585,6 +599,30 @@ ValueObject::GetNumChildren ()
     }
     return m_children.GetChildrenCount();
 }
+
+bool
+ValueObject::MightHaveChildren()
+{
+    bool has_children = false;
+    clang_type_t clang_type = GetClangType();
+    if (clang_type)
+    {
+        const uint32_t type_info = ClangASTContext::GetTypeInfo (clang_type,
+                                                                 GetClangAST(),
+                                                                 NULL);
+        if (type_info & (ClangASTContext::eTypeHasChildren |
+                         ClangASTContext::eTypeIsPointer |
+                         ClangASTContext::eTypeIsReference))
+            has_children = true;
+    }
+    else
+    {
+        has_children = GetNumChildren () > 0;
+    }
+    return has_children;
+}
+
+// Should only be called by ValueObject::GetNumChildren()
 void
 ValueObject::SetNumChildren (uint32_t num_children)
 {
@@ -1258,7 +1296,7 @@ ValueObject::GetValueAsUnsigned (uint64_t fail_value, bool *success)
         {
             if (success)
                 *success = true;
-            return scalar.GetRawBits64(fail_value);
+            return scalar.ULongLong(fail_value);
         }
         // fallthrough, otherwise...
     }
@@ -1548,6 +1586,7 @@ ValueObject::GetAddressOf (bool scalar_is_load_address, AddressType *address_typ
     switch (m_value.GetValueType())
     {
     case Value::eValueTypeScalar:
+    case Value::eValueTypeVector:
         if (scalar_is_load_address)
         {
             if(address_type)
@@ -1584,6 +1623,7 @@ ValueObject::GetPointerValue (AddressType *address_type)
     switch (m_value.GetValueType())
     {
     case Value::eValueTypeScalar:
+    case Value::eValueTypeVector:
         address = m_value.GetScalar().ULongLong(LLDB_INVALID_ADDRESS);
         break;
 
@@ -1645,7 +1685,7 @@ ValueObject::SetValueFromCString (const char *value_str, Error& error)
                     Process *process = exe_ctx.GetProcessPtr();
                     if (process)
                     {
-                        addr_t target_addr = m_value.GetScalar().GetRawBits64(LLDB_INVALID_ADDRESS);
+                        addr_t target_addr = m_value.GetScalar().ULongLong(LLDB_INVALID_ADDRESS);
                         size_t bytes_written = process->WriteScalarToMemory (target_addr, 
                                                                              new_scalar, 
                                                                              byte_size, 
@@ -1683,7 +1723,8 @@ ValueObject::SetValueFromCString (const char *value_str, Error& error)
                 break;
             case Value::eValueTypeFileAddress:
             case Value::eValueTypeScalar:
-                break;    
+            case Value::eValueTypeVector:
+                break;
             }
         }
         else
@@ -2051,10 +2092,15 @@ ValueObject::CalculateSyntheticValue (bool use_synthetic)
         return;
     }
     
+    lldb::SyntheticChildrenSP current_synth_sp(m_synthetic_children_sp);
+    
     if (!UpdateFormatsIfNeeded(m_last_format_mgr_dynamic) && m_synthetic_value)
         return;
     
     if (m_synthetic_children_sp.get() == NULL)
+        return;
+    
+    if (current_synth_sp == m_synthetic_children_sp && m_synthetic_value)
         return;
     
     m_synthetic_value = new ValueObjectSynthetic(*this, m_synthetic_children_sp);
@@ -2071,7 +2117,10 @@ ValueObject::CalculateDynamicValue (DynamicValueType use_dynamic)
         ExecutionContext exe_ctx (GetExecutionContextRef());
         Process *process = exe_ctx.GetProcessPtr();
         if (process && process->IsPossibleDynamicValue(*this))
+        {
+            ClearDynamicTypeInformation ();
             m_dynamic_value = new ValueObjectDynamicValue (*this, use_dynamic);
+        }
     }
 }
 
@@ -3223,12 +3272,11 @@ DumpValueObject_Impl (Stream &s,
                             s.Printf(", dynamic type: unknown) ");
                         else
                         {
-                            ObjCLanguageRuntime::ObjCISA isa = runtime->GetISA(*valobj);
-                            if (!runtime->IsValidISA(isa))
-                                s.Printf(", dynamic type: unknown) ");
+                            ObjCLanguageRuntime::ClassDescriptorSP objc_class_sp (runtime->GetNonKVOClassDescriptor(*valobj));
+                            if (objc_class_sp)
+                                s.Printf(", dynamic type: %s) ", objc_class_sp->GetClassName().GetCString());
                             else
-                                s.Printf(", dynamic type: %s) ",
-                                         runtime->GetActualTypeName(isa).GetCString());
+                                s.Printf(", dynamic type: unknown) ");
                         }
                     }
                 }

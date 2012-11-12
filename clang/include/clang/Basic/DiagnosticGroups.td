@@ -22,8 +22,6 @@ def : DiagGroup<"address">;
 def AddressOfTemporary : DiagGroup<"address-of-temporary">;
 def : DiagGroup<"aggregate-return">;
 def AmbigMemberTemplate : DiagGroup<"ambiguous-member-template">;
-def : DiagGroup<"attributes">;
-def : DiagGroup<"bad-function-cast">;
 def Availability : DiagGroup<"availability">;
 def Section : DiagGroup<"section">;
 def AutoImport : DiagGroup<"auto-import">;
@@ -33,6 +31,7 @@ def StringConversion : DiagGroup<"string-conversion">;
 def SignConversion : DiagGroup<"sign-conversion">;
 def BoolConversion : DiagGroup<"bool-conversion">;
 def IntConversion : DiagGroup<"int-conversion">;
+def EnumConversion : DiagGroup<"enum-conversion">;
 def NonLiteralNullConversion : DiagGroup<"non-literal-null-conversion">;
 def NullConversion : DiagGroup<"null-conversion">;
 def ImplicitConversionFloatingPointToBool :
@@ -44,7 +43,6 @@ def : DiagGroup<"cast-qual">;
 def : DiagGroup<"char-align">;
 def Comment : DiagGroup<"comment">;
 def : DiagGroup<"ctor-dtor-privacy">;
-def : DiagGroup<"declaration-after-statement">;
 def DefaultArgSpecialMember : DiagGroup<"default-arg-special-member">;
 def GNUDesignator : DiagGroup<"gnu-designator">;
 
@@ -116,9 +114,9 @@ def ExitTimeDestructors : DiagGroup<"exit-time-destructors">;
 def FlexibleArrayExtensions : DiagGroup<"flexible-array-extensions">;
 def FourByteMultiChar : DiagGroup<"four-char-constants">;
 def GlobalConstructors : DiagGroup<"global-constructors">;
-def : DiagGroup<"idiomatic-parentheses">;
 def BitwiseOpParentheses: DiagGroup<"bitwise-op-parentheses">;
 def LogicalOpParentheses: DiagGroup<"logical-op-parentheses">;
+def ShiftOpParentheses: DiagGroup<"shift-op-parentheses">;
 def DanglingElse: DiagGroup<"dangling-else">;
 def IgnoredQualifiers : DiagGroup<"ignored-qualifiers">;
 def : DiagGroup<"import">;
@@ -127,7 +125,6 @@ def IncompleteUmbrella : DiagGroup<"incomplete-umbrella">;
 def KNRPromotedParameter : DiagGroup<"knr-promoted-parameter">;
 def : DiagGroup<"init-self">;
 def : DiagGroup<"inline">;
-def : DiagGroup<"int-to-pointer-cast">;
 def : DiagGroup<"invalid-pch">;
 def LiteralRange : DiagGroup<"literal-range">;
 def LocalTypeTemplateArgs : DiagGroup<"local-type-template-args",
@@ -139,12 +136,12 @@ def MissingBraces : DiagGroup<"missing-braces">;
 def MissingDeclarations: DiagGroup<"missing-declarations">;
 def : DiagGroup<"missing-format-attribute">;
 def : DiagGroup<"missing-include-dirs">;
-def : DiagGroup<"missing-noreturn">;
 def MultiChar : DiagGroup<"multichar">;
 def : DiagGroup<"nested-externs">;
-def : DiagGroup<"newline-eof">;
 def CXX11LongLong : DiagGroup<"c++11-long-long">;
 def LongLong : DiagGroup<"long-long", [CXX11LongLong]>;
+def MismatchedParameterTypes : DiagGroup<"mismatched-parameter-types">;
+def MismatchedReturnTypes : DiagGroup<"mismatched-return-types">;
 def MismatchedTags : DiagGroup<"mismatched-tags">;
 def MissingFieldInitializers : DiagGroup<"missing-field-initializers">;
 def ModuleBuild : DiagGroup<"module-build">;
@@ -193,7 +190,7 @@ def Sentinel : DiagGroup<"sentinel">;
 def MissingMethodReturnType : DiagGroup<"missing-method-return-type">;
 def : DiagGroup<"sequence-point">;
 def Shadow : DiagGroup<"shadow">;
-def : DiagGroup<"shorten-64-to-32">;
+def Shorten64To32 : DiagGroup<"shorten-64-to-32">;
 def : DiagGroup<"sign-promo">;
 def SignCompare : DiagGroup<"sign-compare">;
 def : DiagGroup<"stack-protector">;
@@ -207,9 +204,10 @@ def TautologicalCompare : DiagGroup<"tautological-compare",
                                     [TautologicalOutOfRangeCompare]>;
 def HeaderHygiene : DiagGroup<"header-hygiene">;
 def DuplicateDeclSpecifier : DiagGroup<"duplicate-decl-specifier">;
+def CompareDistinctPointerType : DiagGroup<"compare-distinct-pointer-types">;
 
 // Preprocessor warnings.
-def : DiagGroup<"builtin-macro-redefined">;
+def AmbiguousMacro : DiagGroup<"ambiguous-macro">;
 
 // Just silence warnings about -Wstrict-aliasing for now.
 def : DiagGroup<"strict-aliasing=0">;
@@ -275,6 +273,8 @@ def ImplicitAtomic : DiagGroup<"implicit-atomic-properties">;
 def CustomAtomic : DiagGroup<"custom-atomic-properties">;
 def AtomicProperties : DiagGroup<"atomic-properties",
                                  [ImplicitAtomic, CustomAtomic]>;
+// FIXME: Remove arc-abi once an Xcode is released that doesn't pass this flag.
+def : DiagGroup<"arc-abi">;
 def ARCUnsafeRetainedAssign : DiagGroup<"arc-unsafe-retained-assign">;
 def ARCRetainCycles : DiagGroup<"arc-retain-cycles">;
 def ARCNonPodMemAccess : DiagGroup<"arc-non-pod-memaccess">;
@@ -289,7 +289,6 @@ def Selector : DiagGroup<"selector">;
 def Protocol : DiagGroup<"protocol">;
 def SuperSubClassMismatch : DiagGroup<"super-class-method-mismatch">;
 def OverridingMethodMismatch : DiagGroup<"overriding-method-mismatch">;
-def : DiagGroup<"variadic-macros">;
 def VariadicMacros : DiagGroup<"variadic-macros">;
 def VectorConversion : DiagGroup<"vector-conversion">;      // clang specific
 def VexingParse : DiagGroup<"vexing-parse">;
@@ -315,6 +314,7 @@ def ParenthesesOnEquality : DiagGroup<"parentheses-equality">;
 def Parentheses : DiagGroup<"parentheses",
                             [LogicalOpParentheses,
                              BitwiseOpParentheses,
+                             ShiftOpParentheses,
                              ParenthesesOnEquality,
                              DanglingElse]>;
 
@@ -326,15 +326,16 @@ def Parentheses : DiagGroup<"parentheses",
 //   - bool-to-pointer conversion warnings are on by default
 //   - __null-to-integer conversion warnings are on by default
 def Conversion : DiagGroup<"conversion",
-                           [DiagGroup<"shorten-64-to-32">,
+                           [BoolConversion,
                             ConstantConversion,
+                            EnumConversion,
+                            Shorten64To32,
+                            IntConversion,
                             LiteralConversion,
-                            StringConversion,
-                            SignConversion,
-                            BoolConversion,
-                            NullConversion, // NULL->non-pointer
                             NonLiteralNullConversion, // (1-1)->pointer (etc)
-                            IntConversion]>,
+                            NullConversion, // NULL->non-pointer
+                            SignConversion,
+                            StringConversion]>,
                  DiagCategory<"Value Conversion Issue">;
 
 def Unused : DiagGroup<"unused",
@@ -360,6 +361,8 @@ def Format2 : DiagGroup<"format=2",
 
 def TypeSafety : DiagGroup<"type-safety">;
 
+def IntToPointerCast : DiagGroup<"int-to-pointer-cast">;
+
 def Extra : DiagGroup<"extra", [
     MissingFieldInitializers,
     IgnoredQualifiers,
@@ -376,6 +379,7 @@ def Most : DiagGroup<"most", [
     DeleteNonVirtualDtor,
     Format,
     Implicit,
+    IntToPointerCast,
     MismatchedTags,
     MissingBraces,
     MultiChar,
@@ -469,4 +473,10 @@ def ObjCCocoaAPI : DiagGroup<"objc-cocoa-api", [
 def ObjCStringComparison : DiagGroup<"objc-string-compare">;
 def ObjCLiteralComparison : DiagGroup<"objc-literal-compare", [
     ObjCStringComparison
+  ]>;
+
+// Inline ASM warnings.
+def ASMOperandWidths : DiagGroup<"asm-operand-widths">;
+def ASM : DiagGroup<"asm", [
+    ASMOperandWidths
   ]>;

@@ -410,33 +410,13 @@ Sema::ActOnCXXTypeid(SourceLocation OpLoc, SourceLocation LParenLoc,
   return BuildCXXTypeId(TypeInfoType, OpLoc, (Expr*)TyOrExpr, RParenLoc);
 }
 
-/// Retrieve the UuidAttr associated with QT.
-static UuidAttr *GetUuidAttrOfType(QualType QT) {
-  // Optionally remove one level of pointer, reference or array indirection.
-  const Type *Ty = QT.getTypePtr();
-  if (QT->isPointerType() || QT->isReferenceType())
-    Ty = QT->getPointeeType().getTypePtr();
-  else if (QT->isArrayType())
-    Ty = cast<ArrayType>(QT)->getElementType().getTypePtr();
-
-  // Loop all record redeclaration looking for an uuid attribute.
-  CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
-  for (CXXRecordDecl::redecl_iterator I = RD->redecls_begin(),
-       E = RD->redecls_end(); I != E; ++I) {
-    if (UuidAttr *Uuid = I->getAttr<UuidAttr>())
-      return Uuid;
-  }
-
-  return 0;
-}
-
 /// \brief Build a Microsoft __uuidof expression with a type operand.
 ExprResult Sema::BuildCXXUuidof(QualType TypeInfoType,
                                 SourceLocation TypeidLoc,
                                 TypeSourceInfo *Operand,
                                 SourceLocation RParenLoc) {
   if (!Operand->getType()->isDependentType()) {
-    if (!GetUuidAttrOfType(Operand->getType()))
+    if (!CXXUuidofExpr::GetUuidAttrOfType(Operand->getType()))
       return ExprError(Diag(TypeidLoc, diag::err_uuidof_without_guid));
   }
 
@@ -452,7 +432,7 @@ ExprResult Sema::BuildCXXUuidof(QualType TypeInfoType,
                                 Expr *E,
                                 SourceLocation RParenLoc) {
   if (!E->getType()->isDependentType()) {
-    if (!GetUuidAttrOfType(E->getType()) &&
+    if (!CXXUuidofExpr::GetUuidAttrOfType(E->getType()) &&
         !E->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull))
       return ExprError(Diag(TypeidLoc, diag::err_uuidof_without_guid));
   }
@@ -1007,7 +987,7 @@ Sema::ActOnCXXNew(SourceLocation StartLoc, bool UseGlobal,
   if (ParenListExpr *List = dyn_cast_or_null<ParenListExpr>(Initializer))
     DirectInitRange = List->getSourceRange();
 
-  return BuildCXXNew(StartLoc, UseGlobal,
+  return BuildCXXNew(SourceRange(StartLoc, D.getLocEnd()), UseGlobal,
                      PlacementLParen,
                      PlacementArgs,
                      PlacementRParen,
@@ -1040,7 +1020,7 @@ static bool isLegalArrayNewInitializer(CXXNewExpr::InitializationStyle Style,
 }
 
 ExprResult
-Sema::BuildCXXNew(SourceLocation StartLoc, bool UseGlobal,
+Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
                   SourceLocation PlacementLParen,
                   MultiExprArg PlacementArgs,
                   SourceLocation PlacementRParen,
@@ -1052,6 +1032,7 @@ Sema::BuildCXXNew(SourceLocation StartLoc, bool UseGlobal,
                   Expr *Initializer,
                   bool TypeMayContainAuto) {
   SourceRange TypeRange = AllocTypeInfo->getTypeLoc().getSourceRange();
+  SourceLocation StartLoc = Range.getBegin();
 
   CXXNewExpr::InitializationStyle initStyle;
   if (DirectInitRange.isValid()) {
@@ -1427,7 +1408,7 @@ Sema::BuildCXXNew(SourceLocation StartLoc, bool UseGlobal,
                                         TypeIdParens,
                                         ArraySize, initStyle, Initializer,
                                         ResultType, AllocTypeInfo,
-                                        StartLoc, DirectInitRange));
+                                        Range, DirectInitRange));
 }
 
 /// \brief Checks that a type is suitable as the allocated type

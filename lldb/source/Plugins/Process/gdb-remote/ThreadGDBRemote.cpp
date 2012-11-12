@@ -32,15 +32,15 @@ using namespace lldb_private;
 // Thread Registers
 //----------------------------------------------------------------------
 
-ThreadGDBRemote::ThreadGDBRemote (const ProcessSP &process_sp, lldb::tid_t tid) :
-    Thread(process_sp, tid),
+ThreadGDBRemote::ThreadGDBRemote (Process &process, lldb::tid_t tid) :
+    Thread(process, tid),
     m_thread_name (),
     m_dispatch_queue_name (),
     m_thread_dispatch_qaddr (LLDB_INVALID_ADDRESS)
 {
     ProcessGDBRemoteLog::LogIf(GDBR_LOG_THREAD, "%p: ThreadGDBRemote::ThreadGDBRemote (pid = %i, tid = 0x%4.4x)", 
                                this, 
-                               process_sp ? process_sp->GetID() : LLDB_INVALID_PROCESS_ID, 
+                               process.GetID(),
                                GetID());
 }
 
@@ -225,6 +225,9 @@ ThreadGDBRemote::GetPrivateStopReason ()
         if (m_thread_stop_reason_stop_id != process_stop_id ||
             (m_actual_stop_info_sp && !m_actual_stop_info_sp->IsValid()))
         {
+            if (IsStillAtLastBreakpointHit())
+                return m_actual_stop_info_sp;
+
             // If GetGDBProcess().SetThreadStopInfo() doesn't find a stop reason
             // for this thread, then m_actual_stop_info_sp will not ever contain
             // a valid stop reason and the "m_actual_stop_info_sp->IsValid() == false"

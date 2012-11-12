@@ -47,7 +47,6 @@ typedef enum InlineStrategy
     eInlineBreakpointsAlways
 } InlineStrategy;
 
-
 //----------------------------------------------------------------------
 // TargetProperties
 //----------------------------------------------------------------------
@@ -82,6 +81,12 @@ public:
     
     InlineStrategy
     GetInlineStrategy () const;
+
+    const char *
+    GetArg0 () const;
+    
+    void
+    SetArg0 (const char *arg);
 
     bool
     GetRunArguments (Args &args) const;
@@ -133,9 +138,125 @@ public:
     
     const char *
     GetExpressionPrefixContentsAsCString ();
+
 };
 
 typedef STD_SHARED_PTR(TargetProperties) TargetPropertiesSP;
+
+class EvaluateExpressionOptions
+{
+public:
+    static const uint32_t default_timeout = 500000;
+    EvaluateExpressionOptions() :
+        m_execution_policy(eExecutionPolicyOnlyWhenNeeded),
+        m_coerce_to_id(false),
+        m_unwind_on_error(true),
+        m_keep_in_memory(false),
+        m_run_others(true),
+        m_use_dynamic(lldb::eNoDynamicValues),
+        m_timeout_usec(default_timeout)
+    {}
+    
+    ExecutionPolicy
+    GetExecutionPolicy () const
+    {
+        return m_execution_policy;
+    }
+    
+    EvaluateExpressionOptions&
+    SetExecutionPolicy (ExecutionPolicy policy = eExecutionPolicyAlways)
+    {
+        m_execution_policy = policy;
+        return *this;
+    }
+    
+    bool
+    DoesCoerceToId () const
+    {
+        return m_coerce_to_id;
+    }
+    
+    EvaluateExpressionOptions&
+    SetCoerceToId (bool coerce = true)
+    {
+        m_coerce_to_id = coerce;
+        return *this;
+    }
+    
+    bool
+    DoesUnwindOnError () const
+    {
+        return m_unwind_on_error;
+    }
+    
+    EvaluateExpressionOptions&
+    SetUnwindOnError (bool unwind = false)
+    {
+        m_unwind_on_error = unwind;
+        return *this;
+    }
+    
+    bool
+    DoesKeepInMemory () const
+    {
+        return m_keep_in_memory;
+    }
+    
+    EvaluateExpressionOptions&
+    SetKeepInMemory (bool keep = true)
+    {
+        m_keep_in_memory = keep;
+        return *this;
+    }
+    
+    lldb::DynamicValueType
+    GetUseDynamic () const
+    {
+        return m_use_dynamic;
+    }
+    
+    EvaluateExpressionOptions&
+    SetUseDynamic (lldb::DynamicValueType dynamic = lldb::eDynamicCanRunTarget)
+    {
+        m_use_dynamic = dynamic;
+        return *this;
+    }
+    
+    uint32_t
+    GetTimeoutUsec () const
+    {
+        return m_timeout_usec;
+    }
+    
+    EvaluateExpressionOptions&
+    SetTimeoutUsec (uint32_t timeout = 0)
+    {
+        m_timeout_usec = timeout;
+        return *this;
+    }
+    
+    bool
+    GetRunOthers () const
+    {
+        return m_run_others;
+    }
+    
+    EvaluateExpressionOptions&
+    SetRunOthers (bool run_others = true)
+    {
+        m_run_others = run_others;
+        return *this;
+    }
+    
+private:
+    ExecutionPolicy m_execution_policy;
+    bool m_coerce_to_id;
+    bool m_unwind_on_error;
+    bool m_keep_in_memory;
+    bool m_run_others;
+    lldb::DynamicValueType m_use_dynamic;
+    uint32_t m_timeout_usec;
+};
 
 //----------------------------------------------------------------------
 // Target
@@ -144,7 +265,8 @@ class Target :
     public STD_ENABLE_SHARED_FROM_THIS(Target),
     public TargetProperties,
     public Broadcaster,
-    public ExecutionContextScope
+    public ExecutionContextScope,
+    public ModuleList::Notifier
 {
 public:
     friend class TargetList;
@@ -400,7 +522,8 @@ public:
     lldb::WatchpointSP
     CreateWatchpoint (lldb::addr_t addr,
                       size_t size,
-                      uint32_t type,
+                      const ClangASTType *type,
+                      uint32_t kind,
                       Error &error);
 
     lldb::WatchpointSP
@@ -463,13 +586,6 @@ public:
     bool
     IgnoreWatchpointByID (lldb::watch_id_t watch_id, uint32_t ignore_count);
 
-    void
-    ModulesDidLoad (ModuleList &module_list);
-
-    void
-    ModulesDidUnload (ModuleList &module_list);
-
-    
     //------------------------------------------------------------------
     /// Get \a load_addr as a callable code load address for this target
     ///
@@ -500,13 +616,31 @@ public:
     GetOpcodeLoadAddress (lldb::addr_t load_addr, lldb::AddressClass addr_class = lldb::eAddressClassInvalid) const;
 
 protected:
-    void
-    ModuleAdded (lldb::ModuleSP &module_sp);
-
-    void
-    ModuleUpdated (lldb::ModuleSP &old_module_sp, lldb::ModuleSP &new_module_sp);
+    //------------------------------------------------------------------
+    /// Implementing of ModuleList::Notifier.
+    //------------------------------------------------------------------
+    
+    virtual void
+    ModuleAdded (const ModuleList& module_list, const lldb::ModuleSP& module_sp);
+    
+    virtual void
+    ModuleRemoved (const ModuleList& module_list, const lldb::ModuleSP& module_sp);
+    
+    virtual void
+    ModuleUpdated (const ModuleList& module_list,
+                   const lldb::ModuleSP& old_module_sp,
+                   const lldb::ModuleSP& new_module_sp);
+    virtual void
+    WillClearList (const ModuleList& module_list);
 
 public:
+    
+    void
+    ModulesDidLoad (ModuleList &module_list);
+
+    void
+    ModulesDidUnload (ModuleList &module_list);
+    
     //------------------------------------------------------------------
     /// Gets the module for the main executable.
     ///
@@ -579,18 +713,17 @@ public:
     /// @return
     ///     A list of Module objects in a module list.
     //------------------------------------------------------------------
-    ModuleList&
-    GetImages ()
-    {
-        return m_images;
-    }
-
     const ModuleList&
     GetImages () const
     {
         return m_images;
     }
     
+    ModuleList&
+    GetImages ()
+    {
+        return m_images;
+    }
     
     //------------------------------------------------------------------
     /// Return whether this FileSpec corresponds to a module that should be considered for general searches.
@@ -760,104 +893,6 @@ public:
     ClangASTImporter *
     GetClangASTImporter();
     
-    class EvaluateExpressionOptions
-    {
-    public:
-        EvaluateExpressionOptions() :
-            m_execution_policy(eExecutionPolicyOnlyWhenNeeded),
-            m_coerce_to_id(false),
-            m_unwind_on_error(true),
-            m_keep_in_memory(false),
-            m_use_dynamic(lldb::eNoDynamicValues),
-            m_single_thread_timeout_usec(500000)
-        {}
-        
-        ExecutionPolicy
-        GetExecutionPolicy () const
-        {
-            return m_execution_policy;
-        }
-        
-        EvaluateExpressionOptions&
-        SetExecutionPolicy (ExecutionPolicy policy = eExecutionPolicyAlways)
-        {
-            m_execution_policy = policy;
-            return *this;
-        }
-        
-        bool
-        DoesCoerceToId () const
-        {
-            return m_coerce_to_id;
-        }
-        
-        EvaluateExpressionOptions&
-        SetCoerceToId (bool coerce = true)
-        {
-            m_coerce_to_id = coerce;
-            return *this;
-        }
-        
-        bool
-        DoesUnwindOnError () const
-        {
-            return m_unwind_on_error;
-        }
-        
-        EvaluateExpressionOptions&
-        SetUnwindOnError (bool unwind = false)
-        {
-            m_unwind_on_error = unwind;
-            return *this;
-        }
-        
-        bool
-        DoesKeepInMemory () const
-        {
-            return m_keep_in_memory;
-        }
-        
-        EvaluateExpressionOptions&
-        SetKeepInMemory (bool keep = true)
-        {
-            m_keep_in_memory = keep;
-            return *this;
-        }
-        
-        lldb::DynamicValueType
-        GetUseDynamic () const
-        {
-            return m_use_dynamic;
-        }
-        
-        EvaluateExpressionOptions&
-        SetUseDynamic (lldb::DynamicValueType dynamic = lldb::eDynamicCanRunTarget)
-        {
-            m_use_dynamic = dynamic;
-            return *this;
-        }
-        
-        uint32_t
-        GetSingleThreadTimeoutUsec () const
-        {
-            return m_single_thread_timeout_usec;
-        }
-        
-        EvaluateExpressionOptions&
-        SetSingleThreadTimeoutUsec (uint32_t timeout = 0)
-        {
-            m_single_thread_timeout_usec = timeout;
-            return *this;
-        }
-        
-    private:
-        ExecutionPolicy m_execution_policy;
-        bool m_coerce_to_id;
-        bool m_unwind_on_error;
-        bool m_keep_in_memory;
-        lldb::DynamicValueType m_use_dynamic;
-        uint32_t m_single_thread_timeout_usec;
-    };
     
     // Since expressions results can persist beyond the lifetime of a process,
     // and the const expression results are available after a process is gone,

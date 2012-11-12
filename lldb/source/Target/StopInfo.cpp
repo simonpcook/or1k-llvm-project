@@ -99,13 +99,11 @@ public:
         m_should_stop (false),
         m_should_stop_is_valid (false),
         m_should_perform_action (true),
-        m_address (LLDB_INVALID_ADDRESS)
+        m_address (LLDB_INVALID_ADDRESS),
+        m_break_id(LLDB_INVALID_BREAK_ID),
+        m_was_one_shot (false)
     {
-        BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
-        if (bp_site_sp)
-        {
-          m_address = bp_site_sp->GetLoadAddress();
-        }
+        StoreBPInfo();
     }
     
     StopInfoBreakpoint (Thread &thread, break_id_t break_id, bool should_stop) :
@@ -114,12 +112,28 @@ public:
         m_should_stop (should_stop),
         m_should_stop_is_valid (true),
         m_should_perform_action (true),
-        m_address (LLDB_INVALID_ADDRESS)
+        m_address (LLDB_INVALID_ADDRESS),
+        m_break_id(LLDB_INVALID_BREAK_ID),
+        m_was_one_shot (false)
+    {
+        StoreBPInfo();
+    }
+
+    void StoreBPInfo ()
     {
         BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
         if (bp_site_sp)
         {
-          m_address = bp_site_sp->GetLoadAddress();
+            if (bp_site_sp->GetNumberOfOwners() == 1)
+            {
+                BreakpointLocationSP bp_loc_sp = bp_site_sp->GetOwnerAtIndex(0);
+                if (bp_loc_sp)
+                {
+                    m_break_id = bp_loc_sp->GetBreakpoint().GetID();
+                    m_was_one_shot = bp_loc_sp->GetBreakpoint().IsOneShot();
+                }
+            }
+            m_address = bp_site_sp->GetLoadAddress();
         }
     }
 
@@ -160,6 +174,62 @@ public:
         return m_should_stop;
     }
     
+    virtual bool
+    ShouldNotify (Event *event_ptr)
+    {
+        BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
+        if (bp_site_sp)
+        {
+            bool all_internal = true;
+
+            for (uint32_t i = 0; i < bp_site_sp->GetNumberOfOwners(); i++)
+            {
+                if (!bp_site_sp->GetOwnerAtIndex(i)->GetBreakpoint().IsInternal())
+                {
+                    all_internal = false;
+                    break;
+                }
+            }
+            return all_internal == false;
+        }
+        return true;
+    }
+
+    virtual const char *
+    GetDescription ()
+    {
+        if (m_description.empty())
+        {
+            BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
+            if (bp_site_sp)
+            {
+                StreamString strm;
+                strm.Printf("breakpoint ");
+                bp_site_sp->GetDescription(&strm, eDescriptionLevelBrief);
+                m_description.swap (strm.GetString());
+            }
+            else
+            {
+                StreamString strm;
+                if (m_break_id != LLDB_INVALID_BREAK_ID)
+                {
+                    if (m_was_one_shot)
+                        strm.Printf ("one-shot breakpoint %d", m_break_id);
+                    else
+                        strm.Printf ("breakpoint %d which has been deleted.", m_break_id);
+                }
+                else if (m_address == LLDB_INVALID_ADDRESS)
+                    strm.Printf("breakpoint site %lli which has been deleted - unknown address", m_value);
+                else
+                    strm.Printf("breakpoint site %lli which has been deleted - was at 0x%llx", m_value, m_address);
+                
+                m_description.swap (strm.GetString());
+            }
+        }
+        return m_description.c_str();
+    }
+
+protected:
     bool
     ShouldStop (Event *event_ptr)
     {
@@ -232,7 +302,9 @@ public:
                                                                               bp_loc_sp->GetConditionText(),
                                                                               NULL,
                                                                               result_value_sp,
-                                                                              error);
+                                                                              error,
+                                                                              true,
+                                                                              ClangUserExpression::kDefaultTimeout);
                         if (result_code == eExecutionCompleted)
                         {
                             if (result_value_sp)
@@ -298,6 +370,12 @@ public:
                     
                     if (callback_says_stop)
                         m_should_stop = true;
+                    
+                    // If we are going to stop for this breakpoint, then remove the breakpoint.
+                    if (callback_says_stop && bp_loc_sp && bp_loc_sp->GetBreakpoint().IsOneShot())
+                    {
+                        m_thread.GetProcess()->GetTarget().RemoveBreakpointByID (bp_loc_sp->GetBreakpoint().GetID());
+                    }
                         
                     // Also make sure that the callback hasn't continued the target.  
                     // If it did, when we'll set m_should_start to false and get out of here.
@@ -316,60 +394,13 @@ public:
         {
             m_should_stop = true;
             m_should_stop_is_valid = true;
-            LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
+            LogSP log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
-            if (log)
-                log->Printf ("Process::%s could not find breakpoint site id: %lld...", __FUNCTION__, m_value);
+            if (log_process)
+                log_process->Printf ("Process::%s could not find breakpoint site id: %lld...", __FUNCTION__, m_value);
         }
         if (log)
             log->Printf ("Process::%s returning from action with m_should_stop: %d.", __FUNCTION__, m_should_stop);
-    }
-        
-    virtual bool
-    ShouldNotify (Event *event_ptr)
-    {
-        BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
-        if (bp_site_sp)
-        {
-            bool all_internal = true;
-
-            for (uint32_t i = 0; i < bp_site_sp->GetNumberOfOwners(); i++)
-            {
-                if (!bp_site_sp->GetOwnerAtIndex(i)->GetBreakpoint().IsInternal())
-                {
-                    all_internal = false;
-                    break;
-                }
-            }
-            return all_internal == false;
-        }
-        return true;
-    }
-
-    virtual const char *
-    GetDescription ()
-    {
-        if (m_description.empty())
-        {
-            BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
-            if (bp_site_sp)
-            {
-                StreamString strm;
-                strm.Printf("breakpoint ");
-                bp_site_sp->GetDescription(&strm, eDescriptionLevelBrief);
-                m_description.swap (strm.GetString());
-            }
-            else
-            {
-                StreamString strm;
-                if (m_address == LLDB_INVALID_ADDRESS)
-                    strm.Printf("breakpoint site %lli which has been deleted - unknown address", m_value);
-                else
-                    strm.Printf("breakpoint site %lli which has been deleted - was at 0x%llx", m_value, m_address);
-                m_description.swap (strm.GetString());
-            }
-        }
-        return m_description.c_str();
     }
 
 private:
@@ -381,6 +412,8 @@ private:
     lldb::addr_t m_address;       // We use this to capture the breakpoint site address when we create the StopInfo,
                                   // in case somebody deletes it between the time the StopInfo is made and the
                                   // description is asked for.
+    lldb::break_id_t m_break_id;
+    bool m_was_one_shot;
 };
 
 
@@ -391,6 +424,32 @@ private:
 class StopInfoWatchpoint : public StopInfo
 {
 public:
+    // Make sure watchpoint is properly disabled and subsequently enabled while performing watchpoint actions.
+    class WatchpointSentry {
+    public:
+        WatchpointSentry(Process *p, Watchpoint *w):
+            process(p),
+            watchpoint(w)
+        {
+            if (process && watchpoint)
+            {
+                watchpoint->TurnOnEphemeralMode();
+                process->DisableWatchpoint(watchpoint);
+            }
+        }
+        ~WatchpointSentry()
+        {
+            if (process && watchpoint)
+            {
+                if (!watchpoint->IsDisabledDuringEphemeralMode())
+                    process->EnableWatchpoint(watchpoint);
+                watchpoint->TurnOffEphemeralMode();
+            }
+        }
+    private:
+        Process *process;
+        Watchpoint *watchpoint;
+    };
 
     StopInfoWatchpoint (Thread &thread, break_id_t watch_id) :
         StopInfo(thread, watch_id),
@@ -410,6 +469,19 @@ public:
         return eStopReasonWatchpoint;
     }
 
+    virtual const char *
+    GetDescription ()
+    {
+        if (m_description.empty())
+        {
+            StreamString strm;
+            strm.Printf("watchpoint %lli", m_value);
+            m_description.swap (strm.GetString());
+        }
+        return m_description.c_str();
+    }
+
+protected:
     virtual bool
     ShouldStop (Event *event_ptr)
     {
@@ -446,35 +518,6 @@ public:
         return m_should_stop;
     }
     
-    // Make sure watchpoint is properly disabled and subsequently enabled while performing watchpoint actions.
-    class WatchpointSentry {
-    public:
-        WatchpointSentry(Process *p, Watchpoint *w):
-            process(p),
-            watchpoint(w)
-        {
-            if (process && watchpoint)
-            {
-                watchpoint->TurnOnEphemeralMode();
-                process->DisableWatchpoint(watchpoint);
-            }
-        }
-        ~WatchpointSentry()
-        {
-            if (process && watchpoint)
-            {
-                if (!watchpoint->IsDisabledDuringEphemeralMode())
-                    process->EnableWatchpoint(watchpoint);
-                watchpoint->TurnOffEphemeralMode();
-            }
-        }
-    private:
-        Process *process;
-        Watchpoint *watchpoint;
-    };
-
-    // Perform any action that is associated with this stop.  This is done as the
-    // Event is removed from the event queue.
     virtual void
     PerformAction (Event *event_ptr)
     {
@@ -520,75 +563,6 @@ public:
                 }
             }
 
-            // Record the snapshot of our watchpoint.
-            VariableSP var_sp;
-            ValueObjectSP valobj_sp;        
-            StackFrame *frame = exe_ctx.GetFramePtr();
-            if (frame)
-            {
-                bool snapshot_taken = true;
-                if (!wp_sp->IsWatchVariable())
-                {
-                    // We are not watching a variable, just read from the process memory for the watched location.
-                    assert (process);
-                    Error error;
-                    uint64_t val = process->ReadUnsignedIntegerFromMemory(wp_sp->GetLoadAddress(),
-                                                                          wp_sp->GetByteSize(),
-                                                                          0,
-                                                                          error);
-                    if (log)
-                    {
-                        if (error.Success())
-                            log->Printf("Watchpoint snapshot val taken: 0x%llx\n", val);
-                        else
-                            log->Printf("Watchpoint snapshot val taking failed.\n");
-                    }                        
-                    wp_sp->SetNewSnapshotVal(val);
-                }
-                else if (!wp_sp->GetWatchSpec().empty())
-                {
-                    // Use our frame to evaluate the variable expression.
-                    Error error;
-                    uint32_t expr_path_options = StackFrame::eExpressionPathOptionCheckPtrVsMember |
-                                                 StackFrame::eExpressionPathOptionsAllowDirectIVarAccess;
-                    valobj_sp = frame->GetValueForVariableExpressionPath (wp_sp->GetWatchSpec().c_str(), 
-                                                                          eNoDynamicValues, 
-                                                                          expr_path_options,
-                                                                          var_sp,
-                                                                          error);
-                    if (valobj_sp)
-                    {
-                        // We're in business.
-                        StreamString ss;
-                        ValueObject::DumpValueObject(ss, valobj_sp.get());
-                        wp_sp->SetNewSnapshot(ss.GetString());
-                    }
-                    else
-                    {
-                        // The variable expression has become out of scope?
-                        // Let us forget about this stop info.
-                        if (log)
-                            log->Printf("Snapshot attempt failed.  Variable expression has become out of scope?");
-                        snapshot_taken = false;
-                        m_should_stop = false;
-                        wp_sp->IncrementFalseAlarmsAndReviseHitCount();
-                    }
-
-                    if (log && snapshot_taken)
-                        log->Printf("Watchpoint snapshot taken: '%s'\n", wp_sp->GetNewSnapshot().c_str());
-                }
-
-                // Now dump the snapshots we have taken.
-                if (snapshot_taken)
-                {
-                    Debugger &debugger = exe_ctx.GetTargetRef().GetDebugger();
-                    StreamSP output_sp = debugger.GetAsyncOutputStream ();
-                    wp_sp->DumpSnapshots(output_sp.get());
-                    output_sp->EOL();
-                    output_sp->Flush();
-                }
-            }
-
             if (m_should_stop && wp_sp->GetConditionText() != NULL)
             {
                 // We need to make sure the user sees any parse errors in their condition, so we'll hook the
@@ -606,7 +580,8 @@ public:
                                                                       NULL,
                                                                       result_value_sp,
                                                                       error,
-                                                                      500000);
+                                                                      true,
+                                                                      ClangUserExpression::kDefaultTimeout);
                 if (result_code == eExecutionCompleted)
                 {
                     if (result_value_sp)
@@ -673,30 +648,31 @@ public:
                     m_should_stop = false;
                 }
             }
+            // Finally, if we are going to stop, print out the new & old values:
+            if (m_should_stop)
+            {
+                wp_sp->CaptureWatchedValue(exe_ctx);
+                
+                Debugger &debugger = exe_ctx.GetTargetRef().GetDebugger();
+                StreamSP output_sp = debugger.GetAsyncOutputStream ();
+                wp_sp->DumpSnapshots(output_sp.get());
+                output_sp->EOL();
+                output_sp->Flush();
+            }
+            
         }
         else
         {
-            LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
+            LogSP log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
-            if (log)
-                log->Printf ("Process::%s could not find watchpoint id: %lld...", __FUNCTION__, m_value);
+            if (log_process)
+                log_process->Printf ("Process::%s could not find watchpoint id: %lld...", __FUNCTION__, m_value);
         }
         if (log)
             log->Printf ("Process::%s returning from action with m_should_stop: %d.", __FUNCTION__, m_should_stop);
+        
     }
         
-    virtual const char *
-    GetDescription ()
-    {
-        if (m_description.empty())
-        {
-            StreamString strm;
-            strm.Printf("watchpoint %lli", m_value);
-            m_description.swap (strm.GetString());
-        }
-        return m_description.c_str();
-    }
-
 private:
     std::string m_description;
     bool m_should_stop;

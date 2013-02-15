@@ -6,10 +6,10 @@
 #
 
 ---
-atoms:
+defined-atoms:
     - name:          entry
       scope:         hidden
-      fixups:
+      references:
       - offset:      3
         kind:        3
         weasel:      bar
@@ -18,5 +18,4 @@ atoms:
 ...
 
 
-# CHECK:       error: Unknown fixup attribute
-# CHECK:       weasel
+# CHECK:       error: unknown key 'weasel'

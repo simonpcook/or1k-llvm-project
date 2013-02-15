@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "CommandObjectApropos.h"
 
 // C Includes
@@ -54,7 +56,7 @@ CommandObjectApropos::~CommandObjectApropos()
 bool
 CommandObjectApropos::DoExecute (Args& args, CommandReturnObject &result)
 {
-    const int argc = args.GetArgumentCount ();
+    const size_t argc = args.GetArgumentCount ();
 
     if (argc == 1)
     {

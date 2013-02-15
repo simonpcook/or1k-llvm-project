@@ -46,7 +46,9 @@ system linker tool.
 Current Status
 --------------
 
-lld is in its very early stages of development.
+lld is in its early stages of development.
+
+It can currently self host on Linux x86-64 with -static.
 
 Source
 ------

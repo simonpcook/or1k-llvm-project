@@ -166,11 +166,11 @@ class   ProcessInstanceInfoMatch;
 class   ProcessLaunchInfo;
 class   Property;
 struct  PropertyDefinition;
-class   PythonDataArray;
-class   PythonDataDictionary;
-class   PythonDataInteger;
-class   PythonDataObject;
-class   PythonDataString;
+class   PythonArray;
+class   PythonDictionary;
+class   PythonInteger;
+class   PythonObject;
+class   PythonString;
 class   RegisterContext;
 class   RegisterLocation;
 class   RegisterLocationList;
@@ -218,7 +218,7 @@ class   SyntheticChildren;
 class   SyntheticChildrenFrontEnd;
 class   TypeFilterImpl;
 #ifndef LLDB_DISABLE_PYTHON
-class   TypeSyntheticImpl;
+class   ScriptedSyntheticChildren;
 #endif
 class   Target;
 class   TargetList;
@@ -236,6 +236,7 @@ class   ThreadPlanTracer;
 class   ThreadSpec;
 class   TimeValue;
 class   Type;
+class   TypeCategoryMap;
 class   TypeImpl;
 class   TypeAndOrName;
 class   TypeList;
@@ -350,6 +351,7 @@ namespace lldb {
     typedef STD_SHARED_PTR(lldb_private::StopInfo) StopInfoSP;
     typedef STD_SHARED_PTR(lldb_private::StoppointLocation) StoppointLocationSP;
     typedef STD_SHARED_PTR(lldb_private::Stream) StreamSP;
+    typedef STD_WEAK_PTR  (lldb_private::Stream) StreamWP;
     typedef STD_SHARED_PTR(lldb_private::StringSummaryFormat) StringTypeSummaryImplSP;
     typedef STD_SHARED_PTR(lldb_private::SymbolFile) SymbolFileSP;
     typedef STD_SHARED_PTR(lldb_private::SymbolFileType) SymbolFileTypeSP;
@@ -372,7 +374,7 @@ namespace lldb {
     typedef STD_SHARED_PTR(lldb_private::TypeNameSpecifierImpl) TypeNameSpecifierImplSP;
     typedef STD_SHARED_PTR(lldb_private::TypeSummaryImpl) TypeSummaryImplSP;
 #ifndef LLDB_DISABLE_PYTHON
-    typedef STD_SHARED_PTR(lldb_private::TypeSyntheticImpl) TypeSyntheticImplSP;
+    typedef STD_SHARED_PTR(lldb_private::ScriptedSyntheticChildren) ScriptedSyntheticChildrenSP;
 #endif
     typedef STD_SHARED_PTR(lldb_private::UnwindPlan) UnwindPlanSP;
     typedef lldb_private::SharingPtr<lldb_private::ValueObject> ValueObjectSP;

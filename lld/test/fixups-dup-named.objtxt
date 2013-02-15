@@ -1,15 +1,15 @@
 # RUN: lld-core %s | FileCheck %s
 
 #
-# Test fixups referencing multiple atoms that have the same name
+# Test references referencing multiple atoms that have the same name
 #
 
 ---
-atoms:
+defined-atoms:
     - name:              foo
       type:              code
       content:           [ E8, 00, 00, 00, 00, E8, 00, 00, 00, 00 ]
-      fixups:
+      references:
       - offset:          1
         kind:            3
         target:          bar_1

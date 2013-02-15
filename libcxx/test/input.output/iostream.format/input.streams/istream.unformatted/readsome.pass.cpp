@@ -6,6 +6,9 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// XFAIL: with_system_lib=x86_64-apple-darwin11
+// XFAIL: with_system_lib=x86_64-apple-darwin12
 
 // <istream>
 
@@ -59,6 +62,7 @@ int main()
         assert(!is.fail());
         assert(is.gcount() == 1);
         assert(std::string(s, 1) == "0");
+        assert(is.readsome(s, 5) == 0);
     }
     {
         testbuf<wchar_t> sb(L" 1234567890");
@@ -79,5 +83,6 @@ int main()
         assert(!is.fail());
         assert(is.gcount() == 1);
         assert(std::wstring(s, 1) == L"0");
+        assert(is.readsome(s, 5) == 0);
     }
 }

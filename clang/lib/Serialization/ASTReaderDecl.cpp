@@ -12,19 +12,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/Serialization/ASTReader.h"
 #include "ASTCommon.h"
 #include "ASTReaderInternals.h"
-#include "clang/Serialization/ASTReader.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclGroup.h"
+#include "clang/AST/DeclTemplate.h"
+#include "clang/AST/DeclVisitor.h"
+#include "clang/AST/Expr.h"
 #include "clang/Sema/IdentifierResolver.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
-#include "clang/AST/ASTConsumer.h"
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/DeclVisitor.h"
-#include "clang/AST/DeclGroup.h"
-#include "clang/AST/DeclCXX.h"
-#include "clang/AST/DeclTemplate.h"
-#include "clang/AST/Expr.h"
 #include "llvm/Support/SaveAndRestore.h"
 using namespace clang;
 using namespace clang::serialization;
@@ -116,29 +116,25 @@ namespace clang {
       ASTReader &Reader;
       GlobalDeclID FirstID;
       mutable bool Owning;
+      Decl::Kind DeclKind;
       
       void operator=(RedeclarableResult &) LLVM_DELETED_FUNCTION;
       
     public:
-      RedeclarableResult(ASTReader &Reader, GlobalDeclID FirstID)
-        : Reader(Reader), FirstID(FirstID), Owning(true) { }
+      RedeclarableResult(ASTReader &Reader, GlobalDeclID FirstID,
+                         Decl::Kind DeclKind)
+        : Reader(Reader), FirstID(FirstID), Owning(true), DeclKind(DeclKind) { }
 
       RedeclarableResult(const RedeclarableResult &Other)
-        : Reader(Other.Reader), FirstID(Other.FirstID), Owning(Other.Owning) 
+        : Reader(Other.Reader), FirstID(Other.FirstID), Owning(Other.Owning) ,
+          DeclKind(Other.DeclKind)
       { 
         Other.Owning = false;
       }
 
       ~RedeclarableResult() {
-        // FIXME: We want to suppress this when the declaration is local to
-        // a function, since there's no reason to search other AST files
-        // for redeclarations (they can't exist). However, this is hard to 
-        // do locally because the declaration hasn't necessarily loaded its
-        // declaration context yet. Also, local externs still have the function
-        // as their (semantic) declaration context, which is wrong and would
-        // break this optimize.
-        
-        if (FirstID && Owning && Reader.PendingDeclChainsKnown.insert(FirstID))
+        if (FirstID && Owning && isRedeclarableDeclKind(DeclKind) &&
+            Reader.PendingDeclChainsKnown.insert(FirstID))
           Reader.PendingDeclChains.push_back(FirstID);
       }
       
@@ -151,7 +147,7 @@ namespace clang {
         Owning = false;
       }
     };
-    
+
     /// \brief Class used to capture the result of searching for an existing
     /// declaration of a specific kind and name, along with the ability
     /// to update the place where this result was found (the declaration
@@ -479,6 +475,7 @@ void ASTDeclReader::VisitRecordDecl(RecordDecl *RD) {
   RD->setHasFlexibleArrayMember(Record[Idx++]);
   RD->setAnonymousStructOrUnion(Record[Idx++]);
   RD->setHasObjectMember(Record[Idx++]);
+  RD->setHasVolatileMember(Record[Idx++]);
 }
 
 void ASTDeclReader::VisitValueDecl(ValueDecl *VD) {
@@ -528,6 +525,9 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
   FD->IsExplicitlyDefaulted = Record[Idx++];
   FD->HasImplicitReturnZero = Record[Idx++];
   FD->IsConstexpr = Record[Idx++];
+  FD->HasSkippedBody = Record[Idx++];
+  FD->HasCachedLinkage = true;
+  FD->CachedLinkage = Record[Idx++];
   FD->EndRangeLoc = ReadSourceLocation(Record, Idx);
 
   switch ((FunctionDecl::TemplatedKind)Record[Idx++]) {
@@ -652,6 +652,7 @@ void ASTDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {
   MD->setPropertyAccessor(Record[Idx++]);
   MD->setDefined(Record[Idx++]);
   MD->IsOverriding = Record[Idx++];
+  MD->HasSkippedBody = Record[Idx++];
 
   MD->IsRedeclaration = Record[Idx++];
   MD->HasRedeclaration = Record[Idx++];
@@ -909,6 +910,8 @@ void ASTDeclReader::VisitVarDecl(VarDecl *VD) {
   VD->VarDeclBits.CXXForRangeDecl = Record[Idx++];
   VD->VarDeclBits.ARCPseudoStrong = Record[Idx++];
   VD->VarDeclBits.IsConstexpr = Record[Idx++];
+  VD->HasCachedLinkage = true;
+  VD->CachedLinkage = Record[Idx++];
   
   // Only true variables (not parameters or implicit parameters) can be merged.
   if (VD->getKind() == Decl::Var)
@@ -1083,11 +1086,7 @@ void ASTDeclReader::ReadCXXDefinitionData(
                                    const RecordData &Record, unsigned &Idx) {
   // Note: the caller has deserialized the IsLambda bit already.
   Data.UserDeclaredConstructor = Record[Idx++];
-  Data.UserDeclaredCopyConstructor = Record[Idx++];
-  Data.UserDeclaredMoveConstructor = Record[Idx++];
-  Data.UserDeclaredCopyAssignment = Record[Idx++];
-  Data.UserDeclaredMoveAssignment = Record[Idx++];
-  Data.UserDeclaredDestructor = Record[Idx++];
+  Data.UserDeclaredSpecialMembers = Record[Idx++];
   Data.Aggregate = Record[Idx++];
   Data.PlainOldData = Record[Idx++];
   Data.Empty = Record[Idx++];
@@ -1101,25 +1100,26 @@ void ASTDeclReader::ReadCXXDefinitionData(
   Data.HasMutableFields = Record[Idx++];
   Data.HasOnlyCMembers = Record[Idx++];
   Data.HasInClassInitializer = Record[Idx++];
-  Data.HasTrivialDefaultConstructor = Record[Idx++];
+  Data.HasUninitializedReferenceMember = Record[Idx++];
+  Data.NeedOverloadResolutionForMoveConstructor = Record[Idx++];
+  Data.NeedOverloadResolutionForMoveAssignment = Record[Idx++];
+  Data.NeedOverloadResolutionForDestructor = Record[Idx++];
+  Data.DefaultedMoveConstructorIsDeleted = Record[Idx++];
+  Data.DefaultedMoveAssignmentIsDeleted = Record[Idx++];
+  Data.DefaultedDestructorIsDeleted = Record[Idx++];
+  Data.HasTrivialSpecialMembers = Record[Idx++];
+  Data.HasIrrelevantDestructor = Record[Idx++];
   Data.HasConstexprNonCopyMoveConstructor = Record[Idx++];
   Data.DefaultedDefaultConstructorIsConstexpr = Record[Idx++];
   Data.HasConstexprDefaultConstructor = Record[Idx++];
-  Data.HasTrivialCopyConstructor = Record[Idx++];
-  Data.HasTrivialMoveConstructor = Record[Idx++];
-  Data.HasTrivialCopyAssignment = Record[Idx++];
-  Data.HasTrivialMoveAssignment = Record[Idx++];
-  Data.HasTrivialDestructor = Record[Idx++];
-  Data.HasIrrelevantDestructor = Record[Idx++];
   Data.HasNonLiteralTypeFieldsOrBases = Record[Idx++];
   Data.ComputedVisibleConversions = Record[Idx++];
   Data.UserProvidedDefaultConstructor = Record[Idx++];
-  Data.DeclaredDefaultConstructor = Record[Idx++];
-  Data.DeclaredCopyConstructor = Record[Idx++];
-  Data.DeclaredMoveConstructor = Record[Idx++];
-  Data.DeclaredCopyAssignment = Record[Idx++];
-  Data.DeclaredMoveAssignment = Record[Idx++];
-  Data.DeclaredDestructor = Record[Idx++];
+  Data.DeclaredSpecialMembers = Record[Idx++];
+  Data.ImplicitCopyConstructorHasConstParam = Record[Idx++];
+  Data.ImplicitCopyAssignmentHasConstParam = Record[Idx++];
+  Data.HasDeclaredCopyConstructorWithConstParam = Record[Idx++];
+  Data.HasDeclaredCopyAssignmentWithConstParam = Record[Idx++];
   Data.FailedImplicitMoveConstructor = Record[Idx++];
   Data.FailedImplicitMoveAssignment = Record[Idx++];
 
@@ -1266,10 +1266,12 @@ void ASTDeclReader::VisitAccessSpecDecl(AccessSpecDecl *D) {
 
 void ASTDeclReader::VisitFriendDecl(FriendDecl *D) {
   VisitDecl(D);
-  if (Record[Idx++])
-    D->Friend = GetTypeSourceInfo(Record, Idx);
-  else
+  if (Record[Idx++]) // hasFriendDecl
     D->Friend = ReadDeclAs<NamedDecl>(Record, Idx);
+  else
+    D->Friend = GetTypeSourceInfo(Record, Idx);
+  for (unsigned i = 0; i != D->NumTPLists; ++i)
+    D->getTPLists()[i] = Reader.ReadTemplateParameterList(F, Record, Idx);
   D->NextFriend = Record[Idx++];
   D->UnsupportedFriend = (Record[Idx++] != 0);
   D->FriendLoc = ReadSourceLocation(Record, Idx);
@@ -1563,7 +1565,8 @@ ASTDeclReader::VisitRedeclarable(Redeclarable<T> *D) {
                              
   // The result structure takes care to note that we need to load the 
   // other declaration chains for this ID.
-  return RedeclarableResult(Reader, FirstDeclID);
+  return RedeclarableResult(Reader, FirstDeclID,
+                            static_cast<T *>(D)->getKind());
 }
 
 /// \brief Attempts to merge the given declaration (D) with another declaration
@@ -1820,10 +1823,11 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
   }
 
   if (DC->isNamespace()) {
-    for (DeclContext::lookup_result R = DC->lookup(Name);
-         R.first != R.second; ++R.first) {
-      if (isSameEntity(*R.first, D))
-        return FindExistingResult(Reader, D, *R.first);
+    DeclContext::lookup_result R = DC->lookup(Name);
+    for (DeclContext::lookup_iterator I = R.begin(), E = R.end(); I != E; 
+         ++I) {
+      if (isSameEntity(*I, D))
+        return FindExistingResult(Reader, D, *I);
     }
   }
   
@@ -1937,7 +1941,7 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   ASTDeclReader Reader(*this, *Loc.F, ID, RawLocation, Record,Idx);
 
   Decl *D = 0;
-  switch ((DeclCode)DeclsCursor.ReadRecord(Code, Record)) {
+  switch ((DeclCode)DeclsCursor.readRecord(Code, Record)) {
   case DECL_CONTEXT_LEXICAL:
   case DECL_CONTEXT_VISIBLE:
     llvm_unreachable("Record cannot be de-serialized with ReadDeclRecord");
@@ -2005,7 +2009,7 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
     D = AccessSpecDecl::CreateDeserialized(Context, ID);
     break;
   case DECL_FRIEND:
-    D = FriendDecl::CreateDeserialized(Context, ID);
+    D = FriendDecl::CreateDeserialized(Context, ID, Record[Idx++]);
     break;
   case DECL_FRIEND_TEMPLATE:
     D = FriendTemplateDecl::CreateDeserialized(Context, ID);
@@ -2122,12 +2126,18 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   // If this declaration is also a declaration context, get the
   // offsets for its tables of lexical and visible declarations.
   if (DeclContext *DC = dyn_cast<DeclContext>(D)) {
+    // FIXME: This should really be
+    //     DeclContext *LookupDC = DC->getPrimaryContext();
+    // but that can walk the redeclaration chain, which might not work yet.
+    DeclContext *LookupDC = DC;
+    if (isa<NamespaceDecl>(DC))
+      LookupDC = DC->getPrimaryContext();
     std::pair<uint64_t, uint64_t> Offsets = Reader.VisitDeclContext(DC);
     if (Offsets.first || Offsets.second) {
       if (Offsets.first != 0)
         DC->setHasExternalLexicalStorage(true);
       if (Offsets.second != 0)
-        DC->setHasExternalVisibleStorage(true);
+        LookupDC->setHasExternalVisibleStorage(true);
       if (ReadDeclContextStorage(*Loc.F, DeclsCursor, Offsets, 
                                  Loc.F->DeclContextInfos[DC]))
         return 0;
@@ -2139,7 +2149,7 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
     if (I != PendingVisibleUpdates.end()) {
       // There are updates. This means the context has external visible
       // storage, even if the original stored version didn't.
-      DC->setHasExternalVisibleStorage(true);
+      LookupDC->setHasExternalVisibleStorage(true);
       DeclContextVisibleUpdates &U = I->second;
       for (DeclContextVisibleUpdates::iterator UI = U.begin(), UE = U.end();
            UI != UE; ++UI) {
@@ -2150,8 +2160,9 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
       PendingVisibleUpdates.erase(I);
     }
 
-    if (!DC->hasExternalVisibleStorage() && DC->hasExternalLexicalStorage())
-      DC->setMustBuildLookupTable();
+    if (!LookupDC->hasExternalVisibleStorage() &&
+        DC->hasExternalLexicalStorage())
+      LookupDC->setMustBuildLookupTable();
   }
   assert(Idx == Record.size());
 
@@ -2189,7 +2200,7 @@ void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
       Cursor.JumpToBit(Offset);
       RecordData Record;
       unsigned Code = Cursor.ReadCode();
-      unsigned RecCode = Cursor.ReadRecord(Code, Record);
+      unsigned RecCode = Cursor.readRecord(Code, Record);
       (void)RecCode;
       assert(RecCode == DECL_UPDATES && "Expected DECL_UPDATES record!");
       
@@ -2226,7 +2237,7 @@ namespace {
     SmallVectorImpl<DeclID> &SearchDecls;
     llvm::SmallPtrSet<Decl *, 16> &Deserialized;
     GlobalDeclID CanonID;
-    llvm::SmallVector<Decl *, 4> Chain;
+    SmallVector<Decl *, 4> Chain;
     
   public:
     RedeclChainVisitor(ASTReader &Reader, SmallVectorImpl<DeclID> &SearchDecls,
@@ -2307,7 +2318,7 @@ void ASTReader::loadPendingDeclChain(serialization::GlobalDeclID ID) {
   Decl *CanonDecl = D->getCanonicalDecl();
   
   // Determine the set of declaration IDs we'll be searching for.
-  llvm::SmallVector<DeclID, 1> SearchDecls;
+  SmallVector<DeclID, 1> SearchDecls;
   GlobalDeclID CanonID = 0;
   if (D == CanonDecl) {
     SearchDecls.push_back(ID); // Always first.
@@ -2404,7 +2415,7 @@ namespace {
       if (Tail)
         ASTDeclReader::setNextObjCCategory(Tail, Cat);
       else
-        Interface->setCategoryList(Cat);
+        Interface->setCategoryListRaw(Cat);
       Tail = Cat;
     }
     
@@ -2419,13 +2430,15 @@ namespace {
         Tail(0) 
     {
       // Populate the name -> category map with the set of known categories.
-      for (ObjCCategoryDecl *Cat = Interface->getCategoryList(); Cat;
-           Cat = Cat->getNextClassCategory()) {
+      for (ObjCInterfaceDecl::known_categories_iterator
+             Cat = Interface->known_categories_begin(),
+             CatEnd = Interface->known_categories_end();
+           Cat != CatEnd; ++Cat) {
         if (Cat->getDeclName())
-          NameCategoryMap[Cat->getDeclName()] = Cat;
+          NameCategoryMap[Cat->getDeclName()] = *Cat;
         
         // Keep track of the tail of the category list.
-        Tail = Cat;
+        Tail = *Cat;
       }
     }
 

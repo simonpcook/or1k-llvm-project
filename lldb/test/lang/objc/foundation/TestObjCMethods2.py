@@ -200,7 +200,7 @@ class FoundationTestCase2(TestBase):
 
         self.runCmd("run", RUN_SUCCEEDED)
         
-        self.expect("expression *my",
+        self.expect("expression --show-types -- *my",
             patterns = ["\(MyString\) \$.* = ", "\(MyBase\)", "\(NSObject\)", "\(Class\)"])
         self.runCmd("process continue")
 
@@ -216,7 +216,7 @@ class FoundationTestCase2(TestBase):
         self.runCmd("run", RUN_SUCCEEDED)
 
         self.expect("po [NSError errorWithDomain:@\"Hello\" code:35 userInfo:nil]",
-            substrs = ["$", "= 0x", "Error Domain=Hello", "Code=35", "be completed."])
+            substrs = ["Error Domain=Hello", "Code=35", "be completed."])
         self.runCmd("process continue")
 
     def NSError_p(self):
@@ -230,7 +230,7 @@ class FoundationTestCase2(TestBase):
 
         self.runCmd("run", RUN_SUCCEEDED)
 
-        self.expect("p [NSError errorWithDomain:@\"Hello\" code:35 userInfo:nil]",
+        self.expect("p [NSError thisMethodIsntImplemented:0]",
                     error = True, 
                     patterns = ["no known method", "cast the message send to the method's return type"])
         self.runCmd("process continue")

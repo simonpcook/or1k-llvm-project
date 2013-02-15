@@ -411,12 +411,24 @@ Listener::WaitForEventsInternal
 
     while (1)
     {
+        // Note, we don't want to lock the m_events_mutex in the call to GetNextEventInternal, since the DoOnRemoval
+        // code might require that new events be serviced.  For instance, the Breakpoint Command's 
         if (GetNextEventInternal (broadcaster, broadcaster_names, num_broadcaster_names, event_type_mask, event_sp))
-            return true;
+                return true;
 
-        // Reset condition value to false, so we can wait for new events to be
-        // added that might meet our current filter
-        m_cond_wait.SetValue (false, eBroadcastNever);
+        {
+            // Reset condition value to false, so we can wait for new events to be
+            // added that might meet our current filter
+            // But first poll for any new event that might satisfy our condition, and if so consume it,
+            // otherwise wait.
+            
+            Mutex::Locker event_locker(m_events_mutex);
+            const bool remove = false;
+            if (FindNextEventInternal (broadcaster, broadcaster_names, num_broadcaster_names, event_type_mask, event_sp, remove))
+                continue;
+            else
+                m_cond_wait.SetValue (false, eBroadcastNever);
+        }
 
         if (m_cond_wait.WaitForValueEqualTo (true, timeout, &timed_out))
             continue;

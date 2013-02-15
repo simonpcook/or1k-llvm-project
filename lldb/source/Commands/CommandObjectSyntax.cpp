@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "CommandObjectSyntax.h"
 
 // C Includes
@@ -57,7 +59,7 @@ CommandObjectSyntax::DoExecute (Args& command, CommandReturnObject &result)
 {
     CommandObject::CommandMap::iterator pos;
     CommandObject *cmd_obj;
-    const int argc = command.GetArgumentCount();
+    const size_t argc = command.GetArgumentCount();
 
     if (argc > 0)
     {

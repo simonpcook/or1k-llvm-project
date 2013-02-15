@@ -126,6 +126,7 @@ lldb_private::DisableLog (const char **categories, Stream *feedback_strm)
                 else if (0 == ::strcasecmp(arg, "state"))       flag_bits &= ~LIBLLDB_LOG_STATE;
                 else if (0 == ::strcasecmp(arg, "step"))        flag_bits &= ~LIBLLDB_LOG_STEP;
                 else if (0 == ::strcasecmp(arg, "thread"))      flag_bits &= ~LIBLLDB_LOG_THREAD;
+                else if (0 == ::strcasecmp(arg, "target"))      flag_bits &= ~LIBLLDB_LOG_TARGET;
                 else if (0 == ::strcasecmp(arg, "verbose"))     flag_bits &= ~LIBLLDB_LOG_VERBOSE;
                 else if (0 == ::strncasecmp(arg, "watch", 5))   flag_bits &= ~LIBLLDB_LOG_WATCHPOINTS;
                 else if (0 == ::strncasecmp(arg, "temp", 4))    flag_bits &= ~LIBLLDB_LOG_TEMPORARY;
@@ -136,6 +137,7 @@ lldb_private::DisableLog (const char **categories, Stream *feedback_strm)
                 else if (0 == ::strncasecmp(arg, "types", 5))   flag_bits &= ~LIBLLDB_LOG_TYPES;
                 else if (0 == ::strncasecmp(arg, "symbol", 6))  flag_bits &= ~LIBLLDB_LOG_SYMBOLS;
                 else if (0 == ::strncasecmp(arg, "module", 6))  flag_bits &= ~LIBLLDB_LOG_MODULES;
+                else if (0 == ::strncasecmp(arg, "mmap", 4))    flag_bits &= ~LIBLLDB_LOG_MMAP;
                 else
                 {
                     feedback_strm->Printf ("error:  unrecognized log category '%s'\n", arg);
@@ -193,6 +195,7 @@ lldb_private::EnableLog (StreamSP &log_stream_sp, uint32_t log_options, const ch
             else if (0 == ::strcasecmp(arg, "state"))       flag_bits |= LIBLLDB_LOG_STATE;
             else if (0 == ::strcasecmp(arg, "step"))        flag_bits |= LIBLLDB_LOG_STEP;
             else if (0 == ::strcasecmp(arg, "thread"))      flag_bits |= LIBLLDB_LOG_THREAD;
+            else if (0 == ::strcasecmp(arg, "target"))      flag_bits |= LIBLLDB_LOG_TARGET;
             else if (0 == ::strcasecmp(arg, "verbose"))     flag_bits |= LIBLLDB_LOG_VERBOSE;
             else if (0 == ::strncasecmp(arg, "watch", 5))   flag_bits |= LIBLLDB_LOG_WATCHPOINTS;
             else if (0 == ::strncasecmp(arg, "temp", 4))    flag_bits |= LIBLLDB_LOG_TEMPORARY;
@@ -203,6 +206,7 @@ lldb_private::EnableLog (StreamSP &log_stream_sp, uint32_t log_options, const ch
             else if (0 == ::strncasecmp(arg, "types", 5))   flag_bits |= LIBLLDB_LOG_TYPES;
             else if (0 == ::strncasecmp(arg, "symbol", 6))  flag_bits |= LIBLLDB_LOG_SYMBOLS;
             else if (0 == ::strncasecmp(arg, "module", 6))  flag_bits |= LIBLLDB_LOG_MODULES;
+            else if (0 == ::strncasecmp(arg, "mmap", 4))    flag_bits |= LIBLLDB_LOG_MMAP;
             else
             {
                 feedback_strm->Printf("error: unrecognized log category '%s'\n", arg);
@@ -237,6 +241,7 @@ lldb_private::ListLogCategories (Stream *strm)
                  "  state - log private and public process state changes\n"
                  "  step - log step related activities\n"
                  "  symbol - log symbol related issues and warnings\n"
+                 "  target - log target events and activities\n"
                  "  thread - log thread events and activities\n"
                  "  types - log type system related activities\n"
                  "  unwind - log stack unwind activities\n"

@@ -29,6 +29,7 @@ import sys
 import textwrap
 import time
 import unittest2
+import progress
 
 def is_exe(fpath):
     """Returns true if fpath is an executable."""
@@ -95,7 +96,7 @@ just_do_benchmarks_test = False
 # Use @dsym_test or @dwarf_test decorators, defined in lldbtest.py, to mark a test
 # as a dsym or dwarf test.  Use '-N dsym' or '-N dwarf' to exclude dsym or dwarf
 # tests from running.
-dont_do_dsym_test = False
+dont_do_dsym_test = "linux" in sys.platform
 dont_do_dwarf_test = False
 
 # The blacklist is optional (-b blacklistFile) and allows a central place to skip
@@ -205,9 +206,6 @@ sdir_has_content = False
 
 # svn_info stores the output from 'svn info lldb.base.dir'.
 svn_info = ''
-
-# The environment variables to unset before running the test cases.
-unsets = []
 
 # Default verbosity is 0.
 verbose = 0
@@ -346,7 +344,6 @@ def parseOptionsAndInitTestdirs():
     global regexp
     global rdir
     global sdir_name
-    global unsets
     global verbose
     global testdirs
 
@@ -377,7 +374,7 @@ def parseOptionsAndInitTestdirs():
     X('+a', "Just do lldb Python API tests. Do not specify along with '+a'", dest='plus_a')
     X('+b', 'Just do benchmark tests', dest='plus_b')
     group.add_argument('-b', metavar='blacklist', help='Read a blacklist file specified after this option')
-    group.add_argument('-f', metavar='filterspec', help='Specify a filter, which consists of the test class name, a dot, followed by the test method, to only admit such test into the test suite')  # FIXME: Example?
+    group.add_argument('-f', metavar='filterspec', action='append', help='Specify a filter, which consists of the test class name, a dot, followed by the test method, to only admit such test into the test suite')  # FIXME: Example?
     X('-g', 'If specified, the filterspec by -f is not exclusive, i.e., if a test module does not match the filterspec (testclass.testmethod), the whole module is still admitted to the test suite')
     X('-l', "Don't skip long running tests")
     group.add_argument('-p', metavar='pattern', help='Specify a regexp filename pattern for inclusion in the test suite')
@@ -406,7 +403,7 @@ def parseOptionsAndInitTestdirs():
     X('-n', "Don't print the headers like build dir, lldb version, and svn info at all")
     X('-S', "Skip the build and cleanup while running the test. Use this option with care as you would need to build the inferior(s) by hand and build the executable(s) with the correct name(s). This can be used with '-# n' to stress test certain test cases for n number of times")
     X('-t', 'Turn on tracing of lldb command and other detailed test executions')
-    group.add_argument('-u', metavar='variable', action='append', help='Specify an environment variable to unset before running the test cases. e.g., -u DYLD_INSERT_LIBRARIES -u MallocScribble')
+    group.add_argument('-u', dest='unset_env_varnames', metavar='variable', action='append', help='Specify an environment variable to unset before running the test cases. e.g., -u DYLD_INSERT_LIBRARIES -u MallocScribble')
     X('-v', 'Do verbose mode of unittest framework (print out each test case invocation)')
     X('-w', 'Insert some wait time (currently 0.5 sec) between consecutive test cases')
 
@@ -419,6 +416,14 @@ def parseOptionsAndInitTestdirs():
 
     platform_system = platform.system()
     platform_machine = platform.machine()
+    
+    if args.unset_env_varnames:
+        for env_var in args.unset_env_varnames:
+            if env_var in os.environ:
+                # From Python Doc: When unsetenv() is supported, deletion of items in os.environ
+                # is automatically translated into a corresponding call to unsetenv().
+                del os.environ[env_var]
+                #os.unsetenv(env_var)
     
     # only print the args if being verbose
     if args.v:
@@ -510,9 +515,9 @@ def parseOptionsAndInitTestdirs():
         failfast = True
 
     if args.f:
-        if args.f.startswith('-'):
+        if any([x.startswith('-') for x in args.f]):
             usage(parser)
-        filters.append(args.f)
+        filters.extend(args.f)
 
     if args.g:
         fs4all = False
@@ -567,9 +572,6 @@ def parseOptionsAndInitTestdirs():
 
     if args.t:
         os.environ['LLDB_COMMAND_TRACE'] = 'YES'
-
-    if args.u:
-        unsets.extend(args.u)
 
     if args.v:
         verbose = 2
@@ -797,6 +799,8 @@ def setupSysPath():
             lldbExec = which('lldb')
             if lldbHere and not lldbExec:
                 lldbExec = lldbHere
+            if lldbExec and not lldbHere:
+                lldbHere = lldbExec
     
     if lldbHere:
         os.environ["LLDB_HERE"] = lldbHere
@@ -834,37 +838,61 @@ def setupSysPath():
         # The '-i' option is used to skip looking for lldb.py in the build tree.
         if ignore:
             return
+        
+        # If our lldb supports the -P option, use it to find the python path:
+        init_in_python_dir = 'lldb/__init__.py'
+        import pexpect
+        lldb_dash_p_result = None
+
+        if lldbHere:
+            lldb_dash_p_result = pexpect.run("%s -P"%(lldbHere))
+        elif lldbExec:
+            lldb_dash_p_result = pexpect.run("%s -P"%(lldbExec))
+
+        if lldb_dash_p_result and not lldb_dash_p_result.startswith(("<", "lldb: invalid option:")):
+            lines = lldb_dash_p_result.splitlines()
+            if len(lines) == 1 and os.path.isfile(os.path.join(lines[0], init_in_python_dir)):
+                lldbPath = lines[0]
+                if "linux" in sys.platform:
+                    os.environ['LLDB_BUILD_DIR'] = os.path.join(lldbPath, 'lldb')
+        
+        if not lldbPath: 
+            dbgPath  = os.path.join(base, *(xcode3_build_dir + dbg + python_resource_dir))
+            dbgPath2 = os.path.join(base, *(xcode4_build_dir + dbg + python_resource_dir))
+            dbcPath  = os.path.join(base, *(xcode3_build_dir + dbc + python_resource_dir))
+            dbcPath2 = os.path.join(base, *(xcode4_build_dir + dbc + python_resource_dir))
+            relPath  = os.path.join(base, *(xcode3_build_dir + rel + python_resource_dir))
+            relPath2 = os.path.join(base, *(xcode4_build_dir + rel + python_resource_dir))
+            baiPath  = os.path.join(base, *(xcode3_build_dir + bai + python_resource_dir))
+            baiPath2 = os.path.join(base, *(xcode4_build_dir + bai + python_resource_dir))
     
-        dbgPath  = os.path.join(base, *(xcode3_build_dir + dbg + python_resource_dir))
-        dbgPath2 = os.path.join(base, *(xcode4_build_dir + dbg + python_resource_dir))
-        dbcPath  = os.path.join(base, *(xcode3_build_dir + dbc + python_resource_dir))
-        dbcPath2 = os.path.join(base, *(xcode4_build_dir + dbc + python_resource_dir))
-        relPath  = os.path.join(base, *(xcode3_build_dir + rel + python_resource_dir))
-        relPath2 = os.path.join(base, *(xcode4_build_dir + rel + python_resource_dir))
-        baiPath  = os.path.join(base, *(xcode3_build_dir + bai + python_resource_dir))
-        baiPath2 = os.path.join(base, *(xcode4_build_dir + bai + python_resource_dir))
-    
-        if os.path.isfile(os.path.join(dbgPath, 'lldb/__init__.py')):
-            lldbPath = dbgPath
-        elif os.path.isfile(os.path.join(dbgPath2, 'lldb/__init__.py')):
-            lldbPath = dbgPath2
-        elif os.path.isfile(os.path.join(dbcPath, 'lldb/__init__.py')):
-            lldbPath = dbcPath
-        elif os.path.isfile(os.path.join(dbcPath2, 'lldb/__init__.py')):
-            lldbPath = dbcPath2
-        elif os.path.isfile(os.path.join(relPath, 'lldb/__init__.py')):
-            lldbPath = relPath
-        elif os.path.isfile(os.path.join(relPath2, 'lldb/__init__.py')):
-            lldbPath = relPath2
-        elif os.path.isfile(os.path.join(baiPath, 'lldb/__init__.py')):
-            lldbPath = baiPath
-        elif os.path.isfile(os.path.join(baiPath2, 'lldb/__init__.py')):
-            lldbPath = baiPath2
-    
+            if os.path.isfile(os.path.join(dbgPath, init_in_python_dir)):
+                lldbPath = dbgPath
+            elif os.path.isfile(os.path.join(dbgPath2, init_in_python_dir)):
+                lldbPath = dbgPath2
+            elif os.path.isfile(os.path.join(dbcPath, init_in_python_dir)):
+                lldbPath = dbcPath
+            elif os.path.isfile(os.path.join(dbcPath2, init_in_python_dir)):
+                lldbPath = dbcPath2
+            elif os.path.isfile(os.path.join(relPath, init_in_python_dir)):
+                lldbPath = relPath
+            elif os.path.isfile(os.path.join(relPath2, init_in_python_dir)):
+                lldbPath = relPath2
+            elif os.path.isfile(os.path.join(baiPath, init_in_python_dir)):
+                lldbPath = baiPath
+            elif os.path.isfile(os.path.join(baiPath2, init_in_python_dir)):
+                lldbPath = baiPath2
+
         if not lldbPath:
             print 'This script requires lldb.py to be in either ' + dbgPath + ',',
             print relPath + ', or ' + baiPath
             sys.exit(-1)
+
+    # Some of the code that uses this path assumes it hasn't resolved the Versions... link.  
+    # If the path we've constructed looks like that, then we'll strip out the Versions/A part.
+    (before, frameWithVersion, after) = lldbPath.rpartition("LLDB.framework/Versions/A")
+    if frameWithVersion != "" :
+        lldbPath = before + "LLDB.framework" + after
 
     # If tests need to find LLDB_FRAMEWORK, now they can do it
     os.environ["LLDB_FRAMEWORK"] = os.path.dirname(os.path.dirname(lldbPath))
@@ -1137,16 +1165,6 @@ with open(fname, "w") as f:
     print >> f, "Command invoked: %s\n" % getMyCommandLine()
 
 #
-# If we have environment variables to unset, do it here before we invoke the test runner.
-#
-for env_var in unsets :
-    if env_var in os.environ:
-        # From Python Doc: When unsetenv() is supported, deletion of items in os.environ
-        # is automatically translated into a corresponding call to unsetenv().
-        del os.environ[env_var]
-        #os.unsetenv(env_var)
-
-#
 # Invoke the default TextTestRunner to run the test suite, possibly iterating
 # over different configurations.
 #
@@ -1285,6 +1303,30 @@ for ia in range(len(archs) if iterArchs else 1):
             __singleton__ = None
             __ignore_singleton__ = False
 
+            @staticmethod
+            def getTerminalSize():
+                import os
+                env = os.environ
+                def ioctl_GWINSZ(fd):
+                    try:
+                        import fcntl, termios, struct, os
+                        cr = struct.unpack('hh', fcntl.ioctl(fd, termios.TIOCGWINSZ,
+                    '1234'))
+                    except:
+                        return
+                    return cr
+                cr = ioctl_GWINSZ(0) or ioctl_GWINSZ(1) or ioctl_GWINSZ(2)
+                if not cr:
+                    try:
+                        fd = os.open(os.ctermid(), os.O_RDONLY)
+                        cr = ioctl_GWINSZ(fd)
+                        os.close(fd)
+                    except:
+                        pass
+                if not cr:
+                    cr = (env.get('LINES', 25), env.get('COLUMNS', 80))
+                return int(cr[1]), int(cr[0])
+
             def __init__(self, *args):
                 if not LLDBTestResult.__ignore_singleton__ and LLDBTestResult.__singleton__:
                     raise Exception("LLDBTestResult instantiated more than once")
@@ -1299,6 +1341,13 @@ for ia in range(len(archs) if iterArchs else 1):
                 self.indentation = ' ' * (counterWidth + 2)
                 # This counts from 1 .. suite.countTestCases().
                 self.counter = 0
+                (width, height) = LLDBTestResult.getTerminalSize()
+                self.progressbar = None
+                if width > 10:
+                    try:
+                        self.progressbar = progress.ProgressWithEvents(stdout=self.stream,start=0,end=suite.countTestCases(),width=width-10)
+                    except:
+                        self.progressbar = None
 
             def _exc_info_to_string(self, err, test):
                 """Overrides superclass TestResult's method in order to append
@@ -1434,4 +1483,4 @@ if ("LLDB_TESTSUITE_FORCE_FINISH" in os.environ):
     subprocess.Popen(["/bin/sh", "-c", "kill %s; exit 0" % (os.getpid())])
 
 # Exiting.
-sys.exit(not result.wasSuccessful)
+sys.exit(not result.wasSuccessful())

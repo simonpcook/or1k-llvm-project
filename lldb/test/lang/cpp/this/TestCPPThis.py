@@ -20,6 +20,7 @@ class CPPThisTestCase(TestBase):
 
     #rdar://problem/9962849
     #@expectedFailureClang
+    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
     @dwarf_test
     def test_with_dwarf_and_run_command(self):
         """Test that the appropriate member variables are available when stopped in C++ static, inline, and const methods"""

@@ -6,6 +6,11 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// This test uses new symbols that were not defined in the libc++ shipped on
+// darwin11 and darwin12:
+// XFAIL: with_system_lib=x86_64-apple-darwin11
+// XFAIL: with_system_lib=x86_64-apple-darwin12
 
 // <locale>
 
@@ -31,6 +36,9 @@
 #include <locale>
 #include <cassert>
 
+template <class _Tp>
+void test(const _Tp &) {}
+
 int main()
 {
     assert(std::ctype_base::space);
@@ -54,4 +62,17 @@ int main()
       & std::ctype_base::xdigit) == 0);
     assert(std::ctype_base::alnum == (std::ctype_base::alpha | std::ctype_base::digit));
     assert(std::ctype_base::graph == (std::ctype_base::alnum | std::ctype_base::punct));
+
+    test(std::ctype_base::space);
+    test(std::ctype_base::print);
+    test(std::ctype_base::cntrl);
+    test(std::ctype_base::upper);
+    test(std::ctype_base::lower);
+    test(std::ctype_base::alpha);
+    test(std::ctype_base::digit);
+    test(std::ctype_base::punct);
+    test(std::ctype_base::xdigit);
+    test(std::ctype_base::blank);
+    test(std::ctype_base::alnum);
+    test(std::ctype_base::graph);
 }

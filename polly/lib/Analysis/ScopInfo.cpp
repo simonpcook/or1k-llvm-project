@@ -52,11 +52,11 @@
 using namespace llvm;
 using namespace polly;
 
-STATISTIC(ScopFound,  "Number of valid Scops");
-STATISTIC(RichScopFound,   "Number of Scops containing a loop");
+STATISTIC(ScopFound, "Number of valid Scops");
+STATISTIC(RichScopFound, "Number of Scops containing a loop");
 
 /// Translate a SCEVExpression into an isl_pw_aff object.
-struct SCEVAffinator : public SCEVVisitor<SCEVAffinator, isl_pw_aff*> {
+struct SCEVAffinator : public SCEVVisitor<SCEVAffinator, isl_pw_aff *> {
 private:
   isl_ctx *Ctx;
   int NbLoopSpaces;
@@ -83,20 +83,20 @@ public:
       Space = isl_space_set_dim_id(Space, isl_dim_param, 0, Id);
 
       isl_set *Domain = isl_set_universe(isl_space_copy(Space));
-      isl_aff *Affine = isl_aff_zero_on_domain(
-        isl_local_space_from_space(Space));
+      isl_aff *Affine =
+          isl_aff_zero_on_domain(isl_local_space_from_space(Space));
       Affine = isl_aff_add_coefficient_si(Affine, isl_dim_param, 0, 1);
 
       return isl_pw_aff_alloc(Domain, Affine);
     }
 
-    return SCEVVisitor<SCEVAffinator, isl_pw_aff*>::visit(Scev);
+    return SCEVVisitor<SCEVAffinator, isl_pw_aff *>::visit(Scev);
   }
 
-  SCEVAffinator(const ScopStmt *Stmt) :
-    Ctx(Stmt->getIslCtx()),
-    NbLoopSpaces(Stmt->getNumIterators()),
-    S(Stmt->getParent()) {}
+  SCEVAffinator(const ScopStmt *Stmt)
+      : Ctx(Stmt->getIslCtx()), NbLoopSpaces(Stmt->getNumIterators()),
+        S(Stmt->getParent()) {
+  }
 
   __isl_give isl_pw_aff *visitConstant(const SCEVConstant *Constant) {
     ConstantInt *Value = Constant->getValue();
@@ -178,15 +178,15 @@ public:
 
   int getLoopDepth(const Loop *L) {
     Loop *outerLoop =
-      S->getRegion().outermostLoopInRegion(const_cast<Loop*>(L));
+        S->getRegion().outermostLoopInRegion(const_cast<Loop *>(L));
     assert(outerLoop && "Scop does not contain this loop");
     return L->getLoopDepth() - outerLoop->getLoopDepth();
   }
 
   __isl_give isl_pw_aff *visitAddRecExpr(const SCEVAddRecExpr *Expr) {
     assert(Expr->isAffine() && "Only affine AddRecurrences allowed");
-    assert(S->getRegion().contains(Expr->getLoop())
-           && "Scop does not contain the loop referenced in this AddRec");
+    assert(S->getRegion().contains(Expr->getLoop()) &&
+           "Scop does not contain the loop referenced in this AddRec");
 
     isl_pw_aff *Start = visit(Expr->getStart());
     isl_pw_aff *Step = visit(Expr->getOperand(1));
@@ -196,7 +196,7 @@ public:
     int loopDimension = getLoopDepth(Expr->getLoop());
 
     isl_aff *LAff = isl_aff_set_coefficient_si(
-      isl_aff_zero_on_domain (LocalSpace), isl_dim_in, loopDimension, 1);
+        isl_aff_zero_on_domain(LocalSpace), isl_dim_in, loopDimension, 1);
     isl_pw_aff *LPwAff = isl_pw_aff_from_aff(LAff);
 
     // TODO: Do we need to check for NSW and NUW?
@@ -230,17 +230,16 @@ MemoryAccess::~MemoryAccess() {
   isl_map_free(newAccessRelation);
 }
 
-static void replace(std::string& str, const std::string& find,
-                    const std::string& replace) {
+static void replace(std::string &str, const std::string &find,
+                    const std::string &replace) {
   size_t pos = 0;
-  while((pos = str.find(find, pos)) != std::string::npos)
-  {
+  while ((pos = str.find(find, pos)) != std::string::npos) {
     str.replace(pos, find.length(), replace);
     pos += replace.length();
   }
 }
 
-static void makeIslCompatible(std::string& str) {
+static void makeIslCompatible(std::string &str) {
   str.erase(0, 1);
   replace(str, ".", "_");
   replace(str, "\"", "_");
@@ -273,12 +272,13 @@ isl_basic_map *MemoryAccess::createBasicAccessMap(ScopStmt *Statement) {
   Space = isl_space_align_params(Space, Statement->getDomainSpace());
 
   return isl_basic_map_from_domain_and_range(
-    isl_basic_set_universe(Statement->getDomainSpace()),
-    isl_basic_set_universe(Space));
+      isl_basic_set_universe(Statement->getDomainSpace()),
+      isl_basic_set_universe(Space));
 }
 
 MemoryAccess::MemoryAccess(const IRAccess &Access, const Instruction *AccInst,
-                           ScopStmt *Statement) : Inst(AccInst) {
+                           ScopStmt *Statement)
+    : Inst(AccInst) {
   newAccessRelation = NULL;
   Type = Access.isRead() ? Read : Write;
   statement = Statement;
@@ -309,8 +309,8 @@ MemoryAccess::MemoryAccess(const IRAccess &Access, const Instruction *AccInst,
 
   AccessRelation = isl_map_from_pw_aff(Affine);
   isl_space *Space = Statement->getDomainSpace();
-  AccessRelation = isl_map_set_tuple_id(AccessRelation, isl_dim_in,
-    isl_space_get_tuple_id(Space, isl_dim_set));
+  AccessRelation = isl_map_set_tuple_id(
+      AccessRelation, isl_dim_in, isl_space_get_tuple_id(Space, isl_dim_set));
   isl_space_free(Space);
   AccessRelation = isl_map_set_tuple_name(AccessRelation, isl_dim_out,
                                           getBaseName().c_str());
@@ -338,9 +338,7 @@ void MemoryAccess::print(raw_ostream &OS) const {
   OS.indent(16) << getAccessRelationStr() << ";\n";
 }
 
-void MemoryAccess::dump() const {
-  print(errs());
-}
+void MemoryAccess::dump() const { print(errs()); }
 
 // Create a map in the size of the provided set domain, that maps from the
 // one element of the provided set domain to another element of the provided
@@ -389,41 +387,30 @@ static isl_map *getEqualAndLarger(isl_space *setDomain) {
   return Map;
 }
 
-isl_set *MemoryAccess::getStride(__isl_take const isl_set *domainSubset) const {
-  isl_map *accessRelation = getAccessRelation();
-  isl_set *scatteringDomain = const_cast<isl_set*>(domainSubset);
-  isl_map *scattering = getStatement()->getScattering();
+isl_set *MemoryAccess::getStride(__isl_take const isl_map *Schedule) const {
+  isl_map *S = const_cast<isl_map *>(Schedule);
+  isl_map *AccessRelation = getAccessRelation();
+  isl_space *Space = isl_space_range(isl_map_get_space(S));
+  isl_map *NextScatt = getEqualAndLarger(Space);
 
-  scattering = isl_map_reverse(scattering);
-  int difference = isl_map_n_in(scattering) - isl_set_n_dim(scatteringDomain);
-  scattering = isl_map_project_out(scattering, isl_dim_in,
-                                   isl_set_n_dim(scatteringDomain),
-                                   difference);
+  S = isl_map_reverse(S);
+  NextScatt = isl_map_lexmin(NextScatt);
 
-  // Remove all names of the scattering dimensions, as the names may be lost
-  // anyways during the project. This leads to consistent results.
-  scattering = isl_map_set_tuple_name(scattering, isl_dim_in, "");
-  scatteringDomain = isl_set_set_tuple_name(scatteringDomain, "");
+  NextScatt = isl_map_apply_range(NextScatt, isl_map_copy(S));
+  NextScatt = isl_map_apply_range(NextScatt, isl_map_copy(AccessRelation));
+  NextScatt = isl_map_apply_domain(NextScatt, S);
+  NextScatt = isl_map_apply_domain(NextScatt, AccessRelation);
 
-  isl_map *nextScatt = getEqualAndLarger(isl_set_get_space(scatteringDomain));
-  nextScatt = isl_map_lexmin(nextScatt);
-
-  scattering = isl_map_intersect_domain(scattering, scatteringDomain);
-
-  nextScatt = isl_map_apply_range(nextScatt, isl_map_copy(scattering));
-  nextScatt = isl_map_apply_range(nextScatt, isl_map_copy(accessRelation));
-  nextScatt = isl_map_apply_domain(nextScatt, scattering);
-  nextScatt = isl_map_apply_domain(nextScatt, accessRelation);
-
-  return isl_map_deltas(nextScatt);
+  isl_set *Deltas = isl_map_deltas(NextScatt);
+  return Deltas;
 }
 
-bool MemoryAccess::isStrideX(__isl_take const isl_set *DomainSubset,
+bool MemoryAccess::isStrideX(__isl_take const isl_map *Schedule,
                              int StrideWidth) const {
   isl_set *Stride, *StrideX;
   bool IsStrideX;
 
-  Stride = getStride(DomainSubset);
+  Stride = getStride(Schedule);
   StrideX = isl_set_universe(isl_set_get_space(Stride));
   StrideX = isl_set_fix_si(StrideX, isl_dim_set, 0, StrideWidth);
   IsStrideX = isl_set_is_equal(Stride, StrideX);
@@ -434,12 +421,12 @@ bool MemoryAccess::isStrideX(__isl_take const isl_set *DomainSubset,
   return IsStrideX;
 }
 
-bool MemoryAccess::isStrideZero(const isl_set *DomainSubset) const {
-  return isStrideX(DomainSubset, 0);
+bool MemoryAccess::isStrideZero(const isl_map *Schedule) const {
+  return isStrideX(Schedule, 0);
 }
 
-bool MemoryAccess::isStrideOne(const isl_set *DomainSubset) const {
-  return isStrideX(DomainSubset, 1);
+bool MemoryAccess::isStrideOne(const isl_map *Schedule) const {
+  return isStrideX(Schedule, 1);
 }
 
 void MemoryAccess::setNewAccessRelation(isl_map *newAccess) {
@@ -449,9 +436,7 @@ void MemoryAccess::setNewAccessRelation(isl_map *newAccess) {
 
 //===----------------------------------------------------------------------===//
 
-isl_map *ScopStmt::getScattering() const {
-  return isl_map_copy(Scattering);
-}
+isl_map *ScopStmt::getScattering() const { return isl_map_copy(Scattering); }
 
 void ScopStmt::setScattering(isl_map *NewScattering) {
   isl_map_free(Scattering);
@@ -470,8 +455,8 @@ void ScopStmt::buildScattering(SmallVectorImpl<unsigned> &Scatter) {
 
   // Loop dimensions.
   for (unsigned i = 0; i < NbIterators; ++i)
-    Scattering = isl_map_equate(Scattering, isl_dim_out, 2 * i + 1,
-                                isl_dim_in, i);
+    Scattering =
+        isl_map_equate(Scattering, isl_dim_out, 2 * i + 1, isl_dim_in, i);
 
   // Constant dimensions
   for (unsigned i = 0; i < NbIterators + 1; ++i)
@@ -488,7 +473,8 @@ void ScopStmt::buildAccesses(TempScop &tempScop, const Region &CurRegion) {
   const AccFuncSetType *AccFuncs = tempScop.getAccessFunctions(BB);
 
   for (AccFuncSetType::const_iterator I = AccFuncs->begin(),
-       E = AccFuncs->end(); I != E; ++I) {
+                                      E = AccFuncs->end();
+       I != E; ++I) {
     MemAccs.push_back(new MemoryAccess(I->first, I->second, this));
     InstructionToAccess[I->second] = MemAccs.back();
   }
@@ -539,8 +525,8 @@ __isl_give isl_set *ScopStmt::addLoopBoundsToDomain(__isl_take isl_set *Domain,
 
   for (int i = 0, e = getNumIterators(); i != e; ++i) {
     isl_aff *Zero = isl_aff_zero_on_domain(isl_local_space_copy(LocalSpace));
-    isl_pw_aff *IV = isl_pw_aff_from_aff(
-      isl_aff_set_coefficient_si(Zero, isl_dim_in, i, 1));
+    isl_pw_aff *IV =
+        isl_pw_aff_from_aff(isl_aff_set_coefficient_si(Zero, isl_dim_in, i, 1));
 
     // 0 <= IV.
     isl_set *LowerBound = isl_pw_aff_nonneg_set(isl_pw_aff_copy(IV));
@@ -558,18 +544,18 @@ __isl_give isl_set *ScopStmt::addLoopBoundsToDomain(__isl_take isl_set *Domain,
   return Domain;
 }
 
-__isl_give isl_set *ScopStmt::addConditionsToDomain(__isl_take isl_set *Domain,
-                                                    TempScop &tempScop,
-                                                    const Region &CurRegion) {
+__isl_give isl_set *ScopStmt::addConditionsToDomain(
+    __isl_take isl_set *Domain, TempScop &tempScop, const Region &CurRegion) {
   const Region *TopRegion = tempScop.getMaxRegion().getParent(),
-               *CurrentRegion = &CurRegion;
+                *CurrentRegion = &CurRegion;
   const BasicBlock *BranchingBB = BB;
 
   do {
     if (BranchingBB != CurrentRegion->getEntry()) {
       if (const BBCond *Condition = tempScop.getBBCond(BranchingBB))
         for (BBCond::const_iterator CI = Condition->begin(),
-             CE = Condition->end(); CI != CE; ++CI) {
+                                    CE = Condition->end();
+             CI != CE; ++CI) {
           isl_set *ConditionSet = buildConditionSet(*CI);
           Domain = isl_set_intersect(Domain, ConditionSet);
         }
@@ -581,8 +567,8 @@ __isl_give isl_set *ScopStmt::addConditionsToDomain(__isl_take isl_set *Domain,
   return Domain;
 }
 
-__isl_give isl_set *ScopStmt::buildDomain(TempScop &tempScop,
-                                          const Region &CurRegion) {
+__isl_give isl_set *
+ScopStmt::buildDomain(TempScop &tempScop, const Region &CurRegion) {
   isl_space *Space;
   isl_set *Domain;
   isl_id *Id;
@@ -599,11 +585,10 @@ __isl_give isl_set *ScopStmt::buildDomain(TempScop &tempScop,
   return Domain;
 }
 
-ScopStmt::ScopStmt(Scop &parent, TempScop &tempScop,
-                   const Region &CurRegion, BasicBlock &bb,
-                   SmallVectorImpl<Loop*> &NestLoops,
+ScopStmt::ScopStmt(Scop &parent, TempScop &tempScop, const Region &CurRegion,
+                   BasicBlock &bb, SmallVectorImpl<Loop *> &NestLoops,
                    SmallVectorImpl<unsigned> &Scatter)
-  : Parent(parent), BB(&bb), IVS(NestLoops.size()) {
+    : Parent(parent), BB(&bb), IVS(NestLoops.size()) {
   // Setup the induction variables.
   for (unsigned i = 0, e = NestLoops.size(); i < e; ++i) {
     PHINode *PN = NestLoops[i]->getCanonicalInductionVariable();
@@ -623,17 +608,13 @@ ScopStmt::ScopStmt(Scop &parent, TempScop &tempScop,
   buildAccesses(tempScop, CurRegion);
 }
 
-std::string ScopStmt::getDomainStr() const {
-  return stringFromIslObj(Domain);
-}
+std::string ScopStmt::getDomainStr() const { return stringFromIslObj(Domain); }
 
 std::string ScopStmt::getScatteringStr() const {
   return stringFromIslObj(Scattering);
 }
 
-unsigned ScopStmt::getNumParams() const {
-  return Parent.getNumParams();
-}
+unsigned ScopStmt::getNumParams() const { return Parent.getNumParams(); }
 
 unsigned ScopStmt::getNumIterators() const {
   // The final read has one dimension with one element.
@@ -649,8 +630,8 @@ unsigned ScopStmt::getNumScattering() const {
 
 const char *ScopStmt::getBaseName() const { return BaseName.c_str(); }
 
-const PHINode *ScopStmt::getInductionVariableForDimension(unsigned Dimension)
-  const {
+const PHINode *
+ScopStmt::getInductionVariableForDimension(unsigned Dimension) const {
   return IVS[Dimension].first;
 }
 
@@ -658,28 +639,15 @@ const Loop *ScopStmt::getLoopForDimension(unsigned Dimension) const {
   return IVS[Dimension].second;
 }
 
-const SCEVAddRecExpr *ScopStmt::getSCEVForDimension(unsigned Dimension)
-  const {
-  PHINode *PN =
-    const_cast<PHINode*>(getInductionVariableForDimension(Dimension));
-  return cast<SCEVAddRecExpr>(getParent()->getSE()->getSCEV(PN));
-}
+isl_ctx *ScopStmt::getIslCtx() const { return Parent.getIslCtx(); }
 
-isl_ctx *ScopStmt::getIslCtx() const {
-  return Parent.getIslCtx();
-}
-
-isl_set *ScopStmt::getDomain() const {
-  return isl_set_copy(Domain);
-}
+isl_set *ScopStmt::getDomain() const { return isl_set_copy(Domain); }
 
 isl_space *ScopStmt::getDomainSpace() const {
   return isl_set_get_space(Domain);
 }
 
-isl_id *ScopStmt::getDomainId() const {
-  return isl_set_get_tuple_id(Domain);
-}
+isl_id *ScopStmt::getDomainId() const { return isl_set_get_tuple_id(Domain); }
 
 ScopStmt::~ScopStmt() {
   while (!MemAccs.empty()) {
@@ -709,7 +677,7 @@ void ScopStmt::print(raw_ostream &OS) const {
     OS.indent(16) << "n/a\n";
 
   for (MemoryAccessVec::const_iterator I = MemAccs.begin(), E = MemAccs.end();
-      I != E; ++I)
+       I != E; ++I)
     (*I)->print(OS);
 }
 
@@ -724,9 +692,10 @@ void Scop::setContext(__isl_take isl_set *NewContext) {
   Context = NewContext;
 }
 
-void Scop::addParams(std::vector<const SCEV*> NewParameters) {
-  for (std::vector<const SCEV*>::iterator PI = NewParameters.begin(),
-       PE = NewParameters.end(); PI != PE; ++PI) {
+void Scop::addParams(std::vector<const SCEV *> NewParameters) {
+  for (std::vector<const SCEV *>::iterator PI = NewParameters.begin(),
+                                           PE = NewParameters.end();
+       PI != PE; ++PI) {
     const SCEV *Parameter = *PI;
 
     if (ParameterIds.find(Parameter) != ParameterIds.end())
@@ -755,12 +724,12 @@ __isl_give isl_id *Scop::getIdForParam(const SCEV *Parameter) const {
   if (ParameterName == "" || ParameterName.substr(0, 2) == "p_")
     ParameterName = "p_" + utostr_32(IdIter->second);
 
-  return isl_id_alloc(getIslCtx(), ParameterName.c_str(), (void *) Parameter);
+  return isl_id_alloc(getIslCtx(), ParameterName.c_str(), (void *)Parameter);
 }
 
 void Scop::buildContext() {
   isl_space *Space = isl_space_params_alloc(IslCtx, 0);
-  Context = isl_set_universe (Space);
+  Context = isl_set_universe(Space);
 }
 
 void Scop::addParameterBounds() {
@@ -771,7 +740,7 @@ void Scop::addParameterBounds() {
     const IntegerType *T;
 
     Id = isl_set_get_dim_id(Context, isl_dim_param, i);
-    Scev = (const SCEV*) isl_id_get_user(Id);
+    Scev = (const SCEV *)isl_id_get_user(Id);
     T = dyn_cast<IntegerType>(Scev->getType());
     isl_id_free(Id);
 
@@ -781,19 +750,18 @@ void Scop::addParameterBounds() {
     isl_int_init(V);
 
     isl_int_set_si(V, 1);
-    isl_int_mul_2exp(V, V, Width-1);
+    isl_int_mul_2exp(V, V, Width - 1);
     isl_int_neg(V, V);
     isl_set_lower_bound(Context, isl_dim_param, i, V);
 
     isl_int_set_si(V, 1);
-    isl_int_mul_2exp(V, V, Width-1);
+    isl_int_mul_2exp(V, V, Width - 1);
     isl_int_sub_ui(V, V, 1);
     isl_set_upper_bound(Context, isl_dim_param, i, V);
 
     isl_int_clear(V);
   }
 }
-
 
 void Scop::realignParams() {
   // Add all parameters into a common model.
@@ -815,12 +783,12 @@ void Scop::realignParams() {
 
 Scop::Scop(TempScop &tempScop, LoopInfo &LI, ScalarEvolution &ScalarEvolution,
            isl_ctx *Context)
-           : SE(&ScalarEvolution), R(tempScop.getMaxRegion()),
-           MaxLoopDepth(tempScop.getMaxLoopDepth()) {
+    : SE(&ScalarEvolution), R(tempScop.getMaxRegion()),
+      MaxLoopDepth(tempScop.getMaxLoopDepth()) {
   IslCtx = Context;
   buildContext();
 
-  SmallVector<Loop*, 8> NestLoops;
+  SmallVector<Loop *, 8> NestLoops;
   SmallVector<unsigned, 8> Scatter;
 
   Scatter.assign(MaxLoopDepth + 1, 0);
@@ -843,9 +811,7 @@ Scop::~Scop() {
     delete *I;
 }
 
-std::string Scop::getContextStr() const {
-    return stringFromIslObj(Context);
-}
+std::string Scop::getContextStr() const { return stringFromIslObj(Context); }
 
 std::string Scop::getNameStr() const {
   std::string ExitName, EntryName;
@@ -864,9 +830,7 @@ std::string Scop::getNameStr() const {
   return EntryName + "---" + ExitName;
 }
 
-__isl_give isl_set *Scop::getContext() const {
-  return isl_set_copy(Context);
-}
+__isl_give isl_set *Scop::getContext() const { return isl_set_copy(Context); }
 __isl_give isl_space *Scop::getParamSpace() const {
   return isl_set_get_space(this->Context);
 }
@@ -882,7 +846,8 @@ void Scop::printContext(raw_ostream &OS) const {
   OS.indent(4) << getContextStr() << "\n";
 
   for (ParamVecType::const_iterator PI = Parameters.begin(),
-       PE = Parameters.end(); PI != PE; ++PI) {
+                                    PE = Parameters.end();
+       PI != PE; ++PI) {
     const SCEV *Parameter = *PI;
     int Dim = ParameterIds.find(Parameter)->second;
 
@@ -893,12 +858,11 @@ void Scop::printContext(raw_ostream &OS) const {
 void Scop::printStatements(raw_ostream &OS) const {
   OS << "Statements {\n";
 
-  for (const_iterator SI = begin(), SE = end();SI != SE; ++SI)
+  for (const_iterator SI = begin(), SE = end(); SI != SE; ++SI)
     OS.indent(4) << (**SI);
 
   OS.indent(4) << "}\n";
 }
-
 
 void Scop::print(raw_ostream &OS) const {
   printContext(OS.indent(4));
@@ -917,7 +881,7 @@ __isl_give isl_union_set *Scop::getDomains() {
       Domain = isl_union_set_from_set((*SI)->getDomain());
     else
       Domain = isl_union_set_union(Domain,
-        isl_union_set_from_set((*SI)->getDomain()));
+                                   isl_union_set_from_set((*SI)->getDomain()));
 
   return Domain;
 }
@@ -931,11 +895,9 @@ bool Scop::isTrivialBB(BasicBlock *BB, TempScop &tempScop) {
   return true;
 }
 
-void Scop::buildScop(TempScop &tempScop,
-                      const Region &CurRegion,
-                      SmallVectorImpl<Loop*> &NestLoops,
-                      SmallVectorImpl<unsigned> &Scatter,
-                      LoopInfo &LI) {
+void Scop::buildScop(TempScop &tempScop, const Region &CurRegion,
+                     SmallVectorImpl<Loop *> &NestLoops,
+                     SmallVectorImpl<unsigned> &Scatter, LoopInfo &LI) {
   Loop *L = castToLoop(CurRegion, LI);
 
   if (L)
@@ -945,7 +907,8 @@ void Scop::buildScop(TempScop &tempScop,
   assert(Scatter.size() > loopDepth && "Scatter not big enough!");
 
   for (Region::const_element_iterator I = CurRegion.element_begin(),
-       E = CurRegion.element_end(); I != E; ++I)
+                                      E = CurRegion.element_end();
+       I != E; ++I)
     if (I->isSubRegion())
       buildScop(tempScop, *(I->getNodeAs<Region>()), NestLoops, Scatter, LI);
     else {
@@ -954,8 +917,8 @@ void Scop::buildScop(TempScop &tempScop,
       if (isTrivialBB(BB, tempScop))
         continue;
 
-      Stmts.push_back(new ScopStmt(*this, tempScop, CurRegion, *BB, NestLoops,
-                                   Scatter));
+      Stmts.push_back(
+          new ScopStmt(*this, tempScop, CurRegion, *BB, NestLoops, Scatter));
 
       // Increasing the Scattering function is OK for the moment, because
       // we are using a depth first iterator and the program is well structured.
@@ -968,7 +931,7 @@ void Scop::buildScop(TempScop &tempScop,
   // Exiting a loop region.
   Scatter[loopDepth] = 0;
   NestLoops.pop_back();
-  ++Scatter[loopDepth-1];
+  ++Scatter[loopDepth - 1];
 }
 
 //===----------------------------------------------------------------------===//
@@ -981,8 +944,6 @@ ScopInfo::~ScopInfo() {
   clear();
   isl_ctx_free(ctx);
 }
-
-
 
 void ScopInfo::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<LoopInfo>();
@@ -1006,7 +967,8 @@ bool ScopInfo::runOnRegion(Region *R, RGPassManager &RGM) {
 
   // Statistics.
   ++ScopFound;
-  if (tempScop->getMaxLoopDepth() > 0) ++RichScopFound;
+  if (tempScop->getMaxLoopDepth() > 0)
+    ++RichScopFound;
 
   scop = new Scop(*tempScop, LI, SE, ctx);
 

@@ -11,7 +11,7 @@ else()
   set(ENABLE_SHARED 0)
 endif(BUILD_SHARED_LIBS)
 
-configure_file(
+configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg)
 
@@ -20,6 +20,7 @@ if ( NOT LLD_BUILT_STANDALONE )
   set(LLD_TEST_DEPS
     lld-core lld-test.deps
     FileCheck not llvm-nm
+    lld llvm-objdump llvm-readobj
     )
   set(LLD_TEST_PARAMS
     lld_site_config=${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg

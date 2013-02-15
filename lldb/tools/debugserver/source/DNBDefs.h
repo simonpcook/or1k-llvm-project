@@ -134,11 +134,13 @@ enum
     eEventProcessStoppedStateChanged = 1 << 1,  // The process has changed state to stopped
     eEventSharedLibsStateChange = 1 << 2,       // Shared libraries loaded/unloaded state has changed
     eEventStdioAvailable = 1 << 3,              // Something is available on stdout/stderr
-    eEventProcessAsyncInterrupt = 1 << 4,               // Gives the ability for any infinite wait calls to be interrupted
+    eEventProfileDataAvailable = 1 << 4,        // Profile data ready for retrieval
+    eEventProcessAsyncInterrupt = 1 << 5,       // Gives the ability for any infinite wait calls to be interrupted
     kAllEventsMask = eEventProcessRunningStateChanged |
                      eEventProcessStoppedStateChanged |
                      eEventSharedLibsStateChange |
                      eEventStdioAvailable |
+                     eEventProfileDataAvailable |
                      eEventProcessAsyncInterrupt
 };
 
@@ -228,6 +230,8 @@ struct DNBRegisterInfo
     uint32_t    reg_dwarf;      // DWARF register number (INVALID_NUB_REGNUM when none)
     uint32_t    reg_generic;    // Generic register number (INVALID_NUB_REGNUM when none)
     uint32_t    reg_gdb;        // The GDB register number (INVALID_NUB_REGNUM when none)
+    uint32_t    *pseudo_regs;   // If this register is a part of another register, list the one or more registers
+    uint32_t    *update_regs;   // If modifying this register will invalidate other registers, list them here
 };
 
 struct DNBRegisterSetInfo

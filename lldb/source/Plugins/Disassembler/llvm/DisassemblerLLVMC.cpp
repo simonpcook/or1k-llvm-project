@@ -68,7 +68,7 @@ public:
     virtual size_t
     Decode (const lldb_private::Disassembler &disassembler,
             const lldb_private::DataExtractor &data,
-            uint32_t data_offset)
+            lldb::offset_t data_offset)
     {
         // All we have to do is read the opcode which can be easy for some
         // architetures
@@ -239,7 +239,7 @@ public:
                 m_comment.assign ("unknown opcode");
                 inst_size = m_opcode.GetByteSize();
                 StreamString mnemonic_strm;
-                uint32_t offset = 0;
+                lldb::offset_t offset = 0;
                 switch (inst_size)
                 {
                     case 1:
@@ -271,7 +271,7 @@ public:
                             const uint64_t uval64 = data.GetU64(&offset);
                             m_opcode.SetOpcode64(uval64);
                             m_opcode_name.assign (".quad");
-                            mnemonic_strm.Printf("0x%16.16llx", uval64);
+                            mnemonic_strm.Printf("0x%16.16" PRIx64, uval64);
                         }
                         break;
                     default:
@@ -486,8 +486,8 @@ DisassemblerLLVMC::~DisassemblerLLVMC()
 size_t
 DisassemblerLLVMC::DecodeInstructions (const Address &base_addr,
                                        const DataExtractor& data,
-                                       uint32_t data_offset,
-                                       uint32_t num_instructions,
+                                       lldb::offset_t data_offset,
+                                       size_t num_instructions,
                                        bool append)
 {
     if (!append)
@@ -644,7 +644,7 @@ const char *DisassemblerLLVMC::SymbolLookup (uint64_t value,
                     m_inst->AppendComment(ss.GetString());
                 }
             }
-            //printf ("DisassemblerLLVMC::SymbolLookup (value=0x%16.16llx, type=%llu, pc=0x%16.16llx, name=\"%s\") m_exe_ctx=%p, m_inst=%p\n", value, *type_ptr, pc, remove_this_prior_to_checkin.c_str(), m_exe_ctx, m_inst);
+            //printf ("DisassemblerLLVMC::SymbolLookup (value=0x%16.16" PRIx64 ", type=%" PRIu64 ", pc=0x%16.16" PRIx64 ", name=\"%s\") m_exe_ctx=%p, m_inst=%p\n", value, *type_ptr, pc, remove_this_prior_to_checkin.c_str(), m_exe_ctx, m_inst);
         }
     }
 

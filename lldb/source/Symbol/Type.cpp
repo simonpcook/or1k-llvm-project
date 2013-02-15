@@ -80,7 +80,7 @@ Type::Type () :
     m_symbol_file (NULL),
     m_context (NULL),
     m_encoding_type (NULL),
-    m_encoding_uid (0),
+    m_encoding_uid (LLDB_INVALID_UID),
     m_encoding_uid_type (eEncodingInvalid),
     m_byte_size (0),
     m_decl (),
@@ -150,7 +150,7 @@ Type::GetDescription (Stream *s, lldb::DescriptionLevel level, bool show_name)
     }
     else if (m_encoding_uid != LLDB_INVALID_UID)
     {
-        s->Printf(", type_uid = 0x%8.8x", m_encoding_uid);
+        s->Printf(", type_uid = 0x%8.8" PRIx64, m_encoding_uid);
         switch (m_encoding_uid_type)
         {
         case eEncodingInvalid: break;
@@ -257,7 +257,7 @@ Type::DumpValue
         {
             s->PutChar('(');
             if (verbose)
-                s->Printf("Type{0x%8.8llx} ", GetID());
+                s->Printf("Type{0x%8.8" PRIx64 "} ", GetID());
             DumpTypeName (s);
             s->PutCString(") ");
         }
@@ -828,6 +828,26 @@ TypeAndOrName::operator= (const TypeAndOrName &rhs)
     return *this;
 }
 
+bool
+TypeAndOrName::operator==(const TypeAndOrName &other) const
+{
+    if (m_type_sp != other.m_type_sp)
+        return false;
+    if (m_type_name != other.m_type_name)
+        return false;
+    return true;
+}
+
+bool
+TypeAndOrName::operator!=(const TypeAndOrName &other) const
+{
+    if (m_type_sp != other.m_type_sp)
+        return true;
+    if (m_type_name != other.m_type_name)
+        return true;
+    return false;
+}
+
 ConstString
 TypeAndOrName::GetName () const
 {    
@@ -864,6 +884,25 @@ TypeAndOrName::IsEmpty()
         return false;
     else
         return true;
+}
+
+void
+TypeAndOrName::Clear ()
+{
+    m_type_name.Clear();
+    m_type_sp.reset();
+}
+
+bool
+TypeAndOrName::HasName ()
+{
+    return (bool)m_type_name;
+}
+
+bool
+TypeAndOrName::HasTypeSP ()
+{
+    return m_type_sp.get() != NULL;
 }
 
 TypeImpl::TypeImpl(const lldb_private::ClangASTType& clang_ast_type) :

@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Target/StopInfo.h"
 
 // C Includes
@@ -36,7 +38,9 @@ StopInfo::StopInfo (Thread &thread, uint64_t value) :
     m_thread (thread),
     m_stop_id (thread.GetProcess()->GetStopID()),
     m_resume_id (thread.GetProcess()->GetResumeID()),
-    m_value (value)
+    m_value (value),
+    m_override_set(false),
+    m_override_value(true)
 {
 }
 
@@ -165,7 +169,7 @@ public:
                 LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
                 if (log)
-                    log->Printf ("Process::%s could not find breakpoint site id: %lld...", __FUNCTION__, m_value);
+                    log->Printf ("Process::%s could not find breakpoint site id: %" PRId64 "...", __FUNCTION__, m_value);
 
                 m_should_stop = true;
             }
@@ -204,6 +208,22 @@ public:
             if (bp_site_sp)
             {
                 StreamString strm;
+                // If we have just hit an internal breakpoint, and it has a kind description, print that instead of the
+                // full breakpoint printing:
+                if (bp_site_sp->IsInternal())
+                {
+                    size_t num_owners = bp_site_sp->GetNumberOfOwners();
+                    for (size_t idx = 0; idx < num_owners; idx++)
+                    {
+                        const char *kind = bp_site_sp->GetOwnerAtIndex(idx)->GetBreakpoint().GetBreakpointKind();
+                        if (kind != NULL)
+                        {
+                            m_description.assign (kind);
+                            return kind;
+                        }
+                    }
+                }
+                
                 strm.Printf("breakpoint ");
                 bp_site_sp->GetDescription(&strm, eDescriptionLevelBrief);
                 m_description.swap (strm.GetString());
@@ -213,15 +233,34 @@ public:
                 StreamString strm;
                 if (m_break_id != LLDB_INVALID_BREAK_ID)
                 {
-                    if (m_was_one_shot)
-                        strm.Printf ("one-shot breakpoint %d", m_break_id);
+                    BreakpointSP break_sp = m_thread.GetProcess()->GetTarget().GetBreakpointByID(m_break_id);
+                    if (break_sp)
+                    {
+                        if (break_sp->IsInternal())
+                        {
+                            const char *kind = break_sp->GetBreakpointKind();
+                            if (kind)
+                                strm.Printf ("internal %s breakpoint(%d).", kind, m_break_id);
+                            else
+                                strm.Printf ("internal breakpoint(%d).", m_break_id);
+                        }
+                        else
+                        {
+                            strm.Printf ("breakpoint %d.", m_break_id);
+                        }
+                    } 
                     else
-                        strm.Printf ("breakpoint %d which has been deleted.", m_break_id);
+                    {
+                        if (m_was_one_shot)
+                            strm.Printf ("one-shot breakpoint %d", m_break_id);
+                        else
+                            strm.Printf ("breakpoint %d which has been deleted.", m_break_id);
+                    }
                 }
                 else if (m_address == LLDB_INVALID_ADDRESS)
-                    strm.Printf("breakpoint site %lli which has been deleted - unknown address", m_value);
+                    strm.Printf("breakpoint site %" PRIi64 " which has been deleted - unknown address", m_value);
                 else
-                    strm.Printf("breakpoint site %lli which has been deleted - was at 0x%llx", m_value, m_address);
+                    strm.Printf("breakpoint site %" PRIi64 " which has been deleted - was at 0x%" PRIx64, m_value, m_address);
                 
                 m_description.swap (strm.GetString());
             }
@@ -273,6 +312,47 @@ protected:
                 m_should_stop = false;
 
                 ExecutionContext exe_ctx (m_thread.GetStackFrameAtIndex(0));
+                Process *process  = exe_ctx.GetProcessPtr();
+                if (process->GetModIDRef().IsLastResumeForUserExpression())
+                {
+                    // If we are in the middle of evaluating an expression, don't run asynchronous breakpoint commands or
+                    // expressions.  That could lead to infinite recursion if the command or condition re-calls the function
+                    // with this breakpoint.
+                    // TODO: We can keep a list of the breakpoints we've seen while running expressions in the nested
+                    // PerformAction calls that can arise when the action runs a function that hits another breakpoint,
+                    // and only stop running commands when we see the same breakpoint hit a second time.
+                    
+                    m_should_stop_is_valid = true;
+                    if (log)
+                        log->Printf ("StopInfoBreakpoint::PerformAction - Hit a breakpoint while running an expression,"
+                                     " not running commands to avoid recursion.");
+                    bool ignoring_breakpoints = process->GetIgnoreBreakpointsInExpressions();
+                    if (ignoring_breakpoints)
+                    {
+                        m_should_stop = false;
+                        // Internal breakpoints will always stop.  
+                        for (size_t j = 0; j < num_owners; j++)
+                        {
+                            lldb::BreakpointLocationSP bp_loc_sp = bp_site_sp->GetOwnerAtIndex(j);
+                            if (bp_loc_sp->GetBreakpoint().IsInternal())
+                            {
+                                m_should_stop = true;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        m_should_stop = true;
+                    }
+                    if (log)
+                        log->Printf ("StopInfoBreakpoint::PerformAction - in expression, continuing: %s.",
+                                     m_should_stop ? "true" : "false");
+                    process->GetTarget().GetDebugger().GetAsyncOutputStream()->Printf("Warning: hit breakpoint while "
+                                           "running function, skipping commands and conditions to prevent recursion.");
+                    return;
+                }
+                
                 StoppointCallbackContext context (event_ptr, exe_ctx, false);
 
                 for (size_t j = 0; j < num_owners; j++)
@@ -292,13 +372,15 @@ protected:
                         
                         ExecutionResults result_code;
                         ValueObjectSP result_value_sp;
-                        const bool discard_on_error = true;
+                        const bool unwind_on_error = true;
+                        const bool ignore_breakpoints = true;
                         Error error;
                         result_code = ClangUserExpression::EvaluateWithError (exe_ctx,
                                                                               eExecutionPolicyOnlyWhenNeeded,
                                                                               lldb::eLanguageTypeUnknown,
                                                                               ClangUserExpression::eResultTypeAny,
-                                                                              discard_on_error,
+                                                                              unwind_on_error,
+                                                                              ignore_breakpoints,
                                                                               bp_loc_sp->GetConditionText(),
                                                                               NULL,
                                                                               result_value_sp,
@@ -397,7 +479,7 @@ protected:
             LogSP log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
             if (log_process)
-                log_process->Printf ("Process::%s could not find breakpoint site id: %lld...", __FUNCTION__, m_value);
+                log_process->Printf ("Process::%s could not find breakpoint site id: %" PRId64 "...", __FUNCTION__, m_value);
         }
         if (log)
             log->Printf ("Process::%s returning from action with m_should_stop: %d.", __FUNCTION__, m_should_stop);
@@ -433,8 +515,9 @@ public:
         {
             if (process && watchpoint)
             {
+                const bool notify = false;
                 watchpoint->TurnOnEphemeralMode();
-                process->DisableWatchpoint(watchpoint);
+                process->DisableWatchpoint(watchpoint, notify);
             }
         }
         ~WatchpointSentry()
@@ -442,7 +525,10 @@ public:
             if (process && watchpoint)
             {
                 if (!watchpoint->IsDisabledDuringEphemeralMode())
-                    process->EnableWatchpoint(watchpoint);
+                {
+                    const bool notify = false;
+                    process->EnableWatchpoint(watchpoint, notify);
+                }
                 watchpoint->TurnOffEphemeralMode();
             }
         }
@@ -475,7 +561,7 @@ public:
         if (m_description.empty())
         {
             StreamString strm;
-            strm.Printf("watchpoint %lli", m_value);
+            strm.Printf("watchpoint %" PRIi64, m_value);
             m_description.swap (strm.GetString());
         }
         return m_description.c_str();
@@ -509,7 +595,7 @@ protected:
             LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
             if (log)
-                log->Printf ("Process::%s could not find watchpoint location id: %lld...",
+                log->Printf ("Process::%s could not find watchpoint location id: %" PRId64 "...",
                              __FUNCTION__, GetValue());
 
             m_should_stop = true;
@@ -569,13 +655,15 @@ protected:
                 // constructor errors up to the debugger's Async I/O.
                 ExecutionResults result_code;
                 ValueObjectSP result_value_sp;
-                const bool discard_on_error = true;
+                const bool unwind_on_error = true;
+                const bool ignore_breakpoints = true;
                 Error error;
                 result_code = ClangUserExpression::EvaluateWithError (exe_ctx,
                                                                       eExecutionPolicyOnlyWhenNeeded,
                                                                       lldb::eLanguageTypeUnknown,
                                                                       ClangUserExpression::eResultTypeAny,
-                                                                      discard_on_error,
+                                                                      unwind_on_error,
+                                                                      ignore_breakpoints,
                                                                       wp_sp->GetConditionText(),
                                                                       NULL,
                                                                       result_value_sp,
@@ -666,7 +754,7 @@ protected:
             LogSP log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
             if (log_process)
-                log_process->Printf ("Process::%s could not find watchpoint id: %lld...", __FUNCTION__, m_value);
+                log_process->Printf ("Process::%s could not find watchpoint id: %" PRId64 "...", __FUNCTION__, m_value);
         }
         if (log)
             log->Printf ("Process::%s returning from action with m_should_stop: %d.", __FUNCTION__, m_should_stop);
@@ -706,6 +794,12 @@ public:
     }
 
     virtual bool
+    ShouldStopSynchronous (Event *event_ptr)
+    {
+        return m_thread.GetProcess()->GetUnixSignals().GetShouldStop (m_value);
+    }
+
+    virtual bool
     ShouldStop (Event *event_ptr)
     {
         return m_thread.GetProcess()->GetUnixSignals().GetShouldStop (m_value);
@@ -716,7 +810,16 @@ public:
     virtual bool
     ShouldNotify (Event *event_ptr)
     {
-        return m_thread.GetProcess()->GetUnixSignals().GetShouldNotify (m_value);
+        bool should_notify = m_thread.GetProcess()->GetUnixSignals().GetShouldNotify (m_value);
+        if (should_notify)
+        {
+            StreamString strm;
+            strm.Printf ("thread %d received signal: %s",
+                         m_thread.GetIndexID(),
+                         m_thread.GetProcess()->GetUnixSignals().GetSignalAsCString (m_value));
+            Process::ProcessEventData::AddRestartedReason(event_ptr, strm.GetData());
+        }
+        return should_notify;
     }
 
     
@@ -737,7 +840,7 @@ public:
             if (signal_name)
                 strm.Printf("signal %s", signal_name);
             else
-                strm.Printf("signal %lli", m_value);
+                strm.Printf("signal %" PRIi64, m_value);
             m_description.swap (strm.GetString());
         }
         return m_description.c_str();
@@ -857,11 +960,63 @@ public:
     {
         return m_return_valobj_sp;
     }
+    
+protected:
+    virtual bool
+    ShouldStop (Event *event_ptr)
+    {
+        if (m_plan_sp)
+            return m_plan_sp->ShouldStop(event_ptr);
+        else
+            return StopInfo::ShouldStop(event_ptr);
+    }
 
 private:
     ThreadPlanSP m_plan_sp;
     ValueObjectSP m_return_valobj_sp;
 };
+    
+class StopInfoExec : public StopInfo
+{
+public:
+    
+    StopInfoExec (Thread &thread) :
+        StopInfo (thread, LLDB_INVALID_UID),
+        m_performed_action (false)
+    {
+    }
+    
+    virtual
+    ~StopInfoExec ()
+    {
+    }
+    
+    virtual StopReason
+    GetStopReason () const
+    {
+        return eStopReasonExec;
+    }
+    
+    virtual const char *
+    GetDescription ()
+    {
+        return "exec";
+    }
+protected:
+    
+    virtual void
+    PerformAction (Event *event_ptr)
+    {
+        // Only perform the action once
+        if (m_performed_action)
+            return;
+        m_performed_action = true;
+        m_thread.GetProcess()->DidExec();
+    }
+    
+    bool m_performed_action;
+};
+
 } // namespace lldb_private
 
 StopInfoSP
@@ -904,6 +1059,12 @@ StopInfoSP
 StopInfo::CreateStopReasonWithException (Thread &thread, const char *description)
 {
     return StopInfoSP (new StopInfoException (thread, description));
+}
+
+StopInfoSP
+StopInfo::CreateStopReasonWithExec (Thread &thread)
+{
+    return StopInfoSP (new StopInfoExec (thread));
 }
 
 ValueObjectSP

@@ -113,6 +113,9 @@ public:
     virtual void
     DidAttach ();
 
+    virtual void
+    DoDidExec ();
+
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
@@ -190,19 +193,19 @@ public:
     // Process Breakpoints
     //----------------------------------------------------------------------
     virtual lldb_private::Error
-    EnableBreakpoint (lldb_private::BreakpointSite *bp_site);
+    EnableBreakpointSite (lldb_private::BreakpointSite *bp_site);
 
     virtual lldb_private::Error
-    DisableBreakpoint (lldb_private::BreakpointSite *bp_site);
+    DisableBreakpointSite (lldb_private::BreakpointSite *bp_site);
 
     //----------------------------------------------------------------------
     // Process Watchpoints
     //----------------------------------------------------------------------
     virtual lldb_private::Error
-    EnableWatchpoint (lldb_private::Watchpoint *wp);
+    EnableWatchpoint (lldb_private::Watchpoint *wp, bool notify = true);
 
     virtual lldb_private::Error
-    DisableWatchpoint (lldb_private::Watchpoint *wp);
+    DisableWatchpoint (lldb_private::Watchpoint *wp, bool notify = true);
 
     virtual lldb_private::Error
     GetWatchpointSupportInfo (uint32_t &num);
@@ -294,9 +297,6 @@ protected:
         m_last_stop_packet = response;
     }
 
-    void
-    CheckForKernel (lldb_private::Stream *strm);
-
     //------------------------------------------------------------------
     /// Broadcaster event bits definitions.
     //------------------------------------------------------------------
@@ -339,7 +339,6 @@ protected:
     bool m_waiting_for_attach;
     bool m_destroy_tried_resuming;
     std::string m_dyld_plugin_name;
-    lldb::addr_t m_kernel_load_addr;
     lldb::CommandObjectSP m_command_sp;
     
     bool

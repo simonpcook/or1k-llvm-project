@@ -15,26 +15,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "CGObjCRuntime.h"
-#include "CodeGenModule.h"
-#include "CodeGenFunction.h"
 #include "CGCleanup.h"
+#include "CodeGenFunction.h"
+#include "CodeGenModule.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/StmtObjC.h"
-#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/FileManager.h"
-
-#include "llvm/Intrinsics.h"
-#include "llvm/Module.h"
-#include "llvm/LLVMContext.h"
+#include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/CallSite.h"
 #include "llvm/Support/Compiler.h"
-#include "llvm/DataLayout.h"
-
 #include <cstdarg>
 
 
@@ -194,7 +192,7 @@ protected:
   /// The element types must match the types of the structure elements in the
   /// first argument.
   llvm::GlobalVariable *MakeGlobal(llvm::StructType *Ty,
-                                   llvm::ArrayRef<llvm::Constant*> V,
+                                   ArrayRef<llvm::Constant *> V,
                                    StringRef Name="",
                                    llvm::GlobalValue::LinkageTypes linkage
                                          =llvm::GlobalValue::InternalLinkage) {
@@ -206,7 +204,7 @@ protected:
   /// elements that the array type declares, of the type specified as the array
   /// element type.
   llvm::GlobalVariable *MakeGlobal(llvm::ArrayType *Ty,
-                                   llvm::ArrayRef<llvm::Constant*> V,
+                                   ArrayRef<llvm::Constant *> V,
                                    StringRef Name="",
                                    llvm::GlobalValue::LinkageTypes linkage
                                          =llvm::GlobalValue::InternalLinkage) {
@@ -217,7 +215,7 @@ protected:
   /// Generates a global array, inferring the array type from the specified
   /// element type and the size of the initialiser.  
   llvm::GlobalVariable *MakeGlobalArray(llvm::Type *Ty,
-                                        llvm::ArrayRef<llvm::Constant*> V,
+                                        ArrayRef<llvm::Constant *> V,
                                         StringRef Name="",
                                         llvm::GlobalValue::LinkageTypes linkage
                                          =llvm::GlobalValue::InternalLinkage) {
@@ -385,7 +383,7 @@ private:
   /// a class defined in the runtime, declaring no methods, but adopting the
   /// protocols.  This is a horribly ugly hack, but it allows us to collect all
   /// of the protocols without changing the ABI.
-  void GenerateProtocolHolderCategory(void);
+  void GenerateProtocolHolderCategory();
   /// Generates a class structure.
   llvm::Constant *GenerateClassStructure(
       llvm::Constant *MetaClass,
@@ -494,8 +492,9 @@ public:
   virtual llvm::Constant *GetOptimizedPropertySetFunction(bool atomic, 
                                                           bool copy);
   virtual llvm::Constant *GetSetStructFunction();
-  virtual llvm::Constant *GetCppAtomicObjectFunction();
   virtual llvm::Constant *GetGetStructFunction();
+  virtual llvm::Constant *GetCppAtomicObjectGetFunction();
+  virtual llvm::Constant *GetCppAtomicObjectSetFunction();
   virtual llvm::Constant *EnumerationMutationFunction();
 
   virtual void EmitTryStmt(CodeGenFunction &CGF,
@@ -503,7 +502,8 @@ public:
   virtual void EmitSynchronizedStmt(CodeGenFunction &CGF,
                                     const ObjCAtSynchronizedStmt &S);
   virtual void EmitThrowStmt(CodeGenFunction &CGF,
-                             const ObjCAtThrowStmt &S);
+                             const ObjCAtThrowStmt &S,
+                             bool ClearInsertionPoint=true);
   virtual llvm::Value * EmitObjCWeakRead(CodeGenFunction &CGF,
                                          llvm::Value *AddrWeakObj);
   virtual void EmitObjCWeakAssign(CodeGenFunction &CGF,
@@ -537,6 +537,12 @@ public:
                                              const CGBlockInfo &blockInfo) {
     return NULLPtr;
   }
+  
+  virtual llvm::Constant *BuildByrefLayout(CodeGenModule &CGM,
+                                           QualType T) {
+    return NULLPtr;
+  }
+  
   virtual llvm::GlobalVariable *GetClassGlobal(const std::string &Name) {
     return 0;
   }
@@ -597,9 +603,25 @@ class CGObjCGNUstep : public CGObjCGNU {
     /// arguments.  Returns the slot for the corresponding method.  Superclass
     /// message lookup rarely changes, so this is a good caching opportunity.
     LazyRuntimeFunction SlotLookupSuperFn;
+    /// Specialised function for setting atomic retain properties
+    LazyRuntimeFunction SetPropertyAtomic;
+    /// Specialised function for setting atomic copy properties
+    LazyRuntimeFunction SetPropertyAtomicCopy;
+    /// Specialised function for setting nonatomic retain properties
+    LazyRuntimeFunction SetPropertyNonAtomic;
+    /// Specialised function for setting nonatomic copy properties
+    LazyRuntimeFunction SetPropertyNonAtomicCopy;
+    /// Function to perform atomic copies of C++ objects with nontrivial copy
+    /// constructors from Objective-C ivars.
+    LazyRuntimeFunction CxxAtomicObjectGetFn;
+    /// Function to perform atomic copies of C++ objects with nontrivial copy
+    /// constructors to Objective-C ivars.
+    LazyRuntimeFunction CxxAtomicObjectSetFn;
     /// Type of an slot structure pointer.  This is returned by the various
     /// lookup functions.
     llvm::Type *SlotTy;
+  public:
+    virtual llvm::Constant *GetEHType(QualType T);
   protected:
     virtual llvm::Value *LookupIMP(CodeGenFunction &CGF,
                                    llvm::Value *&Receiver,
@@ -653,6 +675,8 @@ class CGObjCGNUstep : public CGObjCGNU {
     }
   public:
     CGObjCGNUstep(CodeGenModule &Mod) : CGObjCGNU(Mod, 9, 3) {
+      ObjCRuntime R = CGM.getLangOpts().ObjCRuntime;
+
       llvm::StructType *SlotStructTy = llvm::StructType::get(PtrTy,
           PtrTy, PtrTy, IntTy, IMPTy, NULL);
       SlotTy = llvm::PointerType::getUnqual(SlotStructTy);
@@ -670,8 +694,69 @@ class CGObjCGNUstep : public CGObjCGNU {
         // void __cxa_end_catch(void)
         ExitCatchFn.init(&CGM, "__cxa_end_catch", VoidTy, NULL);
         // void _Unwind_Resume_or_Rethrow(void*)
-        ExceptionReThrowFn.init(&CGM, "_Unwind_Resume_or_Rethrow", VoidTy, PtrTy, NULL);
+        ExceptionReThrowFn.init(&CGM, "_Unwind_Resume_or_Rethrow", VoidTy,
+            PtrTy, NULL);
+      } else if (R.getVersion() >= VersionTuple(1, 7)) {
+        llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
+        // id objc_begin_catch(void *e)
+        EnterCatchFn.init(&CGM, "objc_begin_catch", IdTy, PtrTy, NULL);
+        // void objc_end_catch(void)
+        ExitCatchFn.init(&CGM, "objc_end_catch", VoidTy, NULL);
+        // void _Unwind_Resume_or_Rethrow(void*)
+        ExceptionReThrowFn.init(&CGM, "objc_exception_rethrow", VoidTy,
+            PtrTy, NULL);
       }
+      llvm::Type *VoidTy = llvm::Type::getVoidTy(VMContext);
+      SetPropertyAtomic.init(&CGM, "objc_setProperty_atomic", VoidTy, IdTy,
+          SelectorTy, IdTy, PtrDiffTy, NULL);
+      SetPropertyAtomicCopy.init(&CGM, "objc_setProperty_atomic_copy", VoidTy,
+          IdTy, SelectorTy, IdTy, PtrDiffTy, NULL);
+      SetPropertyNonAtomic.init(&CGM, "objc_setProperty_nonatomic", VoidTy,
+          IdTy, SelectorTy, IdTy, PtrDiffTy, NULL);
+      SetPropertyNonAtomicCopy.init(&CGM, "objc_setProperty_nonatomic_copy",
+          VoidTy, IdTy, SelectorTy, IdTy, PtrDiffTy, NULL);
+      // void objc_setCppObjectAtomic(void *dest, const void *src, void
+      // *helper);
+      CxxAtomicObjectSetFn.init(&CGM, "objc_setCppObjectAtomic", VoidTy, PtrTy,
+          PtrTy, PtrTy, NULL);
+      // void objc_getCppObjectAtomic(void *dest, const void *src, void
+      // *helper);
+      CxxAtomicObjectGetFn.init(&CGM, "objc_getCppObjectAtomic", VoidTy, PtrTy,
+          PtrTy, PtrTy, NULL);
+    }
+    virtual llvm::Constant *GetCppAtomicObjectGetFunction() {
+      // The optimised functions were added in version 1.7 of the GNUstep
+      // runtime.
+      assert (CGM.getLangOpts().ObjCRuntime.getVersion() >=
+          VersionTuple(1, 7));
+      return CxxAtomicObjectGetFn;
+    }
+    virtual llvm::Constant *GetCppAtomicObjectSetFunction() {
+      // The optimised functions were added in version 1.7 of the GNUstep
+      // runtime.
+      assert (CGM.getLangOpts().ObjCRuntime.getVersion() >=
+          VersionTuple(1, 7));
+      return CxxAtomicObjectSetFn;
+    }
+    virtual llvm::Constant *GetOptimizedPropertySetFunction(bool atomic,
+                                                            bool copy) {
+      // The optimised property functions omit the GC check, and so are not
+      // safe to use in GC mode.  The standard functions are fast in GC mode,
+      // so there is less advantage in using them.
+      assert ((CGM.getLangOpts().getGC() == LangOptions::NonGC));
+      // The optimised functions were added in version 1.7 of the GNUstep
+      // runtime.
+      assert (CGM.getLangOpts().ObjCRuntime.getVersion() >=
+          VersionTuple(1, 7));
+
+      if (atomic) {
+        if (copy) return SetPropertyAtomicCopy;
+        return SetPropertyAtomic;
+      }
+      if (copy) return SetPropertyNonAtomicCopy;
+      return SetPropertyNonAtomic;
+
+      return 0;
     }
 };
 
@@ -966,29 +1051,30 @@ llvm::Value *CGObjCGNU::GetSelector(CGBuilderTy &Builder, const ObjCMethodDecl
 }
 
 llvm::Constant *CGObjCGNU::GetEHType(QualType T) {
-  if (!CGM.getLangOpts().CPlusPlus) {
-      if (T->isObjCIdType()
-          || T->isObjCQualifiedIdType()) {
-        // With the old ABI, there was only one kind of catchall, which broke
-        // foreign exceptions.  With the new ABI, we use __objc_id_typeinfo as
-        // a pointer indicating object catchalls, and NULL to indicate real
-        // catchalls
-        if (CGM.getLangOpts().ObjCRuntime.isNonFragile()) {
-          return MakeConstantString("@id");
-        } else {
-          return 0;
-        }
-      }
-
-      // All other types should be Objective-C interface pointer types.
-      const ObjCObjectPointerType *OPT =
-        T->getAs<ObjCObjectPointerType>();
-      assert(OPT && "Invalid @catch type.");
-      const ObjCInterfaceDecl *IDecl =
-        OPT->getObjectType()->getInterface();
-      assert(IDecl && "Invalid @catch type.");
-      return MakeConstantString(IDecl->getIdentifier()->getName());
+  if (T->isObjCIdType() || T->isObjCQualifiedIdType()) {
+    // With the old ABI, there was only one kind of catchall, which broke
+    // foreign exceptions.  With the new ABI, we use __objc_id_typeinfo as
+    // a pointer indicating object catchalls, and NULL to indicate real
+    // catchalls
+    if (CGM.getLangOpts().ObjCRuntime.isNonFragile()) {
+      return MakeConstantString("@id");
+    } else {
+      return 0;
+    }
   }
+
+  // All other types should be Objective-C interface pointer types.
+  const ObjCObjectPointerType *OPT = T->getAs<ObjCObjectPointerType>();
+  assert(OPT && "Invalid @catch type.");
+  const ObjCInterfaceDecl *IDecl = OPT->getObjectType()->getInterface();
+  assert(IDecl && "Invalid @catch type.");
+  return MakeConstantString(IDecl->getIdentifier()->getName());
+}
+
+llvm::Constant *CGObjCGNUstep::GetEHType(QualType T) {
+  if (!CGM.getLangOpts().CPlusPlus)
+    return CGObjCGNU::GetEHType(T);
+
   // For Objective-C++, we want to provide the ability to catch both C++ and
   // Objective-C objects in the same function.
 
@@ -1801,7 +1887,7 @@ void CGObjCGNU::GenerateProtocol(const ObjCProtocolDecl *PD) {
     llvm::ConstantExpr::getBitCast(MakeGlobal(ProtocolTy, Elements,
           ".objc_protocol"), IdTy);
 }
-void CGObjCGNU::GenerateProtocolHolderCategory(void) {
+void CGObjCGNU::GenerateProtocolHolderCategory() {
   // Collect information about instance methods
   SmallVector<Selector, 1> MethodSels;
   SmallVector<llvm::Constant*, 1> MethodTypes;
@@ -1869,7 +1955,7 @@ llvm::Constant *CGObjCGNU::MakeBitField(ArrayRef<bool> bits) {
     }
     return llvm::ConstantInt::get(IntPtrTy, val);
   }
-  llvm::SmallVector<llvm::Constant*, 8> values;
+  SmallVector<llvm::Constant *, 8> values;
   int v=0;
   while (v < bitCount) {
     int32_t word = 0;
@@ -2528,7 +2614,10 @@ llvm::Constant *CGObjCGNU::GetGetStructFunction() {
 llvm::Constant *CGObjCGNU::GetSetStructFunction() {
   return SetStructPropertyFn;
 }
-llvm::Constant *CGObjCGNU::GetCppAtomicObjectFunction() {
+llvm::Constant *CGObjCGNU::GetCppAtomicObjectGetFunction() {
+  return 0;
+}
+llvm::Constant *CGObjCGNU::GetCppAtomicObjectSetFunction() {
   return 0;
 }
 
@@ -2560,7 +2649,8 @@ void CGObjCGNU::EmitTryStmt(CodeGenFunction &CGF,
 }
 
 void CGObjCGNU::EmitThrowStmt(CodeGenFunction &CGF,
-                              const ObjCAtThrowStmt &S) {
+                              const ObjCAtThrowStmt &S,
+                              bool ClearInsertionPoint) {
   llvm::Value *ExceptionAsObject;
 
   if (const Expr *ThrowExpr = S.getThrowExpr()) {
@@ -2576,7 +2666,8 @@ void CGObjCGNU::EmitThrowStmt(CodeGenFunction &CGF,
       CGF.EmitCallOrInvoke(ExceptionThrowFn, ExceptionAsObject);
   Throw.setDoesNotReturn();
   CGF.Builder.CreateUnreachable();
-  CGF.Builder.ClearInsertionPoint();
+  if (ClearInsertionPoint)
+    CGF.Builder.ClearInsertionPoint();
 }
 
 llvm::Value * CGObjCGNU::EmitObjCWeakRead(CodeGenFunction &CGF,

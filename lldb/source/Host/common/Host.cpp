@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Host/Host.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/ConstString.h"
@@ -24,6 +26,7 @@
 
 #include "llvm/Support/Host.h"
 #include "llvm/Support/MachO.h"
+#include "llvm/ADT/Twine.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -89,7 +92,7 @@ Host::StartMonitoringChildProcess
     info_ptr->monitor_signals = monitor_signals;
     
     char thread_name[256];
-    ::snprintf (thread_name, sizeof(thread_name), "<lldb.host.wait4(pid=%i)>", pid);
+    ::snprintf (thread_name, sizeof(thread_name), "<lldb.host.wait4(pid=%" PRIu64 ")>", pid);
     thread = ThreadCreate (thread_name,
                            MonitorChildProcessThreadFunction,
                            info_ptr,
@@ -144,16 +147,18 @@ MonitorChildProcessThreadFunction (void *arg)
     delete info;
 
     int status = -1;
-    const int options = 0;
+    const int options = __WALL;
+
     while (1)
     {
         log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS);
         if (log)
-            log->Printf("%s ::wait_pid (pid = %i, &status, options = %i)...", function, pid, options);
+            log->Printf("%s ::wait_pid (pid = %" PRIu64 ", &status, options = %i)...", function, pid, options);
 
         // Wait for all child processes
         ::pthread_testcancel ();
-        const lldb::pid_t wait_pid = ::waitpid (pid, &status, options);
+        // Get signals from all children with same process group of pid
+        const lldb::pid_t wait_pid = ::waitpid (-1*pid, &status, options);
         ::pthread_testcancel ();
 
         if (wait_pid == -1)
@@ -163,7 +168,7 @@ MonitorChildProcessThreadFunction (void *arg)
             else
                 break;
         }
-        else if (wait_pid == pid)
+        else if (wait_pid > 0)
         {
             bool exited = false;
             int signal = 0;
@@ -178,14 +183,17 @@ MonitorChildProcessThreadFunction (void *arg)
             {
                 exit_status = WEXITSTATUS(status);
                 status_cstr = "EXITED";
-                exited = true;
+                if (wait_pid == pid)
+                    exited = true;
             }
             else if (WIFSIGNALED(status))
             {
                 signal = WTERMSIG(status);
                 status_cstr = "SIGNALED";
-                exited = true;
-                exit_status = -1;
+                if (wait_pid == pid) {
+                    exited = true;
+                    exit_status = -1;
+                }
             }
             else
             {
@@ -198,7 +206,7 @@ MonitorChildProcessThreadFunction (void *arg)
 
                 log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS);
                 if (log)
-                    log->Printf ("%s ::waitpid (pid = %i, &status, options = %i) => pid = %i, status = 0x%8.8x (%s), signal = %i, exit_state = %i",
+                    log->Printf ("%s ::waitpid (pid = %" PRIu64 ", &status, options = %i) => pid = %" PRIu64 ", status = 0x%8.8x (%s), signal = %i, exit_state = %i",
                                  function,
                                  wait_pid,
                                  options,
@@ -212,7 +220,7 @@ MonitorChildProcessThreadFunction (void *arg)
                 {
                     bool callback_return = false;
                     if (callback)
-                        callback_return = callback (callback_baton, pid, exited, signal, exit_status);
+                        callback_return = callback (callback_baton, wait_pid, exited, signal, exit_status);
                     
                     // If our process exited, then this thread should exit
                     if (exited)
@@ -353,7 +361,6 @@ Host::GetArchitecture (SystemDefaultArchitecture arch_kind)
 
         case llvm::Triple::sparcv9:
         case llvm::Triple::ppc64:
-        case llvm::Triple::cellspu:
             g_host_arch_64.SetTriple(triple);
             g_supports_64 = true;
             break;
@@ -996,13 +1003,6 @@ Host::GetLLDBPath (PathType path_type, FileSpec &file_spec)
 
     case ePathTypePythonDir:                
         {
-            // TODO: Anyone know how we can determine this for linux? Other systems?
-            // For linux and FreeBSD we are currently assuming the
-            // location of the lldb binary that contains this function is
-            // the directory that will contain a python directory which
-            // has our lldb module. This is how files get placed when
-            // compiling with Makefiles.
-
             static ConstString g_lldb_python_dir;
             if (!g_lldb_python_dir)
             {
@@ -1021,9 +1021,19 @@ Host::GetLLDBPath (PathType path_type, FileSpec &file_spec)
                         ::strncpy (framework_pos, "/Resources/Python", PATH_MAX - (framework_pos - raw_path));
                     }
 #else
+                    llvm::Twine python_version_dir;
+                    python_version_dir = "/python"
+                                       + llvm::Twine(PY_MAJOR_VERSION)
+                                       + "."
+                                       + llvm::Twine(PY_MINOR_VERSION)
+                                       + "/site-packages";
+
                     // We may get our string truncated. Should we protect
                     // this with an assert?
-                    ::strncat(raw_path, "/python", sizeof(raw_path) - strlen(raw_path) - 1);
+
+                    ::strncat(raw_path, python_version_dir.str().c_str(),
+                              sizeof(raw_path) - strlen(raw_path) - 1);
+
 #endif
                     FileSpec::Resolve (raw_path, resolved_path, sizeof(resolved_path));
                     g_lldb_python_dir.SetCString(resolved_path);
@@ -1092,9 +1102,6 @@ Host::GetLLDBPath (PathType path_type, FileSpec &file_spec)
             // TODO: where would user LLDB plug-ins be located on linux? Other systems?
             return false;
         }
-    default:
-        assert (!"Unhandled PathType");
-        break;
     }
 
     return false;

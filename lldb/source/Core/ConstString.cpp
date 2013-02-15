@@ -87,7 +87,7 @@ public:
     }
 
     const char *
-    GetConstCStringWithLength (const char *cstr, int cstr_len)
+    GetConstCStringWithLength (const char *cstr, size_t cstr_len)
     {
         if (cstr)
         {
@@ -132,11 +132,11 @@ public:
     }
 
     const char *
-    GetConstTrimmedCStringWithLength (const char *cstr, int cstr_len)
+    GetConstTrimmedCStringWithLength (const char *cstr, size_t cstr_len)
     {
         if (cstr)
         {
-            int trimmed_len = std::min<int> (strlen (cstr), cstr_len);
+            const size_t trimmed_len = std::min<size_t> (strlen (cstr), cstr_len);
             return GetConstCStringWithLength (cstr, trimmed_len);
         }
         return NULL;
@@ -294,7 +294,7 @@ ConstString::DumpDebug(Stream *s) const
     size_t cstr_len = GetLength();
     // Only print the parens if we have a non-NULL string
     const char *parens = cstr ? "\"" : "";
-    s->Printf("%*p: ConstString, string = %s%s%s, length = %llu", (int)sizeof(void*) * 2, this, parens, cstr, parens, (uint64_t)cstr_len);
+    s->Printf("%*p: ConstString, string = %s%s%s, length = %" PRIu64, (int)sizeof(void*) * 2, this, parens, cstr, parens, (uint64_t)cstr_len);
 }
 
 void

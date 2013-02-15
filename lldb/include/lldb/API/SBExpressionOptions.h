@@ -20,9 +20,6 @@ namespace lldb {
 
 class SBExpressionOptions
 {
-friend class SBFrame;
-friend class SBValue;
-
 public:
     SBExpressionOptions();
 
@@ -43,7 +40,13 @@ public:
     GetUnwindOnError () const;
     
     void
-    SetUnwindOnError (bool unwind = false);
+    SetUnwindOnError (bool unwind = true);
+    
+    bool
+    GetIgnoreBreakpoints () const;
+    
+    void
+    SetIgnoreBreakpoints (bool ignore = true);
     
     lldb::DynamicValueType
     GetFetchDynamicValue () const;
@@ -72,6 +75,10 @@ protected:
 
     lldb_private::EvaluateExpressionOptions &
     ref () const;
+
+    friend class SBFrame;
+    friend class SBValue;
+    friend class SBTarget;
 
 private:
     // This auto_pointer is made in the constructor and is always valid.

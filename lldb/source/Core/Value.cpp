@@ -144,7 +144,7 @@ Value::GetType()
 }
 
 void
-Value::ResizeData(int len)
+Value::ResizeData(size_t len)
 {
     m_value_type = eValueTypeHostAddress;
     m_data_buffer.SetByteSize(len);
@@ -156,7 +156,6 @@ Value::ValueOf(ExecutionContext *exe_ctx, clang::ASTContext *ast_context)
 {
     switch (m_context_type)
     {
-    default:
     case eContextTypeInvalid:
     case eContextTypeClangType:         // clang::Type *
     case eContextTypeRegisterInfo:      // RegisterInfo *
@@ -177,7 +176,6 @@ Value::GetValueByteSize (clang::ASTContext *ast_context, Error *error_ptr)
 
     switch (m_context_type)
     {
-    default:
     case eContextTypeInvalid:
         // If we have no context, there is no way to know how much memory to read
         if (error_ptr)
@@ -201,8 +199,7 @@ Value::GetValueByteSize (clang::ASTContext *ast_context, Error *error_ptr)
         if (GetRegisterInfo())
             byte_size = GetRegisterInfo()->byte_size;
         else if (error_ptr)
-                error_ptr->SetErrorString ("Can't determine byte size with NULL RegisterInfo *.");
-
+            error_ptr->SetErrorString ("Can't determine byte size with NULL RegisterInfo *.");
         break;
 
     case eContextTypeLLDBType:             // Type *
@@ -245,7 +242,6 @@ Value::GetClangType ()
 {
     switch (m_context_type)
     {
-    default:
     case eContextTypeInvalid:
         break;
 
@@ -274,7 +270,6 @@ Value::GetValueDefaultFormat ()
 {
     switch (m_context_type)
     {
-    default:
     case eContextTypeInvalid:
         break;
 
@@ -331,7 +326,7 @@ Value::GetData (DataExtractor &data)
 }
 
 Error
-Value::GetValueAsData (ExecutionContext *exe_ctx, 
+Value::GetValueAsData (ExecutionContext *exe_ctx,
                        clang::ASTContext *ast_context, 
                        DataExtractor &data, 
                        uint32_t data_offset,
@@ -373,9 +368,54 @@ Value::GetValueAsData (ExecutionContext *exe_ctx,
         else 
         {
             Process *process = exe_ctx->GetProcessPtr();
-            if (process == NULL)
+            if (process == NULL || !process->IsAlive())
             {
-                error.SetErrorString ("can't read load address (invalid process)");
+                Target *target = exe_ctx->GetTargetPtr();
+                if (target)
+                {
+                    // Allow expressions to run and evaluate things when the target
+                    // has memory sections loaded. This allows you to use "target modules load"
+                    // to load your executable and any shared libraries, then execute
+                    // commands where you can look at types in data sections.
+                    const SectionLoadList &target_sections = target->GetSectionLoadList();
+                    if (!target_sections.IsEmpty())
+                    {
+                        address = m_value.ULongLong(LLDB_INVALID_ADDRESS);
+                        if (target_sections.ResolveLoadAddress(address, file_so_addr))
+                        {
+                            address_type = eAddressTypeLoad;
+                            data.SetByteOrder(target->GetArchitecture().GetByteOrder());
+                            data.SetAddressByteSize(target->GetArchitecture().GetAddressByteSize());
+                        }
+                        else
+                            address = LLDB_INVALID_ADDRESS;
+                    }
+//                    else
+//                    {
+//                        ModuleSP exe_module_sp (target->GetExecutableModule());
+//                        if (exe_module_sp)
+//                        {
+//                            address = m_value.ULongLong(LLDB_INVALID_ADDRESS);
+//                            if (address != LLDB_INVALID_ADDRESS)
+//                            {
+//                                if (exe_module_sp->ResolveFileAddress(address, file_so_addr))
+//                                {
+//                                    data.SetByteOrder(target->GetArchitecture().GetByteOrder());
+//                                    data.SetAddressByteSize(target->GetArchitecture().GetAddressByteSize());
+//                                    address_type = eAddressTypeFile;
+//                                }
+//                                else
+//                                {
+//                                    address = LLDB_INVALID_ADDRESS;
+//                                }
+//                            }
+//                        }
+//                    }
+                }
+                else
+                {
+                    error.SetErrorString ("can't read load address (invalid process)");
+                }
             }
             else
             {
@@ -456,14 +496,14 @@ Value::GetValueAsData (ExecutionContext *exe_ctx,
                         if (module)
                         {
                             if (variable)
-                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%llx for variable '%s' in %s%s%s", 
+                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%" PRIx64 " for variable '%s' in %s%s%s",
                                                                 address, 
                                                                 variable->GetName().AsCString(""),
                                                                 module->GetFileSpec().GetDirectory().GetCString(),
                                                                 module->GetFileSpec().GetDirectory() ? "/" : "",
                                                                 module->GetFileSpec().GetFilename().GetCString());
                             else
-                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%llx in %s%s%s", 
+                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%" PRIx64 " in %s%s%s",
                                                                 address, 
                                                                 module->GetFileSpec().GetDirectory().GetCString(),
                                                                 module->GetFileSpec().GetDirectory() ? "/" : "",
@@ -472,11 +512,11 @@ Value::GetValueAsData (ExecutionContext *exe_ctx,
                         else
                         {
                             if (variable)
-                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%llx for variable '%s'", 
+                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%" PRIx64 " for variable '%s'",
                                                                 address, 
                                                                 variable->GetName().AsCString(""));
                             else
-                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%llx", address);
+                                error.SetErrorStringWithFormat ("unable to resolve the module for file address 0x%" PRIx64, address);
                         }
                     }
                 }
@@ -520,7 +560,7 @@ Value::GetValueAsData (ExecutionContext *exe_ctx,
     }
 
     // If we got here, we need to read the value from memory
-    uint32_t byte_size = GetValueByteSize (ast_context, &error);
+    size_t byte_size = GetValueByteSize (ast_context, &error);
 
     // Bail if we encountered any errors getting the byte size
     if (error.Fail())
@@ -555,7 +595,7 @@ Value::GetValueAsData (ExecutionContext *exe_ctx,
                 const bool prefer_file_cache = false;
                 if (exe_ctx->GetTargetRef().ReadMemory(file_so_addr, prefer_file_cache, dst, byte_size, error) != byte_size)
                 {
-                    error.SetErrorStringWithFormat("read memory from 0x%llx failed", (uint64_t)address);
+                    error.SetErrorStringWithFormat("read memory from 0x%" PRIx64 " failed", (uint64_t)address);
                 }
             }
             else
@@ -570,14 +610,14 @@ Value::GetValueAsData (ExecutionContext *exe_ctx,
                 {
                     const size_t bytes_read = process->ReadMemory(address, dst, byte_size, error);
                     if (bytes_read != byte_size)
-                        error.SetErrorStringWithFormat("read memory from 0x%llx failed (%u of %u bytes read)", 
+                        error.SetErrorStringWithFormat("read memory from 0x%" PRIx64 " failed (%u of %u bytes read)",
                                                        (uint64_t)address, 
                                                        (uint32_t)bytes_read, 
                                                        (uint32_t)byte_size);
                 }
                 else
                 {
-                    error.SetErrorStringWithFormat("read memory from 0x%llx failed (invalid process)", (uint64_t)address);                    
+                    error.SetErrorStringWithFormat("read memory from 0x%" PRIx64 " failed (invalid process)", (uint64_t)address);
                 }
             }
         }
@@ -607,16 +647,13 @@ Value::ResolveValue(ExecutionContext *exe_ctx, clang::ASTContext *ast_context)
 
         default:
         case eValueTypeFileAddress:
-            m_value.Clear();
-            break;
-
         case eValueTypeLoadAddress:          // load address value
         case eValueTypeHostAddress:          // host address value (for memory in the process that is using liblldb)
             {
-                AddressType address_type = m_value_type == eValueTypeLoadAddress ? eAddressTypeLoad : eAddressTypeHost;
-                lldb::addr_t addr = m_value.ULongLong(LLDB_INVALID_ADDRESS);
                 DataExtractor data;
-                if (ClangASTType::ReadFromMemory (ast_context, opaque_clang_qual_type, exe_ctx, addr, address_type, data))
+                lldb::addr_t addr = m_value.ULongLong(LLDB_INVALID_ADDRESS);
+                Error error (GetValueAsData (exe_ctx, ast_context, data, 0, NULL));
+                if (error.Success())
                 {
                     Scalar scalar;
                     if (ClangASTType::GetValueAsScalar (ast_context, opaque_clang_qual_type, data, 0, data.GetByteSize(), scalar))

@@ -29,7 +29,7 @@
 
 #define DEBUG_TYPE "polly-cloog"
 #include "llvm/Assembly/Writer.h"
-#include "llvm/Module.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 
 #include "cloog/isl/domain.h"
@@ -87,7 +87,6 @@ class FileToString {
 
   char buf[BUFFERSIZE + 1];
 
-
 public:
   FileToString() {
     pipe(FD);
@@ -98,9 +97,7 @@ public:
     //close(FD[1]);
   }
 
-  FILE *getInputFile() {
-    return input;
-  }
+  FILE *getInputFile() { return input; }
 
   void closeInput() {
     fclose(input);
@@ -119,7 +116,6 @@ public:
 
       output += std::string(buf, readSize);
     }
-
 
     return output;
   }
@@ -143,9 +139,7 @@ void Cloog::pprint(raw_ostream &OS) {
 }
 
 /// Create the Cloog AST from this program.
-struct clast_root *Cloog::getClast() {
-  return (clast_root*)ClastRoot;
-}
+struct clast_root *Cloog::getClast() { return (clast_root *)ClastRoot; }
 
 void Cloog::buildCloogOptions() {
   Options = cloog_options_malloc(State);
@@ -173,7 +167,7 @@ CloogUnionDomain *Cloog::buildCloogUnionDomain() {
     CloogDomain *Domain;
 
     Scattering = cloog_scattering_from_isl_map(Stmt->getScattering());
-    Domain  = cloog_domain_from_isl_set(Stmt->getDomain());
+    Domain = cloog_domain_from_isl_set(Stmt->getDomain());
 
     std::string entryName = Stmt->getBaseName();
 
@@ -219,7 +213,7 @@ CloogInput *Cloog::buildCloogInput() {
 }
 
 void ClastVisitor::visit(const clast_stmt *stmt) {
-  if      (CLAST_STMT_IS_A(stmt, stmt_root))
+  if (CLAST_STMT_IS_A(stmt, stmt_root))
     assert(false && "No second root statement expected");
   else if (CLAST_STMT_IS_A(stmt, stmt_ass))
     return visitAssignment((const clast_assignment *)stmt);
@@ -236,20 +230,13 @@ void ClastVisitor::visit(const clast_stmt *stmt) {
     visit(stmt->next);
 }
 
-void ClastVisitor::visitAssignment(const clast_assignment *stmt) {
-}
+void ClastVisitor::visitAssignment(const clast_assignment *stmt) {}
 
-void ClastVisitor::visitBlock(const clast_block *stmt) {
-  visit(stmt->body);
-}
+void ClastVisitor::visitBlock(const clast_block *stmt) { visit(stmt->body); }
 
-void ClastVisitor::visitFor(const clast_for *stmt) {
-  visit(stmt->body);
-}
+void ClastVisitor::visitFor(const clast_for *stmt) { visit(stmt->body); }
 
-void ClastVisitor::visitGuard(const clast_guard *stmt) {
-  visit(stmt->then);
-}
+void ClastVisitor::visitGuard(const clast_guard *stmt) { visit(stmt->then); }
 
 } // End namespace polly.
 
@@ -297,7 +284,7 @@ bool CloogExporter::runOnScop(Scop &S) {
   std::string Filename = getFileName(&R);
 
   errs() << "Writing Scop '" << R.getNameStr() << "' in function '"
-    << FunctionName << "' to '" << Filename << "'...\n";
+         << FunctionName << "' to '" << Filename << "'...\n";
 
   FILE *F = fopen(Filename.c_str(), "w");
   C.dump(F);
@@ -312,29 +299,20 @@ void CloogExporter::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<CloogInfo>();
 }
 
-static RegisterPass<CloogExporter> A("polly-export-cloog",
-                                    "Polly - Export the Cloog input file"
-                                    " (Writes a .cloog file for each Scop)"
-                                    );
+static RegisterPass<CloogExporter>
+A("polly-export-cloog", "Polly - Export the Cloog input file"
+                        " (Writes a .cloog file for each Scop)");
 
-llvm::Pass *polly::createCloogExporterPass() {
-  return new CloogExporter();
-}
+llvm::Pass *polly::createCloogExporterPass() { return new CloogExporter(); }
 
 /// Write a .cloog input file
-void CloogInfo::dump(FILE *F) {
-  C->dump(F);
-}
+void CloogInfo::dump(FILE *F) { C->dump(F); }
 
 /// Print a source code representation of the program.
-void CloogInfo::pprint(llvm::raw_ostream &OS) {
-  C->pprint(OS);
-}
+void CloogInfo::pprint(llvm::raw_ostream &OS) { C->pprint(OS); }
 
 /// Create the Cloog AST from this program.
-const struct clast_root *CloogInfo::getClast() {
-  return C->getClast();
-}
+const struct clast_root *CloogInfo::getClast() { return C->getClast(); }
 
 void CloogInfo::releaseMemory() {
   if (C) {
@@ -354,7 +332,7 @@ bool CloogInfo::runOnScop(Scop &S) {
   Function *F = S.getRegion().getEntry()->getParent();
 
   DEBUG(dbgs() << ":: " << F->getName());
-  DEBUG(dbgs() << " : " << S.getRegion().getNameStr() << "\n");;
+  DEBUG(dbgs() << " : " << S.getRegion().getNameStr() << "\n");
   DEBUG(C->pprint(dbgs()));
 
   return false;

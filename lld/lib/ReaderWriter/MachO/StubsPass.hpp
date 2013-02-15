@@ -13,13 +13,14 @@
 #include "llvm/ADT/DenseMap.h"
 
 #include "lld/Core/DefinedAtom.h"
+#include "lld/Core/LinkerOptions.h"
 #include "lld/Core/SharedLibraryAtom.h"
 #include "lld/Core/File.h"
 #include "lld/Core/Reference.h"
 #include "lld/Core/Pass.h"
+#include "lld/ReaderWriter/Simple.h"
 
 #include "ReferenceKinds.h"
-#include "SimpleAtoms.hpp"
 #include "StubAtoms.hpp"
 
 namespace lld {
@@ -28,19 +29,20 @@ namespace mach_o {
 
 class StubsPass : public lld::StubsPass {
 public:
-  StubsPass(const WriterOptionsMachO &options) 
-    : _options(options), 
-      _kindHandler(KindHandler::makeHandler(options.architecture())),
-      _helperCommonAtom(nullptr),
-      _helperCacheAtom(nullptr),
-      _helperBinderAtom(nullptr) {
+  StubsPass(const MachOTargetInfo &ti) 
+    : _targetInfo(ti)
+    , _kindHandler(KindHandler::makeHandler(_targetInfo.getTriple().getArch()))
+    , _file(ti)
+    , _helperCommonAtom(nullptr)
+    , _helperCacheAtom(nullptr)
+    , _helperBinderAtom(nullptr) {
   }
 
   virtual bool noTextRelocs() {
-    return _options.noTextRelocations();
+    return !_targetInfo.getLinkerOptions()._textRelocations;
   }
 
-  virtual bool isCallSite(Reference::Kind kind) {
+  virtual bool isCallSite(int32_t kind) {
     return _kindHandler->isCallSite(kind);
   }
 
@@ -58,16 +60,15 @@ public:
   }
 
   const DefinedAtom* makeStub(const Atom& target) {
-    switch ( _options.architecture() ) {
-      case WriterOptionsMachO::arch_x86_64:
+    switch (_targetInfo.getTriple().getArch()) {
+      case llvm::Triple::x86_64:
         return makeStub_x86_64(target);
-
-      case WriterOptionsMachO::arch_x86:
+      case llvm::Triple::x86:
         return makeStub_x86(target);
-
-      case WriterOptionsMachO::arch_armv6:
-      case WriterOptionsMachO::arch_armv7:
+      case llvm::Triple::arm:
         return makeStub_arm(target);
+      default:
+        llvm_unreachable("Unknown arch");
     }
   }
 
@@ -119,7 +120,7 @@ public:
   }
 
 
-  virtual void addStubAtoms(File &mergedFile) {
+  virtual void addStubAtoms(MutableFile &mergedFile) {
     // Exit early if no stubs needed.
     if ( _targetToStub.size() == 0 )
       return;
@@ -147,11 +148,11 @@ private:
 
   class File : public SimpleFile {
   public:
-      File() : SimpleFile("MachO Stubs pass") {
-      }
+    File(const MachOTargetInfo &ti) : SimpleFile(ti, "MachO Stubs pass") {
+    }
   };
 
-  const WriterOptionsMachO                       &_options;
+  const MachOTargetInfo                          &_targetInfo;
   KindHandler                                    *_kindHandler;
   File                                            _file;
   llvm::DenseMap<const Atom*, const DefinedAtom*> _targetToStub;

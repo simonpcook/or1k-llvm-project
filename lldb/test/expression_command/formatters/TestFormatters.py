@@ -25,10 +25,11 @@ class ExprFormattersTestCase(TestBase):
         self.buildDsym()
         self.do_my_test()
 
+    @expectedFailureLinux # bugzilla 14437
     @dwarf_test
     def test_with_dwarf(self):
         """Test expr + formatters for good interoperability."""
-        self.buildDsym()
+        self.buildDwarf()
         self.do_my_test()
 
     def do_my_test(self):
@@ -51,11 +52,11 @@ class ExprFormattersTestCase(TestBase):
         self.runCmd("script import formatters")
         self.runCmd("script import foosynth")
         
-        self.runCmd("frame variable foo1 -T")
-        self.runCmd("frame variable foo1.b -T")
-        self.runCmd("frame variable foo1.b.b_ref -T")
+        self.runCmd("frame variable foo1 --show-types")
+        self.runCmd("frame variable foo1.b --show-types")
+        self.runCmd("frame variable foo1.b.b_ref --show-types")
 
-        self.expect("expression *(new foo(47))",
+        self.expect("expression --show-types -- *(new foo(47))",
             substrs = ['(int) a = 47', '(bar) b = {', '(int) i = 94', '(baz) b = {', '(int) k = 99'])
 
         self.runCmd("type summary add -F formatters.foo_SummaryProvider foo")
@@ -93,7 +94,7 @@ class ExprFormattersTestCase(TestBase):
         self.runCmd("type summary delete foo")
         self.runCmd("type synthetic add --python-class foosynth.FooSyntheticProvider foo")
 
-        self.expect("expression $" + object_name,
+        self.expect("expression --show-types -- $" + object_name,
             substrs = ['(foo) $', ' = {', '(int) *i_ptr = 243'])
 
         self.runCmd("n")
@@ -117,7 +118,7 @@ class ExprFormattersTestCase(TestBase):
         self.runCmd("type summary delete foo")
         self.runCmd("type synthetic add --python-class foosynth.FooSyntheticProvider foo")
 
-        self.expect("expression $" + object_name,
+        self.expect("expression --show-types -- $" + object_name,
             substrs = ['(foo) $', ' = {', '(int) *i_ptr = 8888'])
 
         self.runCmd("n")

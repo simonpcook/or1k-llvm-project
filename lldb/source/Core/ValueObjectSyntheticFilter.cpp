@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
 
 #include "lldb/Core/ValueObjectSyntheticFilter.h"
 
@@ -14,8 +15,8 @@
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
-#include "lldb/Core/FormatClasses.h"
 #include "lldb/Core/ValueObject.h"
+#include "lldb/DataFormatters/FormatClasses.h"
 
 using namespace lldb_private;
 
@@ -26,19 +27,19 @@ public:
     SyntheticChildrenFrontEnd(backend)
     {}
 
-    uint32_t
+    size_t
     CalculateNumChildren()
     {
         return 0;
     }
     
     lldb::ValueObjectSP
-    GetChildAtIndex (uint32_t idx)
+    GetChildAtIndex (size_t idx)
     {
         return lldb::ValueObjectSP();
     }
     
-    uint32_t
+    size_t
     GetIndexOfChildWithName (const ConstString &name)
     {
         return UINT32_MAX;
@@ -94,13 +95,29 @@ ValueObjectSynthetic::GetTypeName()
     return m_parent->GetTypeName();
 }
 
-uint32_t
+ConstString
+ValueObjectSynthetic::GetQualifiedTypeName()
+{
+    return m_parent->GetQualifiedTypeName();
+}
+
+size_t
 ValueObjectSynthetic::CalculateNumChildren()
 {
     UpdateValueIfNeeded();
     if (m_synthetic_children_count < UINT32_MAX)
         return m_synthetic_children_count;
     return (m_synthetic_children_count = m_synth_filter_ap->CalculateNumChildren());
+}
+
+lldb::ValueObjectSP
+ValueObjectSynthetic::GetDynamicValue (lldb::DynamicValueType valueType)
+{
+    if (!m_parent)
+        return lldb::ValueObjectSP();
+    if (m_parent->IsDynamic() && m_parent->GetDynamicValueType() == valueType)
+        return m_parent->GetSP();
+    return ValueObject::GetDynamicValue(valueType);
 }
 
 bool
@@ -182,7 +199,7 @@ ValueObjectSynthetic::UpdateValue ()
 }
 
 lldb::ValueObjectSP
-ValueObjectSynthetic::GetChildAtIndex (uint32_t idx, bool can_create)
+ValueObjectSynthetic::GetChildAtIndex (size_t idx, bool can_create)
 {
     UpdateValueIfNeeded();
     
@@ -218,7 +235,7 @@ ValueObjectSynthetic::GetChildMemberWithName (const ConstString &name, bool can_
     return GetChildAtIndex(index, can_create);
 }
 
-uint32_t
+size_t
 ValueObjectSynthetic::GetIndexOfChildWithName (const ConstString &name)
 {
     UpdateValueIfNeeded();

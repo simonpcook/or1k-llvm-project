@@ -22,7 +22,7 @@
 
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/RegionIterator.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -60,12 +60,13 @@ inline raw_ostream &operator<<(raw_ostream &OS, const BBCond &Cond) {
 //===----------------------------------------------------------------------===//
 // TempScop implementation
 TempScop::~TempScop() {
-  if (MayASInfo) delete MayASInfo;
+  if (MayASInfo)
+    delete MayASInfo;
 }
 
 void TempScop::print(raw_ostream &OS, ScalarEvolution *SE, LoopInfo *LI) const {
-  OS << "Scop: " << R.getNameStr() << ", Max Loop Depth: "<< MaxLoopDepth
-    << "\n";
+  OS << "Scop: " << R.getNameStr() << ", Max Loop Depth: " << MaxLoopDepth
+     << "\n";
 
   printDetail(OS, SE, LI, &R, 0);
 }
@@ -95,19 +96,17 @@ void TempScopInfo::buildAccessFunctions(Region &R, BasicBlock &BB) {
 
       const SCEV *AccessFunction = SE->getSCEV(getPointerOperand(Inst));
       const SCEVUnknown *BasePointer =
-        dyn_cast<SCEVUnknown>(SE->getPointerBase(AccessFunction));
+          dyn_cast<SCEVUnknown>(SE->getPointerBase(AccessFunction));
 
       assert(BasePointer && "Could not find base pointer");
       AccessFunction = SE->getMinusSCEV(AccessFunction, BasePointer);
 
-      bool IsAffine = isAffineExpr(&R, AccessFunction, *SE,
-                                   BasePointer->getValue());
+      bool IsAffine =
+          isAffineExpr(&R, AccessFunction, *SE, BasePointer->getValue());
 
-      Functions.push_back(std::make_pair(IRAccess(Type,
-                                                  BasePointer->getValue(),
-                                                  AccessFunction, Size,
-                                                  IsAffine),
-                                         &Inst));
+      Functions.push_back(
+          std::make_pair(IRAccess(Type, BasePointer->getValue(), AccessFunction,
+                                  Size, IsAffine), &Inst));
     }
   }
 
@@ -122,8 +121,8 @@ void TempScopInfo::buildLoopBounds(TempScop &Scop) {
   Region &R = Scop.getMaxRegion();
   unsigned MaxLoopDepth = 0;
 
-  for (Region::block_iterator I = R.block_begin(), E = R.block_end();
-       I != E; ++I) {
+  for (Region::block_iterator I = R.block_begin(), E = R.block_end(); I != E;
+       ++I) {
     Loop *L = LI->getLoopFor(*I);
 
     if (!L || !R.contains(L))
@@ -146,8 +145,7 @@ void TempScopInfo::buildLoopBounds(TempScop &Scop) {
 }
 
 void TempScopInfo::buildAffineCondition(Value &V, bool inverted,
-                                         Comparison **Comp,
-                                         TempScop &Scop) const {
+                                        Comparison **Comp) const {
   if (ConstantInt *C = dyn_cast<ConstantInt>(&V)) {
     // If this is always true condition, we will create 1 >= 0,
     // otherwise we will create 1 == 0.
@@ -191,8 +189,7 @@ void TempScopInfo::buildAffineCondition(Value &V, bool inverted,
   *Comp = new Comparison(LHS, RHS, Pred);
 }
 
-void TempScopInfo::buildCondition(BasicBlock *BB, BasicBlock *RegionEntry,
-                                  TempScop &Scop) {
+void TempScopInfo::buildCondition(BasicBlock *BB, BasicBlock *RegionEntry) {
   BBCond Cond;
 
   DomTreeNode *BBNode = DT->getNode(BB), *EntryNode = DT->getNode(RegionEntry);
@@ -219,7 +216,7 @@ void TempScopInfo::buildCondition(BasicBlock *BB, BasicBlock *RegionEntry,
     bool inverted = DT->dominates(Br->getSuccessor(1), BB);
 
     Comparison *Cmp;
-    buildAffineCondition(*(Br->getCondition()), inverted, &Cmp, Scop);
+    buildAffineCondition(*(Br->getCondition()), inverted, &Cmp);
     Cond.push_back(*Cmp);
   }
 
@@ -230,10 +227,10 @@ void TempScopInfo::buildCondition(BasicBlock *BB, BasicBlock *RegionEntry,
 TempScop *TempScopInfo::buildTempScop(Region &R) {
   TempScop *TScop = new TempScop(R, LoopBounds, BBConds, AccFuncMap);
 
-  for (Region::block_iterator I = R.block_begin(), E = R.block_end();
-       I != E; ++I) {
+  for (Region::block_iterator I = R.block_begin(), E = R.block_end(); I != E;
+       ++I) {
     buildAccessFunctions(R, **I);
-    buildCondition(*I, R.getEntry(), *TScop);
+    buildCondition(*I, R.getEntry());
   }
 
   buildLoopBounds(*TScop);
@@ -248,9 +245,10 @@ TempScop *TempScopInfo::getTempScop(const Region *R) const {
   return at == TempScops.end() ? 0 : at->second;
 }
 
-void TempScopInfo::print(raw_ostream &OS, const Module *) const {
+void TempScopInfo::print(raw_ostream &OS, const Module *)const {
   for (TempScopMapType::const_iterator I = TempScops.begin(),
-       E = TempScops.end(); I != E; ++I)
+                                       E = TempScops.end();
+       I != E; ++I)
     I->second->print(OS, SE, LI);
 }
 
@@ -264,7 +262,7 @@ bool TempScopInfo::runOnFunction(Function &F) {
   TD = &getAnalysis<DataLayout>();
 
   for (ScopDetection::iterator I = SD->begin(), E = SD->end(); I != E; ++I) {
-    Region *R = const_cast<Region*>(*I);
+    Region *R = const_cast<Region *>(*I);
     TempScops.insert(std::make_pair(R, buildTempScop(*R)));
   }
 
@@ -283,9 +281,7 @@ void TempScopInfo::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
 }
 
-TempScopInfo::~TempScopInfo() {
-  clear();
-}
+TempScopInfo::~TempScopInfo() { clear(); }
 
 void TempScopInfo::clear() {
   BBConds.clear();

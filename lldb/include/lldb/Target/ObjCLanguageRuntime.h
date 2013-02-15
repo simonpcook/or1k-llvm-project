@@ -31,7 +31,109 @@ class ObjCLanguageRuntime :
     public LanguageRuntime
 {
 public:
-    
+    class MethodName
+    {
+    public:
+        enum Type
+        {
+            eTypeUnspecified,
+            eTypeClassMethod,
+            eTypeInstanceMethod
+        };
+        
+        MethodName () :
+            m_full(),
+            m_class(),
+            m_category(),
+            m_selector(),
+            m_type (eTypeUnspecified),
+            m_category_is_valid (false)
+        {
+        }
+
+        MethodName (const char *name, bool strict) :
+            m_full(),
+            m_class(),
+            m_category(),
+            m_selector(),
+            m_type (eTypeUnspecified),
+            m_category_is_valid (false)
+        {
+            SetName (name, strict);
+        }
+
+        void
+        Clear();
+
+        bool
+        IsValid (bool strict) const
+        {
+            // If "strict" is true, the name must have everything specified including
+            // the leading "+" or "-" on the method name
+            if (strict && m_type == eTypeUnspecified)
+                return false;
+            // Other than that, m_full will only be filled in if the objective C
+            // name is valid.
+            return (bool)m_full;
+        }
+        
+        bool
+        HasCategory()
+        {
+            return (bool)GetCategory();
+        }
+
+        Type
+        GetType () const
+        {
+            return m_type;
+        }
+        
+        const ConstString &
+        GetFullName () const
+        {
+            return m_full;
+        }
+        
+        ConstString
+        GetFullNameWithoutCategory (bool empty_if_no_category);
+
+        bool
+        SetName (const char *name, bool strict);
+
+        const ConstString &
+        GetClassName ();
+
+        const ConstString &
+        GetClassNameWithCategory ();
+
+        const ConstString &
+        GetCategory ();
+        
+        const ConstString &
+        GetSelector ();
+
+        // Get all possible names for a method. Examples:
+        // If name is "+[NSString(my_additions) myStringWithCString:]"
+        //  names[0] => "+[NSString(my_additions) myStringWithCString:]"
+        //  names[1] => "+[NSString myStringWithCString:]"
+        // If name is specified without the leading '+' or '-' like "[NSString(my_additions) myStringWithCString:]"
+        //  names[0] => "+[NSString(my_additions) myStringWithCString:]"
+        //  names[1] => "-[NSString(my_additions) myStringWithCString:]"
+        //  names[2] => "+[NSString myStringWithCString:]"
+        //  names[3] => "-[NSString myStringWithCString:]"
+        size_t
+        GetFullNames (std::vector<ConstString> &names, bool append);
+    protected:
+        ConstString m_full;     // Full name:   "+[NSString(my_additions) myStringWithCString:]"
+        ConstString m_class;    // Class name:  "NSString"
+        ConstString m_class_category; // Class with category: "NSString(my_additions)"
+        ConstString m_category; // Category:    "my_additions"
+        ConstString m_selector; // Selector:    "myStringWithCString:"
+        Type m_type;
+        bool m_category_is_valid;
+
+    };
     typedef lldb::addr_t ObjCISA;
     
     class ClassDescriptor;
@@ -114,8 +216,9 @@ public:
         // This should return true iff the interface could be completed
         virtual bool
         Describe (std::function <void (ObjCISA)> const &superclass_func,
-                  std::function <void (const char*, const char*)> const &instance_method_func,
-                  std::function <void (const char*, const char*)> const &class_method_func)
+                  std::function <bool (const char*, const char*)> const &instance_method_func,
+                  std::function <bool (const char*, const char*)> const &class_method_func,
+                  std::function <bool (const char *, const char *, lldb::addr_t, uint64_t)> const &ivar_func)
         {
             return false;
         }
@@ -248,7 +351,7 @@ public:
     IsValidISA(ObjCISA isa)
     {
         UpdateISAToDescriptorMap();
-        return m_isa_to_descriptor_cache.count(isa) > 0;
+        return m_isa_to_descriptor.count(isa) > 0;
     }
 
     virtual void
@@ -257,10 +360,9 @@ public:
     void
     UpdateISAToDescriptorMap()
     {
-        if (m_process && m_process->GetStopID() != m_isa_to_descriptor_cache_stop_id)
+        if (m_process && m_process->GetStopID() != m_isa_to_descriptor_stop_id)
         {
             UpdateISAToDescriptorMapIfNeeded ();
-            assert (m_process->GetStopID() == m_isa_to_descriptor_cache_stop_id); // REMOVE THIS PRIOR TO CHECKIN
         }
     }
     
@@ -284,6 +386,15 @@ public:
     
     virtual size_t
     GetByteOffsetForIvar (ClangASTType &parent_qual_type, const char *ivar_name);
+    
+    // Given the name of an Objective-C runtime symbol (e.g., ivar offset symbol),
+    // try to determine from the runtime what the value of that symbol would be.
+    // Useful when the underlying binary is stripped.
+    virtual lldb::addr_t
+    LookupRuntimeSymbol (const ConstString &name)
+    {
+        return LLDB_INVALID_ADDRESS;
+    }
     
     //------------------------------------------------------------------
     /// Chop up an objective C function prototype.
@@ -342,12 +453,12 @@ public:
     ///     Returns the number of strings that were successfully filled
     ///     in.
     //------------------------------------------------------------------
-    static uint32_t
-    ParseMethodName (const char *name, 
-                     ConstString *class_name,               // Class name (with category if there is one)
-                     ConstString *selector_name,            // selector only
-                     ConstString *name_sans_category,       // full function name with no category (empty if no category)
-                     ConstString *class_name_sans_category);// Class name without category (empty if no category)
+//    static uint32_t
+//    ParseMethodName (const char *name, 
+//                     ConstString *class_name,               // Class name (with category if there is one)
+//                     ConstString *selector_name,            // selector only
+//                     ConstString *name_sans_category,       // full function name with no category (empty if no category)
+//                     ConstString *class_name_sans_category);// Class name without category (empty if no category)
     
     static bool
     IsPossibleObjCMethodName (const char *name)
@@ -397,6 +508,40 @@ protected:
     {
         return false;
     }
+    
+    
+    bool
+    ISAIsCached (ObjCISA isa) const
+    {
+        return m_isa_to_descriptor.find(isa) != m_isa_to_descriptor.end();
+    }
+
+    bool
+    AddClass (ObjCISA isa, const ClassDescriptorSP &descriptor_sp)
+    {
+        if (isa != 0)
+        {
+            m_isa_to_descriptor[isa] = descriptor_sp;
+            return true;
+        }
+        return false;
+    }
+
+    bool
+    AddClass (ObjCISA isa, const ClassDescriptorSP &descriptor_sp, const char *class_name);
+
+    bool
+    AddClass (ObjCISA isa, const ClassDescriptorSP &descriptor_sp, uint32_t class_name_hash)
+    {
+        if (isa != 0)
+        {
+            m_isa_to_descriptor[isa] = descriptor_sp;
+            m_hash_to_isa_map.insert(std::make_pair(class_name_hash, isa));
+            return true;
+        }
+        return false;
+    }
+
 private:
     // We keep a map of <Class,Selector>->Implementation so we don't have to call the resolver
     // function over and over.
@@ -445,16 +590,24 @@ private:
     };
 
     typedef std::map<ClassAndSel,lldb::addr_t> MsgImplMap;
-    MsgImplMap m_impl_cache;
-    
-    LazyBool m_has_new_literals_and_indexing;
-protected:
     typedef std::map<ObjCISA, ClassDescriptorSP> ISAToDescriptorMap;
+    typedef std::multimap<uint32_t, ObjCISA> HashToISAMap;
     typedef ISAToDescriptorMap::iterator ISAToDescriptorIterator;
-    ISAToDescriptorMap m_isa_to_descriptor_cache;
-    uint32_t m_isa_to_descriptor_cache_stop_id;
+    typedef HashToISAMap::iterator HashToISAIterator;
+
+    MsgImplMap m_impl_cache;
+    LazyBool m_has_new_literals_and_indexing;
+    ISAToDescriptorMap m_isa_to_descriptor;
+    HashToISAMap m_hash_to_isa_map;
+
+protected:
+    uint32_t m_isa_to_descriptor_stop_id;
     typedef std::map<ConstString, lldb::TypeWP> CompleteClassMap;
     CompleteClassMap m_complete_class_cache;
+
+    
+    ISAToDescriptorIterator
+    GetDescriptorIterator (const ConstString &name);
 
     DISALLOW_COPY_AND_ASSIGN (ObjCLanguageRuntime);
 };

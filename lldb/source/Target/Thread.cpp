@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/lldb-private-log.h"
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Debugger.h"
@@ -241,7 +243,7 @@ Thread::Thread (Process &process, lldb::tid_t tid) :
     Broadcaster(&process.GetTarget().GetDebugger(), Thread::GetStaticBroadcasterClass().AsCString()),
     m_process_wp (process.shared_from_this()),
     m_actual_stop_info_sp (),
-    m_index_id (process.GetNextThreadIndexID ()),
+    m_index_id (process.GetNextThreadIndexID(tid)),
     m_reg_context_sp (),
     m_state (eStateUnloaded),
     m_state_mutex (Mutex::eMutexTypeRecursive),
@@ -256,11 +258,10 @@ Thread::Thread (Process &process, lldb::tid_t tid) :
     m_unwinder_ap (),
     m_destroy_called (false),
     m_thread_stop_reason_stop_id (0)
-
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
-        log->Printf ("%p Thread::Thread(tid = 0x%4.4llx)", this, GetID());
+        log->Printf ("%p Thread::Thread(tid = 0x%4.4" PRIx64 ")", this, GetID());
 
     CheckInWithManager();
     QueueFundamentalPlan(true);
@@ -271,7 +272,7 @@ Thread::~Thread()
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
-        log->Printf ("%p Thread::~Thread(tid = 0x%4.4llx)", this, GetID());
+        log->Printf ("%p Thread::~Thread(tid = 0x%4.4" PRIx64 ")", this, GetID());
     /// If you hit this assert, it means your derived class forgot to call DoDestroy in its destructor.
     assert (m_destroy_called);
 }
@@ -317,6 +318,33 @@ Thread::SetSelectedFrameByIndex (uint32_t frame_idx, bool broadcast)
         if (broadcast)
             BroadcastSelectedFrameChange(frame_sp->GetStackID());
         return true;
+    }
+    else
+        return false;
+}
+
+bool
+Thread::SetSelectedFrameByIndexNoisily (uint32_t frame_idx, Stream &output_stream)
+{
+    const bool broadcast = true;
+    bool success = SetSelectedFrameByIndex (frame_idx, broadcast);
+    if (success)
+    {
+        StackFrameSP frame_sp = GetSelectedFrame();
+        if (frame_sp)
+        {
+            bool already_shown = false;
+            SymbolContext frame_sc(frame_sp->GetSymbolContext(eSymbolContextLineEntry));
+            if (GetProcess()->GetTarget().GetDebugger().GetUseExternalEditor() && frame_sc.line_entry.file && frame_sc.line_entry.line != 0)
+            {
+                already_shown = Host::OpenFileInExternalEditor (frame_sc.line_entry.file, frame_sc.line_entry.line);
+            }
+
+            bool show_frame_info = true;
+            bool show_source = !already_shown;
+            return frame_sp->GetStatus (output_stream, show_frame_info, show_source);
+        }
+        return false;
     }
     else
         return false;
@@ -396,9 +424,15 @@ Thread::CheckpointThreadState (ThreadStateCheckpoint &saved_state)
 }
 
 bool
-Thread::RestoreThreadStateFromCheckpoint (ThreadStateCheckpoint &saved_state)
+Thread::RestoreRegisterStateFromCheckpoint (ThreadStateCheckpoint &saved_state)
 {
     RestoreSaveFrameZero(saved_state.register_backup);
+    return true;
+}
+
+bool
+Thread::RestoreThreadStateFromCheckpoint (ThreadStateCheckpoint &saved_state)
+{
     if (saved_state.stop_info_sp)
         saved_state.stop_info_sp->MakeStopInfoValid();
     SetStopInfo(saved_state.stop_info_sp);
@@ -538,10 +572,10 @@ Thread::ShouldStop (Event* event_ptr)
     if (GetResumeState () == eStateSuspended)
     {
         if (log)
-            log->Printf ("Thread::%s for tid = 0x%4.4llx, should_stop = 0 (ignore since thread was suspended)", 
+            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
                          __FUNCTION__, 
                          GetID ());
-//            log->Printf ("Thread::%s for tid = 0x%4.4llx, pc = 0x%16.16llx, should_stop = 0 (ignore since thread was suspended)", 
+//            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", pc = 0x%16.16" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
 //                         __FUNCTION__, 
 //                         GetID (), 
 //                         GetRegisterContext()->GetPC());
@@ -551,10 +585,10 @@ Thread::ShouldStop (Event* event_ptr)
     if (GetTemporaryResumeState () == eStateSuspended)
     {
         if (log)
-            log->Printf ("Thread::%s for tid = 0x%4.4llx, should_stop = 0 (ignore since thread was suspended)", 
+            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
                          __FUNCTION__, 
                          GetID ());
-//            log->Printf ("Thread::%s for tid = 0x%4.4llx, pc = 0x%16.16llx, should_stop = 0 (ignore since thread was suspended)", 
+//            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", pc = 0x%16.16" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
 //                         __FUNCTION__, 
 //                         GetID (), 
 //                         GetRegisterContext()->GetPC());
@@ -564,7 +598,7 @@ Thread::ShouldStop (Event* event_ptr)
     if (ThreadStoppedForAReason() == false)
     {
         if (log)
-            log->Printf ("Thread::%s for tid = 0x%4.4llx, pc = 0x%16.16llx, should_stop = 0 (ignore since no stop reason)", 
+            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", pc = 0x%16.16" PRIx64 ", should_stop = 0 (ignore since no stop reason)",
                          __FUNCTION__, 
                          GetID (), 
                          GetRegisterContext()->GetPC());
@@ -573,7 +607,7 @@ Thread::ShouldStop (Event* event_ptr)
     
     if (log)
     {
-        log->Printf ("Thread::%s for tid = 0x%4.4llx, pc = 0x%16.16llx", 
+        log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", pc = 0x%16.16" PRIx64,
                      __FUNCTION__, 
                      GetID (), 
                      GetRegisterContext()->GetPC());
@@ -612,7 +646,7 @@ Thread::ShouldStop (Event* event_ptr)
     
     bool done_processing_current_plan = false;
     
-    if (!current_plan->PlanExplainsStop())
+    if (!current_plan->PlanExplainsStop(event_ptr))
     {
         if (current_plan->TracerExplainsStop())
         {
@@ -626,7 +660,7 @@ Thread::ShouldStop (Event* event_ptr)
             ThreadPlan *plan_ptr = current_plan;
             while ((plan_ptr = GetPreviousPlan(plan_ptr)) != NULL)
             {
-                if (plan_ptr->PlanExplainsStop())
+                if (plan_ptr->PlanExplainsStop(event_ptr))
                 {
                     should_stop = plan_ptr->ShouldStop (event_ptr);
                     
@@ -770,21 +804,21 @@ Thread::ShouldReportStop (Event* event_ptr)
     if (thread_state == eStateSuspended || thread_state == eStateInvalid)
     {
         if (log)
-            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4llx: returning vote %i (state was suspended or invalid)\n", GetID(), eVoteNoOpinion);
+            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4" PRIx64 ": returning vote %i (state was suspended or invalid)\n", GetID(), eVoteNoOpinion);
         return eVoteNoOpinion;
     }
 
     if (temp_thread_state == eStateSuspended || temp_thread_state == eStateInvalid)
     {
         if (log)
-            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4llx: returning vote %i (temporary state was suspended or invalid)\n", GetID(), eVoteNoOpinion);
+            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4" PRIx64 ": returning vote %i (temporary state was suspended or invalid)\n", GetID(), eVoteNoOpinion);
         return eVoteNoOpinion;
     }
 
     if (!ThreadStoppedForAReason())
     {
         if (log)
-            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4llx: returning vote %i (thread didn't stop for a reason.)\n", GetID(), eVoteNoOpinion);
+            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4" PRIx64 ": returning vote %i (thread didn't stop for a reason.)\n", GetID(), eVoteNoOpinion);
         return eVoteNoOpinion;
     }
 
@@ -792,14 +826,29 @@ Thread::ShouldReportStop (Event* event_ptr)
     {
         // Don't use GetCompletedPlan here, since that suppresses private plans.
         if (log)
-            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4llx: returning vote  for complete stack's back plan\n", GetID());
+            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4" PRIx64 ": returning vote  for complete stack's back plan\n", GetID());
         return m_completed_plan_stack.back()->ShouldReportStop (event_ptr);
     }
     else
     {
+        Vote thread_vote = eVoteNoOpinion;
+        ThreadPlan *plan_ptr = GetCurrentPlan();
+        while (1)
+        {
+            if (plan_ptr->PlanExplainsStop(event_ptr))
+            {
+                thread_vote = plan_ptr->ShouldReportStop(event_ptr);
+                break;
+            }
+            if (PlanIsBasePlan(plan_ptr))
+                break;
+            else
+                plan_ptr = GetPreviousPlan(plan_ptr);
+        }
         if (log)
-            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4llx: returning vote  for current plan\n", GetID());
-        return GetCurrentPlan()->ShouldReportStop (event_ptr);
+            log->Printf ("Thread::ShouldReportStop() tid = 0x%4.4" PRIx64 ": returning vote %i for current plan\n", GetID(), thread_vote);
+
+        return thread_vote;
     }
 }
 
@@ -819,7 +868,7 @@ Thread::ShouldReportRun (Event* event_ptr)
     {
         // Don't use GetCompletedPlan here, since that suppresses private plans.
         if (log)
-            log->Printf ("Current Plan for thread %d (0x%4.4llx): %s being asked whether we should report run.", 
+            log->Printf ("Current Plan for thread %d (0x%4.4" PRIx64 "): %s being asked whether we should report run.",
                          GetIndexID(), 
                          GetID(),
                          m_completed_plan_stack.back()->GetName());
@@ -829,7 +878,7 @@ Thread::ShouldReportRun (Event* event_ptr)
     else
     {
         if (log)
-            log->Printf ("Current Plan for thread %d (0x%4.4llx): %s being asked whether we should report run.", 
+            log->Printf ("Current Plan for thread %d (0x%4.4" PRIx64 "): %s being asked whether we should report run.",
                          GetIndexID(), 
                          GetID(),
                          GetCurrentPlan()->GetName());
@@ -864,7 +913,7 @@ Thread::PushPlan (ThreadPlanSP &thread_plan_sp)
         {
             StreamString s;
             thread_plan_sp->GetDescription (&s, lldb::eDescriptionLevelFull);
-            log->Printf("Pushing plan: \"%s\", tid = 0x%4.4llx.",
+            log->Printf("Pushing plan: \"%s\", tid = 0x%4.4" PRIx64 ".",
                         s.GetData(),
                         thread_plan_sp->GetThread().GetID());
         }
@@ -883,7 +932,7 @@ Thread::PopPlan ()
         ThreadPlanSP &plan = m_plan_stack.back();
         if (log)
         {
-            log->Printf("Popping plan: \"%s\", tid = 0x%4.4llx.", plan->GetName(), plan->GetThread().GetID());
+            log->Printf("Popping plan: \"%s\", tid = 0x%4.4" PRIx64 ".", plan->GetName(), plan->GetThread().GetID());
         }
         m_completed_plan_stack.push_back (plan);
         plan->WillPop();
@@ -1048,7 +1097,7 @@ Thread::DiscardThreadPlansUpToPlan (ThreadPlan *up_to_plan_ptr)
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     if (log)
     {
-        log->Printf("Discarding thread plans for thread tid = 0x%4.4llx, up to %p", GetID(), up_to_plan_ptr);
+        log->Printf("Discarding thread plans for thread tid = 0x%4.4" PRIx64 ", up to %p", GetID(), up_to_plan_ptr);
     }
 
     int stack_size = m_plan_stack.size();
@@ -1089,7 +1138,7 @@ Thread::DiscardThreadPlans(bool force)
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     if (log)
     {
-        log->Printf("Discarding thread plans for thread (tid = 0x%4.4llx, force %d)", GetID(), force);
+        log->Printf("Discarding thread plans for thread (tid = 0x%4.4" PRIx64 ", force %d)", GetID(), force);
     }
 
     if (force)
@@ -1158,6 +1207,28 @@ Thread::PlanIsBasePlan (ThreadPlan *plan_ptr)
        return m_plan_stack[0].get() == plan_ptr;
 }
 
+Error
+Thread::UnwindInnermostExpression()
+{
+    Error error;
+    int stack_size = m_plan_stack.size();
+    
+    // If the input plan is NULL, discard all plans.  Otherwise make sure this plan is in the
+    // stack, and if so discard up to and including it.
+    
+    for (int i = stack_size - 1; i > 0; i--)
+    {
+        if (m_plan_stack[i]->GetKind() == ThreadPlan::eKindCallFunction)
+        {
+            DiscardThreadPlansUpToPlan(m_plan_stack[i].get());
+            return error;
+        }
+    }
+    error.SetErrorString("No expressions currently active on this thread");
+    return error;
+}
+
+
 ThreadPlan *
 Thread::QueueFundamentalPlan (bool abort_other_plans)
 {
@@ -1180,28 +1251,41 @@ Thread::QueueThreadPlanForStepSingleInstruction
 }
 
 ThreadPlan *
-Thread::QueueThreadPlanForStepRange 
+Thread::QueueThreadPlanForStepOverRange
 (
     bool abort_other_plans, 
-    StepType type, 
     const AddressRange &range, 
-    const SymbolContext &addr_context, 
+    const SymbolContext &addr_context,
+    lldb::RunMode stop_other_threads
+)
+{
+    ThreadPlanSP thread_plan_sp;
+    thread_plan_sp.reset (new ThreadPlanStepOverRange (*this, range, addr_context, stop_other_threads));
+
+    QueueThreadPlan (thread_plan_sp, abort_other_plans);
+    return thread_plan_sp.get();
+}
+
+ThreadPlan *
+Thread::QueueThreadPlanForStepInRange
+(
+    bool abort_other_plans, 
+    const AddressRange &range, 
+    const SymbolContext &addr_context,
+    const char *step_in_target,
     lldb::RunMode stop_other_threads,
     bool avoid_code_without_debug_info
 )
 {
     ThreadPlanSP thread_plan_sp;
-    if (type == eStepTypeInto)
-    {
-        ThreadPlanStepInRange *plan = new ThreadPlanStepInRange (*this, range, addr_context, stop_other_threads);
-        if (avoid_code_without_debug_info)
-            plan->GetFlags().Set (ThreadPlanShouldStopHere::eAvoidNoDebug);
-        else
-            plan->GetFlags().Clear (ThreadPlanShouldStopHere::eAvoidNoDebug);
-        thread_plan_sp.reset (plan);
-    }
+    ThreadPlanStepInRange *plan = new ThreadPlanStepInRange (*this, range, addr_context, stop_other_threads);
+    if (avoid_code_without_debug_info)
+        plan->GetFlags().Set (ThreadPlanShouldStopHere::eAvoidNoDebug);
     else
-        thread_plan_sp.reset (new ThreadPlanStepOverRange (*this, range, addr_context, stop_other_threads));
+        plan->GetFlags().Clear (ThreadPlanShouldStopHere::eAvoidNoDebug);
+    if (step_in_target)
+        plan->SetStepInTarget(step_in_target);
+    thread_plan_sp.reset (plan);
 
     QueueThreadPlan (thread_plan_sp, abort_other_plans);
     return thread_plan_sp.get();
@@ -1263,9 +1347,16 @@ Thread::QueueThreadPlanForCallFunction (bool abort_other_plans,
                                         Address& function,
                                         lldb::addr_t arg,
                                         bool stop_other_threads,
-                                        bool discard_on_error)
+                                        bool unwind_on_error,
+                                        bool ignore_breakpoints)
 {
-    ThreadPlanSP thread_plan_sp (new ThreadPlanCallFunction (*this, function, ClangASTType(), arg, stop_other_threads, discard_on_error));
+    ThreadPlanSP thread_plan_sp (new ThreadPlanCallFunction (*this,
+                                                             function,
+                                                             ClangASTType(),
+                                                             arg,
+                                                             stop_other_threads,
+                                                             unwind_on_error,
+                                                             ignore_breakpoints));
     QueueThreadPlan (thread_plan_sp, abort_other_plans);
     return thread_plan_sp.get();
 }
@@ -1305,7 +1396,7 @@ Thread::DumpThreadPlans (lldb_private::Stream *s) const
     uint32_t stack_size = m_plan_stack.size();
     int i;
     s->Indent();
-    s->Printf ("Plan Stack for thread #%u: tid = 0x%4.4llx, stack_size = %d\n", GetIndexID(), GetID(), stack_size);
+    s->Printf ("Plan Stack for thread #%u: tid = 0x%4.4" PRIx64 ", stack_size = %d\n", GetIndexID(), GetID(), stack_size);
     for (i = stack_size - 1; i >= 0; i--)
     {
         s->IndentMore();
@@ -1431,7 +1522,7 @@ Thread::ReturnFromFrameWithIndex (uint32_t frame_idx, lldb::ValueObjectSP return
     
     if (!frame_sp)
     {
-        return_error.SetErrorStringWithFormat("Could not find frame with index %d in thread 0x%llx.", frame_idx, GetID());
+        return_error.SetErrorStringWithFormat("Could not find frame with index %d in thread 0x%" PRIx64 ".", frame_idx, GetID());
     }
     
     return ReturnFromFrame(frame_sp, return_value_sp, broadcast);
@@ -1451,6 +1542,11 @@ Thread::ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return
     Thread *thread = frame_sp->GetThread().get();
     uint32_t older_frame_idx = frame_sp->GetFrameIndex() + 1;
     StackFrameSP older_frame_sp = thread->GetStackFrameAtIndex(older_frame_idx);
+    if (!older_frame_sp)
+    {
+        return_error.SetErrorString("No older frame to return to.");
+        return return_error;
+    }
     
     if (return_value_sp)
     {    
@@ -1492,21 +1588,29 @@ Thread::ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return
     
     // Now write the return registers for the chosen frame:
     // Note, we can't use ReadAllRegisterValues->WriteAllRegisterValues, since the read & write
-    // cook their data 
-    bool copy_success = thread->GetStackFrameAtIndex(0)->GetRegisterContext()->CopyFromRegisterContext(older_frame_sp->GetRegisterContext());
-    if (copy_success)
+    // cook their data
+    
+    StackFrameSP youngest_frame_sp = thread->GetStackFrameAtIndex(0);
+    if (youngest_frame_sp)
     {
-        thread->DiscardThreadPlans(true);
-        thread->ClearStackFrames();
-        if (broadcast && EventTypeHasListeners(eBroadcastBitStackChanged))
-            BroadcastEvent(eBroadcastBitStackChanged, new ThreadEventData (this->shared_from_this()));
-        return return_error;
+        bool copy_success = youngest_frame_sp->GetRegisterContext()->CopyFromRegisterContext(older_frame_sp->GetRegisterContext());
+        if (copy_success)
+        {
+            thread->DiscardThreadPlans(true);
+            thread->ClearStackFrames();
+            if (broadcast && EventTypeHasListeners(eBroadcastBitStackChanged))
+                BroadcastEvent(eBroadcastBitStackChanged, new ThreadEventData (this->shared_from_this()));
+        }
+        else
+        {
+            return_error.SetErrorString("Could not reset register values.");
+        }
     }
     else
     {
-        return_error.SetErrorString("Could not reset register values.");
-        return return_error;
+        return_error.SetErrorString("Returned past top frame.");
     }
+    return return_error;
 }
 
 void
@@ -1561,14 +1665,16 @@ Thread::StopReasonAsCString (lldb::StopReason reason)
 {
     switch (reason)
     {
-    case eStopReasonInvalid:      return "invalid";
-    case eStopReasonNone:         return "none";
-    case eStopReasonTrace:        return "trace";
-    case eStopReasonBreakpoint:   return "breakpoint";
-    case eStopReasonWatchpoint:   return "watchpoint";
-    case eStopReasonSignal:       return "signal";
-    case eStopReasonException:    return "exception";
-    case eStopReasonPlanComplete: return "plan complete";
+    case eStopReasonInvalid:       return "invalid";
+    case eStopReasonNone:          return "none";
+    case eStopReasonTrace:         return "trace";
+    case eStopReasonBreakpoint:    return "breakpoint";
+    case eStopReasonWatchpoint:    return "watchpoint";
+    case eStopReasonSignal:        return "signal";
+    case eStopReasonException:     return "exception";
+    case eStopReasonExec:          return "exec";
+    case eStopReasonPlanComplete:  return "plan complete";
+    case eStopReasonThreadExiting: return "thread exiting";
     }
 
 
@@ -1682,6 +1788,8 @@ Thread::ResetFrameZeroRegisters (lldb::DataBufferSP register_data_sp)
         // Clear out all stack frames as our world just changed.
         ClearStackFrames();
         frame_sp->GetRegisterContext()->InvalidateIfNeeded(true);
+        if (m_unwinder_ap.get())
+            m_unwinder_ap->Clear();
 
         return ret;
     }
@@ -1721,7 +1829,7 @@ Thread::Flush ()
     m_reg_context_sp.reset();
 }
 
-const bool
+bool
 Thread::IsStillAtLastBreakpointHit ()
 {
     // If we are currently stopped at a breakpoint, always return that stopinfo and don't reset it.

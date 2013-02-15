@@ -40,11 +40,11 @@ public:
   /// Check if the shared library exports a symbol with the specified name.
   /// If so, return a SharedLibraryAtom which represents that exported
   /// symbol.  Otherwise return nullptr.
-  virtual const SharedLibraryAtom *exports(StringRef name, 
-                                          bool dataSymbolOnly) const;
+  virtual const SharedLibraryAtom *exports(StringRef name,
+                                           bool dataSymbolOnly) const = 0;
 protected:
   /// only subclasses of SharedLibraryFile can be instantiated 
-  SharedLibraryFile(StringRef path) : File(path) { }
+  SharedLibraryFile(StringRef path) : File(path) {}
 };
 
 } // namespace lld

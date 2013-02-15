@@ -238,7 +238,8 @@ public:
     {
         eBroadcastBitBreakpointChanged  = (1 << 0),
         eBroadcastBitModulesLoaded      = (1 << 1),
-        eBroadcastBitModulesUnloaded    = (1 << 2)
+        eBroadcastBitModulesUnloaded    = (1 << 2),
+        eBroadcastBitWatchpointChanged  = (1 << 3)
     };
 
     //------------------------------------------------------------------
@@ -560,6 +561,9 @@ public:
     lldb::SBTypeList
     FindTypes (const char* type);
 
+    lldb::SBType
+    GetBasicType(lldb::BasicType type);
+
     lldb::SBSourceManager
     GetSourceManager ();
 
@@ -581,6 +585,21 @@ public:
     lldb::SBValueList
     FindGlobalVariables (const char *name, 
                          uint32_t max_matches);
+
+     %feature("docstring", "
+    //------------------------------------------------------------------
+    /// Find the first global (or static) variable by name.
+    ///
+    /// @param[in] name
+    ///     The name of the global or static variable we are looking
+    ///     for.
+    ///
+    /// @return
+    ///     An SBValue that gets filled in with the found variable (if any).
+    //------------------------------------------------------------------
+    ") FindFirstGlobalVariable;
+    lldb::SBValue
+    FindFirstGlobalVariable (const char* name);
 
     void
     Clear ();
@@ -687,9 +706,17 @@ public:
     lldb::SBInstructionList
     GetInstructions (lldb::SBAddress base_addr, const void *buf, size_t size);
     
+    lldb::SBSymbolContextList
+    FindSymbols (const char *name, lldb::SymbolType type = eSymbolTypeAny);
+
     bool
     GetDescription (lldb::SBStream &description, lldb::DescriptionLevel description_level);
     
+    lldb::addr_t
+    GetStackRedZoneSize();
+
+    lldb::SBValue
+    EvaluateExpression (const char *expr, const lldb::SBExpressionOptions &options);
     %pythoncode %{
         class modules_access(object):
             '''A helper object that will lazily hand out lldb.SBModule objects for a target when supplied an index, or by full or partial path.'''

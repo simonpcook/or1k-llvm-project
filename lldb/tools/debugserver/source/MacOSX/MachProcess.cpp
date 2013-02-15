@@ -83,6 +83,11 @@ MachProcess::MachProcess() :
     m_stdio_mutex       (PTHREAD_MUTEX_RECURSIVE),
     m_stdout_data       (),
     m_thread_actions    (),
+    m_profile_enabled   (false),
+    m_profile_interval_usec (0),
+    m_profile_thread    (0),
+    m_profile_data_mutex(PTHREAD_MUTEX_RECURSIVE),
+    m_profile_data      (),
     m_thread_list        (),
     m_exception_messages (),
     m_exception_messages_mutex (PTHREAD_MUTEX_RECURSIVE),
@@ -286,6 +291,11 @@ MachProcess::Clear()
         PTHREAD_MUTEX_LOCKER(locker, m_exception_messages_mutex);
         m_exception_messages.clear();
     }
+    if (m_profile_thread)
+    {
+        pthread_join(m_profile_thread, NULL);
+        m_profile_thread = NULL;
+    }
 }
 
 
@@ -295,6 +305,26 @@ MachProcess::StartSTDIOThread()
     DNBLogThreadedIf(LOG_PROCESS, "MachProcess::%s ( )", __FUNCTION__);
     // Create the thread that watches for the child STDIO
     return ::pthread_create (&m_stdio_thread, NULL, MachProcess::STDIOThread, this) == 0;
+}
+
+void
+MachProcess::SetEnableAsyncProfiling(bool enable, uint64_t interval_usec)
+{
+    m_profile_enabled = enable;
+    m_profile_interval_usec = interval_usec;
+    
+    if (m_profile_enabled && (m_profile_thread == 0))
+    {
+        StartProfileThread();
+    }
+}
+
+bool
+MachProcess::StartProfileThread()
+{
+    DNBLogThreadedIf(LOG_PROCESS, "MachProcess::%s ( )", __FUNCTION__);
+    // Create the thread that profiles the inferior and reports back if enabled
+    return ::pthread_create (&m_profile_thread, NULL, MachProcess::ProfileThread, this) == 0;
 }
 
 
@@ -334,6 +364,7 @@ MachProcess::Kill (const struct timespec *timeout_abstime)
     nub_state_t state = DoSIGSTOP(true, false, NULL);
     DNBLogThreadedIf(LOG_PROCESS, "MachProcess::Kill() DoSIGSTOP() state = %s", DNBStateAsString(state));
     errno = 0;
+    DNBLog ("Sending ptrace PT_KILL to terminate inferior process.");
     ::ptrace (PT_KILL, m_pid, 0, 0);
     DNBError err;
     err.SetErrorToErrno();
@@ -1311,6 +1342,77 @@ MachProcess::STDIOThread(void *arg)
     return NULL;
 }
 
+
+void
+MachProcess::SignalAsyncProfileData (const char *info)
+{
+    DNBLogThreadedIf(LOG_PROCESS, "MachProcess::%s (%s) ...", __FUNCTION__, info);
+    PTHREAD_MUTEX_LOCKER (locker, m_profile_data_mutex);
+    m_profile_data.push_back(info);
+    m_events.SetEvents(eEventProfileDataAvailable);
+    
+    // Wait for the event bit to reset if a reset ACK is requested
+    m_events.WaitForResetAck(eEventProfileDataAvailable);
+}
+
+
+size_t
+MachProcess::GetAsyncProfileData (char *buf, size_t buf_size)
+{
+    DNBLogThreadedIf(LOG_PROCESS, "MachProcess::%s (&%p[%llu]) ...", __FUNCTION__, buf, (uint64_t)buf_size);
+    PTHREAD_MUTEX_LOCKER (locker, m_profile_data_mutex);
+    if (m_profile_data.empty())
+        return 0;
+    
+    size_t bytes_available = m_profile_data.front().size();
+    if (bytes_available > 0)
+    {
+        if (bytes_available > buf_size)
+        {
+            memcpy(buf, m_profile_data.front().data(), buf_size);
+            m_profile_data.front().erase(0, buf_size);
+            bytes_available = buf_size;
+        }
+        else
+        {
+            memcpy(buf, m_profile_data.front().data(), bytes_available);
+            m_profile_data.erase(m_profile_data.begin());
+        }
+    }
+    return bytes_available;
+}
+
+
+void *
+MachProcess::ProfileThread(void *arg)
+{
+    MachProcess *proc = (MachProcess*) arg;
+    DNBLogThreadedIf(LOG_PROCESS, "MachProcess::%s ( arg = %p ) thread starting...", __FUNCTION__, arg);
+
+    while (proc->IsProfilingEnabled())
+    {
+        nub_state_t state = proc->GetState();
+        if (state == eStateRunning)
+        {
+            std::string data = proc->Task().GetProfileData();
+            if (!data.empty())
+            {
+                proc->SignalAsyncProfileData(data.c_str());
+            }
+        }
+        else if ((state == eStateUnloaded) || (state == eStateDetached) || (state == eStateUnloaded))
+        {
+            // Done. Get out of this thread.
+            break;
+        }
+        
+        // A simple way to set up the profile interval. We can also use select() or dispatch timer source if necessary.
+        usleep(proc->ProfileInterval());
+    }
+    return NULL;
+}
+
+
 pid_t
 MachProcess::AttachForDebug (pid_t pid, char *err_str, size_t err_len)
 {
@@ -1589,6 +1691,7 @@ MachProcess::LaunchForDebug
         {
             if (launch_err.AsString() == NULL)
                 launch_err.SetErrorString("unable to start the exception thread");
+            DNBLog ("Could not get inferior's Mach exception port, sending ptrace PT_KILL and exiting.");
             ::ptrace (PT_KILL, m_pid, 0, 0);
             m_pid = INVALID_NUB_PROCESS;
             return INVALID_NUB_PROCESS;
@@ -1719,7 +1822,7 @@ MachProcess::PosixSpawnChildForPTraceDebugging
             }
         }
 
-		// if no_stdio or std paths not supplied, then route to "/dev/null".
+        // if no_stdio or std paths not supplied, then route to "/dev/null".
         if (no_stdio || stdin_path == NULL || stdin_path[0] == '\0')
             stdin_path = "/dev/null";
         if (no_stdio || stdout_path == NULL || stdout_path[0] == '\0')
@@ -1929,6 +2032,7 @@ MachProcess::SBLaunchForDebug (const char *path, char const *argv[], char const 
         {
             if (launch_err.AsString() == NULL)
                 launch_err.SetErrorString("unable to start the exception thread");
+            DNBLog ("Could not get inferior's Mach exception port, sending ptrace PT_KILL and exiting.");
             ::ptrace (PT_KILL, m_pid, 0, 0);
             m_pid = INVALID_NUB_PROCESS;
             return INVALID_NUB_PROCESS;

@@ -7,16 +7,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Basic/SourceManager.h"
-#include "clang/Basic/FileManager.h"
-#include "clang/Basic/Diagnostic.h"
-#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/AST/CommentLexer.h"
 #include "clang/AST/CommentCommandTraits.h"
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticOptions.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/STLExtras.h"
-#include <vector>
-
 #include "gtest/gtest.h"
+#include <vector>
 
 using namespace llvm;
 using namespace clang;
@@ -1662,7 +1661,8 @@ TEST_F(CommentLexerTest, HTMLCharacterReferences16) {
   const char *Sources[] = {
     "// &#61;",
     "// &#x3d;",
-    "// &#X3d;"
+    "// &#X3d;",
+    "// &#X3D;"
   };
 
   for (size_t i = 0, e = array_lengthof(Sources); i != e; i++) {

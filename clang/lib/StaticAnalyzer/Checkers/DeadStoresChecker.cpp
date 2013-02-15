@@ -14,6 +14,7 @@
 
 #include "ClangSACheckers.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Analysis/Analyses/LiveVariables.h"
@@ -125,7 +126,7 @@ class DeadStoreObs : public LiveVariables::Observer {
   llvm::SmallPtrSet<const VarDecl*, 20> Escaped;
   OwningPtr<ReachableCode> reachableCode;
   const CFGBlock *currentBlock;
-  llvm::OwningPtr<llvm::DenseSet<const VarDecl *> > InEH;
+  OwningPtr<llvm::DenseSet<const VarDecl *> > InEH;
 
   enum DeadStoreKind { Standard, Enclosing, DeadIncrement, DeadInit };
 

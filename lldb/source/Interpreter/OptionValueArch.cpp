@@ -7,14 +7,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Interpreter/OptionValueArch.h"
 
 // C Includes
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
-#include "lldb/Core/FormatManager.h"
 #include "lldb/Core/State.h"
+#include "lldb/DataFormatters/FormatManager.h"
 #include "lldb/Interpreter/Args.h"
 #include "lldb/Interpreter/CommandCompletions.h"
 

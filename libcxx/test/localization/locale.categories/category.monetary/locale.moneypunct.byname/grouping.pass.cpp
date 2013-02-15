@@ -6,6 +6,8 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// XFAIL: apple-darwin
 
 // <locale>
 
@@ -17,7 +19,7 @@
 #include <limits>
 #include <cassert>
 
-#include "../../../../platform_support.h" // locale name macros
+#include "platform_support.h" // locale name macros
 
 class Fnf
     : public std::moneypunct_byname<char, false>

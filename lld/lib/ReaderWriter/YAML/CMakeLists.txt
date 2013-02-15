@@ -1,5 +1,7 @@
 add_lld_library(lldYAML
-  YamlKeyValues.cpp
-  ReaderYAML.cpp
-  WriterYAML.cpp
+  ReaderWriterYAML.cpp
+  )
+
+target_link_libraries(lldYAML
+  lldReaderWriter
   )

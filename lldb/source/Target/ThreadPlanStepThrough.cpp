@@ -61,11 +61,12 @@ ThreadPlanStepThrough::ThreadPlanStepThrough (Thread &thread, StackID &m_stack_i
             {
                 return_bp->SetThreadID(m_thread.GetID());
                 m_backstop_bkpt_id = return_bp->GetID();
+                return_bp->SetBreakpointKind("step-through-backstop");
             }
             LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
             if (log)
             {
-                log->Printf ("Setting backstop breakpoint %d at address: 0x%llx", m_backstop_bkpt_id, m_backstop_addr);
+                log->Printf ("Setting backstop breakpoint %d at address: 0x%" PRIx64, m_backstop_bkpt_id, m_backstop_addr);
             }
         }
     }
@@ -103,11 +104,11 @@ ThreadPlanStepThrough::LookForPlanToStepThroughFromCurrentPC()
         {
             StreamString s;
             m_sub_plan_sp->GetDescription(&s, lldb::eDescriptionLevelFull);
-            log->Printf ("Found step through plan from 0x%llx: %s", current_address, s.GetData());
+            log->Printf ("Found step through plan from 0x%" PRIx64 ": %s", current_address, s.GetData());
         }
         else
         {
-            log->Printf ("Couldn't find step through plan from address 0x%llx.", current_address);
+            log->Printf ("Couldn't find step through plan from address 0x%" PRIx64 ".", current_address);
         }
     }
 }
@@ -138,7 +139,7 @@ ThreadPlanStepThrough::ValidatePlan (Stream *error)
 }
 
 bool
-ThreadPlanStepThrough::PlanExplainsStop ()
+ThreadPlanStepThrough::PlanExplainsStop (Event *event_ptr)
 {
     // If we have a sub-plan, it will have been asked first if we explain the stop, and
     // we won't get asked.  The only time we would be the one directly asked this question

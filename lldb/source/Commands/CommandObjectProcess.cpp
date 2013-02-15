@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "CommandObjectProcess.h"
 
 // C Includes
@@ -44,7 +46,8 @@ public:
         CommandObjectParsed (interpreter,
                              "process launch",
                              "Launch the executable in the debugger.",
-                             NULL),
+                             NULL,
+                             eFlagRequiresTarget),
         m_options (interpreter)
     {
         CommandArgumentEntry arg;
@@ -66,7 +69,7 @@ public:
     {
     }
 
-    int
+    virtual int
     HandleArgumentCompletion (Args &input,
                               int &cursor_index,
                               int &cursor_char_position,
@@ -109,13 +112,6 @@ protected:
         Debugger &debugger = m_interpreter.GetDebugger();
         Target *target = debugger.GetSelectedTarget().get();
         Error error;
-
-        if (target == NULL)
-        {
-            result.AppendError ("invalid target, create a debug target using the 'target create' command");
-            result.SetStatus (eReturnStatusFailed);
-            return false;
-        }
         // If our listener is NULL, users aren't allows to launch
         char filename[PATH_MAX];
         const Module *exe_module = target->GetExecutableModulePointer();
@@ -128,7 +124,7 @@ protected:
         }
         
         StateType state = eStateInvalid;
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        Process *process = m_exe_ctx.GetProcessPtr();
         if (process)
         {
             state = process->GetState();
@@ -203,6 +199,11 @@ protected:
         if (environment.GetArgumentCount() > 0)
             m_options.launch_info.GetEnvironmentEntries ().AppendArguments (environment);
 
+        // Get the value of synchronous execution here.  If you wait till after you have started to
+        // run, then you could have hit a breakpoint, whose command might switch the value, and
+        // then you'll pick up that incorrect value.
+        bool synchronous_execution = m_interpreter.GetSynchronous ();
+
         // Finalize the file actions, and if none were given, default to opening
         // up a pseudo terminal
         const bool default_to_use_pty = true;
@@ -250,7 +251,7 @@ protected:
         {
             const char *archname = exe_module->GetArchitecture().GetArchitectureName();
 
-            result.AppendMessageWithFormat ("Process %llu launched: '%s' (%s)\n", process->GetID(), filename, archname);
+            result.AppendMessageWithFormat ("Process %" PRIu64 " launched: '%s' (%s)\n", process->GetID(), filename, archname);
             result.SetDidChangeProcessState (true);
             if (m_options.launch_info.GetFlags().Test(eLaunchFlagStopAtEntry) == false)
             {
@@ -262,7 +263,6 @@ protected:
                     error = process->Resume();
                     if (error.Success())
                     {
-                        bool synchronous_execution = m_interpreter.GetSynchronous ();
                         if (synchronous_execution)
                         {
                             state = process->WaitForProcessToStop (NULL);
@@ -355,7 +355,7 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
             bool success = false;
             switch (short_option)
             {
@@ -450,10 +450,10 @@ public:
                         match_info.SetNameMatchType(eNameMatchStartsWith);
                     }
                     platform_sp->FindProcesses (match_info, process_infos);
-                    const uint32_t num_matches = process_infos.GetSize();
+                    const size_t num_matches = process_infos.GetSize();
                     if (num_matches > 0)
                     {
-                        for (uint32_t i=0; i<num_matches; ++i)
+                        for (size_t i=0; i<num_matches; ++i)
                         {
                             matches.AppendString (process_infos.GetProcessNameAtIndex(i), 
                                                   process_infos.GetProcessNameLengthAtIndex(i));
@@ -503,14 +503,14 @@ protected:
         // and the target actually stopping.  So even if the interpreter is set to be asynchronous, we wait for the stop
         // ourselves here.
         
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        Process *process = m_exe_ctx.GetProcessPtr();
         StateType state = eStateInvalid;
         if (process)
         {
             state = process->GetState();
             if (process->IsAlive() && state != eStateConnected)
             {
-                result.AppendErrorWithFormat ("Process %llu is currently being debugged, kill the process before attaching.\n", 
+                result.AppendErrorWithFormat ("Process %" PRIu64 " is currently being debugged, kill the process before attaching.\n",
                                               process->GetID());
                 result.SetStatus (eReturnStatusFailed);
                 return false;
@@ -597,7 +597,7 @@ protected:
 
                     if (state == eStateStopped)
                     {
-                        result.AppendMessageWithFormat ("Process %llu %s\n", process->GetID(), StateAsCString (state));
+                        result.AppendMessageWithFormat ("Process %" PRIu64 " %s\n", process->GetID(), StateAsCString (state));
                         result.SetStatus (eReturnStatusSuccessFinishNoResult);
                     }
                     else
@@ -640,7 +640,7 @@ protected:
             {
                 result.AppendMessageWithFormat ("Architecture set to: %s.\n", target->GetArchitecture().GetTriple().getTriple().c_str());
             }
-            else if (old_arch_spec != target->GetArchitecture())
+            else if (!old_arch_spec.IsExactMatch(target->GetArchitecture()))
             {
                 result.AppendWarningWithFormat("Architecture changed from %s to %s.\n", 
                                                old_arch_spec.GetTriple().getTriple().c_str(),
@@ -684,7 +684,10 @@ public:
                              "process continue",
                              "Continue execution of all threads in the current process.",
                              "process continue",
-                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused),
+                             eFlagRequiresProcess       |
+                             eFlagTryTargetAPILock      |
+                             eFlagProcessMustBeLaunched |
+                             eFlagProcessMustBePaused   ),
         m_options(interpreter)
     {
     }
@@ -715,7 +718,7 @@ protected:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
             bool success = false;
             switch (short_option)
             {
@@ -752,19 +755,10 @@ protected:
     };
     
     bool
-    DoExecute (Args& command,
-             CommandReturnObject &result)
+    DoExecute (Args& command, CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        Process *process = m_exe_ctx.GetProcessPtr();
         bool synchronous_execution = m_interpreter.GetSynchronous ();
-
-        if (process == NULL)
-        {
-            result.AppendError ("no process to continue");
-            result.SetStatus (eReturnStatusFailed);
-            return false;
-         }
-
         StateType state = process->GetState();
         if (state == eStateStopped)
         {
@@ -783,12 +777,12 @@ protected:
                     StopInfoSP stop_info_sp = sel_thread_sp->GetStopInfo();
                     if (stop_info_sp && stop_info_sp->GetStopReason() == eStopReasonBreakpoint)
                     {
-                        uint64_t bp_site_id = stop_info_sp->GetValue();
+                        lldb::break_id_t bp_site_id = (lldb::break_id_t)stop_info_sp->GetValue();
                         BreakpointSiteSP bp_site_sp(process->GetBreakpointSiteList().FindByID(bp_site_id));
                         if (bp_site_sp)
                         {
-                            uint32_t num_owners = bp_site_sp->GetNumberOfOwners();
-                            for (uint32_t i = 0; i < num_owners; i++)
+                            const size_t num_owners = bp_site_sp->GetNumberOfOwners();
+                            for (size_t i = 0; i < num_owners; i++)
                             {
                                 Breakpoint &bp_ref = bp_site_sp->GetOwnerAtIndex(i)->GetBreakpoint();
                                 if (!bp_ref.IsInternal())
@@ -815,13 +809,13 @@ protected:
             Error error(process->Resume());
             if (error.Success())
             {
-                result.AppendMessageWithFormat ("Process %llu resuming\n", process->GetID());
+                result.AppendMessageWithFormat ("Process %" PRIu64 " resuming\n", process->GetID());
                 if (synchronous_execution)
                 {
                     state = process->WaitForProcessToStop (NULL);
 
                     result.SetDidChangeProcessState (true);
-                    result.AppendMessageWithFormat ("Process %llu %s\n", process->GetID(), StateAsCString (state));
+                    result.AppendMessageWithFormat ("Process %" PRIu64 " %s\n", process->GetID(), StateAsCString (state));
                     result.SetStatus (eReturnStatusSuccessFinishNoResult);
                 }
                 else
@@ -876,6 +870,8 @@ public:
                              "process detach",
                              "Detach from the current process being debugged.",
                              "process detach",
+                             eFlagRequiresProcess      |
+                             eFlagTryTargetAPILock     |
                              eFlagProcessMustBeLaunched)
     {
     }
@@ -886,18 +882,10 @@ public:
 
 protected:
     bool
-    DoExecute (Args& command,
-             CommandReturnObject &result)
+    DoExecute (Args& command, CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
-        if (process == NULL)
-        {
-            result.AppendError ("must have a valid process in order to detach");
-            result.SetStatus (eReturnStatusFailed);
-            return false;
-        }
-
-        result.AppendMessageWithFormat ("Detaching from process %llu\n", process->GetID());
+        Process *process = m_exe_ctx.GetProcessPtr();
+        result.AppendMessageWithFormat ("Detaching from process %" PRIu64 "\n", process->GetID());
         Error error (process->Detach());
         if (error.Success())
         {
@@ -941,7 +929,7 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
             
             switch (short_option)
             {
@@ -1006,12 +994,12 @@ protected:
         
         TargetSP target_sp (m_interpreter.GetDebugger().GetSelectedTarget());
         Error error;        
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        Process *process = m_exe_ctx.GetProcessPtr();
         if (process)
         {
             if (process->IsAlive())
             {
-                result.AppendErrorWithFormat ("Process %llu is currently being debugged, kill the process before connecting.\n", 
+                result.AppendErrorWithFormat ("Process %" PRIu64 " is currently being debugged, kill the process before connecting.\n",
                                               process->GetID());
                 result.SetStatus (eReturnStatusFailed);
                 return false;
@@ -1061,7 +1049,7 @@ protected:
             else
             {
                 result.AppendErrorWithFormat ("Unable to find process plug-in for remote URL '%s'.\nPlease specify a process plug-in name with the --plugin option, or specify an object file using the \"file\" command.\n", 
-                                              m_cmd_name.c_str());
+                                              remote_url);
                 result.SetStatus (eReturnStatusFailed);
             }
         }
@@ -1132,7 +1120,10 @@ public:
                              "process load",
                              "Load a shared library into the current process.",
                              "process load <filename> [<filename> ...]",
-                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused)
+                             eFlagRequiresProcess       |
+                             eFlagTryTargetAPILock      |
+                             eFlagProcessMustBeLaunched |
+                             eFlagProcessMustBePaused   )
     {
     }
 
@@ -1145,15 +1136,9 @@ protected:
     DoExecute (Args& command,
              CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
-        if (process == NULL)
-        {
-            result.AppendError ("must have a valid process in order to load a shared library");
-            result.SetStatus (eReturnStatusFailed);
-            return false;
-        }
+        Process *process = m_exe_ctx.GetProcessPtr();
 
-        const uint32_t argc = command.GetArgumentCount();
+        const size_t argc = command.GetArgumentCount();
         
         for (uint32_t i=0; i<argc; ++i)
         {
@@ -1192,7 +1177,10 @@ public:
                              "process unload",
                              "Unload a shared library from the current process using the index returned by a previous call to \"process load\".",
                              "process unload <index>",
-                             eFlagProcessMustBeLaunched | eFlagProcessMustBePaused)
+                             eFlagRequiresProcess       |
+                             eFlagTryTargetAPILock      |
+                             eFlagProcessMustBeLaunched |
+                             eFlagProcessMustBePaused   )
     {
     }
 
@@ -1205,15 +1193,9 @@ protected:
     DoExecute (Args& command,
              CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
-        if (process == NULL)
-        {
-            result.AppendError ("must have a valid process in order to load a shared library");
-            result.SetStatus (eReturnStatusFailed);
-            return false;
-        }
+        Process *process = m_exe_ctx.GetProcessPtr();
 
-        const uint32_t argc = command.GetArgumentCount();
+        const size_t argc = command.GetArgumentCount();
         
         for (uint32_t i=0; i<argc; ++i)
         {
@@ -1258,7 +1240,8 @@ public:
         CommandObjectParsed (interpreter,
                              "process signal",
                              "Send a UNIX signal to the current process being debugged.",
-                             NULL)
+                             NULL,
+                             eFlagRequiresProcess | eFlagTryTargetAPILock)
     {
         CommandArgumentEntry arg;
         CommandArgumentData signal_arg;
@@ -1283,13 +1266,7 @@ protected:
     DoExecute (Args& command,
              CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
-        if (process == NULL)
-        {
-            result.AppendError ("no process to signal");
-            result.SetStatus (eReturnStatusFailed);
-            return false;
-        }
+        Process *process = m_exe_ctx.GetProcessPtr();
 
         if (command.GetArgumentCount() == 1)
         {
@@ -1346,6 +1323,8 @@ public:
                              "process interrupt",
                              "Interrupt the current process being debugged.",
                              "process interrupt",
+                             eFlagRequiresProcess      |
+                             eFlagTryTargetAPILock     |
                              eFlagProcessMustBeLaunched)
     {
     }
@@ -1359,7 +1338,7 @@ protected:
     DoExecute (Args& command,
              CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        Process *process = m_exe_ctx.GetProcessPtr();
         if (process == NULL)
         {
             result.AppendError ("no process to halt");
@@ -1409,6 +1388,8 @@ public:
                              "process kill",
                              "Terminate the current process being debugged.",
                              "process kill",
+                             eFlagRequiresProcess      |
+                             eFlagTryTargetAPILock     |
                              eFlagProcessMustBeLaunched)
     {
     }
@@ -1422,7 +1403,7 @@ protected:
     DoExecute (Args& command,
              CommandReturnObject &result)
     {
-        Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+        Process *process = m_exe_ctx.GetProcessPtr();
         if (process == NULL)
         {
             result.AppendError ("no process to kill");
@@ -1467,7 +1448,7 @@ public:
                              "process status",
                              "Show the current status and location of executing process.",
                              "process status",
-                             0)
+                             eFlagRequiresProcess | eFlagTryTargetAPILock)
     {
     }
 
@@ -1481,27 +1462,18 @@ public:
     {
         Stream &strm = result.GetOutputStream();
         result.SetStatus (eReturnStatusSuccessFinishNoResult);
-        ExecutionContext exe_ctx(m_interpreter.GetExecutionContext());
-        Process *process = exe_ctx.GetProcessPtr();
-        if (process)
-        {
-            const bool only_threads_with_stop_reason = true;
-            const uint32_t start_frame = 0;
-            const uint32_t num_frames = 1;
-            const uint32_t num_frames_with_source = 1;
-            process->GetStatus(strm);
-            process->GetThreadStatus (strm, 
-                                      only_threads_with_stop_reason, 
-                                      start_frame,
-                                      num_frames,
-                                      num_frames_with_source);
-            
-        }
-        else
-        {
-            result.AppendError ("No process.");
-            result.SetStatus (eReturnStatusFailed);
-        }
+        // No need to check "process" for validity as eFlagRequiresProcess ensures it is valid        
+        Process *process = m_exe_ctx.GetProcessPtr();
+        const bool only_threads_with_stop_reason = true;
+        const uint32_t start_frame = 0;
+        const uint32_t num_frames = 1;
+        const uint32_t num_frames_with_source = 1;
+        process->GetStatus(strm);
+        process->GetThreadStatus (strm, 
+                                  only_threads_with_stop_reason, 
+                                  start_frame,
+                                  num_frames,
+                                  num_frames_with_source);
         return result.Succeeded();
     }
 };
@@ -1533,7 +1505,7 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
             
             switch (short_option)
             {

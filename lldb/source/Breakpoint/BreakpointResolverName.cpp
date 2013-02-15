@@ -22,6 +22,7 @@
 #include "lldb/Symbol/Function.h"
 #include "lldb/Symbol/Symbol.h"
 #include "lldb/Symbol/SymbolContext.h"
+#include "lldb/Target/ObjCLanguageRuntime.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -54,7 +55,12 @@ BreakpointResolverName::BreakpointResolverName
     }
     else
     {
-        m_func_names.push_back(ConstString(func_name));
+        const bool append = true;
+        ObjCLanguageRuntime::MethodName objc_name(func_name, false);
+        if (objc_name.IsValid(false))
+            objc_name.GetFullNames(m_func_names, append);
+        else
+            m_func_names.push_back(ConstString(func_name));
     }
 }
 
@@ -68,9 +74,14 @@ BreakpointResolverName::BreakpointResolverName (Breakpoint *bkpt,
     m_match_type (Breakpoint::Exact),
     m_skip_prologue (skip_prologue)
 {
+    const bool append = true;
     for (size_t i = 0; i < num_names; i++)
     {
-        m_func_names.push_back (ConstString (names[i]));
+        ObjCLanguageRuntime::MethodName objc_name(names[i], false);
+        if (objc_name.IsValid(false))
+            objc_name.GetFullNames(m_func_names, append);
+        else
+            m_func_names.push_back (ConstString (names[i]));
     }
 }
 
@@ -84,10 +95,14 @@ BreakpointResolverName::BreakpointResolverName (Breakpoint *bkpt,
     m_skip_prologue (skip_prologue)
 {
     size_t num_names = names.size();
-    
+    const bool append = true;    
     for (size_t i = 0; i < num_names; i++)
     {
-        m_func_names.push_back (ConstString (names[i].c_str()));
+        ObjCLanguageRuntime::MethodName objc_name(names[i].c_str(), false);
+        if (objc_name.IsValid(false))
+            objc_name.GetFullNames(m_func_names, append);
+        else
+            m_func_names.push_back (ConstString (names[i].c_str()));
     }
 }
 
@@ -170,20 +185,19 @@ BreakpointResolverName::SearchCallback
                 size_t num_names = m_func_names.size();
                 for (int j = 0; j < num_names; j++)
                 {
-                    uint32_t num_functions = context.module_sp->FindFunctions (m_func_names[j], 
-                                                                               NULL,
-                                                                               m_func_name_type_mask, 
-                                                                               include_symbols,
-                                                                               include_inlines, 
-                                                                               append, 
-                                                                               func_list);
+                    size_t num_functions = context.module_sp->FindFunctions (m_func_names[j],
+                                                                             NULL,
+                                                                             m_func_name_type_mask,
+                                                                             include_symbols,
+                                                                             include_inlines,
+                                                                             append,
+                                                                             func_list);
                     // If the search filter specifies a Compilation Unit, then we don't need to bother to look in plain
                     // symbols, since all the ones from a set compilation unit will have been found above already.
                     
                     if (num_functions == 0 && !filter_by_cu)
                     {
-                        if (m_func_name_type_mask & (eFunctionNameTypeBase | eFunctionNameTypeFull | eFunctionNameTypeAuto))
-                            context.module_sp->FindSymbolsWithNameAndType (m_func_names[j], eSymbolTypeCode, sym_list);
+                        context.module_sp->FindFunctionSymbols (m_func_names[j], m_func_name_type_mask, sym_list);
                     }
                 }
             }

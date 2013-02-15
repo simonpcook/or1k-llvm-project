@@ -8,14 +8,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/Core/SymbolTable.h"
-#include "lld/Core/Atom.h"
 #include "lld/Core/AbsoluteAtom.h"
+#include "lld/Core/Atom.h"
 #include "lld/Core/DefinedAtom.h"
 #include "lld/Core/File.h"
 #include "lld/Core/InputFiles.h"
+#include "lld/Core/LinkerOptions.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Resolver.h"
 #include "lld/Core/SharedLibraryAtom.h"
+#include "lld/Core/TargetInfo.h"
 #include "lld/Core/UndefinedAtom.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -29,10 +31,7 @@
 #include <vector>
 
 namespace lld {
-
-SymbolTable::SymbolTable(ResolverOptions &opts)
-  : _options(opts) {
-}
+SymbolTable::SymbolTable(const TargetInfo &ti) : _targetInfo(ti) {}
 
 void SymbolTable::add(const UndefinedAtom &atom) {
   this->addByName(atom);
@@ -47,11 +46,16 @@ void SymbolTable::add(const AbsoluteAtom &atom) {
 }
 
 void SymbolTable::add(const DefinedAtom &atom) {
-  assert(atom.scope() != DefinedAtom::scopeTranslationUnit);
-  if ( !atom.name().empty() ) {
+  if (!atom.name().empty() && 
+      (atom.scope() != DefinedAtom::scopeTranslationUnit)) {
+    // Named atoms cannot be merged by content.
+    assert(atom.merge() != DefinedAtom::mergeByContent);
+    // Track named atoms that are not scoped to file (static).
     this->addByName(atom);
   }
-  else {
+  else if ( atom.merge() == DefinedAtom::mergeByContent ) {
+    // Named atoms cannot be merged by content.
+    assert(atom.name().empty());
     this->addByContent(atom);
   }
 }
@@ -90,7 +94,6 @@ static NameCollisionResolution collide(Atom::Definition first,
   return cases[first][second];
 }
 
-
 enum MergeResolution {
   MCR_First,
   MCR_Second,
@@ -123,9 +126,9 @@ static MergeResolution mergeSelect(DefinedAtom::Merge first,
   return mergeCases[first][second];
 }
 
-
 void SymbolTable::addByName(const Atom & newAtom) {
   StringRef name = newAtom.name();
+  assert(!name.empty());
   const Atom *existing = this->findByName(name);
   if (existing == nullptr) {
     // Name is not in symbol table yet, add it associate with this atom.
@@ -156,6 +159,15 @@ void SymbolTable::addByName(const Atom & newAtom) {
             useNew = true;
             break;
           case MCR_Error:
+            llvm::errs() << "Duplicate symbols: "
+                         << existing->name()
+                         << ":"
+                         << existing->file().path()
+                         << " and "
+                         << newAtom.name()
+                         << ":"
+                         << newAtom.file().path()
+                         << "\n";
             llvm::report_fatal_error("duplicate symbol error");
             break;
         }
@@ -171,7 +183,8 @@ void SymbolTable::addByName(const Atom & newAtom) {
             useNew = false;
           }
           else {
-            if ( _options.warnIfCoalesableAtomsHaveDifferentCanBeNull() ) {
+            if (_targetInfo.getLinkerOptions().
+                    _warnIfCoalesableAtomsHaveDifferentCanBeNull) {
               // FIXME: need diagonstics interface for writing warning messages
               llvm::errs() << "lld warning: undefined symbol "
                            << existingUndef->name()
@@ -196,7 +209,8 @@ void SymbolTable::addByName(const Atom & newAtom) {
           bool sameName = curShLib->loadName().equals(newShLib->loadName());
           if ( !sameName ) {
             useNew = false;
-            if ( _options.warnIfCoalesableAtomsHaveDifferentLoadName() ) {
+            if (_targetInfo.getLinkerOptions().
+                  _warnIfCoalesableAtomsHaveDifferentLoadName) {
               // FIXME: need diagonstics interface for writing warning messages
               llvm::errs() << "lld warning: shared library symbol "
                            << curShLib->name()
@@ -208,7 +222,8 @@ void SymbolTable::addByName(const Atom & newAtom) {
           }
           else if ( ! sameNullness ) {
             useNew = false;
-            if ( _options.warnIfCoalesableAtomsHaveDifferentCanBeNull() ) {
+            if (_targetInfo.getLinkerOptions().
+                    _warnIfCoalesableAtomsHaveDifferentCanBeNull) {
               // FIXME: need diagonstics interface for writing warning messages
               llvm::errs() << "lld warning: shared library symbol "
                            << curShLib->name()
@@ -240,7 +255,6 @@ void SymbolTable::addByName(const Atom & newAtom) {
   }
 }
 
-
 unsigned SymbolTable::AtomMappingInfo::getHashValue(const DefinedAtom * const atom) {
   unsigned hash = atom->size();
   if ( atom->contentType() != DefinedAtom::typeZeroFill ) {
@@ -254,7 +268,6 @@ unsigned SymbolTable::AtomMappingInfo::getHashValue(const DefinedAtom * const at
   //fprintf(stderr, "atom=%p, hash=0x%08X\n", atom, hash);
   return hash;
 }
-
 
 bool SymbolTable::AtomMappingInfo::isEqual(const DefinedAtom * const l,
                                          const DefinedAtom * const r) {
@@ -278,8 +291,9 @@ bool SymbolTable::AtomMappingInfo::isEqual(const DefinedAtom * const l,
   return lc.equals(rc);
 }
 
-
 void SymbolTable::addByContent(const DefinedAtom & newAtom) {
+  // Currently only read-only constants can be merged.
+  assert(newAtom.permissions() == DefinedAtom::permR__);
   AtomContentSet::iterator pos = _contentTable.find(&newAtom);
   if ( pos == _contentTable.end() ) {
     _contentTable.insert(&newAtom);
@@ -289,8 +303,6 @@ void SymbolTable::addByContent(const DefinedAtom & newAtom) {
     // New atom is not being used.  Add it to replacement table.
     _replacedAtoms[&newAtom] = existing;
 }
-
-
 
 const Atom *SymbolTable::findByName(StringRef sym) {
   NameToAtom::iterator pos = _nameTable.find(sym);
@@ -320,13 +332,13 @@ unsigned int SymbolTable::size() {
   return _nameTable.size();
 }
 
-void SymbolTable::undefines(std::vector<const Atom *> &undefs) {
+void SymbolTable::undefines(std::vector<const UndefinedAtom *> &undefs) {
   for (NameToAtom::iterator it = _nameTable.begin(),
        end = _nameTable.end(); it != end; ++it) {
     const Atom *atom = it->second;
     assert(atom != nullptr);
-    if (atom->definition() == Atom::definitionUndefined)
-      undefs.push_back(atom);
+    if (const auto undef = dyn_cast<const UndefinedAtom>(atom))
+      undefs.push_back(undef);
   }
 }
 
@@ -341,5 +353,4 @@ void SymbolTable::tentativeDefinitions(std::vector<StringRef> &names) {
     }
   }
 }
-
 } // namespace lld

@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Expression/ClangExpressionParser.h"
 
 #include "lldb/Core/ArchSpec.h"
@@ -61,8 +63,8 @@
 #else
 #include "llvm/ExecutionEngine/MCJIT.h"
 #endif
-#include "llvm/LLVMContext.h"
-#include "llvm/Module.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/DynamicLibrary.h"
@@ -241,11 +243,11 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
     if (m_compiler->getTargetOpts().Triple.find("ios") != std::string::npos)
         m_compiler->getTargetOpts().ABI = "apcs-gnu";
     
-    m_compiler->createDiagnostics(0, 0);
+    m_compiler->createDiagnostics();
     
     // Create the target instance.
     m_compiler->setTarget(TargetInfo::CreateTargetInfo(m_compiler->getDiagnostics(),
-                                                       m_compiler->getTargetOpts()));
+                                                       &m_compiler->getTargetOpts()));
     
     assert (m_compiler->hasTarget());
     
@@ -263,14 +265,14 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
         break;
     case lldb::eLanguageTypeC_plus_plus:
         m_compiler->getLangOpts().CPlusPlus = true;
-        m_compiler->getLangOpts().CPlusPlus0x = true;
+        m_compiler->getLangOpts().CPlusPlus11 = true;
         break;
     case lldb::eLanguageTypeObjC_plus_plus:
     default:
         m_compiler->getLangOpts().ObjC1 = true;
         m_compiler->getLangOpts().ObjC2 = true;
         m_compiler->getLangOpts().CPlusPlus = true;
-        m_compiler->getLangOpts().CPlusPlus0x = true;
+        m_compiler->getLangOpts().CPlusPlus11 = true;
         break;
     }
     
@@ -366,6 +368,7 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
     m_code_generator.reset(CreateLLVMCodeGen(m_compiler->getDiagnostics(),
                                              module_name,
                                              m_compiler->getCodeGenOpts(),
+                                             m_compiler->getTargetOpts(),
                                              *m_llvm_context));
 }
 
@@ -733,7 +736,7 @@ ClangExpressionParser::DisassembleFunction (Stream &stream, ExecutionContext &ex
     }
     
     if (log)
-        log->Printf("Found function, has local address 0x%llx and remote address 0x%llx", (uint64_t)func_local_addr, (uint64_t)func_remote_addr);
+        log->Printf("Found function, has local address 0x%" PRIx64 " and remote address 0x%" PRIx64, (uint64_t)func_local_addr, (uint64_t)func_remote_addr);
     
     std::pair <lldb::addr_t, lldb::addr_t> func_range;
     
@@ -747,7 +750,7 @@ ClangExpressionParser::DisassembleFunction (Stream &stream, ExecutionContext &ex
     }
     
     if (log)
-        log->Printf("Function's code range is [0x%llx+0x%llx]", func_range.first, func_range.second);
+        log->Printf("Function's code range is [0x%" PRIx64 "+0x%" PRIx64 "]", func_range.first, func_range.second);
     
     Target *target = exe_ctx.GetTargetPtr();
     if (!target)
@@ -807,7 +810,7 @@ ClangExpressionParser::DisassembleFunction (Stream &stream, ExecutionContext &ex
     
     InstructionList &instruction_list = disassembler->GetInstructionList();
     const uint32_t max_opcode_byte_size = instruction_list.GetMaxOpcocdeByteSize();
-    for (uint32_t instruction_index = 0, num_instructions = instruction_list.GetSize(); 
+    for (size_t instruction_index = 0, num_instructions = instruction_list.GetSize();
          instruction_index < num_instructions; 
          ++instruction_index)
     {

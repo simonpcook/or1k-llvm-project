@@ -46,10 +46,11 @@ public:
 
     static lldb_private::ObjectFile *
     CreateInstance(const lldb::ModuleSP &module_sp,
-                   lldb::DataBufferSP& dataSP,
+                   lldb::DataBufferSP& data_sp,
+                   lldb::offset_t data_offset,
                    const lldb_private::FileSpec* file,
-                   lldb::addr_t offset,
-                   lldb::addr_t length);
+                   lldb::offset_t file_offset,
+                   lldb::offset_t length);
 
     static lldb_private::ObjectFile *
     CreateMemoryInstance (const lldb::ModuleSP &module_sp, 
@@ -84,7 +85,7 @@ public:
     virtual bool
     IsExecutable () const;
 
-    virtual size_t
+    virtual uint32_t
     GetAddressByteSize() const;
 
     virtual lldb_private::Symtab *
@@ -119,10 +120,11 @@ public:
 
 private:
     ObjectFileELF(const lldb::ModuleSP &module_sp,
-                  lldb::DataBufferSP& dataSP,
+                  lldb::DataBufferSP& data_sp,
+                  lldb::offset_t data_offset,
                   const lldb_private::FileSpec* file,
-                  lldb::addr_t offset,
-                  lldb::addr_t length);
+                  lldb::offset_t offset,
+                  lldb::offset_t length);
 
     typedef std::vector<elf::ELFProgramHeader>  ProgramHeaderColl;
     typedef ProgramHeaderColl::iterator         ProgramHeaderCollIter;
@@ -168,11 +170,11 @@ private:
     lldb_private::Address  m_entry_point_address;
 
     /// Returns a 1 based index of the given section header.
-    unsigned
+    size_t
     SectionIndex(const SectionHeaderCollIter &I);
 
     /// Returns a 1 based index of the given section header.
-    unsigned
+    size_t
     SectionIndex(const SectionHeaderCollConstIter &I) const;
 
     /// Parses all section headers present in this object file and populates
@@ -282,7 +284,7 @@ private:
 
     static void
     DumpELFSectionHeader_sh_flags(lldb_private::Stream *s, 
-                                  elf::elf_word sh_flags);
+                                  elf::elf_xword sh_flags);
     //@}
 
     /// ELF dependent module dump routine.

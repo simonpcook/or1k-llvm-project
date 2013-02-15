@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "lld/ReaderWriter/ReaderNative.h"
+#include "lld/ReaderWriter/Reader.h"
 
 #include "lld/Core/Atom.h"
 #include "lld/Core/Error.h"
@@ -75,11 +75,17 @@ public:
   }
 
   virtual DefinedAtom::SectionChoice sectionChoice() const {
-    return (DefinedAtom::SectionChoice)(attributes().sectionChoice);
+    return (DefinedAtom::SectionChoice)(
+        attributes().sectionChoiceAndPosition >> 4);
   }
 
   virtual StringRef customSectionName() const;
 
+  virtual SectionPosition sectionPosition() const {
+     return (DefinedAtom::SectionPosition)(
+        attributes().sectionChoiceAndPosition & 0xF);
+  }
+  
   virtual DefinedAtom::DeadStripKind deadStrip() const {
      return (DefinedAtom::DeadStripKind)(attributes().deadStrip);
   }
@@ -240,11 +246,11 @@ public:
 
   /// Instantiates a File object from a native object file.  Ownership
   /// of the MemoryBuffer is transfered to the resulting File object.
-  static error_code make(std::unique_ptr<llvm::MemoryBuffer> &mb,
-                         StringRef path,
-                         std::vector<std::unique_ptr<lld::File>> &result) {
-    const uint8_t* const base =
-                       reinterpret_cast<const uint8_t*>(mb->getBufferStart());
+  static error_code make(
+      const TargetInfo &ti, std::unique_ptr<llvm::MemoryBuffer> &mb,
+      StringRef path, std::vector<std::unique_ptr<lld::File> > &result) {
+    const uint8_t *const base =
+        reinterpret_cast<const uint8_t *>(mb->getBufferStart());
     const NativeFileHeader* const header =
                        reinterpret_cast<const NativeFileHeader*>(base);
     const NativeChunk *const chunks =
@@ -258,17 +264,16 @@ public:
     if ( header->fileSize > fileSize )
       return make_error_code(native_reader_error::file_too_short);
 
-    DEBUG_WITH_TYPE("ReaderNative", llvm::dbgs() 
-                    << " Native File Header:"
-                    << " fileSize=" << header->fileSize
-                    << " chunkCount=" << header->chunkCount
-                    << "\n");
+    DEBUG_WITH_TYPE("ReaderNative",
+                    llvm::dbgs() << " Native File Header:" << " fileSize="
+                                 << header->fileSize << " chunkCount="
+                                 << header->chunkCount << "\n");
 
     // instantiate NativeFile object and add values to it as found
-    std::unique_ptr<File> file(new File(std::move(mb), path));
+    std::unique_ptr<File> file(new File(ti, std::move(mb), path));
 
     // process each chunk
-    for(uint32_t i=0; i < header->chunkCount; ++i) {
+    for (uint32_t i = 0; i < header->chunkCount; ++i) {
       error_code ec;
       const NativeChunk* chunk = &chunks[i];
       // sanity check chunk is within file
@@ -355,7 +360,7 @@ public:
     delete _sharedLibraryAtoms._arrayStart;
     delete _absoluteAtoms._arrayStart;
     delete _references.arrayStart;
-    delete _targetsTable;
+    delete [] _targetsTable;
   }
 
   virtual const atom_collection<DefinedAtom>&  defined() const {
@@ -367,13 +372,10 @@ public:
   virtual const atom_collection<SharedLibraryAtom>& sharedLibrary() const {
       return _sharedLibraryAtoms;
   }
-  virtual const atom_collection<AbsoluteAtom>& absolute() const {
-      return _absoluteAtoms;
+  virtual const atom_collection<AbsoluteAtom> &absolute() const {
+    return _absoluteAtoms;
   }
-
-  virtual void addAtom(const Atom&) {
-    assert(0 && "cannot add atoms to native .o files");
-  }
+  virtual const TargetInfo &getTargetInfo() const { return _targetInfo; }
 
 private:
   friend class NativeDefinedAtomV1;
@@ -726,25 +728,18 @@ private:
     assert(index > _targetsTableCount);
     _targetsTable[index] = newAtom;
   }
-  
-
 
   // private constructor, only called by make()
-  File(std::unique_ptr<llvm::MemoryBuffer> mb, StringRef path) :
-    lld::File(path),
-    _buffer(std::move(mb)),  // Reader now takes ownership of buffer
-    _header(nullptr),
-    _targetsTable(nullptr),
-    _targetsTableCount(0),
-    _strings(nullptr),
-    _stringsMaxOffset(0),
-    _addends(nullptr),
-    _addendsMaxIndex(0),
-    _contentStart(nullptr),
-    _contentEnd(nullptr)
-  {
-    _header = reinterpret_cast<const NativeFileHeader*>
-                                                  (_buffer->getBufferStart());
+  File(const TargetInfo &ti, std::unique_ptr<llvm::MemoryBuffer> mb,
+       StringRef path)
+      : lld::File(path),
+        _buffer(std::move(mb)), // Reader now takes ownership of buffer
+        _header(nullptr), _targetsTable(nullptr), _targetsTableCount(0),
+        _strings(nullptr), _stringsMaxOffset(0), _addends(nullptr),
+        _addendsMaxIndex(0), _contentStart(nullptr), _contentEnd(nullptr),
+        _targetInfo(ti) {
+    _header =
+        reinterpret_cast<const NativeFileHeader *>(_buffer->getBufferStart());
   }
 
   template <typename T>
@@ -803,13 +798,13 @@ private:
   const char*                     _strings;
   uint32_t                        _stringsMaxOffset;
   const Reference::Addend*        _addends;
-  uint32_t                        _addendsMaxIndex;
-  const uint8_t*                  _contentStart;
-  const uint8_t*                  _contentEnd;
+  uint32_t _addendsMaxIndex;
+  const uint8_t *_contentStart;
+  const uint8_t *_contentEnd;
+  const TargetInfo &_targetInfo;
 };
 
-
-inline const class lld::File& NativeDefinedAtomV1::file() const {
+inline const class lld::File &NativeDefinedAtomV1::file() const {
   return *_file;
 }
 
@@ -918,39 +913,25 @@ inline void NativeReferenceV1::setTarget(const Atom* newAtom) {
 
 inline void NativeReferenceV1::setAddend(Addend a) {
   // Do nothing if addend value is not being changed.
-  if ( this->addend() == a )
+  if (addend() == a)
     return;
-  assert(0 && "setAddend() not supported");
+  llvm_unreachable("setAddend() not supported");
 }
-
 
 class Reader : public lld::Reader {
 public:
-  Reader(const ReaderOptionsNative &options) {}
-  
-  virtual error_code parseFile(std::unique_ptr<MemoryBuffer> mb, 
-                               std::vector<std::unique_ptr<lld::File>> &result) {
-    return File::make(mb, mb->getBufferIdentifier(), result);
+  Reader(const TargetInfo &ti)
+   : lld::Reader(ti) {}
+
+  virtual error_code parseFile(
+      std::unique_ptr<MemoryBuffer> mb,
+      std::vector<std::unique_ptr<lld::File> > &result) {
+    return File::make(_targetInfo, mb, mb->getBufferIdentifier(), result);
   }
 };
+} // end namespace native
 
-
-
-} // namespace native
-
-Reader* createReaderNative(const ReaderOptionsNative &options) {
-  return new lld::native::Reader(options);
+std::unique_ptr<Reader> createReaderNative(const TargetInfo &ti) {
+  return std::unique_ptr<Reader>(new lld::native::Reader(ti));
 }
-
-ReaderOptionsNative::ReaderOptionsNative() {
-}
-
-ReaderOptionsNative::~ReaderOptionsNative() {
-}
-
-
-} // namespace lld
-
-
-
-
+} // end namespace lld

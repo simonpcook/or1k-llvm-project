@@ -67,7 +67,7 @@ VariableList::Clear()
 }
 
 VariableSP
-VariableList::GetVariableAtIndex(uint32_t idx)
+VariableList::GetVariableAtIndex(size_t idx) const
 {
     VariableSP var_sp;
     if (idx < m_variables.size())
@@ -76,7 +76,7 @@ VariableList::GetVariableAtIndex(uint32_t idx)
 }
 
 VariableSP
-VariableList::RemoveVariableAtIndex(uint32_t idx)
+VariableList::RemoveVariableAtIndex(size_t idx)
 {
     VariableSP var_sp;
     if (idx < m_variables.size())

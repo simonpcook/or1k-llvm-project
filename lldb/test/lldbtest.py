@@ -410,6 +410,58 @@ def expectedFailurei386(func):
             raise case._UnexpectedSuccess
     return wrapper
 
+def expectedFailureLinux(func):
+    """Decorate the item as a Linux only expectedFailure."""
+    if isinstance(func, type) and issubclass(func, unittest2.TestCase):
+        raise Exception("@expectedFailureLinux can only be used to decorate a test method")
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from unittest2 import case
+        self = args[0]
+        platform = sys.platform
+        try:
+            func(*args, **kwargs)
+        except Exception:
+            if "linux" in platform:
+                raise case._ExpectedFailure(sys.exc_info())
+            else:
+                raise
+
+        if "linux" in platform:
+            raise case._UnexpectedSuccess
+    return wrapper
+
+def skipOnLinux(func):
+    """Decorate the item to skip tests that should be skipped on Linux."""
+    if isinstance(func, type) and issubclass(func, unittest2.TestCase):
+        raise Exception("@skipOnLinux can only be used to decorate a test method")
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from unittest2 import case
+        self = args[0]
+        platform = sys.platform
+        if "linux" in platform:
+            self.skipTest("skip on linux")
+        else:
+            func(*args, **kwargs)
+    return wrapper
+
+def skipIfGcc(func):
+    """Decorate the item to skip tests that should be skipped if building with gcc ."""
+    if isinstance(func, type) and issubclass(func, unittest2.TestCase):
+        raise Exception("@skipOnLinux can only be used to decorate a test method")
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from unittest2 import case
+        self = args[0]
+        compiler = self.getCompiler()
+        if "gcc" in compiler:
+            self.skipTest("skipping because gcc is the test compiler")
+        else:
+            func(*args, **kwargs)
+    return wrapper
+
+
 class Base(unittest2.TestCase):
     """
     Abstract base for performing lldb (see TestBase) or other generic tests (see
@@ -585,6 +637,12 @@ class Base(unittest2.TestCase):
         # See HideStdout(self).
         self.sys_stdout_hidden = False
 
+        # set environment variable names for finding shared libraries
+        if sys.platform.startswith("darwin"):
+            self.dylibPath = 'DYLD_LIBRARY_PATH'
+        elif sys.platform.startswith("linux") or sys.platform.startswith("freebsd"):
+            self.dylibPath = 'LD_LIBRARY_PATH'
+
     def runHooks(self, child=None, child_prompt=None, use_cmd_api=False):
         """Perform the run hooks to bring lldb debugger to the desired state.
 
@@ -675,6 +733,7 @@ class Base(unittest2.TestCase):
             if self.child_in_script_interpreter:
                 self.child.sendline('quit()')
                 self.child.expect_exact(self.child_prompt)
+            self.child.sendline('settings set interpreter.prompt-on-quit false')
             self.child.sendline('quit')
             try:
                 self.child.expect(pexpect.EOF)

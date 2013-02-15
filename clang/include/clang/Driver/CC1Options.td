@@ -81,15 +81,6 @@ def analyzer_inline_max_stack_depth : Separate<["-"], "analyzer-inline-max-stack
 def analyzer_inline_max_stack_depth_EQ : Joined<["-"], "analyzer-inline-max-stack-depth=">, 
   Alias<analyzer_inline_max_stack_depth>;
   
-def analyzer_inline_max_function_size : Separate<["-"], "analyzer-inline-max-function-size">,
-  HelpText<"Bound on the number of basic blocks in an inlined function (200 by default)">;
-def analyzer_inline_max_function_size_EQ : Joined<["-"], "analyzer-inline-max-function-size=">, 
-  Alias<analyzer_inline_max_function_size>;
-
-def analyzer_ipa : Separate<["-"], "analyzer-ipa">,
-  HelpText<"Specify the inter-procedural analysis mode">;
-def analyzer_ipa_EQ : Joined<["-"], "analyzer-ipa=">, Alias<analyzer_ipa>;
-  
 def analyzer_inlining_mode : Separate<["-"], "analyzer-inlining-mode">,
   HelpText<"Specify the function selection heuristic used during inlining">;
 def analyzer_inlining_mode_EQ : Joined<["-"], "analyzer-inlining-mode=">, Alias<analyzer_inlining_mode>;
@@ -97,8 +88,6 @@ def analyzer_inlining_mode_EQ : Joined<["-"], "analyzer-inlining-mode=">, Alias<
 def analyzer_disable_retry_exhausted : Flag<["-"], "analyzer-disable-retry-exhausted">,
   HelpText<"Do not re-analyze paths leading to exhausted nodes with a different strategy (may decrease code coverage)">;
   
-def analyzer_max_nodes : Separate<["-"], "analyzer-max-nodes">,
-  HelpText<"The maximum number of nodes the analyzer can generate (150000 default, 0 = no limit)">;
 def analyzer_max_loop : Separate<["-"], "analyzer-max-loop">,
   HelpText<"The maximum number of times the analyzer will go through a loop">;
 def analyzer_stats : Flag<["-"], "analyzer-stats">,
@@ -145,6 +134,8 @@ def dwarf_debug_flags : Separate<["-"], "dwarf-debug-flags">,
   HelpText<"The string to embed in the Dwarf debug flags record.">;
 def dwarf_column_info : Flag<["-"], "dwarf-column-info">,
   HelpText<"Turn on column location information.">;
+def split_dwarf : Flag<["-"], "split-dwarf">,
+  HelpText<"Split out the dwarf .dwo sections">;
 def fforbid_guard_variables : Flag<["-"], "fforbid-guard-variables">,
   HelpText<"Emit an error if a C++ static local initializer would need a guard variable">;
 def no_implicit_float : Flag<["-"], "no-implicit-float">,
@@ -197,8 +188,6 @@ def mrelocation_model : Separate<["-"], "mrelocation-model">,
   HelpText<"The relocation model to use">;
 def munwind_tables : Flag<["-"], "munwind-tables">,
   HelpText<"Generate unwinding tables for all functions">;
-def fuse_init_array : Flag<["-"], "fuse-init-array">,
-  HelpText<"Use .init_array instead of .ctors">;
 def mconstructor_aliases : Flag<["-"], "mconstructor-aliases">,
   HelpText<"Emit complete constructors and destructors as aliases when possible">;
 def mlink_bitcode_file : Separate<["-"], "mlink-bitcode-file">,
@@ -217,9 +206,6 @@ def header_include_file : Separate<["-"], "header-include-file">,
 // Diagnostic Options
 //===----------------------------------------------------------------------===//
 
-def dump_build_information : Separate<["-"], "dump-build-information">,
-  MetaVarName<"<filename>">,
-  HelpText<"output a dump of some build information to a file">;
 def diagnostic_log_file : Separate<["-"], "diagnostic-log-file">,
   HelpText<"Filename (or -) to log diagnostics to">;
 def diagnostic_serialized_file : Separate<["-"], "serialize-diagnostic-file">,
@@ -230,6 +216,8 @@ def fdiagnostics_format : Separate<["-"], "fdiagnostics-format">,
   HelpText<"Change diagnostic formatting to match IDE and command line tools">;
 def fdiagnostics_show_category : Separate<["-"], "fdiagnostics-show-category">,
   HelpText<"Print diagnostic category">;
+def fno_diagnostics_use_presumed_location : Flag<["-"], "fno-diagnostics-use-presumed-location">,
+  HelpText<"Ignore #line directives when displaying diagnostic locations">;
 def ftabstop : Separate<["-"], "ftabstop">, MetaVarName<"<N>">,
   HelpText<"Set the tab stop distance.">;
 def ferror_limit : Separate<["-"], "ferror-limit">, MetaVarName<"<N>">,
@@ -292,6 +280,8 @@ def ast_dump_filter : Separate<["-"], "ast-dump-filter">,
   HelpText<"Use with -ast-dump or -ast-print to dump/print only AST declaration"
            " nodes having a certain substring in a qualified name. Use"
            " -ast-list to list all filterable declaration node names.">;
+def fno_modules_global_index : Flag<["-"], "fno-modules-global-index">,
+  HelpText<"Do not automatically generate or update the global module index">;
 
 let Group = Action_Group in {
 
@@ -404,6 +394,8 @@ def fobjc_dispatch_method_EQ : Joined<["-"], "fobjc-dispatch-method=">,
   HelpText<"Objective-C dispatch method to use">;
 def fobjc_default_synthesize_properties : Flag<["-"], "fobjc-default-synthesize-properties">,
   HelpText<"enable the default synthesis of Objective-C properties">;
+def fencode_extended_block_signature : Flag<["-"], "fencode-extended-block-signature">,
+  HelpText<"enable extended encoding of block type signature">;
 def pic_level : Separate<["-"], "pic-level">,
   HelpText<"Value for __PIC__">;
 def pie_level : Separate<["-"], "pie-level">,

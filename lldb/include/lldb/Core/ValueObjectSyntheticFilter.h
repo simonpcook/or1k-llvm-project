@@ -38,25 +38,31 @@ public:
     
     virtual ConstString
     GetTypeName();
+    
+    virtual ConstString
+    GetQualifiedTypeName();
 
     virtual bool
     MightHaveChildren();
 
-    virtual uint32_t
+    virtual size_t
     CalculateNumChildren();
 
     virtual lldb::ValueType
     GetValueType() const;
     
     virtual lldb::ValueObjectSP
-    GetChildAtIndex (uint32_t idx, bool can_create);
+    GetChildAtIndex (size_t idx, bool can_create);
     
     virtual lldb::ValueObjectSP
     GetChildMemberWithName (const ConstString &name, bool can_create);
     
-    virtual uint32_t
+    virtual size_t
     GetIndexOfChildWithName (const ConstString &name);
 
+    virtual lldb::ValueObjectSP
+    GetDynamicValue (lldb::DynamicValueType valueType);
+    
     virtual bool
     IsInScope ();
     
@@ -77,12 +83,9 @@ public:
     virtual bool
     IsDynamic ()
     {
-        if (m_parent)
-            return m_parent->IsDynamic();
-        else
-            return false;
+        return false;
     }
-    
+
     virtual ValueObject *
     GetParent()
     {

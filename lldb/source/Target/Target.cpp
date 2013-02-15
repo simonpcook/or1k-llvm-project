@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Target/Target.h"
 
 // C Includes
@@ -86,12 +88,17 @@ Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::Plat
     SetEventName (eBroadcastBitBreakpointChanged, "breakpoint-changed");
     SetEventName (eBroadcastBitModulesLoaded, "modules-loaded");
     SetEventName (eBroadcastBitModulesUnloaded, "modules-unloaded");
+    SetEventName (eBroadcastBitWatchpointChanged, "watchpoint-changed");
     
     CheckInWithManager();
 
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf ("%p Target::Target()", this);
+    if (m_arch.IsValid())
+    {
+        LogIfAnyCategoriesSet(LIBLLDB_LOG_TARGET, "Target::Target created with architecture %s (%s)", m_arch.GetArchitectureName(), m_arch.GetTriple().getTriple().c_str());
+    }
 }
 
 //----------------------------------------------------------------------
@@ -130,6 +137,21 @@ Target::Dump (Stream *s, lldb::DescriptionLevel description_level)
 }
 
 void
+Target::CleanupProcess ()
+{
+    // Do any cleanup of the target we need to do between process instances.
+    // NB It is better to do this before destroying the process in case the
+    // clean up needs some help from the process.
+    m_breakpoint_list.ClearAllBreakpointSites();
+    m_internal_breakpoint_list.ClearAllBreakpointSites();
+    // Disable watchpoints just on the debugger side.
+    Mutex::Locker locker;
+    this->GetWatchpointList().GetListMutex(locker);
+    DisableAllWatchpoints(false);
+    ClearAllWatchpointHitCounts();
+}
+
+void
 Target::DeleteCurrentProcess ()
 {
     if (m_process_sp.get())
@@ -140,16 +162,8 @@ Target::DeleteCurrentProcess ()
         
         m_process_sp->Finalize();
 
-        // Do any cleanup of the target we need to do between process instances.
-        // NB It is better to do this before destroying the process in case the
-        // clean up needs some help from the process.
-        m_breakpoint_list.ClearAllBreakpointSites();
-        m_internal_breakpoint_list.ClearAllBreakpointSites();
-        // Disable watchpoints just on the debugger side.
-        Mutex::Locker locker;
-        this->GetWatchpointList().GetListMutex(locker);
-        DisableAllWatchpoints(false);
-        ClearAllWatchpointHitCounts();
+        CleanupProcess ();
+
         m_process_sp.reset();
     }
 }
@@ -527,7 +541,7 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
 {
     LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
-        log->Printf("Target::%s (addr = 0x%8.8llx size = %llu type = %u)\n",
+        log->Printf("Target::%s (addr = 0x%8.8" PRIx64 " size = %" PRIu64 " type = %u)\n",
                     __FUNCTION__, addr, (uint64_t)size, kind);
 
     WatchpointSP wp_sp;
@@ -541,7 +555,7 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
         if (size == 0)
             error.SetErrorString("cannot set a watchpoint with watch_size of 0");
         else
-            error.SetErrorStringWithFormat("invalid watch address: %llu", addr);
+            error.SetErrorStringWithFormat("invalid watch address: %" PRIu64, addr);
         return wp_sp;
     }
 
@@ -549,6 +563,7 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
     // of watchpoints limited by the hardware which the inferior is running on.
 
     // Grab the list mutex while doing operations.
+    const bool notify = false;   // Don't notify about all the state changes we do on creating the watchpoint.
     Mutex::Locker locker;
     this->GetWatchpointList().GetListMutex(locker);
     WatchpointSP matched_sp = m_watchpoint_list.FindByAddress(addr);
@@ -561,36 +576,33 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
         // Return the existing watchpoint if both size and type match.
         if (size == old_size && kind == old_type) {
             wp_sp = matched_sp;
-            wp_sp->SetEnabled(false);
+            wp_sp->SetEnabled(false, notify);
         } else {
             // Nil the matched watchpoint; we will be creating a new one.
-            m_process_sp->DisableWatchpoint(matched_sp.get());
-            m_watchpoint_list.Remove(matched_sp->GetID());
+            m_process_sp->DisableWatchpoint(matched_sp.get(), notify);
+            m_watchpoint_list.Remove(matched_sp->GetID(), true);
         }
     }
 
-    if (!wp_sp) {
-        Watchpoint *new_wp = new Watchpoint(*this, addr, size, type);
-        if (!new_wp) {
-            printf("Watchpoint ctor failed, out of memory?\n");
-            return wp_sp;
-        }
-        new_wp->SetWatchpointType(kind);
-        wp_sp.reset(new_wp);
-        m_watchpoint_list.Add(wp_sp);
+    if (!wp_sp) 
+    {
+        wp_sp.reset(new Watchpoint(*this, addr, size, type));
+        wp_sp->SetWatchpointType(kind, notify);
+        m_watchpoint_list.Add (wp_sp, true);
     }
 
-    error = m_process_sp->EnableWatchpoint(wp_sp.get());
+    error = m_process_sp->EnableWatchpoint(wp_sp.get(), notify);
     if (log)
-            log->Printf("Target::%s (creation of watchpoint %s with id = %u)\n",
-                        __FUNCTION__,
-                        error.Success() ? "succeeded" : "failed",
-                        wp_sp->GetID());
+        log->Printf("Target::%s (creation of watchpoint %s with id = %u)\n",
+                    __FUNCTION__,
+                    error.Success() ? "succeeded" : "failed",
+                    wp_sp->GetID());
 
-    if (error.Fail()) {
+    if (error.Fail()) 
+    {
         // Enabling the watchpoint on the device side failed.
         // Remove the said watchpoint from the list maintained by the target instance.
-        m_watchpoint_list.Remove(wp_sp->GetID());
+        m_watchpoint_list.Remove (wp_sp->GetID(), true);
         // See if we could provide more helpful error message.
         if (!CheckIfWatchpointsExhausted(this, error))
         {
@@ -726,7 +738,7 @@ Target::RemoveAllWatchpoints (bool end_to_end)
         log->Printf ("Target::%s\n", __FUNCTION__);
 
     if (!end_to_end) {
-        m_watchpoint_list.RemoveAll();
+        m_watchpoint_list.RemoveAll(true);
         return true;
     }
 
@@ -746,7 +758,7 @@ Target::RemoveAllWatchpoints (bool end_to_end)
         if (rc.Fail())
             return false;
     }
-    m_watchpoint_list.RemoveAll ();
+    m_watchpoint_list.RemoveAll (true);
     return true; // Success!
 }
 
@@ -916,7 +928,7 @@ Target::RemoveWatchpointByID (lldb::watch_id_t watch_id)
 
     if (DisableWatchpointByID (watch_id))
     {
-        m_watchpoint_list.Remove(watch_id);
+        m_watchpoint_list.Remove(watch_id, true);
         return true;
     }
     return false;
@@ -969,6 +981,7 @@ LoadScriptingResourceForModule (const ModuleSP &module_sp, Target *target)
 void
 Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
 {
+    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TARGET));
     m_images.Clear();
     m_scratch_ast_context_ap.reset();
     m_scratch_ast_source_ap.reset();
@@ -985,8 +998,12 @@ Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
 
         // If we haven't set an architecture yet, reset our architecture based on what we found in the executable module.
         if (!m_arch.IsValid())
+        {
             m_arch = executable_sp->GetArchitecture();
-        
+            if (log)
+              log->Printf ("Target::SetExecutableModule setting architecture to %s (%s) based on executable file", m_arch.GetArchitectureName(), m_arch.GetTriple().getTriple().c_str());
+        }
+
         FileSpecList dependent_files;
         ObjectFile *executable_objfile = executable_sp->GetObjectFile();
 
@@ -1019,18 +1036,23 @@ Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
 bool
 Target::SetArchitecture (const ArchSpec &arch_spec)
 {
-    if (m_arch == arch_spec || !m_arch.IsValid())
+    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TARGET));
+    if (m_arch.IsCompatibleMatch(arch_spec) || !m_arch.IsValid())
     {
         // If we haven't got a valid arch spec, or the architectures are
         // compatible, so just update the architecture. Architectures can be
         // equal, yet the triple OS and vendor might change, so we need to do
         // the assignment here just in case.
         m_arch = arch_spec;
+        if (log)
+            log->Printf ("Target::SetArchitecture setting architecture to %s (%s)", arch_spec.GetArchitectureName(), arch_spec.GetTriple().getTriple().c_str());
         return true;
     }
     else
     {
         // If we have an executable file, try to reset the executable to the desired architecture
+        if (log)
+          log->Printf ("Target::SetArchitecture changing architecture to %s (%s)", arch_spec.GetArchitectureName(), arch_spec.GetTriple().getTriple().c_str());
         m_arch = arch_spec;
         ModuleSP executable_sp = GetExecutableModule ();
         m_images.Clear();
@@ -1041,6 +1063,8 @@ Target::SetArchitecture (const ArchSpec &arch_spec)
         
         if (executable_sp)
         {
+            if (log)
+              log->Printf("Target::SetArchitecture Trying to select executable file architecture %s (%s)", arch_spec.GetArchitectureName(), arch_spec.GetTriple().getTriple().c_str());
             ModuleSpec module_spec (executable_sp->GetFileSpec(), arch_spec);
             Error error = ModuleList::GetSharedModule (module_spec, 
                                                        executable_sp, 
@@ -1244,12 +1268,12 @@ Target::ReadMemory (const Address& addr,
         {
             ModuleSP addr_module_sp (resolved_addr.GetModule());
             if (addr_module_sp && addr_module_sp->GetFileSpec())
-                error.SetErrorStringWithFormat("%s[0x%llx] can't be resolved, %s in not currently loaded", 
+                error.SetErrorStringWithFormat("%s[0x%" PRIx64 "] can't be resolved, %s in not currently loaded",
                                                addr_module_sp->GetFileSpec().GetFilename().AsCString(), 
                                                resolved_addr.GetFileAddress(),
                                                addr_module_sp->GetFileSpec().GetFilename().AsCString());
             else
-                error.SetErrorStringWithFormat("0x%llx can't be resolved", resolved_addr.GetFileAddress());
+                error.SetErrorStringWithFormat("0x%" PRIx64 " can't be resolved", resolved_addr.GetFileAddress());
         }
         else
         {
@@ -1259,9 +1283,9 @@ Target::ReadMemory (const Address& addr,
                 if (error.Success())
                 {
                     if (bytes_read == 0)
-                        error.SetErrorStringWithFormat("read memory from 0x%llx failed", load_addr);
+                        error.SetErrorStringWithFormat("read memory from 0x%" PRIx64 " failed", load_addr);
                     else
-                        error.SetErrorStringWithFormat("only %llu of %llu bytes were read from memory at 0x%llx", (uint64_t)bytes_read, (uint64_t)dst_len, load_addr);
+                        error.SetErrorStringWithFormat("only %" PRIu64 " of %" PRIu64 " bytes were read from memory at 0x%" PRIx64, (uint64_t)bytes_read, (uint64_t)dst_len, load_addr);
                 }
             }
             if (bytes_read)
@@ -1290,6 +1314,82 @@ Target::ReadMemory (const Address& addr,
 }
 
 size_t
+Target::ReadCStringFromMemory (const Address& addr, std::string &out_str, Error &error)
+{
+    char buf[256];
+    out_str.clear();
+    addr_t curr_addr = addr.GetLoadAddress(this);
+    Address address(addr);
+    while (1)
+    {
+        size_t length = ReadCStringFromMemory (address, buf, sizeof(buf), error);
+        if (length == 0)
+            break;
+        out_str.append(buf, length);
+        // If we got "length - 1" bytes, we didn't get the whole C string, we
+        // need to read some more characters
+        if (length == sizeof(buf) - 1)
+            curr_addr += length;
+        else
+            break;
+        address = Address(curr_addr);
+    }
+    return out_str.size();
+}
+
+
+size_t
+Target::ReadCStringFromMemory (const Address& addr, char *dst, size_t dst_max_len, Error &result_error)
+{
+    size_t total_cstr_len = 0;
+    if (dst && dst_max_len)
+    {
+        result_error.Clear();
+        // NULL out everything just to be safe
+        memset (dst, 0, dst_max_len);
+        Error error;
+        addr_t curr_addr = addr.GetLoadAddress(this);
+        Address address(addr);
+        const size_t cache_line_size = 512;
+        size_t bytes_left = dst_max_len - 1;
+        char *curr_dst = dst;
+        
+        while (bytes_left > 0)
+        {
+            addr_t cache_line_bytes_left = cache_line_size - (curr_addr % cache_line_size);
+            addr_t bytes_to_read = std::min<addr_t>(bytes_left, cache_line_bytes_left);
+            size_t bytes_read = ReadMemory (address, false, curr_dst, bytes_to_read, error);
+            
+            if (bytes_read == 0)
+            {
+                result_error = error;
+                dst[total_cstr_len] = '\0';
+                break;
+            }
+            const size_t len = strlen(curr_dst);
+            
+            total_cstr_len += len;
+            
+            if (len < bytes_to_read)
+                break;
+            
+            curr_dst += bytes_read;
+            curr_addr += bytes_read;
+            bytes_left -= bytes_read;
+            address = Address(curr_addr);
+        }
+    }
+    else
+    {
+        if (dst == NULL)
+            result_error.SetErrorString("invalid arguments");
+        else
+            result_error.Clear();
+    }
+    return total_cstr_len;
+}
+
+size_t
 Target::ReadScalarIntegerFromMemory (const Address& addr, 
                                      bool prefer_file_cache,
                                      uint32_t byte_size, 
@@ -1305,7 +1405,7 @@ Target::ReadScalarIntegerFromMemory (const Address& addr,
         if (bytes_read == byte_size)
         {
             DataExtractor data (&uval, sizeof(uval), m_arch.GetByteOrder(), m_arch.GetAddressByteSize());
-            uint32_t offset = 0;
+            lldb::offset_t offset = 0;
             if (byte_size <= 4)
                 scalar = data.GetMaxU32 (&offset, byte_size);
             else
@@ -1460,38 +1560,63 @@ Target::GetSharedModule (const ModuleSpec &module_spec, Error *error_ptr)
         // module in the list already, and if there was, let's remove it.
         if (module_sp)
         {
-            // GetSharedModule is not guaranteed to find the old shared module, for instance
-            // in the common case where you pass in the UUID, it is only going to find the one
-            // module matching the UUID.  In fact, it has no good way to know what the "old module"
-            // relevant to this target is, since there might be many copies of a module with this file spec
-            // in various running debug sessions, but only one of them will belong to this target.
-            // So let's remove the UUID from the module list, and look in the target's module list.
-            // Only do this if there is SOMETHING else in the module spec...
-            if (!old_module_sp)
+            ObjectFile *objfile = module_sp->GetObjectFile();
+            if (objfile)
             {
-                if (module_spec.GetUUID().IsValid() && !module_spec.GetFileSpec().GetFilename().IsEmpty() && !module_spec.GetFileSpec().GetDirectory().IsEmpty())
+                switch (objfile->GetType())
                 {
-                    ModuleSpec module_spec_copy(module_spec.GetFileSpec());
-                    module_spec_copy.GetUUID().Clear();
-                    
-                    ModuleList found_modules;
-                    size_t num_found = m_images.FindModules (module_spec_copy, found_modules);
-                    if (num_found == 1)
+                    case ObjectFile::eTypeCoreFile:      /// A core file that has a checkpoint of a program's execution state
+                    case ObjectFile::eTypeExecutable:    /// A normal executable
+                    case ObjectFile::eTypeDynamicLinker: /// The platform's dynamic linker executable
+                    case ObjectFile::eTypeObjectFile:    /// An intermediate object file
+                    case ObjectFile::eTypeSharedLibrary: /// A shared library that can be used during execution
+                        break;
+                    case ObjectFile::eTypeDebugInfo:     /// An object file that contains only debug information
+                        if (error_ptr)
+                            error_ptr->SetErrorString("debug info files aren't valid target modules, please specify an executable");
+                        return ModuleSP();
+                    case ObjectFile::eTypeStubLibrary:   /// A library that can be linked against but not used for execution
+                        if (error_ptr)
+                            error_ptr->SetErrorString("stub libraries aren't valid target modules, please specify an executable");
+                        return ModuleSP();
+                    default:
+                        if (error_ptr)
+                            error_ptr->SetErrorString("unsupported file type, please specify an executable");
+                        return ModuleSP();
+                }
+                // GetSharedModule is not guaranteed to find the old shared module, for instance
+                // in the common case where you pass in the UUID, it is only going to find the one
+                // module matching the UUID.  In fact, it has no good way to know what the "old module"
+                // relevant to this target is, since there might be many copies of a module with this file spec
+                // in various running debug sessions, but only one of them will belong to this target.
+                // So let's remove the UUID from the module list, and look in the target's module list.
+                // Only do this if there is SOMETHING else in the module spec...
+                if (!old_module_sp)
+                {
+                    if (module_spec.GetUUID().IsValid() && !module_spec.GetFileSpec().GetFilename().IsEmpty() && !module_spec.GetFileSpec().GetDirectory().IsEmpty())
                     {
-                        old_module_sp = found_modules.GetModuleAtIndex(0);
+                        ModuleSpec module_spec_copy(module_spec.GetFileSpec());
+                        module_spec_copy.GetUUID().Clear();
+                        
+                        ModuleList found_modules;
+                        size_t num_found = m_images.FindModules (module_spec_copy, found_modules);
+                        if (num_found == 1)
+                        {
+                            old_module_sp = found_modules.GetModuleAtIndex(0);
+                        }
                     }
                 }
+                
+                if (old_module_sp && m_images.GetIndexForModule (old_module_sp.get()) != LLDB_INVALID_INDEX32)
+                {
+                    m_images.ReplaceModule(old_module_sp, module_sp);
+                    Module *old_module_ptr = old_module_sp.get();
+                    old_module_sp.reset();
+                    ModuleList::RemoveSharedModuleIfOrphaned (old_module_ptr);
+                }
+                else
+                    m_images.Append(module_sp);
             }
-            
-            if (old_module_sp && m_images.GetIndexForModule (old_module_sp.get()) != LLDB_INVALID_INDEX32)
-            {
-                m_images.ReplaceModule(old_module_sp, module_sp);
-                Module *old_module_ptr = old_module_sp.get();
-                old_module_sp.reset();
-                ModuleList::RemoveSharedModuleIfOrphaned (old_module_ptr);
-            }
-            else
-                m_images.Append(module_sp);
         }
     }
     if (error_ptr)
@@ -1617,7 +1742,10 @@ Target::SetDefaultArchitecture (const ArchSpec &arch)
 {
     TargetPropertiesSP properties_sp(Target::GetGlobalProperties());
     if (properties_sp)
+    {
+        LogIfAnyCategoriesSet(LIBLLDB_LOG_TARGET, "Target::SetDefaultArchitecture setting target's default architecture to  %s (%s)", arch.GetArchitectureName(), arch.GetTriple().getTriple().c_str());
         return properties_sp->SetDefaultArchitecture(arch);
+    }
 }
 
 Target *
@@ -1657,31 +1785,10 @@ Target::EvaluateExpression
     m_suppress_stop_hooks = true;
 
     ExecutionContext exe_ctx;
-
-    const size_t expr_cstr_len = ::strlen (expr_cstr);
-
+    
     if (frame)
     {
         frame->CalculateExecutionContext(exe_ctx);
-        Error error;
-        const uint32_t expr_path_options = StackFrame::eExpressionPathOptionCheckPtrVsMember |
-                                           StackFrame::eExpressionPathOptionsNoFragileObjcIvar |
-                                           StackFrame::eExpressionPathOptionsNoSyntheticChildren;
-        lldb::VariableSP var_sp;
-        
-        // Make sure we don't have any things that we know a variable expression
-        // won't be able to deal with before calling into it
-        if (::strcspn (expr_cstr, "()+*&|!~<=/^%,?") == expr_cstr_len)
-        {
-            result_valobj_sp = frame->GetValueForVariableExpressionPath (expr_cstr, 
-                                                                         options.GetUseDynamic(),
-                                                                         expr_path_options, 
-                                                                         var_sp, 
-                                                                         error);
-            // if this expression results in a bitfield, we give up and let the IR handle it
-            if (result_valobj_sp && result_valobj_sp->IsBitfield())
-                result_valobj_sp.reset();
-        }
     }
     else if (m_process_sp)
     {
@@ -1692,89 +1799,33 @@ Target::EvaluateExpression
         CalculateExecutionContext(exe_ctx);
     }
     
-    if (result_valobj_sp)
+    // Make sure we aren't just trying to see the value of a persistent
+    // variable (something like "$0")
+    lldb::ClangExpressionVariableSP persistent_var_sp;
+    // Only check for persistent variables the expression starts with a '$' 
+    if (expr_cstr[0] == '$')
+        persistent_var_sp = m_persistent_variables.GetVariable (expr_cstr);
+
+    if (persistent_var_sp)
     {
+        result_valobj_sp = persistent_var_sp->GetValueObject ();
         execution_results = eExecutionCompleted;
-        // We got a result from the frame variable expression path above...
-        ConstString persistent_variable_name (m_persistent_variables.GetNextPersistentVariableName());
-
-        lldb::ValueObjectSP const_valobj_sp;
-        
-        // Check in case our value is already a constant value
-        if (result_valobj_sp->GetIsConstant())
-        {
-            const_valobj_sp = result_valobj_sp;
-            const_valobj_sp->SetName (persistent_variable_name);
-        }
-        else
-        {
-            if (options.GetUseDynamic() != lldb::eNoDynamicValues)
-            {
-                ValueObjectSP dynamic_sp = result_valobj_sp->GetDynamicValue(options.GetUseDynamic());
-                if (dynamic_sp)
-                    result_valobj_sp = dynamic_sp;
-            }
-
-            const_valobj_sp = result_valobj_sp->CreateConstantValue (persistent_variable_name);
-        }
-
-        lldb::ValueObjectSP live_valobj_sp = result_valobj_sp;
-        
-        result_valobj_sp = const_valobj_sp;
-
-        ClangExpressionVariableSP clang_expr_variable_sp(m_persistent_variables.CreatePersistentVariable(result_valobj_sp));        
-        assert (clang_expr_variable_sp.get());
-        
-        // Set flags and live data as appropriate
-
-        const Value &result_value = live_valobj_sp->GetValue();
-        
-        switch (result_value.GetValueType())
-        {
-        case Value::eValueTypeHostAddress:
-        case Value::eValueTypeFileAddress:
-            // we don't do anything with these for now
-            break;
-        case Value::eValueTypeScalar:
-        case Value::eValueTypeVector:
-            clang_expr_variable_sp->m_flags |= ClangExpressionVariable::EVIsLLDBAllocated;
-            clang_expr_variable_sp->m_flags |= ClangExpressionVariable::EVNeedsAllocation;
-            break;
-        case Value::eValueTypeLoadAddress:
-            clang_expr_variable_sp->m_live_sp = live_valobj_sp;
-            clang_expr_variable_sp->m_flags |= ClangExpressionVariable::EVIsProgramReference;
-            break;
-        }
     }
     else
     {
-        // Make sure we aren't just trying to see the value of a persistent 
-        // variable (something like "$0")
-        lldb::ClangExpressionVariableSP persistent_var_sp;
-        // Only check for persistent variables the expression starts with a '$' 
-        if (expr_cstr[0] == '$')
-            persistent_var_sp = m_persistent_variables.GetVariable (expr_cstr);
-
-        if (persistent_var_sp)
-        {
-            result_valobj_sp = persistent_var_sp->GetValueObject ();
-            execution_results = eExecutionCompleted;
-        }
-        else
-        {
-            const char *prefix = GetExpressionPrefixContentsAsCString();
-                    
-            execution_results = ClangUserExpression::Evaluate (exe_ctx, 
-                                                               options.GetExecutionPolicy(),
-                                                               lldb::eLanguageTypeUnknown,
-                                                               options.DoesCoerceToId() ? ClangUserExpression::eResultTypeId : ClangUserExpression::eResultTypeAny,
-                                                               options.DoesUnwindOnError(),
-                                                               expr_cstr, 
-                                                               prefix, 
-                                                               result_valobj_sp,
-                                                               options.GetRunOthers(),
-                                                               options.GetTimeoutUsec());
-        }
+        const char *prefix = GetExpressionPrefixContentsAsCString();
+                
+        execution_results = ClangUserExpression::Evaluate (exe_ctx, 
+                                                           options.GetExecutionPolicy(),
+                                                           lldb::eLanguageTypeUnknown,
+                                                           options.DoesCoerceToId() ? ClangUserExpression::eResultTypeId : ClangUserExpression::eResultTypeAny,
+                                                           options.DoesUnwindOnError(),
+                                                           options.DoesIgnoreBreakpoints(),
+                                                           expr_cstr, 
+                                                           prefix, 
+                                                           result_valobj_sp,
+                                                           options.GetRunOthers(),
+                                                           options.GetTimeoutUsec());
     }
     
     m_suppress_stop_hooks = old_suppress_value;
@@ -2015,9 +2066,9 @@ Target::RunStopHooks ()
                                        cur_hook_sp->GetCommands().GetStringAtIndex(0) :
                                        NULL);
                     if (cmd)
-                        result.AppendMessageWithFormat("\n- Hook %llu (%s)\n", cur_hook_sp->GetID(), cmd);
+                        result.AppendMessageWithFormat("\n- Hook %" PRIu64 " (%s)\n", cur_hook_sp->GetID(), cmd);
                     else
-                        result.AppendMessageWithFormat("\n- Hook %llu\n", cur_hook_sp->GetID());
+                        result.AppendMessageWithFormat("\n- Hook %" PRIu64 "\n", cur_hook_sp->GetID());
                     any_thread_matched = true;
                 }
                 
@@ -2042,7 +2093,7 @@ Target::RunStopHooks ()
                 if ((result.GetStatus() == eReturnStatusSuccessContinuingNoResult) || 
                     (result.GetStatus() == eReturnStatusSuccessContinuingResult))
                 {
-                    result.AppendMessageWithFormat ("Aborting stop hooks, hook %llu set the program running.", cur_hook_sp->GetID());
+                    result.AppendMessageWithFormat ("Aborting stop hooks, hook %" PRIu64 " set the program running.", cur_hook_sp->GetID());
                     keep_going = false;
                 }
             }
@@ -2100,7 +2151,7 @@ Target::StopHook::GetDescription (Stream *s, lldb::DescriptionLevel level) const
 
     s->SetIndentLevel(indent_level + 2);
 
-    s->Printf ("Hook: %llu\n", GetID());
+    s->Printf ("Hook: %" PRIu64 "\n", GetID());
     if (m_active)
         s->Indent ("State: enabled\n");
     else

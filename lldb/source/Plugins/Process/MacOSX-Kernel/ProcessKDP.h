@@ -174,19 +174,19 @@ public:
     // Process Breakpoints
     //----------------------------------------------------------------------
     virtual lldb_private::Error
-    EnableBreakpoint (lldb_private::BreakpointSite *bp_site);
+    EnableBreakpointSite (lldb_private::BreakpointSite *bp_site);
     
     virtual lldb_private::Error
-    DisableBreakpoint (lldb_private::BreakpointSite *bp_site);
+    DisableBreakpointSite (lldb_private::BreakpointSite *bp_site);
     
     //----------------------------------------------------------------------
     // Process Watchpoints
     //----------------------------------------------------------------------
     virtual lldb_private::Error
-    EnableWatchpoint (lldb_private::Watchpoint *wp);
+    EnableWatchpoint (lldb_private::Watchpoint *wp, bool notify = true);
     
     virtual lldb_private::Error
-    DisableWatchpoint (lldb_private::Watchpoint *wp);
+    DisableWatchpoint (lldb_private::Watchpoint *wp, bool notify = true);
     
     CommunicationKDP &
     GetCommunication()

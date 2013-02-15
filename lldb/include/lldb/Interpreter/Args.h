@@ -268,7 +268,7 @@ public:
     //  FIXME: Handle the quote character somehow.
     //------------------------------------------------------------------
     void
-    SetArguments (int argc, const char **argv);
+    SetArguments (size_t argc, const char **argv);
 
     void
     SetArguments (const char **argv);
@@ -382,12 +382,15 @@ public:
     }
 
     static lldb::addr_t
-    StringToAddress (const char *s, lldb::addr_t fail_value = LLDB_INVALID_ADDRESS, bool *success_ptr = NULL);
+    StringToAddress (const ExecutionContext *exe_ctx,
+                     const char *s,
+                     lldb::addr_t fail_value,
+                     Error *error);
 
     static bool
     StringToBoolean (const char *s, bool fail_value, bool *success_ptr);
     
-    static int32_t
+    static int64_t
     StringToOptionEnum (const char *s, OptionEnumValueElement *enum_values, int32_t fail_value, Error &error);
 
     static lldb::ScriptLanguage
@@ -396,7 +399,7 @@ public:
     static Error
     StringToFormat (const char *s,
                     lldb::Format &format,
-                    uint32_t *byte_size_ptr); // If non-NULL, then a byte size can precede the format character
+                    size_t *byte_size_ptr); // If non-NULL, then a byte size can precede the format character
 
     static lldb::Encoding
     StringToEncoding (const char *s,

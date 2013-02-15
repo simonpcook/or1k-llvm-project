@@ -41,6 +41,11 @@ public:
         return m_object;
     }
     
+    operator bool ()
+    {
+        return m_object != NULL;
+    }
+    
     ScriptInterpreterObject&
     operator = (const ScriptInterpreterObject& rhs)
     {
@@ -79,11 +84,11 @@ public:
                                                           void** pyfunct_wrapper,
                                                           std::string& retval);
     
-    typedef void* (*SWIGPythonCreateSyntheticProvider) (const std::string python_class_name,
+    typedef void* (*SWIGPythonCreateSyntheticProvider) (const char *python_class_name,
                                                         const char *session_dictionary_name,
                                                         const lldb::ValueObjectSP& valobj_sp);
 
-    typedef void* (*SWIGPythonCreateOSPlugin) (const std::string python_class_name,
+    typedef void* (*SWIGPythonCreateOSPlugin) (const char *python_class_name,
                                                const char *session_dictionary_name,
                                                const lldb::ProcessSP& process_sp);
     
@@ -102,7 +107,7 @@ public:
                                                                      std::string& err_msg,
                                                                      lldb_private::CommandReturnObject& cmd_retobj);
     
-    typedef bool           (*SWIGPythonCallModuleInit)              (const std::string python_module_name,
+    typedef bool           (*SWIGPythonCallModuleInit)              (const char *python_module_name,
                                                                      const char *session_dictionary_name,
                                                                      lldb::DebuggerSP& debugger);
 
@@ -256,38 +261,46 @@ public:
     }
     
     virtual lldb::ScriptInterpreterObjectSP
-    CreateSyntheticScriptedProvider (std::string class_name,
+    CreateSyntheticScriptedProvider (const char *class_name,
                                      lldb::ValueObjectSP valobj)
     {
         return lldb::ScriptInterpreterObjectSP();
     }
     
     virtual lldb::ScriptInterpreterObjectSP
-    CreateOSPlugin (std::string class_name,
-                    lldb::ProcessSP process_sp)
+    OSPlugin_CreatePluginObject (const char *class_name,
+                                 lldb::ProcessSP process_sp)
     {
         return lldb::ScriptInterpreterObjectSP();
     }
     
     virtual lldb::ScriptInterpreterObjectSP
-    OSPlugin_QueryForRegisterInfo (lldb::ScriptInterpreterObjectSP object)
+    OSPlugin_RegisterInfo (lldb::ScriptInterpreterObjectSP os_plugin_object_sp)
     {
         return lldb::ScriptInterpreterObjectSP();
     }
     
     virtual lldb::ScriptInterpreterObjectSP
-    OSPlugin_QueryForThreadsInfo (lldb::ScriptInterpreterObjectSP object)
+    OSPlugin_ThreadsInfo (lldb::ScriptInterpreterObjectSP os_plugin_object_sp)
     {
         return lldb::ScriptInterpreterObjectSP();
     }
     
     virtual lldb::ScriptInterpreterObjectSP
-    OSPlugin_QueryForRegisterContextData (lldb::ScriptInterpreterObjectSP object,
-                                          lldb::tid_t thread_id)
+    OSPlugin_RegisterContextData (lldb::ScriptInterpreterObjectSP os_plugin_object_sp,
+                                  lldb::tid_t thread_id)
     {
         return lldb::ScriptInterpreterObjectSP();
     }
-    
+
+    virtual lldb::ScriptInterpreterObjectSP
+    OSPlugin_CreateThread (lldb::ScriptInterpreterObjectSP os_plugin_object_sp,
+                           lldb::tid_t tid,
+                           lldb::addr_t context)
+    {
+        return lldb::ScriptInterpreterObjectSP();
+    }
+
     virtual bool
     GenerateFunction(const char *signature, const StringList &input)
     {
@@ -327,7 +340,7 @@ public:
         return false;
     }
     
-    virtual uint32_t
+    virtual size_t
     CalculateNumChildren (const lldb::ScriptInterpreterObjectSP& implementor)
     {
         return 0;
@@ -371,6 +384,12 @@ public:
     GetDocumentationForItem (const char* item, std::string& dest)
     {
 		dest.clear();
+        return false;
+    }
+    
+    virtual bool
+    CheckObjectExists (const char* name)
+    {
         return false;
     }
 

@@ -163,7 +163,7 @@ ProcessMachCore::GetDynamicLoaderAddress (lldb::addr_t addr)
     }
 
     // TODO: swap header if needed...
-    //printf("0x%16.16llx: magic = 0x%8.8x, file_type= %u\n", vaddr, header.magic, header.filetype);
+    //printf("0x%16.16" PRIx64 ": magic = 0x%8.8x, file_type= %u\n", vaddr, header.magic, header.filetype);
     if (header.magic == llvm::MachO::HeaderMagic32 ||
         header.magic == llvm::MachO::HeaderMagic64)
     {
@@ -175,14 +175,14 @@ ProcessMachCore::GetDynamicLoaderAddress (lldb::addr_t addr)
         switch (header.filetype)
         {
         case llvm::MachO::HeaderFileTypeDynamicLinkEditor:
-            //printf("0x%16.16llx: file_type = MH_DYLINKER\n", vaddr);
+            //printf("0x%16.16" PRIx64 ": file_type = MH_DYLINKER\n", vaddr);
             // Address of dyld "struct mach_header" in the core file
             m_dyld_plugin_name = DynamicLoaderMacOSXDYLD::GetPluginNameStatic();
             m_dyld_addr = addr;
             return true;
 
         case llvm::MachO::HeaderFileTypeExecutable:
-            //printf("0x%16.16llx: file_type = MH_EXECUTE\n", vaddr);
+            //printf("0x%16.16" PRIx64 ": file_type = MH_EXECUTE\n", vaddr);
             // Check MH_EXECUTABLE file types to see if the dynamic link object flag
             // is NOT set. If it isn't, then we have a mach_kernel.
             if ((header.flags & llvm::MachO::HeaderFlagBitIsDynamicLinkObject) == 0)
@@ -256,7 +256,7 @@ ProcessMachCore::DoLoadCore ()
                 ranges_are_sorted = false;
             vm_addr = section->GetFileAddress();
             VMRangeToFileOffset::Entry *last_entry = m_core_aranges.Back();
-//            printf ("LC_SEGMENT[%u] arange=[0x%16.16llx - 0x%16.16llx), frange=[0x%8.8x - 0x%8.8x)\n", 
+//            printf ("LC_SEGMENT[%u] arange=[0x%16.16" PRIx64 " - 0x%16.16" PRIx64 "), frange=[0x%8.8x - 0x%8.8x)\n",
 //                    i, 
 //                    range_entry.GetRangeBase(),
 //                    range_entry.GetRangeEnd(),
@@ -298,26 +298,6 @@ ProcessMachCore::DoLoadCore ()
     }
     if (arch.IsValid())
         m_target.SetArchitecture(arch);            
-
-    if (m_dyld_addr == LLDB_INVALID_ADDRESS)
-    {
-        // Check the magic kernel address for the mach image header address in case
-        // it is there. 
-        if (arch.GetAddressByteSize() == 8)
-        {
-            Error header_addr_error;
-            addr_t header_addr = ReadPointerFromMemory (0xffffff8000002010ull, header_addr_error);
-            if (header_addr != LLDB_INVALID_ADDRESS)
-                GetDynamicLoaderAddress (header_addr);
-        }
-        else
-        {
-            Error header_addr_error;
-            addr_t header_addr = ReadPointerFromMemory (0xffff0110, header_addr_error);
-            if (header_addr != LLDB_INVALID_ADDRESS)
-                GetDynamicLoaderAddress (header_addr);
-        }
-    }
 
     return error;
 }
@@ -413,7 +393,7 @@ ProcessMachCore::DoReadMemory (addr_t addr, void *buf, size_t size, Error &error
         }
         else
         {
-            error.SetErrorStringWithFormat ("core file does not contain 0x%llx", addr);
+            error.SetErrorStringWithFormat ("core file does not contain 0x%" PRIx64, addr);
         }
     }
     return 0;

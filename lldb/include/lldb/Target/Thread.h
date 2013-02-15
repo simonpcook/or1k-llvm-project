@@ -57,6 +57,7 @@ class Thread :
     public Broadcaster
 {
 friend class ThreadEventData;
+friend class ThreadList;
 
 public:
     //------------------------------------------------------------------
@@ -67,7 +68,8 @@ public:
         eBroadcastBitStackChanged           = (1 << 0),
         eBroadcastBitThreadSuspended        = (1 << 1),
         eBroadcastBitThreadResumed          = (1 << 2),
-        eBroadcastBitSelectedFrameChanged  = (1 << 3)
+        eBroadcastBitSelectedFrameChanged   = (1 << 3),
+        eBroadcastBitThreadSelected         = (1 << 4)
     };
 
     static ConstString &GetStaticBroadcasterClass ();
@@ -392,8 +394,12 @@ public:
     uint32_t
     SetSelectedFrame (lldb_private::StackFrame *frame, bool broadcast = false);
 
+
     bool
     SetSelectedFrameByIndex (uint32_t frame_idx, bool broadcast = false);
+
+    bool
+    SetSelectedFrameByIndexNoisily (uint32_t frame_idx, Stream &output_stream);
 
     void
     SetDefaultFileAndLineToSelectedFrame()
@@ -478,8 +484,8 @@ public:
                                              bool stop_other_threads);
 
     //------------------------------------------------------------------
-    /// Queues the plan used to step through an address range, stepping into or over
-    /// function calls depending on the value of StepType.
+    /// Queues the plan used to step through an address range, stepping  over
+    /// function calls.
     ///
     /// @param[in] abort_other_plans
     ///    \b true if we discard the currently queued plans and replace them with this one.
@@ -505,10 +511,48 @@ public:
     ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
     virtual ThreadPlan *
-    QueueThreadPlanForStepRange (bool abort_other_plans,
-                                 StepType type,
+    QueueThreadPlanForStepOverRange (bool abort_other_plans,
                                  const AddressRange &range,
                                  const SymbolContext &addr_context,
+                                 lldb::RunMode stop_other_threads);
+
+    //------------------------------------------------------------------
+    /// Queues the plan used to step through an address range, stepping into functions.
+    ///
+    /// @param[in] abort_other_plans
+    ///    \b true if we discard the currently queued plans and replace them with this one.
+    ///    Otherwise this plan will go on the end of the plan stack.
+    ///
+    /// @param[in] type
+    ///    Type of step to do, only eStepTypeInto and eStepTypeOver are supported by this plan.
+    ///
+    /// @param[in] range
+    ///    The address range to step through.
+    ///
+    /// @param[in] addr_context
+    ///    When dealing with stepping through inlined functions the current PC is not enough information to know
+    ///    what "step" means.  For instance a series of nested inline functions might start at the same address.
+    //     The \a addr_context provides the current symbol context the step
+    ///    is supposed to be out of.
+    //   FIXME: Currently unused.
+    ///
+    /// @param[in] step_in_target
+    ///    Name if function we are trying to step into.  We will step out if we don't land in that function.
+    ///
+    /// @param[in] stop_other_threads
+    ///    \b true if we will stop other threads while we single step this one.
+    ///
+    /// @param[in] avoid_code_without_debug_info
+    ///    If \b true we will step out if we step into code with no debug info.
+    ///
+    /// @return
+    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    //------------------------------------------------------------------
+    virtual ThreadPlan *
+    QueueThreadPlanForStepInRange (bool abort_other_plans,
+                                 const AddressRange &range,
+                                 const SymbolContext &addr_context,
+                                 const char *step_in_target,
                                  lldb::RunMode stop_other_threads,
                                  bool avoid_code_without_debug_info);
 
@@ -608,7 +652,8 @@ public:
                                     Address& function,
                                     lldb::addr_t arg,
                                     bool stop_other_threads,
-                                    bool discard_on_error = false);
+                                    bool unwind_on_error = false,
+                                    bool ignore_breakpoints = true);
                                             
     //------------------------------------------------------------------
     // Thread Plan accessors:
@@ -622,6 +667,17 @@ public:
     //------------------------------------------------------------------
     ThreadPlan *
     GetCurrentPlan ();
+    
+    //------------------------------------------------------------------
+    /// Unwinds the thread stack for the innermost expression plan currently
+    /// on the thread plan stack.
+    ///
+    /// @return
+    ///     An error if the thread plan could not be unwound.
+    //------------------------------------------------------------------
+
+    Error
+    UnwindInnermostExpression();
 
 private:
     bool
@@ -730,6 +786,9 @@ public:
     
     virtual bool
     CheckpointThreadState (ThreadStateCheckpoint &saved_state);
+    
+    virtual bool
+    RestoreRegisterStateFromCheckpoint (ThreadStateCheckpoint &saved_state);
     
     virtual bool
     RestoreThreadStateFromCheckpoint (ThreadStateCheckpoint &saved_state);
@@ -859,7 +918,7 @@ protected:
     GetUnwinder ();
 
     // Check to see whether the thread is still at the last breakpoint hit that stopped it.
-    virtual const bool
+    virtual bool
     IsStillAtLastBreakpointHit();
 
     lldb::StackFrameListSP

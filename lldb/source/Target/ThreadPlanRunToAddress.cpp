@@ -93,6 +93,7 @@ ThreadPlanRunToAddress::SetInitialBreakpoints ()
         {
             m_break_ids[i] = breakpoint->GetID();
             breakpoint->SetThreadID(m_thread.GetID());
+            breakpoint->SetBreakpointKind("run-to-address");
         }
     }
 }
@@ -187,7 +188,7 @@ ThreadPlanRunToAddress::ValidatePlan (Stream *error)
 }
 
 bool
-ThreadPlanRunToAddress::PlanExplainsStop ()
+ThreadPlanRunToAddress::PlanExplainsStop (Event *event_ptr)
 {
     return AtOurAddress();
 }

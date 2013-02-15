@@ -14,13 +14,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
-#include "clang/Analysis/AnalysisContext.h"
-#include "clang/Analysis/Support/BumpVector.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/RecordLayout.h"
+#include "clang/Analysis/AnalysisContext.h"
+#include "clang/Analysis/Support/BumpVector.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
@@ -272,10 +273,11 @@ void ObjCStringRegion::ProfileRegion(llvm::FoldingSetNodeID& ID,
 
 void AllocaRegion::ProfileRegion(llvm::FoldingSetNodeID& ID,
                                  const Expr *Ex, unsigned cnt,
-                                 const MemRegion *) {
+                                 const MemRegion *superRegion) {
   ID.AddInteger((unsigned) AllocaRegionKind);
   ID.AddPointer(Ex);
   ID.AddInteger(cnt);
+  ID.AddPointer(superRegion);
 }
 
 void AllocaRegion::Profile(llvm::FoldingSetNodeID& ID) const {
@@ -1078,16 +1080,37 @@ RegionOffset MemRegion::getAsOffset() const {
 
   while (1) {
     switch (R->getKind()) {
-    default:
-      return RegionOffset(R, RegionOffset::Symbolic);
+    case GenericMemSpaceRegionKind:
+    case StackLocalsSpaceRegionKind:
+    case StackArgumentsSpaceRegionKind:
+    case HeapSpaceRegionKind:
+    case UnknownSpaceRegionKind:
+    case StaticGlobalSpaceRegionKind:
+    case GlobalInternalSpaceRegionKind:
+    case GlobalSystemSpaceRegionKind:
+    case GlobalImmutableSpaceRegionKind:
+      // Stores can bind directly to a region space to set a default value.
+      assert(Offset == 0 && !SymbolicOffsetBase);
+      goto Finish;
+
+    case FunctionTextRegionKind:
+    case BlockTextRegionKind:
+    case BlockDataRegionKind:
+      // These will never have bindings, but may end up having values requested
+      // if the user does some strange casting.
+      if (Offset != 0)
+        SymbolicOffsetBase = R;
+      goto Finish;
 
     case SymbolicRegionKind:
     case AllocaRegionKind:
     case CompoundLiteralRegionKind:
     case CXXThisRegionKind:
     case StringRegionKind:
+    case ObjCStringRegionKind:
     case VarRegionKind:
     case CXXTempObjectRegionKind:
+      // Usual base regions.
       goto Finish;
 
     case ObjCIvarRegionKind:
@@ -1207,6 +1230,29 @@ RegionOffset MemRegion::getAsOffset() const {
 // BlockDataRegion
 //===----------------------------------------------------------------------===//
 
+std::pair<const VarRegion *, const VarRegion *>
+BlockDataRegion::getCaptureRegions(const VarDecl *VD) {
+  MemRegionManager &MemMgr = *getMemRegionManager();
+  const VarRegion *VR = 0;
+  const VarRegion *OriginalVR = 0;
+
+  if (!VD->getAttr<BlocksAttr>() && VD->hasLocalStorage()) {
+    VR = MemMgr.getVarRegion(VD, this);
+    OriginalVR = MemMgr.getVarRegion(VD, LC);
+  }
+  else {
+    if (LC) {
+      VR = MemMgr.getVarRegion(VD, LC);
+      OriginalVR = VR;
+    }
+    else {
+      VR = MemMgr.getVarRegion(VD, MemMgr.getUnknownRegion());
+      OriginalVR = MemMgr.getVarRegion(VD, LC);
+    }
+  }
+  return std::make_pair(VR, OriginalVR);
+}
+
 void BlockDataRegion::LazyInitializeReferencedVars() {
   if (ReferencedVars)
     return;
@@ -1231,25 +1277,9 @@ void BlockDataRegion::LazyInitializeReferencedVars() {
   new (BVOriginal) VarVec(BC, E - I);
 
   for ( ; I != E; ++I) {
-    const VarDecl *VD = *I;
     const VarRegion *VR = 0;
     const VarRegion *OriginalVR = 0;
-
-    if (!VD->getAttr<BlocksAttr>() && VD->hasLocalStorage()) {
-      VR = MemMgr.getVarRegion(VD, this);
-      OriginalVR = MemMgr.getVarRegion(VD, LC);
-    }
-    else {
-      if (LC) {
-        VR = MemMgr.getVarRegion(VD, LC);
-        OriginalVR = VR;
-      }
-      else {
-        VR = MemMgr.getVarRegion(VD, MemMgr.getUnknownRegion());
-        OriginalVR = MemMgr.getVarRegion(VD, LC);
-      }
-    }
-
+    llvm::tie(VR, OriginalVR) = getCaptureRegions(*I);
     assert(VR);
     assert(OriginalVR);
     BV->push_back(VR, BC);
@@ -1292,4 +1322,14 @@ BlockDataRegion::referenced_vars_end() const {
 
   return BlockDataRegion::referenced_vars_iterator(Vec->end(),
                                                    VecOriginal->end());
+}
+
+const VarRegion *BlockDataRegion::getOriginalRegion(const VarRegion *R) const {
+  for (referenced_vars_iterator I = referenced_vars_begin(),
+                                E = referenced_vars_end();
+       I != E; ++I) {
+    if (I.getCapturedRegion() == R)
+      return I.getOriginalRegion();
+  }
+  return 0;
 }

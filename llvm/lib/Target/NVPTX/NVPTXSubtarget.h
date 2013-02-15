@@ -14,8 +14,8 @@
 #ifndef NVPTXSUBTARGET_H
 #define NVPTXSUBTARGET_H
 
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include "NVPTX.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 
 #define GET_SUBTARGETINFO_HEADER
 #include "NVPTXGenSubtargetInfo.inc"
@@ -28,7 +28,6 @@ class NVPTXSubtarget : public NVPTXGenSubtargetInfo {
   
   std::string TargetName;
   NVPTX::DrvInterface drvInterface;
-  bool dummy; // For the 'dummy' feature, see NVPTX.td
   bool Is64Bit;
 
   // PTX version x.y is represented as 10*x+y, e.g. 3.1 == 31
@@ -58,6 +57,7 @@ public:
   bool hasF32FTZ() const { return SmVersion >= 20; }
   bool hasFMAF32() const { return SmVersion >= 20; }
   bool hasFMAF64() const { return SmVersion >= 13; }
+  bool hasLDG() const { return SmVersion >= 32; }
   bool hasLDU() const { return SmVersion >= 20; }
   bool hasGenericLdSt() const { return SmVersion >= 20; }
   inline bool hasHWROT32() const { return false; }

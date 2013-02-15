@@ -82,6 +82,15 @@ public:
     ConstString
     GetConstQualifiedTypeName ();
 
+    static lldb::BasicType
+    GetBasicTypeEnumeration (const ConstString &name);
+
+    static ClangASTType
+    GetBasicType (clang::ASTContext *ast, lldb::BasicType type);
+
+    static ClangASTType
+    GetBasicType (clang::ASTContext *ast, const ConstString &name);
+
     static ConstString
     GetConstTypeName (clang::ASTContext *ast,
                       lldb::clang_type_t clang_type);
@@ -97,6 +106,9 @@ public:
     static std::string
     GetTypeNameForOpaqueQualType (clang::ASTContext *ast,
                                   lldb::clang_type_t opaque_qual_type);
+
+    uint32_t
+    GetClangTypeByteSize ();
 
     uint32_t
     GetClangTypeBitWidth ();

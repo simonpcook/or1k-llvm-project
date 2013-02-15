@@ -19,6 +19,9 @@ class StdMapDataFormatterTestCase(TestBase):
         self.buildDsym()
         self.data_formatter_commands()
 
+    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
+    @skipIfGcc # bugzilla 15036: When built with GCC, this test causes lldb to crash with
+               # assert DeclCXX.h:554 queried property of class with no definition
     @dwarf_test
     def test_with_dwarf_and_run_command(self):
         """Test data formatter commands."""
@@ -56,7 +59,7 @@ class StdMapDataFormatterTestCase(TestBase):
         # Execute the cleanup function during test case tear down.
         self.addTearDownHook(cleanup)
 
-        self.runCmd("frame variable ii -T")
+        self.runCmd("frame variable ii --show-types")
         
         self.runCmd("type summary add -x \"std::map<\" --summary-string \"map has ${svar%#} items\" -e") 
         
@@ -136,7 +139,7 @@ class StdMapDataFormatterTestCase(TestBase):
                                '{}'])
         
         self.runCmd("n")
-        self.runCmd("frame variable si -T")
+        self.runCmd("frame variable si --show-types")
 
         self.expect('frame variable si',
                     substrs = ['map has 0 items',
@@ -211,7 +214,7 @@ class StdMapDataFormatterTestCase(TestBase):
                                '{}'])
 
         self.runCmd("n")
-        self.runCmd("frame variable is -T")
+        self.runCmd("frame variable is --show-types")
         
         self.expect('frame variable is',
                     substrs = ['map has 0 items',
@@ -272,7 +275,7 @@ class StdMapDataFormatterTestCase(TestBase):
                                '{}'])
 
         self.runCmd("n")
-        self.runCmd("frame variable ss -T")
+        self.runCmd("frame variable ss --show-types")
         
         self.expect('frame variable ss',
                     substrs = ['map has 0 items',

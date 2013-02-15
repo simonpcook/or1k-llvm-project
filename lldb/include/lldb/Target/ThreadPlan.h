@@ -332,7 +332,7 @@ public:
     ValidatePlan (Stream *error) = 0;
 
     virtual bool
-    PlanExplainsStop () = 0;
+    PlanExplainsStop (Event *event_ptr) = 0;
     
     bool
     TracerExplainsStop ()
@@ -492,6 +492,17 @@ public:
     GetReturnValueObject ()
     {
         return lldb::ValueObjectSP();
+    }
+    
+    // If a thread plan stores the state before it was run, then you might
+    // want to restore the state when it is done.  This will do that job.
+    // This is mostly useful for artificial plans like CallFunction plans.
+    
+    virtual bool
+    RestoreThreadState()
+    {
+        // Nothing to do in general.
+        return true;
     }
     
 protected:

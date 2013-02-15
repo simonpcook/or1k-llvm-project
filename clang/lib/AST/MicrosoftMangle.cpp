@@ -13,6 +13,7 @@
 
 #include "clang/AST/Mangle.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
@@ -21,18 +22,30 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/Basic/ABI.h"
 #include "clang/Basic/DiagnosticOptions.h"
-
 #include <map>
 
 using namespace clang;
 
 namespace {
 
+static const FunctionDecl *getStructor(const FunctionDecl *fn) {
+  if (const FunctionTemplateDecl *ftd = fn->getPrimaryTemplate())
+    return ftd->getTemplatedDecl();
+
+  return fn;
+}
+
 /// MicrosoftCXXNameMangler - Manage the mangling of a single name for the
 /// Microsoft Visual C++ ABI.
 class MicrosoftCXXNameMangler {
   MangleContext &Context;
   raw_ostream &Out;
+
+  /// The "structor" is the top-level declaration being mangled, if
+  /// that's not a template specialization; otherwise it's the pattern
+  /// for that specialization.
+  const NamedDecl *Structor;
+  unsigned StructorType;
 
   // FIXME: audit the performance of BackRefMap as it might do way too many
   // copying of strings.
@@ -47,7 +60,15 @@ class MicrosoftCXXNameMangler {
 
 public:
   MicrosoftCXXNameMangler(MangleContext &C, raw_ostream &Out_)
-  : Context(C), Out(Out_), UseNameBackReferences(true) { }
+    : Context(C), Out(Out_),
+      Structor(0), StructorType(-1),
+      UseNameBackReferences(true) { }
+
+  MicrosoftCXXNameMangler(MangleContext &C, raw_ostream &Out_,
+                          const CXXDestructorDecl *D, CXXDtorType Type)
+    : Context(C), Out(Out_),
+      Structor(getStructor(D)), StructorType(Type),
+      UseNameBackReferences(true) { }
 
   raw_ostream &getStream() const { return Out; }
 
@@ -68,6 +89,7 @@ private:
   void mangleSourceName(const IdentifierInfo *II);
   void manglePostfix(const DeclContext *DC, bool NoFunction=false);
   void mangleOperatorName(OverloadedOperatorKind OO, SourceLocation Loc);
+  void mangleCXXDtorType(CXXDtorType T);
   void mangleQualifiers(Qualifiers Quals, bool IsMember);
   void manglePointerQualifiers(Qualifiers Quals);
 
@@ -96,7 +118,7 @@ private:
   void mangleExtraDimensions(QualType T);
   void mangleFunctionClass(const FunctionDecl *FD);
   void mangleCallingConvention(const FunctionType *T, bool IsInstMethod = false);
-  void mangleIntegerLiteral(QualType T, const llvm::APSInt &Number);
+  void mangleIntegerLiteral(const llvm::APSInt &Number, bool IsBoolean);
   void mangleExpression(const Expr *E);
   void mangleThrowSpecification(const FunctionProtoType *T);
 
@@ -373,7 +395,7 @@ isTemplate(const NamedDecl *ND,
       dyn_cast<ClassTemplateSpecializationDecl>(ND)) {
     TypeSourceInfo *TSI = Spec->getTypeAsWritten();
     if (TSI) {
-      TemplateSpecializationTypeLoc &TSTL =
+      TemplateSpecializationTypeLoc TSTL =
         cast<TemplateSpecializationTypeLoc>(TSI->getTypeLoc());
       TemplateArgumentListInfo LI(TSTL.getLAngleLoc(), TSTL.getRAngleLoc());
       for (unsigned i = 0, e = TSTL.getNumArgs(); i != e; ++i)
@@ -453,7 +475,7 @@ MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       
       if (const NamespaceDecl *NS = dyn_cast<NamespaceDecl>(ND)) {
         if (NS->isAnonymousNamespace()) {
-          Out << "?A";
+          Out << "?A@";
           break;
         }
       }
@@ -485,7 +507,14 @@ MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       break;
       
     case DeclarationName::CXXDestructorName:
-      Out << "?1";
+      if (ND == Structor)
+        // If the named decl is the C++ destructor we're mangling,
+        // use the type we were given.
+        mangleCXXDtorType(static_cast<CXXDtorType>(StructorType));
+      else
+        // Otherwise, use the complete destructor name. This is relevant if a
+        // class with a destructor is declared within a destructor.
+        mangleCXXDtorType(Dtor_Complete);
       break;
       
     case DeclarationName::CXXConversionFunctionName:
@@ -541,6 +570,23 @@ void MicrosoftCXXNameMangler::manglePostfix(const DeclContext *DC,
     mangleUnqualifiedName(cast<NamedDecl>(DC));
     manglePostfix(DC->getParent(), NoFunction);
   }
+}
+
+void MicrosoftCXXNameMangler::mangleCXXDtorType(CXXDtorType T) {
+  switch (T) {
+  case Dtor_Deleting:
+    Out << "?_G";
+    return;
+  case Dtor_Base:
+    // FIXME: We should be asked to mangle base dtors.
+    // However, fixing this would require larger changes to the CodeGenModule.
+    // Please put llvm_unreachable here when CGM is changed.
+    // For now, just mangle a base dtor the same way as a complete dtor...
+  case Dtor_Complete:
+    Out << "?1";
+    return;
+  }
+  llvm_unreachable("Unsupported dtor type?");
 }
 
 void MicrosoftCXXNameMangler::mangleOperatorName(OverloadedOperatorKind OO,
@@ -742,13 +788,17 @@ void MicrosoftCXXNameMangler::mangleTemplateInstantiationName(
   // Always start with the unqualified name.
 
   // Templates have their own context for back references.
-  BackRefMap TemplateContext;
-  NameBackReferences.swap(TemplateContext);
+  ArgBackRefMap OuterArgsContext;
+  BackRefMap OuterTemplateContext;
+  NameBackReferences.swap(OuterTemplateContext);
+  TypeBackReferences.swap(OuterArgsContext);
 
   mangleUnscopedTemplateName(TD);
   mangleTemplateArgs(TemplateArgs);
 
-  NameBackReferences.swap(TemplateContext);
+  // Restore the previous back reference contexts.
+  NameBackReferences.swap(OuterTemplateContext);
+  TypeBackReferences.swap(OuterArgsContext);
 }
 
 void
@@ -759,13 +809,13 @@ MicrosoftCXXNameMangler::mangleUnscopedTemplateName(const TemplateDecl *TD) {
 }
 
 void
-MicrosoftCXXNameMangler::mangleIntegerLiteral(QualType T,
-                                              const llvm::APSInt &Value) {
+MicrosoftCXXNameMangler::mangleIntegerLiteral(const llvm::APSInt &Value,
+                                              bool IsBoolean) {
   // <integer-literal> ::= $0 <number>
   Out << "$0";
   // Make sure booleans are encoded as 0/1.
-  if (T->isBooleanType())
-    Out << (Value.getBoolValue() ? "0" : "A@");
+  if (IsBoolean && Value.getBoolValue())
+    mangleNumber(1);
   else
     mangleNumber(Value);
 }
@@ -775,7 +825,7 @@ MicrosoftCXXNameMangler::mangleExpression(const Expr *E) {
   // See if this is a constant expression.
   llvm::APSInt Value;
   if (E->isIntegerConstantExpr(Value, Context.getASTContext())) {
-    mangleIntegerLiteral(E->getType(), Value);
+    mangleIntegerLiteral(Value, E->getType()->isBooleanType());
     return;
   }
 
@@ -802,7 +852,8 @@ MicrosoftCXXNameMangler::mangleTemplateArgs(
       mangleType(TA.getAsType(), TAL.getSourceRange());
       break;
     case TemplateArgument::Integral:
-      mangleIntegerLiteral(TA.getIntegralType(), TA.getAsIntegral());
+      mangleIntegerLiteral(TA.getAsIntegral(),
+                           TA.getIntegralType()->isBooleanType());
       break;
     case TemplateArgument::Expression:
       mangleExpression(TA.getAsExpr());
@@ -1048,6 +1099,15 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T,
   case BuiltinType::ObjCId: Out << "PAUobjc_object@@"; break;
   case BuiltinType::ObjCClass: Out << "PAUobjc_class@@"; break;
   case BuiltinType::ObjCSel: Out << "PAUobjc_selector@@"; break;
+
+  case BuiltinType::OCLImage1d: Out << "PAUocl_image1d@@"; break;
+  case BuiltinType::OCLImage1dArray: Out << "PAUocl_image1darray@@"; break;
+  case BuiltinType::OCLImage1dBuffer: Out << "PAUocl_image1dbuffer@@"; break;
+  case BuiltinType::OCLImage2d: Out << "PAUocl_image2d@@"; break;
+  case BuiltinType::OCLImage2dArray: Out << "PAUocl_image2darray@@"; break;
+  case BuiltinType::OCLImage3d: Out << "PAUocl_image3d@@"; break;
+  case BuiltinType::OCLSampler: Out << "PAUocl_sampler@@"; break;
+  case BuiltinType::OCLEvent: Out << "PAUocl_event@@"; break;
  
   case BuiltinType::NullPtr: Out << "$$T"; break;
 
@@ -1096,9 +1156,18 @@ void MicrosoftCXXNameMangler::mangleType(const FunctionType *T,
 
   // <return-type> ::= <type>
   //               ::= @ # structors (they have no declared return type)
-  if (IsStructor)
+  if (IsStructor) {
+    if (isa<CXXDestructorDecl>(D) && D == Structor &&
+        StructorType == Dtor_Deleting) {
+      // The scalar deleting destructor takes an extra int argument.
+      // However, the FunctionType generated has 0 arguments.
+      // FIXME: This is a temporary hack.
+      // Maybe should fix the FunctionType creation instead?
+      Out << "PAXI@Z";
+      return;
+    }
     Out << '@';
-  else {
+  } else {
     QualType Result = Proto->getResultType();
     const Type* RT = Result.getTypePtr();
     if (!RT->isAnyPointerType() && !RT->isReferenceType()) {
@@ -1697,7 +1766,7 @@ void MicrosoftMangleContext::mangleCXXCtor(const CXXConstructorDecl *D,
 void MicrosoftMangleContext::mangleCXXDtor(const CXXDestructorDecl *D,
                                            CXXDtorType Type,
                                            raw_ostream & Out) {
-  MicrosoftCXXNameMangler mangler(*this, Out);
+  MicrosoftCXXNameMangler mangler(*this, Out, D, Type);
   mangler.mangle(D);
 }
 void MicrosoftMangleContext::mangleReferenceTemporary(const clang::VarDecl *VD,

@@ -76,15 +76,20 @@ UniversalArchs.asan_osx := $(call CheckArches,i386 x86_64,asan_osx)
 Configs += asan_osx_dynamic
 UniversalArchs.asan_osx_dynamic := $(call CheckArches,i386 x86_64,asan_osx_dynamic)
 
+Configs += ubsan_osx
+UniversalArchs.ubsan_osx := $(call CheckArches,i386 x86_64,ubsan_osx)
+
 # Darwin 10.6 has a bug in cctools that makes it unable to use ranlib on our ARM
 # object files. If we are on that platform, strip out all ARM archs. We still
 # build the libraries themselves so that Clang can find them where it expects
 # them, even though they might not have an expected slice.
+ifneq ($(shell which sw_vers),)
 ifneq ($(shell sw_vers -productVersion | grep 10.6),)
 UniversalArchs.ios := $(filter-out armv7, $(UniversalArchs.ios))
 UniversalArchs.cc_kext := $(filter-out armv7, $(UniversalArchs.cc_kext))
 UniversalArchs.cc_kext_ios5 := $(filter-out armv7, $(UniversalArchs.cc_kext_ios5))
 UniversalArchs.profile_ios := $(filter-out armv7, $(UniversalArchs.profile_ios))
+endif
 endif
 
 # If RC_SUPPORTED_ARCHS is defined, treat it as a list of the architectures we
@@ -126,10 +131,14 @@ IOSSIM_DEPLOYMENT_ARGS += -isysroot $(ProjSrcRoot)/SDKs/darwin
 CFLAGS.eprintf		:= $(CFLAGS) $(OSX_DEPLOYMENT_ARGS)
 CFLAGS.10.4		:= $(CFLAGS) $(OSX_DEPLOYMENT_ARGS)
 # FIXME: We can't build ASAN with our stub SDK yet.
-CFLAGS.asan_osx         := $(CFLAGS) -mmacosx-version-min=10.5 -fno-builtin
+CFLAGS.asan_osx         := $(CFLAGS) -mmacosx-version-min=10.5 -fno-builtin \
+                           -DASAN_FLEXIBLE_MAPPING_AND_OFFSET=1
 CFLAGS.asan_osx_dynamic := \
 	$(CFLAGS) -mmacosx-version-min=10.5 -fno-builtin \
-	-DMAC_INTERPOSE_FUNCTIONS=1
+	-DMAC_INTERPOSE_FUNCTIONS=1 \
+  -DASAN_FLEXIBLE_MAPPING_AND_OFFSET=1
+
+CFLAGS.ubsan_osx	:= $(CFLAGS) -mmacosx-version-min=10.5 -fno-builtin
 
 CFLAGS.ios.i386		:= $(CFLAGS) $(IOSSIM_DEPLOYMENT_ARGS)
 CFLAGS.ios.x86_64	:= $(CFLAGS) $(IOSSIM_DEPLOYMENT_ARGS)
@@ -160,7 +169,7 @@ CFLAGS.profile_ios.armv7s := $(CFLAGS) $(IOS_DEPLOYMENT_ARGS)
 
 # Configure the asan_osx_dynamic library to be built shared.
 SHARED_LIBRARY.asan_osx_dynamic := 1
-LDFLAGS.asan_osx_dynamic := -framework Foundation -lstdc++
+LDFLAGS.asan_osx_dynamic := -framework Foundation -lstdc++ -undefined dynamic_lookup
 
 FUNCTIONS.eprintf := eprintf
 FUNCTIONS.10.4 := eprintf floatundidf floatundisf floatundixf
@@ -182,6 +191,8 @@ FUNCTIONS.asan_osx := $(AsanFunctions) $(InterceptionFunctions) \
 FUNCTIONS.asan_osx_dynamic := $(AsanFunctions) $(InterceptionFunctions) \
                               $(SanitizerCommonFunctions) \
 	                      $(AsanDynamicFunctions)
+
+FUNCTIONS.ubsan_osx := $(UbsanFunctions) $(SanitizerCommonFunctions)
 
 CCKEXT_COMMON_FUNCTIONS := \
 	absvdi2 \

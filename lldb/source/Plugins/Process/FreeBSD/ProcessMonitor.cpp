@@ -502,8 +502,8 @@ SingleStepOperation::Execute(ProcessMonitor *monitor)
 class SiginfoOperation : public Operation
 {
 public:
-    SiginfoOperation(lldb::tid_t tid, void *info, bool &result)
-        : m_tid(tid), m_info(info), m_result(result) { }
+    SiginfoOperation(lldb::tid_t tid, void *info, bool &result, int &ptrace_err)
+        : m_tid(tid), m_info(info), m_result(result), m_err(ptrace_err) { }
 
     void Execute(ProcessMonitor *monitor);
 
@@ -511,6 +511,7 @@ private:
     lldb::tid_t m_tid;
     void *m_info;
     bool &m_result;
+    int &m_err;
 };
 
 void
@@ -518,9 +519,10 @@ SiginfoOperation::Execute(ProcessMonitor *monitor)
 {
     struct ptrace_lwpinfo plwp;
 
-    if (PTRACE(PT_LWPINFO, m_tid, (caddr_t)&plwp, sizeof(plwp)))
+    if (PTRACE(PT_LWPINFO, m_tid, (caddr_t)&plwp, sizeof(plwp))) {
         m_result = false;
-    else {
+        m_err = errno;
+    } else {
         memcpy(m_info, &plwp.pl_siginfo, sizeof(siginfo_t));
         m_result = true;
     }
@@ -625,14 +627,16 @@ ProcessMonitor::LaunchArgs::LaunchArgs(ProcessMonitor *monitor,
                                        char const **envp,
                                        const char *stdin_path,
                                        const char *stdout_path,
-                                       const char *stderr_path)
+                                       const char *stderr_path,
+                                       const char *working_dir)
     : OperationArgs(monitor),
       m_module(module),
       m_argv(argv),
       m_envp(envp),
       m_stdin_path(stdin_path),
       m_stdout_path(stdout_path),
-      m_stderr_path(stderr_path) { }
+      m_stderr_path(stderr_path),
+      m_working_dir(working_dir) { }
 
 ProcessMonitor::LaunchArgs::~LaunchArgs()
 { }
@@ -663,6 +667,7 @@ ProcessMonitor::ProcessMonitor(ProcessPOSIX *process,
                                const char *stdin_path,
                                const char *stdout_path,
                                const char *stderr_path,
+                               const char *working_dir,
                                lldb_private::Error &error)
     : m_process(static_cast<ProcessFreeBSD *>(process)),
       m_operation_thread(LLDB_INVALID_HOST_THREAD),
@@ -676,7 +681,7 @@ ProcessMonitor::ProcessMonitor(ProcessPOSIX *process,
     std::auto_ptr<LaunchArgs> args;
 
     args.reset(new LaunchArgs(this, module, argv, envp,
-                              stdin_path, stdout_path, stderr_path));
+                              stdin_path, stdout_path, stderr_path, working_dir));
     
 
     // Server/client descriptors.
@@ -837,6 +842,7 @@ ProcessMonitor::Launch(LaunchArgs *args)
     const char *stdin_path = args->m_stdin_path;
     const char *stdout_path = args->m_stdout_path;
     const char *stderr_path = args->m_stderr_path;
+    const char *working_dir = args->m_working_dir;
     lldb::pid_t pid;
 
     lldb::ThreadSP inferior;
@@ -851,6 +857,7 @@ ProcessMonitor::Launch(LaunchArgs *args)
         eDupStdinFailed,
         eDupStdoutFailed,
         eDupStderrFailed,
+        eChdirFailed,
         eExecFailed
     };
 
@@ -885,6 +892,11 @@ ProcessMonitor::Launch(LaunchArgs *args)
             if (!DupDescriptor(stderr_path, STDERR_FILENO, O_WRONLY | O_CREAT))
                 exit(eDupStderrFailed);
 
+        // Change working directory
+        if (working_dir != NULL && working_dir[0])
+          if (0 != ::chdir(working_dir))
+              exit(eChdirFailed);
+
         // Execute.  We should never return.
         execve(argv[0],
                const_cast<char *const *>(argv),
@@ -917,6 +929,9 @@ ProcessMonitor::Launch(LaunchArgs *args)
                 break;
             case eDupStderrFailed: 
                 args->m_error.SetErrorString("Child open stderr failed.");
+                break;
+            case eChdirFailed:
+                args->m_error.SetErrorString("Child failed to set working directory.");
                 break;
             case eExecFailed: 
                 args->m_error.SetErrorString("Child exec failed.");
@@ -1060,8 +1075,9 @@ ProcessMonitor::MonitorCallback(void *callback_baton,
     ProcessFreeBSD *process = monitor->m_process;
     bool stop_monitoring;
     siginfo_t info;
+    int ptrace_err;
 
-    if (!monitor->GetSignalInfo(pid, &info))
+    if (!monitor->GetSignalInfo(pid, &info, ptrace_err))
         stop_monitoring = true; // pid is gone.  Bail.
     else {
         switch (info.si_signo)
@@ -1407,7 +1423,8 @@ ProcessMonitor::WriteMemory(lldb::addr_t vm_addr, const void *buf, size_t size,
 }
 
 bool
-ProcessMonitor::ReadRegisterValue(unsigned offset, unsigned size, RegisterValue &value)
+ProcessMonitor::ReadRegisterValue(lldb::tid_t tid, unsigned offset,
+                                  unsigned size, RegisterValue &value)
 {
     bool result;
     ReadRegOperation op(offset, size, value, result);
@@ -1416,7 +1433,8 @@ ProcessMonitor::ReadRegisterValue(unsigned offset, unsigned size, RegisterValue 
 }
 
 bool
-ProcessMonitor::WriteRegisterValue(unsigned offset, const RegisterValue &value)
+ProcessMonitor::WriteRegisterValue(lldb::tid_t tid, unsigned offset,
+                                   const RegisterValue &value)
 {
     bool result;
     WriteRegOperation op(offset, value, result);
@@ -1425,7 +1443,7 @@ ProcessMonitor::WriteRegisterValue(unsigned offset, const RegisterValue &value)
 }
 
 bool
-ProcessMonitor::ReadGPR(void *buf)
+ProcessMonitor::ReadGPR(lldb::tid_t tid, void *buf)
 {
     bool result;
     ReadGPROperation op(buf, result);
@@ -1434,7 +1452,7 @@ ProcessMonitor::ReadGPR(void *buf)
 }
 
 bool
-ProcessMonitor::ReadFPR(void *buf)
+ProcessMonitor::ReadFPR(lldb::tid_t tid, void *buf)
 {
     bool result;
     ReadFPROperation op(buf, result);
@@ -1443,7 +1461,7 @@ ProcessMonitor::ReadFPR(void *buf)
 }
 
 bool
-ProcessMonitor::WriteGPR(void *buf)
+ProcessMonitor::WriteGPR(lldb::tid_t tid, void *buf)
 {
     bool result;
     WriteGPROperation op(buf, result);
@@ -1452,7 +1470,7 @@ ProcessMonitor::WriteGPR(void *buf)
 }
 
 bool
-ProcessMonitor::WriteFPR(void *buf)
+ProcessMonitor::WriteFPR(lldb::tid_t tid, void *buf)
 {
     bool result;
     WriteFPROperation op(buf, result);
@@ -1488,10 +1506,10 @@ ProcessMonitor::BringProcessIntoLimbo()
 }
 
 bool
-ProcessMonitor::GetSignalInfo(lldb::tid_t tid, void *siginfo)
+ProcessMonitor::GetSignalInfo(lldb::tid_t tid, void *siginfo, int &ptrace_err)
 {
     bool result;
-    SiginfoOperation op(tid, siginfo, result);
+    SiginfoOperation op(tid, siginfo, result, ptrace_err);
     DoOperation(&op);
     return result;
 }

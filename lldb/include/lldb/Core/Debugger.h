@@ -23,13 +23,14 @@
 
 #include "lldb/Core/Broadcaster.h"
 #include "lldb/Core/Communication.h"
-#include "lldb/Core/FormatManager.h"
 #include "lldb/Core/InputReaderStack.h"
 #include "lldb/Core/Listener.h"
 #include "lldb/Core/StreamFile.h"
 #include "lldb/Core/SourceManager.h"
 #include "lldb/Core/UserID.h"
 #include "lldb/Core/UserSettingsController.h"
+#include "lldb/DataFormatters/FormatManager.h"
+#include "lldb/Host/Terminal.h"
 #include "lldb/Interpreter/OptionValueProperties.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Platform.h"
@@ -116,6 +117,12 @@ public:
 
     void
     SetErrorFileHandle (FILE *fh, bool tranfer_ownership);
+    
+    void
+    SaveInputTerminalState();
+    
+    void
+    RestoreInputTerminalState();
 
     Stream&
     GetOutputStream ()
@@ -220,11 +227,11 @@ public:
     static lldb::DebuggerSP
     FindDebuggerWithInstanceName (const ConstString &instance_name);
     
-    static uint32_t
+    static size_t
     GetNumDebuggers();
     
     static lldb::DebuggerSP
-    GetDebuggerAtIndex (uint32_t);
+    GetDebuggerAtIndex (size_t index);
 
     static bool
     FormatPrompt (const char *format,
@@ -351,6 +358,7 @@ protected:
     StreamFile m_input_file;
     StreamFile m_output_file;
     StreamFile m_error_file;
+    TerminalState m_terminal_state;
     TargetList m_target_list;
     PlatformList m_platform_list;
     Listener m_listener;
@@ -361,7 +369,7 @@ protected:
 
     InputReaderStack m_input_reader_stack;
     std::string m_input_reader_data;
-    typedef std::map<std::string, lldb::StreamSP> LogStreamMap;
+    typedef std::map<std::string, lldb::StreamWP> LogStreamMap;
     LogStreamMap m_log_streams;
     lldb::StreamSP m_log_callback_stream_sp;
     ConstString m_instance_name;

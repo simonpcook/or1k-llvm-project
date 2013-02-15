@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 #include "sanitizer_common/sanitizer_libc.h"
 #include "tsan_platform.h"
+#include "tsan_rtl.h"
 #include "gtest/gtest.h"
 
 namespace __tsan {
@@ -58,31 +59,6 @@ TEST(Platform, ThreadInfoWorker) {
   pthread_t t;
   pthread_create(&t, 0, WorkerThread, 0);
   pthread_join(t, 0);
-}
-
-TEST(Platform, FileOps) {
-  const char *str1 = "qwerty";
-  uptr len1 = internal_strlen(str1);
-  const char *str2 = "zxcv";
-  uptr len2 = internal_strlen(str2);
-
-  fd_t fd = internal_open("./tsan_test.tmp", true);
-  EXPECT_NE(fd, kInvalidFd);
-  EXPECT_EQ(len1, internal_write(fd, str1, len1));
-  EXPECT_EQ(len2, internal_write(fd, str2, len2));
-  internal_close(fd);
-
-  fd = internal_open("./tsan_test.tmp", false);
-  EXPECT_NE(fd, kInvalidFd);
-  EXPECT_EQ(len1 + len2, internal_filesize(fd));
-  char buf[64] = {};
-  EXPECT_EQ(len1, internal_read(fd, buf, len1));
-  EXPECT_EQ(0, internal_memcmp(buf, str1, len1));
-  EXPECT_EQ((char)0, buf[len1 + 1]);
-  internal_memset(buf, 0, len1);
-  EXPECT_EQ(len2, internal_read(fd, buf, len2));
-  EXPECT_EQ(0, internal_memcmp(buf, str2, len2));
-  internal_close(fd);
 }
 
 }  // namespace __tsan

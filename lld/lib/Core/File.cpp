@@ -1,4 +1,4 @@
-//===- Core/File.cpp - A Contaier of Atoms --------------------------------===//
+//===- Core/File.cpp - A Container of Atoms -------------------------------===//
 //
 //                             The LLVM Linker
 //
@@ -18,4 +18,13 @@ StringRef File::translationUnitSource() const {
   return StringRef();
 }
 
-}
+
+File::atom_collection_empty<DefinedAtom>       File::_noDefinedAtoms;
+File::atom_collection_empty<UndefinedAtom>     File::_noUndefinedAtoms;
+File::atom_collection_empty<SharedLibraryAtom> File::_noSharedLibaryAtoms;
+File::atom_collection_empty<AbsoluteAtom>      File::_noAbsoluteAtoms;
+
+
+
+
+} // namespace lld

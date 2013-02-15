@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include <string>
 #include <vector>
 
@@ -70,12 +72,14 @@ static PropertyDefinition
 g_properties[] =
 {
     { "expand-regex-aliases", OptionValue::eTypeBoolean, true, false, NULL, NULL, "If true, regular expression alias commands will show the expanded command that will be executed. This can be used to debug new regular expression alias commands." },
+    { "prompt-on-quit", OptionValue::eTypeBoolean, true, true, NULL, NULL, "If true, LLDB will prompt you before quitting if there are any live processes being debugged. If false, LLDB will quit without asking in any case." },
     { NULL                  , OptionValue::eTypeInvalid, true, 0    , NULL, NULL, NULL }
 };
 
 enum
 {
-    ePropertyExpandRegexAliases = 0
+    ePropertyExpandRegexAliases = 0,
+    ePropertyPromptOnQuit = 1
 };
 
 ConstString &
@@ -119,7 +123,12 @@ CommandInterpreter::GetExpandRegexAliases () const
     return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
 }
 
-
+bool
+CommandInterpreter::GetPromptOnQuit () const
+{
+    const uint32_t idx = ePropertyPromptOnQuit;
+    return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
+}
 
 void
 CommandInterpreter::Initialize ()
@@ -211,11 +220,17 @@ CommandInterpreter::Initialize ()
         AddAlias ("t", cmd_obj_sp);
     }
 
-    cmd_obj_sp = GetCommandSPExact ("source list", false);
+    cmd_obj_sp = GetCommandSPExact ("_regexp-list", false);
     if (cmd_obj_sp)
     {
         AddAlias ("l", cmd_obj_sp);
         AddAlias ("list", cmd_obj_sp);
+    }
+
+    cmd_obj_sp = GetCommandSPExact ("_regexp-env", false);
+    if (cmd_obj_sp)
+    {
+        AddAlias ("env", cmd_obj_sp);
     }
 
     cmd_obj_sp = GetCommandSPExact ("memory read", false);
@@ -277,7 +292,7 @@ CommandInterpreter::Initialize ()
         AddOrReplaceAliasOptions ("call", alias_arguments_vector_sp);
 
         alias_arguments_vector_sp.reset (new OptionArgVector);
-        ProcessAliasOptionsArgs (cmd_obj_sp, "-o --", alias_arguments_vector_sp);
+        ProcessAliasOptionsArgs (cmd_obj_sp, "-O --", alias_arguments_vector_sp);
         AddAlias ("po", cmd_obj_sp);
         AddOrReplaceAliasOptions ("po", alias_arguments_vector_sp);
     }
@@ -386,10 +401,11 @@ CommandInterpreter::LoadCommandDictionary ()
 
     const char *break_regexes[][2] = {{"^(.*[^[:space:]])[[:space:]]*:[[:space:]]*([[:digit:]]+)[[:space:]]*$", "breakpoint set --file '%1' --line %2"},
                                       {"^([[:digit:]]+)[[:space:]]*$", "breakpoint set --line %1"},
-                                      {"^(0x[[:xdigit:]]+)[[:space:]]*$", "breakpoint set --address %1"},
-                                      {"^[\"']?([-+]\\[.*\\])[\"']?[[:space:]]*$", "breakpoint set --name '%1'"},
+                                      {"^\\*?(0x[[:xdigit:]]+)[[:space:]]*$", "breakpoint set --address %1"},
+                                      {"^[\"']?([-+]?\\[.*\\])[\"']?[[:space:]]*$", "breakpoint set --name '%1'"},
                                       {"^(-.*)$", "breakpoint set %1"},
                                       {"^(.*[^[:space:]])`(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%2' --shlib '%1'"},
+                                      {"^\\&(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%1' --skip-prologue=0"},
                                       {"^(.*[^[:space:]])[[:space:]]*$", "breakpoint set --name '%1'"}};
     
     size_t num_regexes = sizeof break_regexes/sizeof(char *[2]);
@@ -453,8 +469,10 @@ CommandInterpreter::LoadCommandDictionary ()
                                                        "_regexp-attach [<pid>]\n_regexp-attach [<process-name>]", 2));
     if (attach_regex_cmd_ap.get())
     {
-        if (attach_regex_cmd_ap->AddRegexCommand("^([0-9]+)$", "process attach --pid %1") &&
-            attach_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])[[:space:]]*$", "process attach --name '%1'"))
+        if (attach_regex_cmd_ap->AddRegexCommand("^([0-9]+)[[:space:]]*$", "process attach --pid %1") &&
+            attach_regex_cmd_ap->AddRegexCommand("^(-.*|.* -.*)$", "process attach %1") && // Any options that are specified get passed to 'process attach'
+            attach_regex_cmd_ap->AddRegexCommand("^(.+)$", "process attach --name '%1'") &&
+            attach_regex_cmd_ap->AddRegexCommand("^$", "process attach"))
         {
             CommandObjectSP attach_regex_cmd_sp(attach_regex_cmd_ap.release());
             m_command_dict[attach_regex_cmd_sp->GetCommandName ()] = attach_regex_cmd_sp;
@@ -569,6 +587,40 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
+    std::auto_ptr<CommandObjectRegexCommand>
+    list_regex_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                     "_regexp-list",
+                                                     "Implements the GDB 'list' command in all of its forms except FILE:FUNCTION and maps them to the appropriate 'source list' commands.",
+                                                     "_regexp-list [<line>]\n_regexp-attach [<file>:<line>]\n_regexp-attach [<file>:<line>]", 2));
+    if (list_regex_cmd_ap.get())
+    {
+        if (list_regex_cmd_ap->AddRegexCommand("^([0-9]+)[[:space:]]*$", "source list --line %1") &&
+            list_regex_cmd_ap->AddRegexCommand("^(.*[^[:space:]])[[:space:]]*:[[:space:]]*([[:digit:]]+)[[:space:]]*$", "source list --file '%1' --line %2") &&
+            list_regex_cmd_ap->AddRegexCommand("^\\*?(0x[[:xdigit:]]+)[[:space:]]*$", "source list --address %1") &&
+            list_regex_cmd_ap->AddRegexCommand("^-[[:space:]]*$", "source list --reverse") &&
+            list_regex_cmd_ap->AddRegexCommand("^(.+)$", "source list --name \"%1\"") &&
+            list_regex_cmd_ap->AddRegexCommand("^$", "source list"))
+        {
+            CommandObjectSP list_regex_cmd_sp(list_regex_cmd_ap.release());
+            m_command_dict[list_regex_cmd_sp->GetCommandName ()] = list_regex_cmd_sp;
+        }
+    }
+
+    std::auto_ptr<CommandObjectRegexCommand>
+    env_regex_cmd_ap(new CommandObjectRegexCommand (*this,
+                                                     "_regexp-env",
+                                                     "Implements a shortcut to viewing and setting environment variables.",
+                                                     "_regexp-env\n_regexp-env FOO=BAR", 2));
+    if (env_regex_cmd_ap.get())
+    {
+        if (env_regex_cmd_ap->AddRegexCommand("^$", "settings show target.env-vars") &&
+            env_regex_cmd_ap->AddRegexCommand("^([A-Za-z_][A-Za-z_0-9]*=.*)$", "settings set target.env-vars %1"))
+        {
+            CommandObjectSP env_regex_cmd_sp(env_regex_cmd_ap.release());
+            m_command_dict[env_regex_cmd_sp->GetCommandName ()] = env_regex_cmd_sp;
+        }
+    }
+
 }
 
 int
@@ -589,7 +641,7 @@ CommandObjectSP
 CommandInterpreter::GetCommandSP (const char *cmd_cstr, bool include_aliases, bool exact, StringList *matches)
 {
     CommandObject::CommandMap::iterator pos;
-    CommandObjectSP ret_val;
+    CommandObjectSP command_sp;
 
     std::string cmd(cmd_cstr);
 
@@ -597,24 +649,24 @@ CommandInterpreter::GetCommandSP (const char *cmd_cstr, bool include_aliases, bo
     {
         pos = m_command_dict.find(cmd);
         if (pos != m_command_dict.end())
-            ret_val = pos->second;
+            command_sp = pos->second;
     }
 
     if (include_aliases && HasAliases())
     {
         pos = m_alias_dict.find(cmd);
         if (pos != m_alias_dict.end())
-            ret_val = pos->second;
+            command_sp = pos->second;
     }
 
     if (HasUserCommands())
     {
         pos = m_user_dict.find(cmd);
         if (pos != m_user_dict.end())
-            ret_val = pos->second;
+            command_sp = pos->second;
     }
 
-    if (!exact && !ret_val)
+    if (!exact && !command_sp)
     {
         // We will only get into here if we didn't find any exact matches.
         
@@ -684,13 +736,13 @@ CommandInterpreter::GetCommandSP (const char *cmd_cstr, bool include_aliases, bo
                 return user_match_sp;
         }
     }
-    else if (matches && ret_val)
+    else if (matches && command_sp)
     {
         matches->AppendString (cmd_cstr);
     }
 
 
-    return ret_val;
+    return command_sp;
 }
 
 bool
@@ -860,7 +912,7 @@ CommandInterpreter::ProcessAliasOptionsArgs (lldb::CommandObjectSP &cmd_obj_sp,
                                                                           options_string)));
         else
         {
-            int argc = args.GetArgumentCount();
+            const size_t argc = args.GetArgumentCount();
             for (size_t i = 0; i < argc; ++i)
                 if (strcmp (args.GetArgumentAtIndex (i), "") != 0)
                     option_arg_vector->push_back 
@@ -970,7 +1022,7 @@ CommandInterpreter::GetHelp (CommandReturnObject &result,
                              uint32_t cmd_types)
 {
     CommandObject::CommandMap::const_iterator pos;
-    uint32_t max_len = FindLongestCommandWord (m_command_dict);
+    size_t max_len = FindLongestCommandWord (m_command_dict);
     
     if ( (cmd_types & eCommandTypesBuiltin) == eCommandTypesBuiltin )
     {
@@ -1316,6 +1368,7 @@ CommandInterpreter::PreprocessCommand (std::string &command)
                     EvaluateExpressionOptions options;
                     options.SetCoerceToId(false)
                     .SetUnwindOnError(true)
+                    .SetIgnoreBreakpoints(true)
                     .SetKeepInMemory(false)
                     .SetRunOthers(true)
                     .SetTimeoutUsec(0);
@@ -1370,6 +1423,9 @@ CommandInterpreter::PreprocessCommand (std::string &command)
                                     break;
                                 case eExecutionInterrupted:
                                     error.SetErrorStringWithFormat("expression interrupted for the expression '%s'", expr_str.c_str());
+                                    break;
+                                case eExecutionHitBreakpoint:
+                                    error.SetErrorStringWithFormat("expression hit breakpoint for the expression '%s'", expr_str.c_str());
                                     break;
                                 case eExecutionTimedOut:
                                     error.SetErrorStringWithFormat("expression timed out for the expression '%s'", expr_str.c_str());
@@ -1580,21 +1636,15 @@ CommandInterpreter::HandleCommand (const char *command_line,
 
         if (cmd_obj == NULL)
         {
-            uint32_t num_matches = matches.GetSize();
+            const size_t num_matches = matches.GetSize();
             if (matches.GetSize() > 1) {
-                std::string error_msg;
-                error_msg.assign ("Ambiguous command '");
-                error_msg.append(next_word.c_str());
-                error_msg.append ("'.");
-
-                error_msg.append (" Possible matches:");
+                StreamString error_msg;
+                error_msg.Printf ("Ambiguous command '%s'. Possible matches:\n", next_word.c_str());
 
                 for (uint32_t i = 0; i < num_matches; ++i) {
-                    error_msg.append ("\n\t");
-                    error_msg.append (matches.GetStringAtIndex(i));
+                    error_msg.Printf ("\t%s\n", matches.GetStringAtIndex(i));
                 }
-                error_msg.append ("\n");
-                result.AppendRawError (error_msg.c_str(), error_msg.size());
+                result.AppendRawError (error_msg.GetString().c_str());
             } else {
                 // We didn't have only one match, otherwise we wouldn't get here.
                 assert(num_matches == 0);
@@ -1762,7 +1812,7 @@ CommandInterpreter::HandleCommand (const char *command_line,
                 error_msg.append (matches.GetStringAtIndex (i));
             }
             error_msg.append ("\n");
-            result.AppendRawError (error_msg.c_str(), error_msg.size());
+            result.AppendRawError (error_msg.c_str());
         }
         else
             result.AppendErrorWithFormat ("Unrecognized command '%s'.\n", command_args.GetArgumentAtIndex (0));
@@ -1942,7 +1992,7 @@ CommandInterpreter::HandleCompletion (const char *current_line,
 
         std::string common_prefix;
         matches.LongestCommonPrefix (common_prefix);
-        int partial_name_len = command_partial_str.size();
+        const size_t partial_name_len = command_partial_str.size();
 
         // If we matched a unique single command, add a space...
         // Only do this if the completer told us this was a complete word, however...
@@ -2196,7 +2246,7 @@ CommandInterpreter::BuildAliasCommandArgs (CommandObject *alias_cmd_obj,
         }
 
         OptionArgVector *option_arg_vector = option_arg_vector_sp.get();
-        int old_size = cmd_args.GetArgumentCount();
+        const size_t old_size = cmd_args.GetArgumentCount();
         std::vector<bool> used (old_size + 1, false);
         
         used[0] = true;
@@ -2587,8 +2637,6 @@ CommandInterpreter::GetScriptInterpreter (bool can_create)
         case eScriptLanguageNone:
             m_script_interpreter_ap.reset (new ScriptInterpreterNone (*this));
             break;
-        default:
-            break;
     };
     
     return m_script_interpreter_ap.get();
@@ -2613,7 +2661,7 @@ CommandInterpreter::OutputFormattedHelpText (Stream &strm,
                                              const char *word_text,
                                              const char *separator,
                                              const char *help_text,
-                                             uint32_t max_word_len)
+                                             size_t max_word_len)
 {
     const uint32_t max_columns = m_debugger.GetTerminalWidth();
 
@@ -2622,7 +2670,7 @@ CommandInterpreter::OutputFormattedHelpText (Stream &strm,
     strm.IndentMore (indent_size);
     
     StreamString text_strm;
-    text_strm.Printf ("%-*s %s %s",  max_word_len, word_text, separator, help_text);
+    text_strm.Printf ("%-*s %s %s",  (int)max_word_len, word_text, separator, help_text);
     
     size_t len = text_strm.GetSize();
     const char *text = text_strm.GetData();
@@ -2642,10 +2690,9 @@ CommandInterpreter::OutputFormattedHelpText (Stream &strm,
         // We need to break it up into multiple lines.
         bool first_line = true;
         int text_width;
-        int start = 0;
-        int end = start;
-        int final_end = strlen (text);
-        int sub_len;
+        size_t start = 0;
+        size_t end = start;
+        const size_t final_end = strlen (text);
         
         while (end < final_end)
         {
@@ -2673,7 +2720,7 @@ CommandInterpreter::OutputFormattedHelpText (Stream &strm,
                 assert (end > 0);
             }
 
-            sub_len = end - start;
+            const size_t sub_len = end - start;
             if (start != 0)
               strm.EOL();
             if (!first_line)
@@ -2801,7 +2848,7 @@ CommandInterpreter::FindHistoryString (const char *input_str) const
     if (input_str[1] == '-')
     {
         bool success;
-        uint32_t idx = Args::StringToUInt32 (input_str+2, 0, 0, &success);
+        size_t idx = Args::StringToUInt32 (input_str+2, 0, 0, &success);
         if (!success)
             return NULL;
         if (idx > m_command_history.size())

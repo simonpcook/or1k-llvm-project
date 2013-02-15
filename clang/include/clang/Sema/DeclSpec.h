@@ -23,14 +23,14 @@
 #ifndef LLVM_CLANG_SEMA_DECLSPEC_H
 #define LLVM_CLANG_SEMA_DECLSPEC_H
 
-#include "clang/Sema/AttributeList.h"
-#include "clang/Sema/Ownership.h"
 #include "clang/AST/NestedNameSpecifier.h"
-#include "clang/Lex/Token.h"
 #include "clang/Basic/ExceptionSpecificationType.h"
 #include "clang/Basic/Lambda.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/Specifiers.h"
+#include "clang/Lex/Token.h"
+#include "clang/Sema/AttributeList.h"
+#include "clang/Sema/Ownership.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -276,6 +276,14 @@ public:
   static const TST TST_auto = clang::TST_auto;
   static const TST TST_unknown_anytype = clang::TST_unknown_anytype;
   static const TST TST_atomic = clang::TST_atomic;
+  static const TST TST_image1d_t = clang::TST_image1d_t;
+  static const TST TST_image1d_array_t = clang::TST_image1d_array_t;
+  static const TST TST_image1d_buffer_t = clang::TST_image1d_buffer_t;
+  static const TST TST_image2d_t = clang::TST_image2d_t;
+  static const TST TST_image2d_array_t = clang::TST_image2d_array_t;
+  static const TST TST_image3d_t = clang::TST_image3d_t;
+  static const TST TST_sampler_t = clang::TST_sampler_t;
+  static const TST TST_event_t = clang::TST_event_t;
   static const TST TST_error = clang::TST_error;
 
   // type-qualifiers
@@ -306,7 +314,7 @@ private:
   /*TSW*/unsigned TypeSpecWidth : 2;
   /*TSC*/unsigned TypeSpecComplex : 2;
   /*TSS*/unsigned TypeSpecSign : 2;
-  /*TST*/unsigned TypeSpecType : 5;
+  /*TST*/unsigned TypeSpecType : 6;
   unsigned TypeAltiVecVector : 1;
   unsigned TypeAltiVecPixel : 1;
   unsigned TypeAltiVecBool : 1;
@@ -319,6 +327,7 @@ private:
   unsigned FS_inline_specified : 1;
   unsigned FS_virtual_specified : 1;
   unsigned FS_explicit_specified : 1;
+  unsigned FS_noreturn_specified : 1;
 
   // friend-specifier
   unsigned Friend_specified : 1;
@@ -361,7 +370,7 @@ private:
   SourceLocation TSTNameLoc;
   SourceRange TypeofParensRange;
   SourceLocation TQ_constLoc, TQ_restrictLoc, TQ_volatileLoc;
-  SourceLocation FS_inlineLoc, FS_virtualLoc, FS_explicitLoc;
+  SourceLocation FS_inlineLoc, FS_virtualLoc, FS_explicitLoc, FS_noreturnLoc;
   SourceLocation FriendLoc, ModulePrivateLoc, ConstexprLoc;
 
   WrittenBuiltinSpecs writtenBS;
@@ -377,15 +386,15 @@ private:
   static bool isExprRep(TST T) {
     return (T == TST_typeofExpr || T == TST_decltype);
   }
+
+  DeclSpec(const DeclSpec &) LLVM_DELETED_FUNCTION;
+  void operator=(const DeclSpec &) LLVM_DELETED_FUNCTION;
+public:
   static bool isDeclRep(TST T) {
     return (T == TST_enum || T == TST_struct ||
             T == TST_interface || T == TST_union ||
             T == TST_class);
   }
-
-  DeclSpec(const DeclSpec &) LLVM_DELETED_FUNCTION;
-  void operator=(const DeclSpec &) LLVM_DELETED_FUNCTION;
-public:
 
   DeclSpec(AttributeFactory &attrFactory)
     : StorageClassSpec(SCS_unspecified),
@@ -403,6 +412,7 @@ public:
       FS_inline_specified(false),
       FS_virtual_specified(false),
       FS_explicit_specified(false),
+      FS_noreturn_specified(false),
       Friend_specified(false),
       Constexpr_specified(false),
       StorageClassSpecAsWritten(SCS_unspecified),
@@ -512,6 +522,9 @@ public:
   bool isExplicitSpecified() const { return FS_explicit_specified; }
   SourceLocation getExplicitSpecLoc() const { return FS_explicitLoc; }
 
+  bool isNoreturnSpecified() const { return FS_noreturn_specified; }
+  SourceLocation getNoreturnSpecLoc() const { return FS_noreturnLoc; }
+
   void ClearFunctionSpecs() {
     FS_inline_specified = false;
     FS_inlineLoc = SourceLocation();
@@ -519,6 +532,8 @@ public:
     FS_virtualLoc = SourceLocation();
     FS_explicit_specified = false;
     FS_explicitLoc = SourceLocation();
+    FS_noreturn_specified = false;
+    FS_noreturnLoc = SourceLocation();
   }
 
   /// \brief Return true if any type-specifier has been found.
@@ -602,12 +617,10 @@ public:
   bool SetTypeQual(TQ T, SourceLocation Loc, const char *&PrevSpec,
                    unsigned &DiagID, const LangOptions &Lang);
 
-  bool SetFunctionSpecInline(SourceLocation Loc, const char *&PrevSpec,
-                             unsigned &DiagID);
-  bool SetFunctionSpecVirtual(SourceLocation Loc, const char *&PrevSpec,
-                              unsigned &DiagID);
-  bool SetFunctionSpecExplicit(SourceLocation Loc, const char *&PrevSpec,
-                               unsigned &DiagID);
+  bool setFunctionSpecInline(SourceLocation Loc);
+  bool setFunctionSpecVirtual(SourceLocation Loc);
+  bool setFunctionSpecExplicit(SourceLocation Loc);
+  bool setFunctionSpecNoreturn(SourceLocation Loc);
 
   bool SetFriendSpec(SourceLocation Loc, const char *&PrevSpec,
                      unsigned &DiagID);
@@ -1867,6 +1880,44 @@ public:
   /// type. This routine checks for both cases.
   bool isDeclarationOfFunction() const;
   
+  /// \brief Return true if a function declarator at this position would be a
+  /// function declaration.
+  bool isFunctionDeclaratorAFunctionDeclaration() const {
+    if (getDeclSpec().getStorageClassSpec() == DeclSpec::SCS_typedef)
+      return false;
+
+    for (unsigned I = 0, N = getNumTypeObjects(); I != N; ++I)
+      if (getTypeObject(I).Kind != DeclaratorChunk::Paren)
+        return false;
+
+    switch (Context) {
+    case FileContext:
+    case MemberContext:
+    case BlockContext:
+      return true;
+
+    case ForContext:
+    case ConditionContext:
+    case KNRTypeListContext:
+    case TypeNameContext:
+    case AliasDeclContext:
+    case AliasTemplateContext:
+    case PrototypeContext:
+    case ObjCParameterContext:
+    case ObjCResultContext:
+    case TemplateParamContext:
+    case CXXNewContext:
+    case CXXCatchContext:
+    case ObjCCatchContext:
+    case BlockLiteralContext:
+    case LambdaExprContext:
+    case TemplateTypeArgContext:
+    case TrailingReturnContext:
+      return false;
+    }
+    llvm_unreachable("unknown context kind!");
+  }
+
   /// takeAttributes - Takes attributes from the given parsed-attributes
   /// set and add them to this declarator.
   ///
@@ -1895,6 +1946,17 @@ public:
       if (getTypeObject(i).getAttrs())
         return true;
     return false;
+  }
+
+  /// \brief Return a source range list of C++11 attributes associated
+  /// with the declarator.
+  void getCXX11AttributeRanges(SmallVector<SourceRange, 4> &Ranges) {
+    AttributeList *AttrList = Attrs.getList();
+    while (AttrList) {
+      if (AttrList->isCXX11Attribute())
+        Ranges.push_back(AttrList->getRange());
+      AttrList = AttrList->getNext();
+    }
   }
 
   void setAsmLabel(Expr *E) { AsmLabel = E; }
@@ -1996,7 +2058,7 @@ struct LambdaIntroducer {
   SourceRange Range;
   SourceLocation DefaultLoc;
   LambdaCaptureDefault Default;
-  llvm::SmallVector<LambdaCapture, 4> Captures;
+  SmallVector<LambdaCapture, 4> Captures;
 
   LambdaIntroducer()
     : Default(LCD_None) {}

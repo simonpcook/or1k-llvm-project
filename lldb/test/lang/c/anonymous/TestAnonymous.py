@@ -15,6 +15,7 @@ class AnonymousTestCase(TestBase):
         self.buildDsym()
         self.expr()
 
+    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
     @dwarf_test
     def test_expr_with_dwarf(self):
         self.buildDwarf()

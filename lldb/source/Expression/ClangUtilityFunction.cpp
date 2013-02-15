@@ -22,6 +22,7 @@
 #include "lldb/Expression/ClangExpressionDeclMap.h"
 #include "lldb/Expression/ClangExpressionParser.h"
 #include "lldb/Expression/ClangUtilityFunction.h"
+#include "lldb/Expression/ExpressionSourceCode.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Target.h"
@@ -40,9 +41,11 @@ using namespace lldb_private;
 ClangUtilityFunction::ClangUtilityFunction (const char *text, 
                                             const char *name) :
     ClangExpression (),
-    m_function_text (text),
+    m_function_text (ExpressionSourceCode::g_expression_prefix),
     m_function_name (name)
 {
+    if (text && text[0])
+        m_function_text.append (text);
 }
 
 ClangUtilityFunction::~ClangUtilityFunction ()
@@ -153,7 +156,7 @@ ClangUtilityFunction::Install (Stream &error_stream,
 #if 0
 	// jingham: look here
     StreamFile logfile ("/tmp/exprs.txt", "a");
-    logfile.Printf ("0x%16.16llx: func = %s, source =\n%s\n", 
+    logfile.Printf ("0x%16.16" PRIx64 ": func = %s, source =\n%s\n",
                     m_jit_start_addr, 
                     m_function_name.c_str(), 
                     m_function_text.c_str());

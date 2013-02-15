@@ -13,6 +13,7 @@
 #include "lldb/Core/RegularExpression.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Symbol/ObjectFile.h"
+#include "lldb/Symbol/SymbolContext.h"
 #include "lldb/Symbol/Symtab.h"
 #include "lldb/Target/ObjCLanguageRuntime.h"
 
@@ -37,7 +38,7 @@ Symtab::~Symtab()
 }
 
 void
-Symtab::Reserve(uint32_t count)
+Symtab::Reserve(size_t count)
 {
     // Clients should grab the mutex from this symbol table and lock it manually
     // when calling this function to avoid performance issues.
@@ -45,7 +46,7 @@ Symtab::Reserve(uint32_t count)
 }
 
 Symbol *
-Symtab::Resize(uint32_t count)
+Symtab::Resize(size_t count)
 {
     // Clients should grab the mutex from this symbol table and lock it manually
     // when calling this function to avoid performance issues.
@@ -149,7 +150,7 @@ Symtab::Dump (Stream *s, Target *target, SortOrder sort_order)
             std::vector<uint32_t>::const_iterator end = m_addr_indexes.end();
             for (pos = m_addr_indexes.begin(); pos != end; ++pos)
             {
-                uint32_t idx = *pos;
+                size_t idx = *pos;
                 if (idx < num_symbols)
                 {
                     s->Indent();
@@ -179,7 +180,7 @@ Symtab::Dump(Stream *s, Target *target, std::vector<uint32_t>& indexes) const
         DumpSymbolHeader (s);
         for (pos = indexes.begin(); pos != end; ++pos)
         {
-            uint32_t idx = *pos;
+            size_t idx = *pos;
             if (idx < num_symbols)
             {
                 s->Indent();
@@ -229,7 +230,7 @@ Symtab::FindSymbolByID (lldb::user_id_t symbol_uid) const
 
 
 Symbol *
-Symtab::SymbolAtIndex(uint32_t idx)
+Symtab::SymbolAtIndex(size_t idx)
 {
     // Clients should grab the mutex from this symbol table and lock it manually
     // when calling this function to avoid performance issues.
@@ -240,7 +241,7 @@ Symtab::SymbolAtIndex(uint32_t idx)
 
 
 const Symbol *
-Symtab::SymbolAtIndex(uint32_t idx) const
+Symtab::SymbolAtIndex(size_t idx) const
 {
     // Clients should grab the mutex from this symbol table and lock it manually
     // when calling this function to avoid performance issues.
@@ -309,20 +310,25 @@ Symtab::InitNameIndexes()
                 
             // If the demangled name turns out to be an ObjC name, and
             // is a category name, add the version without categories to the index too.
-            ConstString objc_base_name;
-            if (ObjCLanguageRuntime::ParseMethodName (entry.cstring,
-                                                      NULL,
-                                                      NULL,
-                                                      &objc_base_name,
-                                                      NULL))
+            ObjCLanguageRuntime::MethodName objc_method (entry.cstring, true);
+            if (objc_method.IsValid(true))
             {
-                entry.cstring = objc_base_name.GetCString();
-                m_name_to_index.Append (entry);
+                entry.cstring = objc_method.GetSelector().GetCString();
+                m_selector_to_index.Append (entry);
+                
+                ConstString objc_method_no_category (objc_method.GetFullNameWithoutCategory(true));
+                if (objc_method_no_category)
+                {
+                    entry.cstring = objc_method_no_category.GetCString();
+                    m_name_to_index.Append (entry);
+                }
             }
                                                         
         }
         m_name_to_index.Sort();
         m_name_to_index.SizeToFit();
+        m_selector_to_index.Sort();
+        m_selector_to_index.SizeToFit();
     }
 }
 
@@ -651,7 +657,7 @@ Symtab::FindSymbolWithType (SymbolType symbol_type, Debug symbol_debug_type, Vis
     Mutex::Locker locker (m_mutex);
 
     const size_t count = m_symbols.size();
-    for (uint32_t idx = start_idx; idx < count; ++idx)
+    for (size_t idx = start_idx; idx < count; ++idx)
     {
         if (symbol_type == eSymbolTypeAny || m_symbols[idx].GetType() == symbol_type)
         {
@@ -977,5 +983,66 @@ Symtab::FindSymbolContainingFileAddress (addr_t file_addr)
         InitAddressIndexes();
 
     return FindSymbolContainingFileAddress (file_addr, &m_addr_indexes[0], m_addr_indexes.size());
+}
+
+void
+Symtab::SymbolIndicesToSymbolContextList (std::vector<uint32_t> &symbol_indexes, SymbolContextList &sc_list)
+{
+    // No need to protect this call using m_mutex all other method calls are
+    // already thread safe.
+    
+    size_t num_indices = symbol_indexes.size();
+    if (num_indices > 0)
+    {
+        SymbolContext sc;
+        sc.module_sp = m_objfile->GetModule();
+        for (size_t i = 0; i < num_indices; i++)
+        {
+            sc.symbol = SymbolAtIndex (symbol_indexes[i]);
+            if (sc.symbol)
+                sc_list.Append (sc);
+        }
+    }
+}
+
+
+size_t
+Symtab::FindFunctionSymbols (const ConstString &name,
+                             uint32_t name_type_mask,
+                             SymbolContextList& sc_list)
+{
+    size_t count = 0;
+    std::vector<uint32_t> symbol_indexes;
+    if (name_type_mask & (eFunctionNameTypeBase | eFunctionNameTypeFull | eFunctionNameTypeAuto))
+    {
+        FindAllSymbolsWithNameAndType (name, eSymbolTypeCode, symbol_indexes);
+    }
+    
+    if (name_type_mask & eFunctionNameTypeSelector)
+    {
+        if (!m_name_indexes_computed)
+            InitNameIndexes();
+
+        if (!m_selector_to_index.IsEmpty())
+        {
+            const UniqueCStringMap<uint32_t>::Entry *match;
+            for (match = m_selector_to_index.FindFirstValueForName(name.AsCString());
+                 match != NULL;
+                 match = m_selector_to_index.FindNextValueForName(match))
+            {
+                symbol_indexes.push_back(match->value);
+            }
+        }
+    }
+
+    if (!symbol_indexes.empty())
+    {
+        std::sort(symbol_indexes.begin(), symbol_indexes.end());
+        symbol_indexes.erase(std::unique(symbol_indexes.begin(), symbol_indexes.end()), symbol_indexes.end());
+        count = symbol_indexes.size();
+        SymbolIndicesToSymbolContextList (symbol_indexes, sc_list);
+    }
+
+    return count;
 }
 

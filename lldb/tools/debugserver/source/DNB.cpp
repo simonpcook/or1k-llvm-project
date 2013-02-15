@@ -255,6 +255,7 @@ DNBProcessLaunch (const char *path,
                 // We failed to get the task for our process ID which is bad.
                 // Kill our process otherwise it will be stopped at the entry
                 // point and get reparented to someone else and never go away.
+                DNBLog ("Could not get task port for process, sending SIGKILL and exiting.");
                 kill (SIGKILL, pid);
 
                 if (err_str && err_len > 0)
@@ -1217,6 +1218,28 @@ DNBProcessMemoryRegionInfo (nub_process_t pid, nub_addr_t addr, DNBRegionInfo *r
     return -1;
 }
 
+std::string
+DNBProcessGetProfileData (nub_process_t pid)
+{
+    MachProcessSP procSP;
+    if (GetProcessSP (pid, procSP))
+        return procSP->Task().GetProfileData();
+    
+    return std::string("");
+}
+
+nub_bool_t
+DNBProcessSetEnableAsyncProfiling (nub_process_t pid, nub_bool_t enable, uint64_t interval_usec)
+{
+    MachProcessSP procSP;
+    if (GetProcessSP (pid, procSP))
+    {
+        procSP->SetEnableAsyncProfiling(enable, interval_usec);
+        return true;
+    }
+    
+    return false;    
+}
 
 //----------------------------------------------------------------------
 // Formatted output that uses memory and registers from process and
@@ -2068,6 +2091,15 @@ DNBProcessGetAvailableSTDERR (nub_process_t pid, char *buf, nub_size_t buf_size)
     MachProcessSP procSP;
     if (GetProcessSP (pid, procSP))
         return procSP->GetAvailableSTDERR (buf, buf_size);
+    return 0;
+}
+
+nub_size_t
+DNBProcessGetAvailableProfileData (nub_process_t pid, char *buf, nub_size_t buf_size)
+{
+    MachProcessSP procSP;
+    if (GetProcessSP (pid, procSP))
+        return procSP->GetAsyncProfileData (buf, buf_size);
     return 0;
 }
 

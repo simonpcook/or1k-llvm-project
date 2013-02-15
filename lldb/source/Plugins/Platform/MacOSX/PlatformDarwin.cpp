@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "PlatformDarwin.h"
 
 // C Includes
@@ -22,6 +24,8 @@
 #include "lldb/Host/Host.h"
 #include "lldb/Host/Symbols.h"
 #include "lldb/Symbol/ObjectFile.h"
+#include "lldb/Symbol/SymbolFile.h"
+#include "lldb/Symbol/SymbolVendor.h"
 #include "lldb/Target/Target.h"
 
 using namespace lldb;
@@ -48,57 +52,74 @@ PlatformDarwin::~PlatformDarwin()
 {
 }
 
-FileSpec
-PlatformDarwin::LocateExecutableScriptingResource (const ModuleSpec &module_spec)
+FileSpecList
+PlatformDarwin::LocateExecutableScriptingResources (Target *target,
+                                                    Module &module)
 {
-    const FileSpec *exec_fspec = module_spec.GetFileSpecPtr();
-    const ArchSpec *arch = module_spec.GetArchitecturePtr();
-    const UUID *uuid = module_spec.GetUUIDPtr();
-    
-    const char* module_directory = exec_fspec->GetDirectory().GetCString();
-    const char* module_basename = exec_fspec->GetFileNameStrippingExtension().GetCString();
-    
-    Timer scoped_timer (__PRETTY_FUNCTION__,
-                        "LocateExecutableScriptingResource (file = %s, arch = %s, uuid = %p)",
-                        exec_fspec ? exec_fspec->GetFilename().AsCString ("<NULL>") : "<NULL>",
-                        arch ? arch->GetArchitectureName() : "<NULL>",
-                        uuid);
-    
-    
-    FileSpec symbol_fspec (Symbols::LocateExecutableSymbolFile(module_spec));
-    
-    FileSpec script_fspec;
-    
-    StreamString path_string;
-    
-    if (symbol_fspec && symbol_fspec.Exists())
+    FileSpecList file_list;
+    if (target && target->GetDebugger().GetScriptLanguage() == eScriptLanguagePython)
     {
-        // for OSX we are going to be in .dSYM/Contents/Resources/DWARF/<basename>
-        // let us go to .dSYM/Contents/Resources/Python/<basename>.py and see if the file exists
-        path_string.Printf("%s/../Python/%s.py",symbol_fspec.GetDirectory().GetCString(),module_basename);
-        script_fspec.SetFile(path_string.GetData(), true);
-        if (!script_fspec.Exists())
-            script_fspec.Clear();
-    }
-    
-    // no symbols or symbols did not have a scripting resource
-    if (!symbol_fspec || !script_fspec)
-    {
-        path_string.Clear();
-        path_string.Printf("%s.framework",module_basename);
-        if (module_directory && strstr(module_directory, path_string.GetData()))
+        // NB some extensions might be meaningful and should not be stripped - "this.binary.file"
+        // should not lose ".file" but GetFileNameStrippingExtension() will do precisely that.
+        // Ideally, we should have a per-platform list of extensions (".exe", ".app", ".dSYM", ".framework")
+        // which should be stripped while leaving "this.binary.file" as-is.
+        FileSpec module_spec = module.GetFileSpec();
+        
+        if (module_spec)
         {
-            // we are going to be in foo.framework/Versions/X/foo
-            path_string.Clear();
-            // let's go to foo.framework/Versions/X/Resources/Python/foo.py
-            path_string.Printf("%s/Resources/Python/%s.py",module_directory,module_basename);
-            script_fspec.SetFile(path_string.GetData(), true);
-            if (!script_fspec.Exists())
-                script_fspec.Clear();
+            SymbolVendor *symbols = module.GetSymbolVendor ();
+            if (symbols)
+            {
+                SymbolFile *symfile = symbols->GetSymbolFile();
+                if (symfile)
+                {
+                    ObjectFile *objfile = symfile->GetObjectFile();
+                    if (objfile)
+                    {
+                        FileSpec symfile_spec (objfile->GetFileSpec());
+                        if (symfile_spec && symfile_spec.Exists())
+                        {
+                            while (module_spec.GetFilename())
+                            {
+                                std::string module_basename (module_spec.GetFilename().GetCString());
+
+                                // FIXME: for Python, we cannot allow certain characters in module
+                                // filenames we import. Theoretically, different scripting languages may
+                                // have different sets of forbidden tokens in filenames, and that should
+                                // be dealt with by each ScriptInterpreter. For now, we just replace dots
+                                // with underscores, but if we ever support anything other than Python
+                                // we will need to rework this
+                                std::replace(module_basename.begin(), module_basename.end(), '.', '_');
+                                std::replace(module_basename.begin(), module_basename.end(), ' ', '_');
+                                std::replace(module_basename.begin(), module_basename.end(), '-', '_');
+                                
+
+                                StreamString path_string;
+                                // for OSX we are going to be in .dSYM/Contents/Resources/DWARF/<basename>
+                                // let us go to .dSYM/Contents/Resources/Python/<basename>.py and see if the file exists
+                                path_string.Printf("%s/../Python/%s.py",symfile_spec.GetDirectory().GetCString(), module_basename.c_str());
+                                FileSpec script_fspec(path_string.GetData(), true);
+                                if (script_fspec.Exists())
+                                {
+                                    file_list.Append (script_fspec);
+                                    break;
+                                }
+                                
+                                // If we didn't find the python file, then keep
+                                // stripping the extensions and try again
+                                ConstString filename_no_extension (module_spec.GetFileNameStrippingExtension());
+                                if (module_spec.GetFilename() == filename_no_extension)
+                                    break;
+                                
+                                module_spec.GetFilename() = filename_no_extension;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-    
-    return script_fspec;
+    return file_list;
 }
 
 Error
@@ -294,33 +315,52 @@ PlatformDarwin::GetSharedModule (const ModuleSpec &module_spec,
             FileSpec bundle_directory;
             if (Host::GetBundleDirectory (platform_file, bundle_directory))
             {
-                char platform_path[PATH_MAX];
-                char bundle_dir[PATH_MAX];
-                platform_file.GetPath (platform_path, sizeof(platform_path));
-                const size_t bundle_directory_len = bundle_directory.GetPath (bundle_dir, sizeof(bundle_dir));
-                char new_path[PATH_MAX];
-                size_t num_module_search_paths = module_search_paths_ptr->GetSize();
-                for (size_t i=0; i<num_module_search_paths; ++i)
+                if (platform_file == bundle_directory)
                 {
-                    const size_t search_path_len = module_search_paths_ptr->GetFileSpecAtIndex(i).GetPath(new_path, sizeof(new_path));
-                    if (search_path_len < sizeof(new_path))
+                    ModuleSpec new_module_spec (module_spec);
+                    new_module_spec.GetFileSpec() = bundle_directory;
+                    if (Host::ResolveExecutableInBundle (new_module_spec.GetFileSpec()))
                     {
-                        snprintf (new_path + search_path_len, sizeof(new_path) - search_path_len, "/%s", platform_path + bundle_directory_len);
-                        FileSpec new_file_spec (new_path, false);
-                        if (new_file_spec.Exists())
+                        Error new_error (Platform::GetSharedModule (new_module_spec,
+                                                                    module_sp,
+                                                                    NULL,
+                                                                    old_module_sp_ptr,
+                                                                    did_create_ptr));
+                        
+                        if (module_sp)
+                            return new_error;
+                    }
+                }
+                else
+                {
+                    char platform_path[PATH_MAX];
+                    char bundle_dir[PATH_MAX];
+                    platform_file.GetPath (platform_path, sizeof(platform_path));
+                    const size_t bundle_directory_len = bundle_directory.GetPath (bundle_dir, sizeof(bundle_dir));
+                    char new_path[PATH_MAX];
+                    size_t num_module_search_paths = module_search_paths_ptr->GetSize();
+                    for (size_t i=0; i<num_module_search_paths; ++i)
+                    {
+                        const size_t search_path_len = module_search_paths_ptr->GetFileSpecAtIndex(i).GetPath(new_path, sizeof(new_path));
+                        if (search_path_len < sizeof(new_path))
                         {
-                            ModuleSpec new_module_spec (module_spec);
-                            new_module_spec.GetFileSpec() = new_file_spec;
-                            Error new_error (Platform::GetSharedModule (new_module_spec,
-                                                                        module_sp,
-                                                                        NULL,
-                                                                        old_module_sp_ptr,
-                                                                        did_create_ptr));
-                            
-                            if (module_sp)
+                            snprintf (new_path + search_path_len, sizeof(new_path) - search_path_len, "/%s", platform_path + bundle_directory_len);
+                            FileSpec new_file_spec (new_path, false);
+                            if (new_file_spec.Exists())
                             {
-                                module_sp->SetPlatformFileSpec(new_file_spec);
-                                return new_error;
+                                ModuleSpec new_module_spec (module_spec);
+                                new_module_spec.GetFileSpec() = new_file_spec;
+                                Error new_error (Platform::GetSharedModule (new_module_spec,
+                                                                            module_sp,
+                                                                            NULL,
+                                                                            old_module_sp_ptr,
+                                                                            did_create_ptr));
+                                
+                                if (module_sp)
+                                {
+                                    module_sp->SetPlatformFileSpec(new_file_spec);
+                                    return new_error;
+                                }
                             }
                         }
                     }
@@ -673,7 +713,7 @@ PlatformDarwin::x86GetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &arch
     {
         ArchSpec platform_arch (Host::GetArchitecture (Host::eSystemDefaultArchitecture));
         ArchSpec platform_arch64 (Host::GetArchitecture (Host::eSystemDefaultArchitecture64));
-        if (platform_arch == platform_arch64)
+        if (platform_arch.IsExactMatch(platform_arch64))
         {
             // This macosx platform supports both 32 and 64 bit. Since we already
             // returned the 64 bit arch for idx == 0, return the 32 bit arch 
@@ -943,6 +983,7 @@ PlatformDarwin::SetThreadCreationBreakpoint (Target &target)
                                      eFunctionNameTypeFull,
                                      skip_prologue,
                                      internal);
+    bp_sp->SetBreakpointKind("thread-creation");
 
     return bp_sp;
 }

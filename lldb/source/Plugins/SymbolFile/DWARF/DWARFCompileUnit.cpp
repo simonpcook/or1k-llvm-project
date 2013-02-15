@@ -13,6 +13,8 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Core/Stream.h"
 #include "lldb/Core/Timer.h"
+#include "lldb/Symbol/CompileUnit.h"
+#include "lldb/Symbol/LineTable.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/ObjCLanguageRuntime.h"
 
@@ -43,7 +45,10 @@ DWARFCompileUnit::DWARFCompileUnit(SymbolFileDWARF* dwarf2Data) :
     m_length        (0),
     m_version       (0),
     m_addr_size     (DWARFCompileUnit::GetDefaultAddressSize()),
-    m_producer      (eProducerInvalid)
+    m_producer      (eProducerInvalid),
+    m_producer_version_major (0),
+    m_producer_version_minor (0),
+    m_producer_version_update (0)
 {
 }
 
@@ -63,7 +68,7 @@ DWARFCompileUnit::Clear()
 }
 
 bool
-DWARFCompileUnit::Extract(const DataExtractor &debug_info, uint32_t* offset_ptr)
+DWARFCompileUnit::Extract(const DataExtractor &debug_info, lldb::offset_t *offset_ptr)
 {
     Clear();
 
@@ -98,7 +103,7 @@ DWARFCompileUnit::Extract(const DataExtractor &debug_info, uint32_t* offset_ptr)
 
 
 dw_offset_t
-DWARFCompileUnit::Extract(dw_offset_t offset, const DataExtractor& debug_info_data, const DWARFAbbreviationDeclarationSet* abbrevs)
+DWARFCompileUnit::Extract(lldb::offset_t offset, const DataExtractor& debug_info_data, const DWARFAbbreviationDeclarationSet* abbrevs)
 {
     Clear();
 
@@ -162,8 +167,8 @@ DWARFCompileUnit::ExtractDIEsIfNeeded (bool cu_die_only)
 
     // Set the offset to that of the first DIE and calculate the start of the
     // next compilation unit header.
-    uint32_t offset = GetFirstDIEOffset();
-    uint32_t next_cu_offset = GetNextCompileUnitOffset();
+    lldb::offset_t offset = GetFirstDIEOffset();
+    lldb::offset_t next_cu_offset = GetNextCompileUnitOffset();
 
     DWARFDebugInfoEntry die;
         // Keep a flat array of the DIE for binary lookup by DIE offset
@@ -268,7 +273,7 @@ DWARFCompileUnit::ExtractDIEsIfNeeded (bool cu_die_only)
     // unit header).
     if (offset > next_cu_offset)
     {
-        m_dwarf2Data->GetObjectFile()->GetModule()->ReportWarning ("DWARF compile unit extends beyond its bounds cu 0x%8.8x at 0x%8.8x\n", 
+        m_dwarf2Data->GetObjectFile()->GetModule()->ReportWarning ("DWARF compile unit extends beyond its bounds cu 0x%8.8x at 0x%8.8" PRIx64 "\n",
                                                                    GetOffset(), 
                                                                    offset);
     }
@@ -389,6 +394,31 @@ DWARFCompileUnit::BuildAddressRangeTable (SymbolFileDWARF* dwarf2Data,
     const DWARFDebugInfoEntry* die = DIE();
     if (die)
         die->BuildAddressRangeTable(dwarf2Data, this, debug_aranges);
+    
+    if (debug_aranges->IsEmpty())
+    {
+        // We got nothing from the functions, maybe we have a line tables only
+        // situation. Check the line tables and build the arange table from this.
+        SymbolContext sc;
+        sc.comp_unit = dwarf2Data->GetCompUnitForDWARFCompUnit(this);
+        if (sc.comp_unit)
+        {
+            LineTable *line_table = sc.comp_unit->GetLineTable();
+
+            if (line_table)
+            {
+                LineTable::FileAddressRanges file_ranges;
+                const bool append = true;
+                const size_t num_ranges = line_table->GetContiguousFileAddressRanges (file_ranges, append);
+                for (uint32_t idx=0; idx<num_ranges; ++idx)
+                {
+                    const LineTable::FileAddressRanges::Entry &range = file_ranges.GetEntryRef(idx);
+                    debug_aranges->AppendRange(GetOffset(), range.GetRangeBase(), range.GetRangeEnd());
+                    printf ("0x%8.8x: [0x%16.16llx - 0x%16.16llx)\n", GetOffset(), range.GetRangeBase(), range.GetRangeEnd());
+                }
+            }
+        }
+    }
     
     // Keep memory down by clearing DIEs if this generate function
     // caused them to be parsed
@@ -654,6 +684,7 @@ DWARFCompileUnit::Index (const uint32_t cu_idx,
 //                    break;
 
                 case DW_AT_MIPS_linkage_name:
+                case DW_AT_linkage_name:
                     if (attributes.ExtractFormValueAtIndex(m_dwarf2Data, i, form_value))
                         mangled_cstr = form_value.AsCString(debug_str);                        
                     break;
@@ -733,28 +764,22 @@ DWARFCompileUnit::Index (const uint32_t cu_idx,
                 {
                     // Note, this check is also done in ParseMethodName, but since this is a hot loop, we do the
                     // simple inlined check outside the call.
-                    if (ObjCLanguageRuntime::IsPossibleObjCMethodName(name))
+                    ObjCLanguageRuntime::MethodName objc_method(name, true);
+                    if (objc_method.IsValid(true))
                     {
-                        ConstString objc_class_name;
-                        ConstString objc_selector_name;
-                        ConstString objc_fullname_no_category_name;
-                        ConstString objc_class_name_no_category;
-                        if (ObjCLanguageRuntime::ParseMethodName (name,
-                                                                  &objc_class_name,
-                                                                  &objc_selector_name,
-                                                                  &objc_fullname_no_category_name,
-                                                                  &objc_class_name_no_category))
-                        {
-                            func_fullnames.Insert (ConstString(name), die.GetOffset());
-                            if (objc_class_name)
-                                objc_class_selectors.Insert(objc_class_name, die.GetOffset());
-                            if (objc_class_name_no_category)
-                                objc_class_selectors.Insert(objc_class_name_no_category, die.GetOffset());
-                            if (objc_selector_name)
-                                func_selectors.Insert (objc_selector_name, die.GetOffset());
-                            if (objc_fullname_no_category_name)
-                                func_fullnames.Insert (objc_fullname_no_category_name, die.GetOffset());
-                        }
+                        ConstString objc_class_name_with_category (objc_method.GetClassNameWithCategory());
+                        ConstString objc_selector_name (objc_method.GetSelector());
+                        ConstString objc_fullname_no_category_name (objc_method.GetFullNameWithoutCategory(true));
+                        ConstString objc_class_name_no_category (objc_method.GetClassName());
+                        func_fullnames.Insert (ConstString(name), die.GetOffset());
+                        if (objc_class_name_with_category)
+                            objc_class_selectors.Insert(objc_class_name_with_category, die.GetOffset());
+                        if (objc_class_name_no_category && objc_class_name_no_category != objc_class_name_with_category)
+                            objc_class_selectors.Insert(objc_class_name_no_category, die.GetOffset());
+                        if (objc_selector_name)
+                            func_selectors.Insert (objc_selector_name, die.GetOffset());
+                        if (objc_fullname_no_category_name)
+                            func_fullnames.Insert (objc_fullname_no_category_name, die.GetOffset());
                     }
                     // If we have a mangled name, then the DW_AT_name attribute
                     // is usually the method name without the class or any parameters
@@ -883,9 +908,23 @@ DWARFCompileUnit::Index (const uint32_t cu_idx,
 }
 
 bool
+DWARFCompileUnit::Supports_unnamed_objc_bitfields ()
+{
+    if (GetProducer() == eProducerClang)
+    {
+        const uint32_t major_version = GetProducerVersionMajor();
+        if (major_version > 425 || (major_version == 425 && GetProducerVersionUpdate() >= 13))
+            return true;
+        else
+            return false;
+    }
+    return true; // Assume all other compilers didn't have incorrect ObjC bitfield info
+}
+
+bool
 DWARFCompileUnit::Supports_DW_AT_APPLE_objc_complete_type ()
 {
-    if (GetProducer() == eProcucerLLVMGCC)
+    if (GetProducer() == eProducerLLVMGCC)
         return false;
     return true;
 }
@@ -895,34 +934,81 @@ DWARFCompileUnit::DW_AT_decl_file_attributes_are_invalid()
 {
     // llvm-gcc makes completely invalid decl file attributes and won't ever
     // be fixed, so we need to know to ignore these.
-    return GetProducer() == eProcucerLLVMGCC;
+    return GetProducer() == eProducerLLVMGCC;
+}
+
+void
+DWARFCompileUnit::ParseProducerInfo ()
+{
+    m_producer_version_major = UINT32_MAX;
+    m_producer_version_minor = UINT32_MAX;
+    m_producer_version_update = UINT32_MAX;
+
+    const DWARFDebugInfoEntry *die = GetCompileUnitDIEOnly();
+    if (die)
+    {
+
+        const char *producer_cstr = die->GetAttributeValueAsString(m_dwarf2Data, this, DW_AT_producer, NULL);
+        if (producer_cstr)
+        {
+            RegularExpression llvm_gcc_regex("^4\\.[012]\\.[01] \\(Based on Apple Inc\\. build [0-9]+\\) \\(LLVM build [\\.0-9]+\\)$");
+            if (llvm_gcc_regex.Execute (producer_cstr))
+            {
+                m_producer = eProducerLLVMGCC;
+            }
+            else if (strstr(producer_cstr, "clang"))
+            {
+                RegularExpression clang_regex("clang-([0-9]+)\\.([0-9]+)\\.([0-9]+)");
+                if (clang_regex.Execute (producer_cstr, 3))
+                {
+                    std::string str;
+                    if (clang_regex.GetMatchAtIndex (producer_cstr, 1, str))
+                        m_producer_version_major = Args::StringToUInt32(str.c_str(), UINT32_MAX, 10);
+                    if (clang_regex.GetMatchAtIndex (producer_cstr, 2, str))
+                        m_producer_version_minor = Args::StringToUInt32(str.c_str(), UINT32_MAX, 10);
+                    if (clang_regex.GetMatchAtIndex (producer_cstr, 3, str))
+                        m_producer_version_update = Args::StringToUInt32(str.c_str(), UINT32_MAX, 10);
+                }
+                m_producer = eProducerClang;
+            }
+            else if (strstr(producer_cstr, "GNU"))
+                m_producer = eProducerGCC;
+        }
+    }
+    if (m_producer == eProducerInvalid)
+        m_producer = eProcucerOther;
 }
 
 DWARFCompileUnit::Producer
 DWARFCompileUnit::GetProducer ()
 {
     if (m_producer == eProducerInvalid)
-    {
-        const DWARFDebugInfoEntry *die = GetCompileUnitDIEOnly();
-        if (die)
-        {
-            const char *producer_cstr = die->GetAttributeValueAsString(m_dwarf2Data, this, DW_AT_producer, NULL);
-            if (producer_cstr)
-            {
-                RegularExpression g_llvm_gcc_regex("^4\\.[012]\\.[01] \\(Based on Apple Inc\\. build [0-9]+\\) \\(LLVM build [\\.0-9]+\\)$");
-                if (g_llvm_gcc_regex.Execute (producer_cstr))
-                    m_producer = eProcucerLLVMGCC;
-                else if (strstr(producer_cstr, "clang"))
-                    m_producer = eProducerClang;
-                else if (strstr(producer_cstr, "GNU"))
-                    m_producer = eProducerGCC;
-            }
-        }
-        if (m_producer == eProducerInvalid)
-            m_producer = eProcucerOther;
-    }
+        ParseProducerInfo ();
     return m_producer;
 }
 
 
+uint32_t
+DWARFCompileUnit::GetProducerVersionMajor()
+{
+    if (m_producer_version_major == 0)
+        ParseProducerInfo ();
+    return m_producer_version_major;
+}
+
+uint32_t
+DWARFCompileUnit::GetProducerVersionMinor()
+{
+    if (m_producer_version_minor == 0)
+        ParseProducerInfo ();
+    return m_producer_version_minor;
+}
+
+uint32_t
+DWARFCompileUnit::GetProducerVersionUpdate()
+{
+    if (m_producer_version_update == 0)
+        ParseProducerInfo ();
+    return m_producer_version_update;
+}
 

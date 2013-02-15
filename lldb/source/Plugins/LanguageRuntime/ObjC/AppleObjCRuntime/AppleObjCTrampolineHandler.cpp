@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "AppleObjCTrampolineHandler.h"
 
 // C Includes
@@ -192,12 +194,12 @@ AppleObjCTrampolineHandler::AppleObjCVTables::VTableRegion::SetUpRegion()
         return;
     }
     
-    uint32_t offset_ptr = 0;
-    const uint16_t header_size = data.GetU16(&offset_ptr);
-    const uint16_t descriptor_size = data.GetU16(&offset_ptr);
-    const size_t num_descriptors = data.GetU32(&offset_ptr);
+    lldb::offset_t offset = 0;
+    const uint16_t header_size = data.GetU16(&offset);
+    const uint16_t descriptor_size = data.GetU16(&offset);
+    const size_t num_descriptors = data.GetU32(&offset);
     
-    m_next_region = data.GetPointer(&offset_ptr);
+    m_next_region = data.GetPointer(&offset);
     
     // If the header size is 0, that means we've come in too early before this data is set up.
     // Set ourselves as not valid, and continue.
@@ -237,16 +239,16 @@ AppleObjCTrampolineHandler::AppleObjCVTables::VTableRegion::SetUpRegion()
     // The actual code for the vtables will be laid out consecutively, so I also
     // compute the start and end of the whole code block.
 
-    offset_ptr = 0;
+    offset = 0;
     m_code_start_addr = 0;
     m_code_end_addr = 0;
 
     for (int i = 0; i < num_descriptors; i++)
     {
-        lldb::addr_t start_offset = offset_ptr;
-        uint32_t offset = desc_extractor.GetU32 (&offset_ptr);
-        uint32_t flags  = desc_extractor.GetU32 (&offset_ptr);
-        lldb::addr_t code_addr = desc_ptr + start_offset + offset;
+        lldb::addr_t start_offset = offset;
+        uint32_t voffset = desc_extractor.GetU32 (&offset);
+        uint32_t flags  = desc_extractor.GetU32 (&offset);
+        lldb::addr_t code_addr = desc_ptr + start_offset + voffset;
         m_descriptors.push_back (VTableDescriptor(flags, code_addr));
         
         if (m_code_start_addr == 0 || code_addr < m_code_start_addr)
@@ -254,7 +256,7 @@ AppleObjCTrampolineHandler::AppleObjCVTables::VTableRegion::SetUpRegion()
         if (code_addr > m_code_end_addr)
             m_code_end_addr = code_addr;
             
-        offset_ptr = start_offset + descriptor_size;
+        offset = start_offset + descriptor_size;
     }
     // Finally, a little bird told me that all the vtable code blocks are the same size.  
     // Let's compute the blocks and if they are all the same add the size to the code end address:
@@ -301,13 +303,13 @@ AppleObjCTrampolineHandler::AppleObjCVTables::VTableRegion::AddressInRegion (lld
 void
 AppleObjCTrampolineHandler::AppleObjCVTables::VTableRegion::Dump (Stream &s)
 {
-    s.Printf ("Header addr: 0x%llx Code start: 0x%llx Code End: 0x%llx Next: 0x%llx\n", 
+    s.Printf ("Header addr: 0x%" PRIx64 " Code start: 0x%" PRIx64 " Code End: 0x%" PRIx64 " Next: 0x%" PRIx64 "\n",
               m_header_addr, m_code_start_addr, m_code_end_addr, m_next_region);
     size_t num_elements = m_descriptors.size();
     for (size_t i = 0; i < num_elements; i++)
     {
         s.Indent();
-        s.Printf ("Code start: 0x%llx Flags: %d\n", m_descriptors[i].code_start, m_descriptors[i].flags);
+        s.Printf ("Code start: 0x%" PRIx64 " Flags: %d\n", m_descriptors[i].code_start, m_descriptors[i].flags);
     }
 }
         
@@ -380,6 +382,7 @@ AppleObjCTrampolineHandler::AppleObjCVTables::InitializeVTableSymbols ()
                     {
                         m_trampolines_changed_bp_id = trampolines_changed_bp_sp->GetID();
                         trampolines_changed_bp_sp->SetCallback (RefreshTrampolines, this, true);
+                        trampolines_changed_bp_sp->SetBreakpointKind ("objc-trampolines-changed");
                         return true;
                     }
                 }
@@ -425,8 +428,8 @@ AppleObjCTrampolineHandler::AppleObjCVTables::RefreshTrampolines (void *baton,
                                                                     data, 
                                                                     0,
                                                                     NULL);
-        uint32_t offset_ptr = 0;
-        lldb::addr_t region_addr = data.GetPointer(&offset_ptr);
+        lldb::offset_t offset = 0;
+        lldb::addr_t region_addr = data.GetPointer(&offset);
         
         if (region_addr != 0)
             vtable_handler->ReadRegions(region_addr);
@@ -616,7 +619,7 @@ AppleObjCTrampolineHandler::SetupDispatchFunction (Thread &thread, ValueList &di
                     impl_code_address = sc.symbol->GetAddress();
                     
                 //lldb::addr_t addr = impl_code_address.GetOpcodeLoadAddress (exe_ctx.GetTargetPtr());
-                //printf ("Getting address for our_utility_function: 0x%llx.\n", addr);
+                //printf ("Getting address for our_utility_function: 0x%" PRIx64 ".\n", addr);
             }
             else
             {
@@ -882,7 +885,7 @@ AppleObjCTrampolineHandler::GetStepThroughDispatchPlan (Thread &thread, bool sto
         {
             if (log)
             {
-                log->Printf("Resolving call for class - 0x%llx and selector - 0x%llx",
+                log->Printf("Resolving call for class - 0x%" PRIx64 " and selector - 0x%" PRIx64,
                             isa_addr, sel_addr);
             }
             ObjCLanguageRuntime *objc_runtime = m_process_sp->GetObjCLanguageRuntime ();
@@ -896,7 +899,7 @@ AppleObjCTrampolineHandler::GetStepThroughDispatchPlan (Thread &thread, bool sto
             // Yup, it was in the cache, so we can run to that address directly.
             
             if (log)
-                log->Printf ("Found implementation address in cache: 0x%llx", impl_addr);
+                log->Printf ("Found implementation address in cache: 0x%" PRIx64, impl_addr);
                  
             ret_plan_sp.reset (new ThreadPlanRunToAddress (thread, impl_addr, stop_others));
         }

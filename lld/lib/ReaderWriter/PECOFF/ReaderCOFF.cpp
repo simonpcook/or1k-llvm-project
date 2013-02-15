@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "lld/ReaderWriter/ReaderPECOFF.h"
+#include "lld/ReaderWriter/Reader.h"
 #include "lld/Core/File.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -153,6 +153,10 @@ public:
     return "";
   }
 
+  virtual SectionPosition sectionPosition() const {
+    return sectionPositionAny;
+  }
+
   virtual DeadStripKind deadStrip() const {
     return deadStripNormal;
   }
@@ -207,8 +211,9 @@ private:
 
 class FileCOFF : public File {
 public:
-  FileCOFF(std::unique_ptr<llvm::MemoryBuffer> MB, llvm::error_code &EC)
-    : File(MB->getBufferIdentifier()) {
+  FileCOFF(const TargetInfo &ti, std::unique_ptr<llvm::MemoryBuffer> MB,
+           llvm::error_code &EC)
+      : File(MB->getBufferIdentifier()), _targetInfo(ti) {
     llvm::OwningPtr<llvm::object::Binary> Bin;
     EC = llvm::object::createBinary(MB.release(), Bin);
     if (EC)
@@ -330,10 +335,6 @@ public:
     }
   }
 
-  virtual void addAtom(const Atom&) {
-    llvm_unreachable("cannot add atoms to native .obj files");
-  }
-
   virtual const atom_collection<DefinedAtom> &defined() const {
     return DefinedAtoms;
   }
@@ -350,25 +351,28 @@ public:
     return AbsoluteAtoms;
   }
 
+  virtual const TargetInfo &getTargetInfo() const { return _targetInfo; }
+
 private:
   std::unique_ptr<const llvm::object::COFFObjectFile> Obj;
-  atom_collection_vector<DefinedAtom>       DefinedAtoms;
+  atom_collection_vector<DefinedAtom> DefinedAtoms;
   atom_collection_vector<UndefinedAtom>     UndefinedAtoms;
   atom_collection_vector<SharedLibraryAtom> SharedLibraryAtoms;
-  atom_collection_vector<AbsoluteAtom>      AbsoluteAtoms;
+  atom_collection_vector<AbsoluteAtom> AbsoluteAtoms;
   llvm::BumpPtrAllocator AtomStorage;
+  const TargetInfo &_targetInfo;
 };
 
 
 
 class ReaderCOFF : public Reader {
 public:
-  ReaderCOFF(const ReaderOptionsPECOFF &options) {}
+  ReaderCOFF(const TargetInfo &ti) : Reader(ti) {}
 
   error_code parseFile(std::unique_ptr<MemoryBuffer> mb,
-                       std::vector<std::unique_ptr<File>> &result) {
+                       std::vector<std::unique_ptr<File> > &result) {
     llvm::error_code ec;
-    std::unique_ptr<File> f(new FileCOFF(std::move(mb), ec));
+    std::unique_ptr<File> f(new FileCOFF(_targetInfo, std::move(mb), ec));
     if (ec) {
       return ec;
     }
@@ -377,22 +381,11 @@ public:
     return error_code::success();
   }
 };
-
-} // namespace anonymous
-
+} // end namespace anonymous
 
 namespace lld {
-
-Reader *createReaderPECOFF(const ReaderOptionsPECOFF &options) {
-  return new ReaderCOFF(options);
+std::unique_ptr<Reader> createReaderPECOFF(const TargetInfo & ti,
+                                           std::function<ReaderFunc>) {
+  return std::unique_ptr<Reader>(new ReaderCOFF(ti));
 }
-
-ReaderOptionsPECOFF::ReaderOptionsPECOFF() {
 }
-
-ReaderOptionsPECOFF::~ReaderOptionsPECOFF() {
-}
-
-} // namespace lld
-
-

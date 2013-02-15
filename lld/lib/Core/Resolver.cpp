@@ -9,17 +9,18 @@
 
 #include "lld/Core/Atom.h"
 #include "lld/Core/File.h"
-#include "lld/Core/LLVM.h"
 #include "lld/Core/InputFiles.h"
+#include "lld/Core/LinkerOptions.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Resolver.h"
 #include "lld/Core/SymbolTable.h"
+#include "lld/Core/TargetInfo.h"
 #include "lld/Core/UndefinedAtom.h"
 
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <cassert>
@@ -103,20 +104,32 @@ void Resolver::doDefinedAtom(const DefinedAtom &atom) {
   DEBUG_WITH_TYPE("resolver", llvm::dbgs()
                     << "         DefinedAtom: "
                     << llvm::format("0x%09lX", &atom)
+                    << ", file=#"
+                    << atom.file().ordinal()
+                    << ", atom=#"
+                    << atom.ordinal()
                     << ", name="
                     << atom.name()
                     << "\n");
 
+  // Verify on zero-size atoms are pinned to start or end of section.
+  switch ( atom.sectionPosition() ) {
+  case DefinedAtom::sectionPositionStart: 
+  case DefinedAtom::sectionPositionEnd:
+    assert(atom.size() == 0);
+    break;
+  case DefinedAtom::sectionPositionEarly: 
+  case DefinedAtom::sectionPositionAny: 
+    break;
+  }
+
   // add to list of known atoms
   _atoms.push_back(&atom);
 
-  // non-static atoms need extra handling
-  if (atom.scope() != DefinedAtom::scopeTranslationUnit) {
-    // tell symbol table about non-static atoms
-    _symbolTable.add(atom);
-  }
+  // tell symbol table 
+  _symbolTable.add(atom);
 
-  if (_options.deadCodeStripping()) {
+  if (_targetInfo.getLinkerOptions()._deadStrip) {
     // add to set of dead-strip-roots, all symbols that
     // the compiler marks as don't strip
     if (atom.deadStrip() == DefinedAtom::deadStripNever)
@@ -169,16 +182,16 @@ void Resolver::addAtoms(const std::vector<const DefinedAtom*>& newAtoms) {
 // ask symbol table if any definitionUndefined atoms still exist
 // if so, keep searching libraries until no more atoms being added
 void Resolver::resolveUndefines() {
-  const bool searchArchives =
-    _options.searchArchivesToOverrideTentativeDefinitions();
-  const bool searchSharedLibs =
-    _options.searchSharedLibrariesToOverrideTentativeDefinitions();
+  const bool searchArchives = _targetInfo.getLinkerOptions().
+      _searchArchivesToOverrideTentativeDefinitions;
+  const bool searchSharedLibs = _targetInfo.getLinkerOptions().
+      _searchSharedLibrariesToOverrideTentativeDefinitions;
 
   // keep looping until no more undefines were added in last loop
   unsigned int undefineGenCount = 0xFFFFFFFF;
   while (undefineGenCount != _symbolTable.size()) {
     undefineGenCount = _symbolTable.size();
-    std::vector<const Atom *> undefines;
+    std::vector<const UndefinedAtom *> undefines;
     _symbolTable.undefines(undefines);
     for ( const Atom *undefAtom : undefines ) {
       StringRef undefName = undefAtom->name();
@@ -246,14 +259,14 @@ void Resolver::markLive(const Atom &atom) {
 // remove all atoms not actually used
 void Resolver::deadStripOptimize() {
   // only do this optimization with -dead_strip
-  if (!_options.deadCodeStripping())
+  if (!_targetInfo.getLinkerOptions()._deadStrip)
     return;
 
   // clear liveness on all atoms
   _liveAtoms.clear();
 
   // By default, shared libraries are built with all globals as dead strip roots
-  if ( _options.allGlobalsAreDeadStripRoots() ) {
+  if (_targetInfo.getLinkerOptions()._globalsAreDeadStripRoots) {
     for ( const Atom *atom : _atoms ) {
       const DefinedAtom *defAtom = dyn_cast<DefinedAtom>(atom);
       if (defAtom == nullptr)
@@ -264,8 +277,7 @@ void Resolver::deadStripOptimize() {
   }
 
   // Or, use list of names that are dead stip roots.
-  const std::vector<StringRef> &names = _options.deadStripRootNames();
-  for ( const StringRef &name : names ) {
+  for (const StringRef &name : _targetInfo.getLinkerOptions()._deadStripRoots) {
     const Atom *symAtom = _symbolTable.findByName(name);
     assert(symAtom->definition() != Atom::definitionUndefined);
     _deadStripRoots.insert(symAtom);
@@ -289,9 +301,9 @@ void Resolver::checkUndefines(bool final) {
     return;
 
   // build vector of remaining undefined symbols
-  std::vector<const Atom *> undefinedAtoms;
+  std::vector<const UndefinedAtom *> undefinedAtoms;
   _symbolTable.undefines(undefinedAtoms);
-  if (_options.deadCodeStripping()) {
+  if (_targetInfo.getLinkerOptions()._deadStrip) {
     // When dead code stripping, we don't care if dead atoms are undefined.
     undefinedAtoms.erase(std::remove_if(
                            undefinedAtoms.begin(), undefinedAtoms.end(),
@@ -299,13 +311,20 @@ void Resolver::checkUndefines(bool final) {
   }
 
   // error message about missing symbols
-  if ( (undefinedAtoms.size() != 0) && _options.undefinesAreErrors() ) {
+  if (!undefinedAtoms.empty() &&
+      (!_targetInfo.getLinkerOptions()._noInhibitExec ||
+       _targetInfo.getLinkerOptions()._outputKind == OutputKind::Relocatable)) {
     // FIXME: need diagonstics interface for writing error messages
-    llvm::errs() << "Undefined symbols:\n";
-    for ( const Atom *undefAtom : undefinedAtoms ) {
-      llvm::errs() << "  " << undefAtom->name() << "\n";
+    bool isError = false;
+    for (const UndefinedAtom *undefAtom : undefinedAtoms) {
+      if (undefAtom->canBeNull() == UndefinedAtom::canBeNullNever) {
+        llvm::errs() << "Undefined Symbol: " << undefAtom->file().path()
+                     << " : " << undefAtom->name() << "\n";
+        isError = true;
+      }
     }
-    llvm::report_fatal_error("symbol(s) not found");
+    if (isError)
+      llvm::report_fatal_error("symbol(s) not found");
   }
 }
 
@@ -364,6 +383,14 @@ void Resolver::MergedFile::addAtom(const Atom& atom) {
     llvm_unreachable("atom has unknown definition kind");
   }
 }
+
+
+MutableFile::DefinedAtomRange Resolver::MergedFile::definedAtoms() {
+  return range<std::vector<const DefinedAtom*>::iterator>(
+                    _definedAtoms._atoms.begin(), _definedAtoms._atoms.end());
+}
+
+
 
 void Resolver::MergedFile::addAtoms(std::vector<const Atom*>& all) {
   DEBUG_WITH_TYPE("resolver", llvm::dbgs() << "Resolver final atom list:\n");

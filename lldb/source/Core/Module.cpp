@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/DataBuffer.h"
@@ -103,7 +105,7 @@ namespace lldb {
         Mutex::Locker locker (Module::GetAllocationModuleCollectionMutex());
         ModuleCollection &modules = GetModuleCollection();
         const size_t count = modules.size();
-        printf ("%s: %llu modules:\n", __PRETTY_FUNCTION__, (uint64_t)count);
+        printf ("%s: %" PRIu64 " modules:\n", __PRETTY_FUNCTION__, (uint64_t)count);
         for (size_t i=0; i<count; ++i)
         {
             
@@ -263,7 +265,7 @@ Module::GetMemoryObjectFile (const lldb::ProcessSP &process_sp, lldb::addr_t hea
                 if (m_objfile_sp)
                 {
                     StreamString s;
-                    s.Printf("0x%16.16llx", header_addr);
+                    s.Printf("0x%16.16" PRIx64, header_addr);
                     m_object_name.SetCString (s.GetData());
 
                     // Once we get the object file, update our module with the object file's
@@ -344,16 +346,15 @@ void
 Module::ParseAllDebugSymbols()
 {
     Mutex::Locker locker (m_mutex);
-    uint32_t num_comp_units = GetNumCompileUnits();
+    size_t num_comp_units = GetNumCompileUnits();
     if (num_comp_units == 0)
         return;
 
     SymbolContext sc;
     sc.module_sp = shared_from_this();
-    uint32_t cu_idx;
     SymbolVendor *symbols = GetSymbolVendor ();
 
-    for (cu_idx = 0; cu_idx < num_comp_units; cu_idx++)
+    for (size_t cu_idx = 0; cu_idx < num_comp_units; cu_idx++)
     {
         sc.comp_unit = symbols->GetCompileUnitAtIndex(cu_idx).get();
         if (sc.comp_unit)
@@ -363,8 +364,7 @@ Module::ParseAllDebugSymbols()
 
             symbols->ParseCompileUnitFunctions(sc);
 
-            uint32_t func_idx;
-            for (func_idx = 0; (sc.function = sc.comp_unit->GetFunctionAtIndex(func_idx).get()) != NULL; ++func_idx)
+            for (size_t func_idx = 0; (sc.function = sc.comp_unit->GetFunctionAtIndex(func_idx).get()) != NULL; ++func_idx)
             {
                 symbols->ParseFunctionBlocks(sc);
 
@@ -398,7 +398,7 @@ Module::DumpSymbolContext(Stream *s)
     s->Printf(", Module{%p}", this);
 }
 
-uint32_t
+size_t
 Module::GetNumCompileUnits()
 {
     Mutex::Locker locker (m_mutex);
@@ -410,10 +410,10 @@ Module::GetNumCompileUnits()
 }
 
 CompUnitSP
-Module::GetCompileUnitAtIndex (uint32_t index)
+Module::GetCompileUnitAtIndex (size_t index)
 {
     Mutex::Locker locker (m_mutex);
-    uint32_t num_comp_units = GetNumCompileUnits ();
+    size_t num_comp_units = GetNumCompileUnits ();
     CompUnitSP cu_sp;
 
     if (index < num_comp_units)
@@ -429,7 +429,7 @@ bool
 Module::ResolveFileAddress (lldb::addr_t vm_addr, Address& so_addr)
 {
     Mutex::Locker locker (m_mutex);
-    Timer scoped_timer(__PRETTY_FUNCTION__, "Module::ResolveFileAddress (vm_addr = 0x%llx)", vm_addr);
+    Timer scoped_timer(__PRETTY_FUNCTION__, "Module::ResolveFileAddress (vm_addr = 0x%" PRIx64 ")", vm_addr);
     ObjectFile* ofile = GetObjectFile();
     if (ofile)
         return so_addr.ResolveAddressUsingFileSections(vm_addr, ofile->GetSectionList());
@@ -527,16 +527,24 @@ Module::ResolveSymbolContextsForFileSpec (const FileSpec &file_spec, uint32_t li
 }
 
 
-uint32_t
-Module::FindGlobalVariables(const ConstString &name, const ClangNamespaceDecl *namespace_decl, bool append, uint32_t max_matches, VariableList& variables)
+size_t
+Module::FindGlobalVariables (const ConstString &name,
+                             const ClangNamespaceDecl *namespace_decl,
+                             bool append,
+                             size_t max_matches,
+                             VariableList& variables)
 {
     SymbolVendor *symbols = GetSymbolVendor ();
     if (symbols)
         return symbols->FindGlobalVariables(name, namespace_decl, append, max_matches, variables);
     return 0;
 }
-uint32_t
-Module::FindGlobalVariables(const RegularExpression& regex, bool append, uint32_t max_matches, VariableList& variables)
+
+size_t
+Module::FindGlobalVariables (const RegularExpression& regex,
+                             bool append,
+                             size_t max_matches,
+                             VariableList& variables)
 {
     SymbolVendor *symbols = GetSymbolVendor ();
     if (symbols)
@@ -544,7 +552,7 @@ Module::FindGlobalVariables(const RegularExpression& regex, bool append, uint32_
     return 0;
 }
 
-uint32_t
+size_t
 Module::FindCompileUnits (const FileSpec &path,
                           bool append,
                           SymbolContextList &sc_list)
@@ -552,12 +560,12 @@ Module::FindCompileUnits (const FileSpec &path,
     if (!append)
         sc_list.Clear();
     
-    const uint32_t start_size = sc_list.GetSize();
-    const uint32_t num_compile_units = GetNumCompileUnits();
+    const size_t start_size = sc_list.GetSize();
+    const size_t num_compile_units = GetNumCompileUnits();
     SymbolContext sc;
     sc.module_sp = shared_from_this();
     const bool compare_directory = path.GetDirectory();
-    for (uint32_t i=0; i<num_compile_units; ++i)
+    for (size_t i=0; i<num_compile_units; ++i)
     {
         sc.comp_unit = GetCompileUnitAtIndex(i).get();
         if (sc.comp_unit)
@@ -569,10 +577,10 @@ Module::FindCompileUnits (const FileSpec &path,
     return sc_list.GetSize() - start_size;
 }
 
-uint32_t
+size_t
 Module::FindFunctions (const ConstString &name,
                        const ClangNamespaceDecl *namespace_decl,
-                       uint32_t name_type_mask, 
+                       uint32_t name_type_mask,
                        bool include_symbols,
                        bool include_inlines,
                        bool append, 
@@ -581,7 +589,7 @@ Module::FindFunctions (const ConstString &name,
     if (!append)
         sc_list.Clear();
 
-    const uint32_t start_size = sc_list.GetSize();
+    const size_t start_size = sc_list.GetSize();
 
     // Find all the functions (not symbols, but debug information functions...
     SymbolVendor *symbols = GetSymbolVendor ();
@@ -599,12 +607,12 @@ Module::FindFunctions (const ConstString &name,
             {
                 std::vector<uint32_t> symbol_indexes;
                 symtab->FindAllSymbolsWithNameAndType (name, eSymbolTypeCode, Symtab::eDebugAny, Symtab::eVisibilityAny, symbol_indexes);
-                const uint32_t num_matches = symbol_indexes.size();
+                const size_t num_matches = symbol_indexes.size();
                 if (num_matches)
                 {
                     const bool merge_symbol_into_function = true;
                     SymbolContext sc(this);
-                    for (uint32_t i=0; i<num_matches; i++)
+                    for (size_t i=0; i<num_matches; i++)
                     {
                         sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
                         sc_list.AppendIfUnique (sc, merge_symbol_into_function);
@@ -616,7 +624,7 @@ Module::FindFunctions (const ConstString &name,
     return sc_list.GetSize() - start_size;
 }
 
-uint32_t
+size_t
 Module::FindFunctions (const RegularExpression& regex, 
                        bool include_symbols,
                        bool include_inlines,
@@ -626,7 +634,7 @@ Module::FindFunctions (const RegularExpression& regex,
     if (!append)
         sc_list.Clear();
     
-    const uint32_t start_size = sc_list.GetSize();
+    const size_t start_size = sc_list.GetSize();
     
     SymbolVendor *symbols = GetSymbolVendor ();
     if (symbols)
@@ -642,12 +650,12 @@ Module::FindFunctions (const RegularExpression& regex,
             {
                 std::vector<uint32_t> symbol_indexes;
                 symtab->AppendSymbolIndexesMatchingRegExAndType (regex, eSymbolTypeCode, Symtab::eDebugAny, Symtab::eVisibilityAny, symbol_indexes);
-                const uint32_t num_matches = symbol_indexes.size();
+                const size_t num_matches = symbol_indexes.size();
                 if (num_matches)
                 {
                     const bool merge_symbol_into_function = true;
                     SymbolContext sc(this);
-                    for (uint32_t i=0; i<num_matches; i++)
+                    for (size_t i=0; i<num_matches; i++)
                     {
                         sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
                         sc_list.AppendIfUnique (sc, merge_symbol_into_function);
@@ -659,12 +667,12 @@ Module::FindFunctions (const RegularExpression& regex,
     return sc_list.GetSize() - start_size;
 }
 
-uint32_t
+size_t
 Module::FindTypes_Impl (const SymbolContext& sc,
                         const ConstString &name,
                         const ClangNamespaceDecl *namespace_decl,
                         bool append,
-                        uint32_t max_matches,
+                        size_t max_matches,
                         TypeList& types)
 {
     Timer scoped_timer(__PRETTY_FUNCTION__, __PRETTY_FUNCTION__);
@@ -677,25 +685,38 @@ Module::FindTypes_Impl (const SymbolContext& sc,
     return 0;
 }
 
-uint32_t
+size_t
 Module::FindTypesInNamespace (const SymbolContext& sc,
                               const ConstString &type_name,
                               const ClangNamespaceDecl *namespace_decl,
-                              uint32_t max_matches,
+                              size_t max_matches,
                               TypeList& type_list)
 {
     const bool append = true;
     return FindTypes_Impl(sc, type_name, namespace_decl, append, max_matches, type_list);
 }
 
-uint32_t
+lldb::TypeSP
+Module::FindFirstType (const SymbolContext& sc,
+                       const ConstString &name,
+                       bool exact_match)
+{
+    TypeList type_list;
+    const size_t num_matches = FindTypes (sc, name, exact_match, 1, type_list);
+    if (num_matches)
+        return type_list.GetTypeAtIndex(0);
+    return TypeSP();
+}
+
+
+size_t
 Module::FindTypes (const SymbolContext& sc,
                    const ConstString &name,
                    bool exact_match,
-                   uint32_t max_matches,
+                   size_t max_matches,
                    TypeList& types)
 {
-    uint32_t num_matches = 0;
+    size_t num_matches = 0;
     const char *type_name_cstr = name.GetCString();
     std::string type_scope;
     std::string type_basename;
@@ -741,19 +762,8 @@ Module::FindTypes (const SymbolContext& sc,
     
 }
 
-//uint32_t
-//Module::FindTypes(const SymbolContext& sc, const RegularExpression& regex, bool append, uint32_t max_matches, Type::Encoding encoding, const char *udt_name, TypeList& types)
-//{
-//  Timer scoped_timer(__PRETTY_FUNCTION__);
-//  SymbolVendor *symbols = GetSymbolVendor ();
-//  if (symbols)
-//      return symbols->FindTypes(sc, regex, append, max_matches, encoding, udt_name, types);
-//  return 0;
-//
-//}
-
 SymbolVendor*
-Module::GetSymbolVendor (bool can_create)
+Module::GetSymbolVendor (bool can_create, lldb_private::Stream *feedback_strm)
 {
     Mutex::Locker locker (m_mutex);
     if (m_did_load_symbol_vendor == false && can_create)
@@ -762,7 +772,7 @@ Module::GetSymbolVendor (bool can_create)
         if (obj_file != NULL)
         {
             Timer scoped_timer(__PRETTY_FUNCTION__, __PRETTY_FUNCTION__);
-            m_symfile_ap.reset(SymbolVendor::FindPlugin(shared_from_this()));
+            m_symfile_ap.reset(SymbolVendor::FindPlugin(shared_from_this(), feedback_strm));
             m_did_load_symbol_vendor = true;
         }
     }
@@ -994,12 +1004,14 @@ Module::GetObjectFile()
         m_did_load_objfile = true;
         Timer scoped_timer(__PRETTY_FUNCTION__,
                            "Module::GetObjectFile () module = %s", GetFileSpec().GetFilename().AsCString(""));
-        DataBufferSP file_data_sp;
-        m_objfile_sp = ObjectFile::FindPlugin (shared_from_this(), 
+        DataBufferSP data_sp;
+        lldb::offset_t data_offset = 0;
+        m_objfile_sp = ObjectFile::FindPlugin (shared_from_this(),
                                                &m_file, 
                                                m_object_offset, 
                                                m_file.GetByteSize(), 
-                                               file_data_sp);
+                                               data_sp,
+                                               data_offset);
         if (m_objfile_sp)
         {
 			// Once we get the object file, update our module with the object file's 
@@ -1046,6 +1058,25 @@ Module::SymbolIndicesToSymbolContextList (Symtab *symtab, std::vector<uint32_t> 
                 sc_list.Append (sc);
         }
     }
+}
+
+size_t
+Module::FindFunctionSymbols (const ConstString &name,
+                             uint32_t name_type_mask,
+                             SymbolContextList& sc_list)
+{
+    Timer scoped_timer(__PRETTY_FUNCTION__,
+                       "Module::FindSymbolsFunctions (name = %s, mask = 0x%8.8x)",
+                       name.AsCString(),
+                       name_type_mask);
+    ObjectFile *objfile = GetObjectFile ();
+    if (objfile)
+    {
+        Symtab *symtab = objfile->GetSymtab();
+        if (symtab)
+            return symtab->FindFunctionSymbols (name, name_type_mask, sc_list);
+    }
+    return 0;
 }
 
 size_t
@@ -1146,27 +1177,45 @@ Module::LoadScriptingResourceInTarget (Target *target, Error& error)
         return false;
     }
     
-    PlatformSP platform_sp(target->GetPlatform());
-    
-    if (!platform_sp)
+    Debugger &debugger = target->GetDebugger();
+    const ScriptLanguage script_language = debugger.GetScriptLanguage();
+    if (script_language != eScriptLanguageNone)
     {
-        error.SetErrorString("invalid Platform");
-        return false;
-    }
+        
+        PlatformSP platform_sp(target->GetPlatform());
+        
+        if (!platform_sp)
+        {
+            error.SetErrorString("invalid Platform");
+            return false;
+        }
 
-    ModuleSpec module_spec(GetFileSpec());
-    FileSpec scripting_fspec = platform_sp->LocateExecutableScriptingResource(module_spec);
-    Debugger &debugger(target->GetDebugger());
-    if (scripting_fspec && scripting_fspec.Exists())
-    {
         ScriptInterpreter *script_interpreter = debugger.GetCommandInterpreter().GetScriptInterpreter();
         if (script_interpreter)
         {
-            StreamString scripting_stream;
-            scripting_fspec.Dump(&scripting_stream);
-            bool did_load = script_interpreter->LoadScriptingModule(scripting_stream.GetData(), false, true, error);
-            if (!did_load)
-                return false;
+            FileSpecList file_specs = platform_sp->LocateExecutableScriptingResources (target,
+                                                                                       *this);
+            
+            
+            const uint32_t num_specs = file_specs.GetSize();
+            if (num_specs)
+            {
+                for (uint32_t i=0; i<num_specs; ++i)
+                {
+                    FileSpec scripting_fspec (file_specs.GetFileSpecAtIndex(i));
+                    if (scripting_fspec && scripting_fspec.Exists())
+                    {
+
+                        StreamString scripting_stream;
+                        scripting_fspec.Dump(&scripting_stream);
+                        const bool can_reload = false;
+                        const bool init_lldb_globals = false;
+                        bool did_load = script_interpreter->LoadScriptingModule(scripting_stream.GetData(), can_reload, init_lldb_globals, error);
+                        if (!did_load)
+                            return false;
+                    }
+                }
+            }
         }
         else
         {
@@ -1185,7 +1234,7 @@ Module::SetArchitecture (const ArchSpec &new_arch)
         m_arch = new_arch;
         return true;
     }    
-    return m_arch == new_arch;
+    return m_arch.IsExactMatch(new_arch);
 }
 
 bool 
@@ -1251,7 +1300,7 @@ Module::MatchesModuleSpec (const ModuleSpec &module_ref)
     const ArchSpec &arch = module_ref.GetArchitecture();
     if (arch.IsValid())
     {
-        if (m_arch != arch)
+        if (!m_arch.IsCompatibleMatch(arch))
             return false;
     }
     

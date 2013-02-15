@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "CommandObjectPlatform.h"
 
 // C Includes
@@ -355,11 +357,11 @@ class CommandObjectPlatformProcessLaunch : public CommandObjectParsed
 {
 public:
     CommandObjectPlatformProcessLaunch (CommandInterpreter &interpreter) :
-        CommandObjectParsed (interpreter, 
+        CommandObjectParsed (interpreter,
                              "platform process launch",
                              "Launch a new process on a remote platform.",
                              "platform process launch program",
-                             0),
+                             eFlagRequiresTarget | eFlagTryTargetAPILock),
         m_options (interpreter)
     {
     }
@@ -384,15 +386,8 @@ protected:
         if (platform_sp)
         {
             Error error;
-            const uint32_t argc = args.GetArgumentCount();
-            Target *target = m_interpreter.GetExecutionContext().GetTargetPtr();
-            if (target == NULL)
-            {
-                result.AppendError ("invalid target, create a debug target using the 'target create' command");
-                result.SetStatus (eReturnStatusFailed);
-                return false;
-            }
-
+            const size_t argc = args.GetArgumentCount();
+            Target *target = m_exe_ctx.GetTargetPtr();
             Module *exe_module = target->GetExecutableModulePointer();
             if (exe_module)
             {
@@ -519,7 +514,7 @@ protected:
                         }
                         else
                         {
-                            result.AppendErrorWithFormat ("no process found with pid = %llu\n", pid);
+                            result.AppendErrorWithFormat ("no process found with pid = %" PRIu64 "\n", pid);
                             result.SetStatus (eReturnStatusFailed);
                         }
                     }
@@ -606,7 +601,7 @@ protected:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
             bool success = false;
 
             switch (short_option)
@@ -796,12 +791,12 @@ protected:
                             ProcessInstanceInfo proc_info;
                             if (platform_sp->GetProcessInfo (pid, proc_info))
                             {
-                                ostrm.Printf ("Process information for process %llu:\n", pid);
+                                ostrm.Printf ("Process information for process %" PRIu64 ":\n", pid);
                                 proc_info.Dump (ostrm, platform_sp.get());
                             }
                             else
                             {
-                                ostrm.Printf ("error: no process information is available for process %llu\n", pid);
+                                ostrm.Printf ("error: no process information is available for process %" PRIu64 "\n", pid);
                             }
                             ostrm.EOL();
                         }

@@ -30,7 +30,7 @@ public:
     {
     }
     
-    clang::DeclContextLookupResult
+    bool
     FindExternalVisibleDeclsByName (const clang::DeclContext *decl_ctx,
                                     clang::DeclarationName name)
     {
@@ -60,12 +60,15 @@ public:
 
             if (!m_type_vendor.FinishDecl(non_const_interface_decl))
                 break;
-                        
-            return non_const_interface_decl->lookup(name);
+            
+            clang::DeclContext::lookup_const_result result = non_const_interface_decl->lookup(name);
+            
+            return (result.size() != 0);
         }
         while(0);
         
-        return clang::DeclContextLookupResult();
+        SetNoExternalVisibleDeclsForName(decl_ctx, name);
+        return false;
     }
     
     clang::ExternalLoadResult
@@ -126,6 +129,8 @@ public:
             ASTDumper dumper((clang::Decl*)interface_decl);
             dumper.ToLog(log, "    [CT] ");
         }
+        
+        m_type_vendor.FinishDecl(interface_decl);
                 
         if (log)
         {
@@ -197,6 +202,7 @@ AppleObjCTypeVendor::GetDeclForISA(ObjCLanguageRuntime::ObjCISA isa)
     m_external_source->SetMetadata((uintptr_t)new_iface_decl, meta_data);
     
     new_iface_decl->setHasExternalVisibleStorage();
+    new_iface_decl->setHasExternalLexicalStorage();
     
     ast_ctx->getTranslationUnitDecl()->addDecl(new_iface_decl);
     
@@ -344,7 +350,7 @@ public:
         
         while (*name_cursor != '\0')
         {
-            char *colon_loc = strchr(name_cursor, ':');
+            const char *colon_loc = strchr(name_cursor, ':');
             if (!colon_loc)
             {
                 selector_components.push_back(&ast_ctx.Idents.get(llvm::StringRef(name_cursor)));
@@ -422,6 +428,8 @@ private:
                 clang::QualType target_type = BuildType(ast_ctx, type+1);
                 if (target_type.isNull())
                     return clang::QualType();
+                else if (target_type == ast_ctx.UnknownAnyTy)
+                    return ast_ctx.UnknownAnyTy;
                 else
                     return ast_ctx.getConstType(target_type);
             }
@@ -430,6 +438,8 @@ private:
             clang::QualType target_type = BuildType(ast_ctx, type+1);
             if (target_type.isNull())
                 return clang::QualType();
+            else if (target_type == ast_ctx.UnknownAnyTy)
+                return ast_ctx.UnknownAnyTy;
             else
                 return ast_ctx.getPointerType(target_type);
         }
@@ -504,6 +514,7 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
     interface_decl->startDefinition();
     
     interface_decl->setHasExternalVisibleStorage(false);
+    interface_decl->setHasExternalLexicalStorage(false);
     
     ObjCLanguageRuntime::ClassDescriptorSP descriptor = m_runtime.GetClassDescriptor(objc_isa);
     
@@ -518,7 +529,7 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
         interface_decl->setSuperClass(superclass_decl);
     };
     
-    auto instance_method_func = [log, interface_decl, this](const char *name, const char *types)
+    auto instance_method_func = [log, interface_decl, this](const char *name, const char *types) -> bool
     {        
         ObjCRuntimeMethodType method_type(types);
         
@@ -529,9 +540,11 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
         
         if (method_decl)
             interface_decl->addDecl(method_decl);
+        
+        return false;
     };
     
-    auto class_method_func = [log, interface_decl, this](const char *name, const char *types)
+    auto class_method_func = [log, interface_decl, this](const char *name, const char *types) -> bool
     {
         ObjCRuntimeMethodType method_type(types);
         
@@ -542,6 +555,8 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
         
         if (method_decl)
             interface_decl->addDecl(method_decl);
+        
+        return false;
     };
     
     if (log)
@@ -552,7 +567,10 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
     }
     
     
-    if (!descriptor->Describe(superclass_func, instance_method_func, class_method_func))
+    if (!descriptor->Describe(superclass_func,
+                              instance_method_func,
+                              class_method_func,
+                              std::function <bool (const char *, const char *, lldb::addr_t, uint64_t)> (nullptr)))
         return false;
     
     if (log)
@@ -601,9 +619,9 @@ AppleObjCTypeVendor::FindTypes (const ConstString &name,
         
         clang::DeclContext::lookup_const_result lookup_result = ast_ctx->getTranslationUnitDecl()->lookup(decl_name);
         
-        if (lookup_result.first != lookup_result.second)
+        if (!lookup_result.empty())
         {
-            if (const clang::ObjCInterfaceDecl *result_iface_decl = llvm::dyn_cast<clang::ObjCInterfaceDecl>(*lookup_result.first))
+            if (const clang::ObjCInterfaceDecl *result_iface_decl = llvm::dyn_cast<clang::ObjCInterfaceDecl>(lookup_result[0]))
             {
                 clang::QualType result_iface_type = ast_ctx->getObjCInterfaceType(result_iface_decl);
                 
@@ -616,7 +634,7 @@ AppleObjCTypeVendor::FindTypes (const ConstString &name,
                     if (metadata)
                         isa_value = metadata->GetISAPtr();
                     
-                    log->Printf("AOCTV::FT [%u] Found %s (isa 0x%llx) in the ASTContext",
+                    log->Printf("AOCTV::FT [%u] Found %s (isa 0x%" PRIx64 ") in the ASTContext",
                                 current_id,
                                 dumper.GetCString(),
                                 isa_value);
@@ -659,7 +677,7 @@ AppleObjCTypeVendor::FindTypes (const ConstString &name,
         if (!iface_decl)
         {
             if (log)
-                log->Printf("AOCTV::FT [%u] Couldn't get the Objective-C interface for isa 0x%llx",
+                log->Printf("AOCTV::FT [%u] Couldn't get the Objective-C interface for isa 0x%" PRIx64,
                             current_id,
                             (uint64_t)isa);
             
@@ -671,7 +689,7 @@ AppleObjCTypeVendor::FindTypes (const ConstString &name,
         if (log)
         {
             ASTDumper dumper(new_iface_type);
-            log->Printf("AOCTV::FT [%u] Created %s (isa 0x%llx)",
+            log->Printf("AOCTV::FT [%u] Created %s (isa 0x%" PRIx64 ")",
                         current_id,
                         dumper.GetCString(),
                         (uint64_t)isa);

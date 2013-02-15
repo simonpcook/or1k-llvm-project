@@ -20,6 +20,7 @@ class TestObjCIvarsInBlocks(TestBase):
         self.buildDsym()
         self.ivars_in_blocks()
 
+    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @python_api_test
     # This test requires the 2.0 runtime, so it will fail on i386.
     @expectedFailurei386
@@ -45,6 +46,9 @@ class TestObjCIvarsInBlocks(TestBase):
         self.assertTrue(target, VALID_TARGET)
 
         breakpoint = target.BreakpointCreateBySourceRegex ('// Break here inside the block.', self.class_source_file_spec)
+        self.assertTrue(breakpoint, VALID_BREAKPOINT)
+
+        breakpoint_two = target.BreakpointCreateBySourceRegex ('// Break here inside the class method block.', self.class_source_file_spec)
         self.assertTrue(breakpoint, VALID_BREAKPOINT)
 
         process = target.LaunchSimple (None, None, os.getcwd())
@@ -93,6 +97,21 @@ class TestObjCIvarsInBlocks(TestBase):
         self.assertTrue (error.Success(), "Got value from indirect access using the expression parser")
 
         self.assertTrue (direct_value == indirect_value, "Direct ivar access and indirect through expression parser produce same value.")
+
+        process.Continue()
+        self.assertTrue (process.GetState() == lldb.eStateStopped, "Stopped at the second breakpoint.")
+
+        thread_list = lldbutil.get_threads_stopped_at_breakpoint (process, breakpoint_two)
+        self.assertTrue (len(thread_list) == 1)
+        thread = thread_list[0]
+        
+        frame = thread.GetFrameAtIndex(0)
+        self.assertTrue (frame, "frame 0 is valid")
+        
+        expr = frame.EvaluateExpression("(ret)")
+        self.assertTrue (expr, "Successfully got a local variable in a block in a class method.")
+
+        self.assertTrue (expr.GetValueAsSigned (error) == 5, "The local variable in the block was what we expected.")
         
 if __name__ == '__main__':
     import atexit

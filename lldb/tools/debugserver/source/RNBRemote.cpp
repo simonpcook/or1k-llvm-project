@@ -30,7 +30,6 @@
 
 #include <iomanip>
 #include <sstream>
-
 #include <TargetConditionals.h> // for endianness predefines
 
 //----------------------------------------------------------------------
@@ -155,9 +154,9 @@ RNBRemote::CreatePacketTable  ()
     t.push_back (Packet (remove_read_watch_bp,          &RNBRemote::HandlePacket_z,             NULL, "z3", "Remove read watchpoint"));
     t.push_back (Packet (insert_access_watch_bp,        &RNBRemote::HandlePacket_z,             NULL, "Z4", "Insert access watchpoint"));
     t.push_back (Packet (remove_access_watch_bp,        &RNBRemote::HandlePacket_z,             NULL, "z4", "Remove access watchpoint"));
+    t.push_back (Packet (query_monitor,                 &RNBRemote::HandlePacket_qRcmd,          NULL, "qRcmd", "Monitor command"));
     t.push_back (Packet (query_current_thread_id,       &RNBRemote::HandlePacket_qC,            NULL, "qC", "Query current thread ID"));
     t.push_back (Packet (query_get_pid,                 &RNBRemote::HandlePacket_qGetPid,       NULL, "qGetPid", "Query process id"));
-//  t.push_back (Packet (query_memory_crc,              &RNBRemote::HandlePacket_UNIMPLEMENTED, NULL, "qCRC:", "Compute CRC of memory region"));
     t.push_back (Packet (query_thread_ids_first,        &RNBRemote::HandlePacket_qThreadInfo,   NULL, "qfThreadInfo", "Get list of active threads (first req)"));
     t.push_back (Packet (query_thread_ids_subsequent,   &RNBRemote::HandlePacket_qThreadInfo,   NULL, "qsThreadInfo", "Get list of active threads (subsequent req)"));
     // APPLE LOCAL: qThreadStopInfo
@@ -173,6 +172,7 @@ RNBRemote::CreatePacketTable  ()
     t.push_back (Packet (query_vattachorwait_supported, &RNBRemote::HandlePacket_qVAttachOrWaitSupported,NULL, "qVAttachOrWaitSupported", "Replys with OK if the 'vAttachOrWait' packet is supported."));
     t.push_back (Packet (query_sync_thread_state_supported, &RNBRemote::HandlePacket_qSyncThreadStateSupported,NULL, "qSyncThreadStateSupported", "Replys with OK if the 'QSyncThreadState:' packet is supported."));
     t.push_back (Packet (query_host_info,               &RNBRemote::HandlePacket_qHostInfo,     NULL, "qHostInfo", "Replies with multiple 'key:value;' tuples appended to each other."));
+    t.push_back (Packet (query_process_info,            &RNBRemote::HandlePacket_qProcessInfo,     NULL, "qProcessInfo", "Replies with multiple 'key:value;' tuples appended to each other."));
 //  t.push_back (Packet (query_symbol_lookup,           &RNBRemote::HandlePacket_UNIMPLEMENTED, NULL, "qSymbol", "Notify that host debugger is ready to do symbol lookups"));
     t.push_back (Packet (start_noack_mode,              &RNBRemote::HandlePacket_QStartNoAckMode        , NULL, "QStartNoAckMode", "Request that " DEBUGSERVER_PROGRAM_NAME " stop acking remote protocol packets"));
     t.push_back (Packet (prefix_reg_packets_with_tid,   &RNBRemote::HandlePacket_QThreadSuffixSupported , NULL, "QThreadSuffixSupported", "Check if thread specifc packets (register packets 'g', 'G', 'p', and 'P') support having the thread ID appended to the end of the command"));
@@ -193,6 +193,8 @@ RNBRemote::CreatePacketTable  ()
     t.push_back (Packet (allocate_memory,               &RNBRemote::HandlePacket_AllocateMemory, NULL, "_M", "Allocate memory in the inferior process."));
     t.push_back (Packet (deallocate_memory,             &RNBRemote::HandlePacket_DeallocateMemory, NULL, "_m", "Deallocate memory in the inferior process."));
     t.push_back (Packet (memory_region_info,            &RNBRemote::HandlePacket_MemoryRegionInfo, NULL, "qMemoryRegionInfo", "Return size and attributes of a memory region that contains the given address"));
+    t.push_back (Packet (get_profile_data,              &RNBRemote::HandlePacket_GetProfileData, NULL, "qGetProfileData", "Return profiling data of the current target."));
+    t.push_back (Packet (set_enable_profiling,          &RNBRemote::HandlePacket_SetEnableAsyncProfiling, NULL, "QSetEnableAsyncProfiling", "Enable or disable the profiling of current target."));
     t.push_back (Packet (watchpoint_support_info,       &RNBRemote::HandlePacket_WatchpointSupportInfo, NULL, "qWatchpointSupportInfo", "Return the number of supported hardware watchpoints"));
 
 }
@@ -221,6 +223,25 @@ RNBRemote::FlushSTDIO ()
             if (count > 0)
             {
                 SendSTDERRPacket (buf, count);
+            }
+        } while (count > 0);
+    }
+}
+
+void
+RNBRemote::SendAsyncProfileData ()
+{
+    if (m_ctx.HasValidProcessID())
+    {
+        nub_process_t pid = m_ctx.ProcessID();
+        char buf[1024];
+        nub_size_t count;
+        do
+        {
+            count = DNBProcessGetAvailableProfileData(pid, buf, sizeof(buf));
+            if (count > 0)
+            {
+                SendAsyncProfileDataPacket (buf, count);
             }
         } while (count > 0);
     }
@@ -260,6 +281,18 @@ RNBRemote::SendSTDERRPacket (char *buf, nub_size_t buf_size)
     if (buf_size == 0)
         return rnb_success;
     return SendHexEncodedBytePacket("O", buf, buf_size, NULL);
+}
+
+// This makes use of asynchronous bit 'A' in the gdb remote protocol.
+rnb_err_t
+RNBRemote::SendAsyncProfileDataPacket (char *buf, nub_size_t buf_size)
+{
+    if (buf_size == 0)
+        return rnb_success;
+    
+    std::string packet("A");
+    packet.append(buf, buf_size);
+    return SendPacket(packet);
 }
 
 rnb_err_t
@@ -1401,6 +1434,135 @@ RNBRemote::HandlePacket_qThreadExtraInfo (const char *p)
     return SendPacket ("");
 }
 
+
+const char *k_space_delimiters = " \t";
+static void
+skip_spaces (std::string &line)
+{
+    if (!line.empty())
+    {
+        size_t space_pos = line.find_first_not_of (k_space_delimiters);
+        if (space_pos > 0)
+            line.erase(0, space_pos);
+    }
+}
+
+static std::string
+get_identifier (std::string &line)
+{
+    std::string word;
+    skip_spaces (line);
+    const size_t line_size = line.size();
+    size_t end_pos;
+    for (end_pos = 0; end_pos < line_size; ++end_pos)
+    {
+        if (end_pos == 0)
+        {
+            if (isalpha(line[end_pos]) || line[end_pos] == '_')
+                continue;
+        }
+        else if (isalnum(line[end_pos]) || line[end_pos] == '_')
+            continue;
+        break;
+    }
+    word.assign (line, 0, end_pos);
+    line.erase(0, end_pos);
+    return word;
+}
+
+static std::string
+get_operator (std::string &line)
+{
+    std::string op;
+    skip_spaces (line);
+    if (!line.empty())
+    {
+        if (line[0] == '=')
+        {
+            op = '=';
+            line.erase(0,1);
+        }
+    }
+    return op;
+}
+
+static std::string
+get_value (std::string &line)
+{
+    std::string value;
+    skip_spaces (line);
+    if (!line.empty())
+    {
+        value.swap(line);
+    }
+    return value;
+}
+
+
+extern void FileLogCallback(void *baton, uint32_t flags, const char *format, va_list args);
+extern void ASLLogCallback(void *baton, uint32_t flags, const char *format, va_list args);
+
+rnb_err_t
+RNBRemote::HandlePacket_qRcmd (const char *p)
+{
+    const char *c = p + strlen("qRcmd,");
+    std::string line;
+    while (c[0] && c[1])
+    {
+        char smallbuf[3] = { c[0], c[1], '\0' };
+        errno = 0;
+        int ch = strtoul (smallbuf, NULL, 16);
+        if (errno != 0 && ch == 0)
+            return HandlePacket_ILLFORMED (__FILE__, __LINE__, p, "non-hex char in payload of qRcmd packet");
+        line.push_back(ch);
+        c += 2;
+    }
+    if (*c == '\0')
+    {
+        std::string command = get_identifier(line);
+        if (command.compare("set") == 0)
+        {
+            std::string variable = get_identifier (line);
+            std::string op = get_operator (line);
+            std::string value = get_value (line);
+            if (variable.compare("logfile") == 0)
+            {
+                FILE *log_file = fopen(value.c_str(), "w");
+                if (log_file)
+                {
+                    DNBLogSetLogCallback(FileLogCallback, log_file);
+                    return SendPacket ("OK");
+                }
+                return SendPacket ("E71");
+            }
+            else if (variable.compare("logmask") == 0)
+            {
+                char *end;
+                errno = 0;
+                uint32_t logmask = strtoul (value.c_str(), &end, 0);
+                if (errno == 0 && end && *end == '\0')
+                {
+                    DNBLogSetLogMask (logmask);
+                    if (!DNBLogGetLogCallback())
+                        DNBLogSetLogCallback(ASLLogCallback, NULL);
+                    return SendPacket ("OK");
+                }
+                errno = 0;
+                logmask = strtoul (value.c_str(), &end, 16);
+                if (errno == 0 && end && *end == '\0')
+                {
+                    DNBLogSetLogMask (logmask);
+                    return SendPacket ("OK");
+                }
+                return SendPacket ("E72");
+            }
+            return SendPacket ("E70");
+        }
+        return SendPacket ("E69");
+    }
+    return SendPacket ("E73");
+}
+
 rnb_err_t
 RNBRemote::HandlePacket_qC (const char *p)
 {
@@ -1518,6 +1680,30 @@ RNBRemote::HandlePacket_qRegisterInfo (const char *p)
             case GENERIC_REGNUM_ARG8:   ostrm << "generic:arg8;"; break;
             default: break;
         }
+        
+        if (reg_entry->nub_info.pseudo_regs && reg_entry->nub_info.pseudo_regs[0] != INVALID_NUB_REGNUM)
+        {
+            ostrm << "container-regs:";
+            for (unsigned i=0; reg_entry->nub_info.pseudo_regs[i] != INVALID_NUB_REGNUM; ++i)
+            {
+                if (i > 0)
+                    ostrm << ',';
+                ostrm << RAW_HEXBASE << reg_entry->nub_info.pseudo_regs[i];
+            }
+            ostrm << ';';
+        }
+
+        if (reg_entry->nub_info.update_regs && reg_entry->nub_info.update_regs[0] != INVALID_NUB_REGNUM)
+        {
+            ostrm << "invalidate-regs:";
+            for (unsigned i=0; reg_entry->nub_info.update_regs[i] != INVALID_NUB_REGNUM; ++i)
+            {
+                if (i > 0)
+                    ostrm << ',';
+                ostrm << RAW_HEXBASE << reg_entry->nub_info.update_regs[i];
+            }
+            ostrm << ';';
+        }
 
         return SendPacket (ostrm.str ());
     }
@@ -1548,6 +1734,16 @@ set_logging (const char *p)
             {
                 if (*p == '|')
                     p++;
+
+// to regenerate the LOG_ entries (not including the LOG_RNB entries)
+// $ for logname in `grep '^#define LOG_' DNBDefs.h | egrep -v 'LOG_HI|LOG_LO' | awk '{print $2}'` 
+// do 
+//   echo "                else if (strncmp (p, \"$logname\", sizeof (\"$logname\") - 1) == 0)"
+//   echo "                {" 
+//   echo "                    p += sizeof (\"$logname\") - 1;"
+//   echo "                    bitmask |= $logname;"
+//   echo "                }"
+// done
                 if (strncmp (p, "LOG_VERBOSE", sizeof ("LOG_VERBOSE") - 1) == 0)
                 {
                     p += sizeof ("LOG_VERBOSE") - 1;
@@ -1588,26 +1784,48 @@ set_logging (const char *p)
                     p += sizeof ("LOG_MEMORY_DATA_LONG") - 1;
                     bitmask |= LOG_MEMORY_DATA_LONG;
                 }
+                else if (strncmp (p, "LOG_MEMORY_PROTECTIONS", sizeof ("LOG_MEMORY_PROTECTIONS") - 1) == 0)
+                {
+                    p += sizeof ("LOG_MEMORY_PROTECTIONS") - 1;
+                    bitmask |= LOG_MEMORY_PROTECTIONS;
+                }
                 else if (strncmp (p, "LOG_BREAKPOINTS", sizeof ("LOG_BREAKPOINTS") - 1) == 0)
                 {
                     p += sizeof ("LOG_BREAKPOINTS") - 1;
                     bitmask |= LOG_BREAKPOINTS;
-                }
-                else if (strncmp (p, "LOG_ALL", sizeof ("LOG_ALL") - 1) == 0)
-                {
-                    p += sizeof ("LOG_ALL") - 1;
-                    bitmask |= LOG_ALL;
                 }
                 else if (strncmp (p, "LOG_EVENTS", sizeof ("LOG_EVENTS") - 1) == 0)
                 {
                     p += sizeof ("LOG_EVENTS") - 1;
                     bitmask |= LOG_EVENTS;
                 }
+                else if (strncmp (p, "LOG_WATCHPOINTS", sizeof ("LOG_WATCHPOINTS") - 1) == 0)
+                {
+                    p += sizeof ("LOG_WATCHPOINTS") - 1;
+                    bitmask |= LOG_WATCHPOINTS;
+                }
+                else if (strncmp (p, "LOG_STEP", sizeof ("LOG_STEP") - 1) == 0)
+                {
+                    p += sizeof ("LOG_STEP") - 1;
+                    bitmask |= LOG_STEP;
+                }
+                else if (strncmp (p, "LOG_TASK", sizeof ("LOG_TASK") - 1) == 0)
+                {
+                    p += sizeof ("LOG_TASK") - 1;
+                    bitmask |= LOG_TASK;
+                }
+                else if (strncmp (p, "LOG_ALL", sizeof ("LOG_ALL") - 1) == 0)
+                {
+                    p += sizeof ("LOG_ALL") - 1;
+                    bitmask |= LOG_ALL;
+                }
                 else if (strncmp (p, "LOG_DEFAULT", sizeof ("LOG_DEFAULT") - 1) == 0)
                 {
                     p += sizeof ("LOG_DEFAULT") - 1;
                     bitmask |= LOG_DEFAULT;
                 }
+// end of auto-generated entries
+
                 else if (strncmp (p, "LOG_NONE", sizeof ("LOG_NONE") - 1) == 0)
                 {
                     p += sizeof ("LOG_NONE") - 1;
@@ -3428,6 +3646,58 @@ RNBRemote::HandlePacket_MemoryRegionInfo (const char *p)
 }
 
 rnb_err_t
+RNBRemote::HandlePacket_GetProfileData (const char *p)
+{
+    nub_process_t pid = m_ctx.ProcessID();
+    if (pid == INVALID_NUB_PROCESS)
+        return SendPacket ("OK");
+
+    std::string data = DNBProcessGetProfileData(pid);
+    if (!data.empty())
+    {
+        return SendPacket (data.c_str());
+    }
+    else
+    {
+        return SendPacket ("OK");
+    }
+}
+
+
+// QSetEnableAsyncProfiling;enable:[0|1]:interval_usec:XXXXXX;
+rnb_err_t
+RNBRemote::HandlePacket_SetEnableAsyncProfiling (const char *p)
+{
+    nub_process_t pid = m_ctx.ProcessID();
+    if (pid == INVALID_NUB_PROCESS)
+        return SendPacket ("");
+
+    StringExtractor packet(p += sizeof ("QSetEnableAsyncProfiling:") - 1);
+    bool enable = false;
+    uint64_t interval_usec = 0;
+    std::string name;
+    std::string value;
+    while (packet.GetNameColonValue(name, value))
+    {
+        if (name.compare ("enable") == 0)
+        {
+            enable  = strtoul(value.c_str(), NULL, 10) > 0;
+        }
+        else if (name.compare ("interval_usec") == 0)
+        {
+            interval_usec  = strtoul(value.c_str(), NULL, 10);
+        }
+    }
+    
+    if (interval_usec == 0)
+    {
+        enable = 0;
+    }
+    DNBProcessSetEnableAsyncProfiling(pid, enable, interval_usec);
+    return SendPacket ("OK");
+}
+
+rnb_err_t
 RNBRemote::HandlePacket_WatchpointSupportInfo (const char *p)
 {
     /* This packet simply returns the number of supported hardware watchpoints.
@@ -3692,3 +3962,108 @@ RNBRemote::HandlePacket_qHostInfo (const char *p)
         strm << "ptrsize:" << std::dec << sizeof(void *) << ';';
     return SendPacket (strm.str());
 }
+
+
+// Note that all numeric values returned by qProcessInfo are hex encoded,
+// including the pid and the cpu type.
+
+rnb_err_t
+RNBRemote::HandlePacket_qProcessInfo (const char *p)
+{
+    nub_process_t pid;
+    std::ostringstream rep;
+
+    // If we haven't run the process yet, return an error.
+    if (!m_ctx.HasValidProcessID())
+        return SendPacket ("E68");
+
+    pid = m_ctx.ProcessID();
+
+    rep << "pid:" << std::hex << pid << ";";
+
+    int procpid_mib[4];
+    procpid_mib[0] = CTL_KERN;
+    procpid_mib[1] = KERN_PROC;
+    procpid_mib[2] = KERN_PROC_PID;
+    procpid_mib[3] = pid;
+    struct kinfo_proc proc_kinfo;
+    size_t proc_kinfo_size = sizeof(struct kinfo_proc);
+
+    if (::sysctl (procpid_mib, 4, &proc_kinfo, &proc_kinfo_size, NULL, 0) == 0)
+    {
+        if (proc_kinfo_size > 0)
+        {
+            rep << "parent-pid:" << std::hex << proc_kinfo.kp_eproc.e_ppid << ";";
+            rep << "real-uid:" << std::hex << proc_kinfo.kp_eproc.e_pcred.p_ruid << ";";
+            rep << "real-gid:" << std::hex << proc_kinfo.kp_eproc.e_pcred.p_rgid << ";";
+            rep << "effective-uid:" << std::hex << proc_kinfo.kp_eproc.e_ucred.cr_uid << ";";
+            if (proc_kinfo.kp_eproc.e_ucred.cr_ngroups > 0)
+                rep << "effective-gid:" << std::hex << proc_kinfo.kp_eproc.e_ucred.cr_groups[0] << ";";
+        }
+    }
+    
+    int cputype_mib[CTL_MAXNAME]={0,};
+    size_t cputype_mib_len = CTL_MAXNAME;
+    cpu_type_t cputype = -1;
+    if (::sysctlnametomib("sysctl.proc_cputype", cputype_mib, &cputype_mib_len) == 0)
+    {
+        cputype_mib[cputype_mib_len] = pid;
+        cputype_mib_len++;
+        size_t len = sizeof(cputype);
+        if (::sysctl (cputype_mib, cputype_mib_len, &cputype, &len, 0, 0) == 0)
+        {
+            rep << "cputype:" << std::hex << cputype << ";";
+        }
+    }
+
+    uint32_t cpusubtype;
+    size_t cpusubtype_len = sizeof(cpusubtype);
+    if (::sysctlbyname("hw.cpusubtype", &cpusubtype, &cpusubtype_len, NULL, 0) == 0)
+    {
+        if (cputype == CPU_TYPE_X86_64 && cpusubtype == CPU_SUBTYPE_486)
+        {
+            cpusubtype = CPU_SUBTYPE_X86_64_ALL;
+        }
+
+        rep << "cpusubtype:" << std::hex << cpusubtype << ';';
+    }
+
+    // The OS in the triple should be "ios" or "macosx" which doesn't match our
+    // "Darwin" which gets returned from "kern.ostype", so we need to hardcode
+    // this for now.
+    if (cputype == CPU_TYPE_ARM)
+        rep << "ostype:ios;";
+    else
+        rep << "ostype:macosx;";
+
+    rep << "vendor:apple;";
+
+#if defined (__LITTLE_ENDIAN__)
+    rep << "endian:little;";
+#elif defined (__BIG_ENDIAN__)
+    rep << "endian:big;";
+#elif defined (__PDP_ENDIAN__)
+    rep << "endian:pdp;";
+#endif
+
+#if (defined (__x86_64__) || defined (__i386__)) && defined (x86_THREAD_STATE)
+    nub_thread_t thread = DNBProcessGetCurrentThread (pid);
+    kern_return_t kr;
+    x86_thread_state_t gp_regs;
+    mach_msg_type_number_t gp_count = x86_THREAD_STATE_COUNT;
+    kr = thread_get_state (thread, x86_THREAD_STATE,
+                           (thread_state_t) &gp_regs, &gp_count);
+    if (kr == KERN_SUCCESS)
+    {
+        if (gp_regs.tsh.flavor == x86_THREAD_STATE64)
+            rep << "ptrsize:8;";
+        else
+            rep << "ptrsize:4;";
+    }
+#elif defined (__arm__)
+    rep << "ptrsize:4;";
+#endif
+
+    return SendPacket (rep.str());
+}
+

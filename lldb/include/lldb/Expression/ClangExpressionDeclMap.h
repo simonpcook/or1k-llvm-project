@@ -328,6 +328,11 @@ public:
     ///     The target to find the symbol in.  If not provided,
     ///     then the current parsing context's Target.
     ///
+    /// @param[in] process
+    ///     The process to use.  For Objective-C symbols, the process's
+    ///     Objective-C language runtime may be queried if the process
+    ///     is non-NULL.
+    ///
     /// @param[in] name
     ///     The name of the symbol.  
     ///
@@ -336,6 +341,7 @@ public:
     //------------------------------------------------------------------
     lldb::addr_t 
     GetSymbolAddress (Target &target,
+                      Process *process,
                       const ConstString &name,
                       lldb::SymbolType symbol_type);
     
@@ -792,6 +798,16 @@ private:
         m_material_vars.reset();
     }
     
+    //----------------------------------------------------------------------
+    /// Get this parser's ID for use in extracting parser- and JIT-specific
+    /// data from persistent variables.
+    //----------------------------------------------------------------------
+    uint64_t
+    GetParserID()
+    {
+        return (uint64_t)this;
+    }
+    
     //------------------------------------------------------------------
     /// Given a stack frame, find a variable that matches the given name and 
     /// type.  We need this for expression re-use; we may not always get the
@@ -834,7 +850,7 @@ private:
     /// @return
     ///     The LLDB Symbol found, or NULL if none was found.
     //---------------------------------------------------------
-    Symbol *
+    const Symbol *
     FindGlobalDataSymbol (Target &target,
                           const ConstString &name);
     
@@ -952,7 +968,7 @@ private:
     //------------------------------------------------------------------
     void
     AddOneGenericVariable (NameSearchContext &context,
-                           Symbol &symbol,
+                           const Symbol &symbol,
                            unsigned int current_id);
     
     //------------------------------------------------------------------
@@ -1001,16 +1017,23 @@ private:
     ///
     /// @param[in] type
     ///     The type that needs to be created.
-    ///
-    /// @param[in] add_method
-    ///     True if a method with signature void $__lldb_expr(void*)
-    ///     should be added to the C++ class type passed in
     //------------------------------------------------------------------
     void 
     AddOneType (NameSearchContext &context, 
                 TypeFromUser &type,
-                unsigned int current_id,
-                bool add_method);
+                unsigned int current_id);
+    
+    //------------------------------------------------------------------
+    /// Copy a C++ class type into the parser's AST context and add a
+    /// member function declaration to it for the expression.
+    ///
+    /// @param[in] type
+    ///     The type that needs to be created.
+    //------------------------------------------------------------------
+
+    TypeFromParser
+    CopyClassType(TypeFromUser &type,
+                  unsigned int current_id);
     
     //------------------------------------------------------------------
     /// Actually do the task of materializing or dematerializing the struct.
@@ -1086,6 +1109,51 @@ private:
                                         lldb::addr_t stack_frame_top,
                                         lldb::addr_t stack_frame_bottom,
                                         Error &err);
+    
+    //------------------------------------------------------------------
+    /// Create a temporary buffer in the target process to store the value
+    /// of a persistent variable that would otherwise not be accessible in
+    /// memory (e.g., register values or constants).
+    ///
+    /// @param[in] process
+    ///     The process to use when allocating the memory.
+    ///
+    /// @param[in] expr_var
+    ///     The variable whose live data will hold this buffer.
+    ///
+    /// @param[in] err
+    ///     An Error to populate with any messages related to
+    ///     allocating the memory.
+    ///
+    /// @return
+    ///     True on success; false otherwise.
+    //------------------------------------------------------------------
+    bool
+    CreateLiveMemoryForExpressionVariable (Process &process,
+                                           lldb::ClangExpressionVariableSP &expr_var,
+                                           Error &err);
+    
+    //------------------------------------------------------------------
+    /// Delete a temporary buffer created with
+    /// CreateLiveMemoryForExpressionVariable.
+    ///
+    /// @param[in] process
+    ///     The process to use when deallocating the memory.
+    ///
+    /// @param[in] expr_var
+    ///     The variable whose live data will hold this buffer.
+    ///
+    /// @param[in] err
+    ///     An Error to populate with any messages related to
+    ///     allocating the memory.
+    ///
+    /// @return
+    ///     True on success; false otherwise.
+    //------------------------------------------------------------------
+    bool
+    DeleteLiveMemoryForExpressionVariable (Process &process,
+                                           lldb::ClangExpressionVariableSP &expr_var,
+                                           Error &err);
     
     //------------------------------------------------------------------
     /// Actually do the task of materializing or dematerializing a 

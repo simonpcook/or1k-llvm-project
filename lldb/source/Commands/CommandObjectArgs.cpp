@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "CommandObjectArgs.h"
 
 // C Includes
@@ -54,7 +56,7 @@ CommandObjectArgs::CommandOptions::SetOptionValue (uint32_t option_idx, const ch
 {
     Error error;
     
-    char short_option = (char) m_getopt_table[option_idx].val;
+    const int short_option = m_getopt_table[option_idx].val;
     
     switch (short_option)
     {
@@ -102,7 +104,7 @@ CommandObjectArgs::DoExecute (Args& args, CommandReturnObject &result)
     ConstString target_triple;
     
     
-    Process *process = m_interpreter.GetExecutionContext().GetProcessPtr();
+    Process *process = m_exe_ctx.GetProcessPtr();
     if (!process)
     {
         result.AppendError ("Args found no process.");
@@ -118,7 +120,7 @@ CommandObjectArgs::DoExecute (Args& args, CommandReturnObject &result)
         return false;
     }
     
-    int num_args = args.GetArgumentCount ();
+    const size_t num_args = args.GetArgumentCount ();
     int arg_index;
     
     if (!num_args)
@@ -128,7 +130,7 @@ CommandObjectArgs::DoExecute (Args& args, CommandReturnObject &result)
         return false;
     }
     
-    Thread *thread = m_interpreter.GetExecutionContext ().GetThreadPtr();
+    Thread *thread = m_exe_ctx.GetThreadPtr();
     
     if (!thread)
     {

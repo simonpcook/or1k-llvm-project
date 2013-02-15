@@ -73,8 +73,8 @@ BreakpointResolverFileLine::SearchCallback
     // So we go through the match list and pull out the sets that have the same file spec in their line_entry
     // and treat each set separately.
     
-    uint32_t num_comp_units = context.module_sp->GetNumCompileUnits();
-    for (uint32_t i = 0; i < num_comp_units; i++)
+    const size_t num_comp_units = context.module_sp->GetNumCompileUnits();
+    for (size_t i = 0; i < num_comp_units; i++)
     {
         CompUnitSP cu_sp (context.module_sp->GetCompileUnitAtIndex (i));
         if (cu_sp)
@@ -174,7 +174,7 @@ BreakpointResolverFileLine::SearchCallback
                         }
                         else if (log)
                         {
-                            log->Printf ("Breakpoint at file address 0x%llx for %s:%d didn't pass the filter.\n",
+                            log->Printf ("Breakpoint at file address 0x%" PRIx64 " for %s:%d didn't pass the filter.\n",
                                          line_start.GetFileAddress(),
                                          m_file_spec.GetFilename().AsCString("<Unknown>"),
                                          m_line_number);
@@ -183,7 +183,7 @@ BreakpointResolverFileLine::SearchCallback
                     else
                     {
                         if (log)
-                            log->Printf ("error: Unable to set breakpoint at file address 0x%llx for %s:%d\n",
+                            log->Printf ("error: Unable to set breakpoint at file address 0x%" PRIx64 " for %s:%d\n",
                                          line_start.GetFileAddress(),
                                          m_file_spec.GetFilename().AsCString("<Unknown>"),
                                          m_line_number);

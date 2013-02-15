@@ -73,6 +73,24 @@ public:
 
     void
     SetPythonOSPluginPath (const FileSpec &file);
+    
+    bool
+    GetIgnoreBreakpointsInExpressions () const;
+    
+    void
+    SetIgnoreBreakpointsInExpressions (bool ignore);
+
+    bool
+    GetUnwindOnErrorInExpressions () const;
+    
+    void
+    SetUnwindOnErrorInExpressions (bool ignore);
+    
+    bool
+    GetStopOnSharedLibraryEvents () const;
+    
+    void
+    SetStopOnSharedLibraryEvents (bool stop);
 };
 
 typedef STD_SHARED_PTR(ProcessProperties) ProcessPropertiesSP;
@@ -625,7 +643,7 @@ public:
     const FileAction *
     GetFileActionForFD (int fd) const
     {
-        for (uint32_t idx=0, count=m_file_actions.size(); idx < count; ++idx)
+        for (size_t idx=0, count=m_file_actions.size(); idx < count; ++idx)
         {
             if (m_file_actions[idx].GetFD () == fd)
                 return &m_file_actions[idx];
@@ -1057,7 +1075,7 @@ public:
         m_infos.clear();
     }
     
-    uint32_t
+    size_t
     GetSize()
     {
         return m_infos.size();
@@ -1070,7 +1088,7 @@ public:
     }
 
     const char *
-    GetProcessNameAtIndex (uint32_t idx)
+    GetProcessNameAtIndex (size_t idx)
     {
         if (idx < m_infos.size())
             return m_infos[idx].GetName();
@@ -1078,7 +1096,7 @@ public:
     }
 
     size_t
-    GetProcessNameLengthAtIndex (uint32_t idx)
+    GetProcessNameLengthAtIndex (size_t idx)
     {
         if (idx < m_infos.size())
             return m_infos[idx].GetNameLength();
@@ -1086,7 +1104,7 @@ public:
     }
 
     lldb::pid_t
-    GetProcessIDAtIndex (uint32_t idx)
+    GetProcessIDAtIndex (size_t idx)
     {
         if (idx < m_infos.size())
             return m_infos[idx].GetProcessID();
@@ -1094,7 +1112,7 @@ public:
     }
 
     bool
-    GetInfoAtIndex (uint32_t idx, ProcessInstanceInfo &info)
+    GetInfoAtIndex (size_t idx, ProcessInstanceInfo &info)
     {
         if (idx < m_infos.size())
         {
@@ -1106,7 +1124,7 @@ public:
     
     // You must ensure "idx" is valid before calling this function
     const ProcessInstanceInfo &
-    GetProcessInfoAtIndex (uint32_t idx) const
+    GetProcessInfoAtIndex (size_t idx) const
     {
         assert (idx < m_infos.size());
         return m_infos[idx];
@@ -1129,6 +1147,7 @@ friend bool operator== (const ProcessModID &lhs, const ProcessModID &rhs);
 public:
     ProcessModID () : 
         m_stop_id (0),
+        m_last_natural_stop_id(0),
         m_resume_id (0), 
         m_memory_id (0),
         m_last_user_expression_resume (0),
@@ -1153,7 +1172,9 @@ public:
     ~ProcessModID () {}
     
     void BumpStopID () { 
-        m_stop_id++; 
+        m_stop_id++;
+        if (!IsLastResumeForUserExpression())
+            m_last_natural_stop_id++;
     }
     
     void BumpMemoryID () { m_memory_id++; }
@@ -1165,6 +1186,7 @@ public:
     }
     
     uint32_t GetStopID() const { return m_stop_id; }
+    uint32_t GetLastNaturalStopID() const { return m_last_natural_stop_id; }
     uint32_t GetMemoryID () const { return m_memory_id; }
     uint32_t GetResumeID () const { return m_resume_id; }
     uint32_t GetLastUserExpressionResumeID () const { return m_last_user_expression_resume; }
@@ -1207,6 +1229,7 @@ public:
     
 private:
     uint32_t m_stop_id;
+    uint32_t m_last_natural_stop_id;
     uint32_t m_resume_id;
     uint32_t m_memory_id;
     uint32_t m_last_user_expression_resume;
@@ -1344,7 +1367,8 @@ public:
         eBroadcastBitStateChanged   = (1 << 0),
         eBroadcastBitInterrupt      = (1 << 1),
         eBroadcastBitSTDOUT         = (1 << 2),
-        eBroadcastBitSTDERR         = (1 << 3)
+        eBroadcastBitSTDERR         = (1 << 3),
+        eBroadcastBitProfileData    = (1 << 4)
     };
 
     enum
@@ -1374,6 +1398,7 @@ public:
         return GetStaticBroadcasterClass();
     }
 
+    
     //------------------------------------------------------------------
     /// A notification structure that can be used by clients to listen
     /// for changes in a process's lifetime.
@@ -1421,6 +1446,22 @@ public:
             {
                 return m_restarted;
             }
+        
+            size_t
+            GetNumRestartedReasons ()
+            {
+                return m_restarted_reasons.size();
+            }
+        
+            const char *
+            GetRestartedReasonAtIndex(size_t idx)
+            {
+                if (idx > m_restarted_reasons.size())
+                    return NULL;
+                else
+                    return m_restarted_reasons[idx].c_str();
+            }
+        
             bool
             GetInterrupted () const
             {
@@ -1444,6 +1485,15 @@ public:
 
             static bool
             GetRestartedFromEvent (const Event *event_ptr);
+        
+            static size_t
+            GetNumRestartedReasons(const Event *event_ptr);
+        
+            static const char *
+            GetRestartedReasonAtIndex(const Event *event_ptr, size_t idx);
+        
+            static void
+            AddRestartedReason (Event *event_ptr, const char *reason);
 
             static void
             SetRestartedInEvent (Event *event_ptr, bool new_value);
@@ -1474,9 +1524,15 @@ public:
             {
                 m_interrupted = new_value;
             }
+            void
+            AddRestartedReason (const char *reason)
+            {
+                m_restarted_reasons.push_back(reason);
+            }
 
             lldb::ProcessSP m_process_sp;
             lldb::StateType m_state;
+            std::vector<std::string> m_restarted_reasons;
             bool m_restarted;  // For "eStateStopped" events, this is true if the target was automatically restarted.
             int m_update_state;
             bool m_interrupted;
@@ -1562,6 +1618,11 @@ public:
     uint32_t
     GetAddressByteSize () const;
 
+    uint32_t
+    GetUniqueID() const
+    {
+        return m_process_unique_id;
+    }
     //------------------------------------------------------------------
     /// Check if a plug-in instance can debug the file in \a module.
     ///
@@ -2054,6 +2115,27 @@ public:
 
 
     //------------------------------------------------------------------
+    /// Called after a process re-execs itself.
+    ///
+    /// Allow Process plug-ins to execute some code after a process has
+    /// exec'ed itself. Subclasses typically should override DoDidExec()
+    /// as the lldb_private::Process class needs to remove its dynamic
+    /// loader, runtime, ABI and other plug-ins, as well as unload all
+    /// shared libraries.
+    //------------------------------------------------------------------
+    virtual void
+    DidExec ();
+
+    //------------------------------------------------------------------
+    /// Subclasses of Process should implement this function if they
+    /// need to do anything after a process exec's itself.
+    //------------------------------------------------------------------
+    virtual void
+    DoDidExec ()
+    {
+    }
+
+    //------------------------------------------------------------------
     /// Called before launching to a process.
     ///
     /// Allow Process plug-ins to execute some code before launching a
@@ -2387,7 +2469,8 @@ public:
                     lldb::ThreadPlanSP &thread_plan_sp,
                     bool stop_others,
                     bool run_others,
-                    bool discard_on_error,
+                    bool unwind_on_error,
+                    bool ignore_breakpoints,
                     uint32_t timeout_usec,
                     Stream &errors);
 
@@ -2492,6 +2575,12 @@ public:
     GetLastUserExpressionResumeID () const
     {
         return m_mod_id.GetLastUserExpressionResumeID();
+    }
+    
+    uint32_t
+    GetLastNaturalStopID()
+    {
+        return m_mod_id.GetLastNaturalStopID();
     }
     
     //------------------------------------------------------------------
@@ -2717,7 +2806,7 @@ public:
     size_t
     WriteScalarToMemory (lldb::addr_t vm_addr, 
                          const Scalar &scalar, 
-                         uint32_t size, 
+                         size_t size, 
                          Error &error);
 
     size_t
@@ -2832,9 +2921,7 @@ public:
     
     lldb::ModuleSP
     ReadModuleFromMemory (const FileSpec& file_spec, 
-                          lldb::addr_t header_addr,
-                          bool add_image_to_target,
-                          bool load_sections_in_target);
+                          lldb::addr_t header_addr);
 
     //------------------------------------------------------------------
     /// Attempt to get the attributes for a region of memory in the process.
@@ -2942,7 +3029,7 @@ public:
 
     Error
     DeallocateMemory (lldb::addr_t ptr);
-
+    
     //------------------------------------------------------------------
     /// Get any available STDOUT.
     ///
@@ -2998,6 +3085,24 @@ public:
         return 0;
     }
 
+    //------------------------------------------------------------------
+    /// Get any available profile data.
+    ///
+    /// @param[out] buf
+    ///     A buffer that will receive any profile data bytes that are
+    ///     currently available.
+    ///
+    /// @param[out] buf_size
+    ///     The size in bytes for the buffer \a buf.
+    ///
+    /// @return
+    ///     The number of bytes written into \a buf. If this value is
+    ///     equal to \a buf_size, another call to this function should
+    ///     be made to retrieve more profile data.
+    //------------------------------------------------------------------
+    virtual size_t
+    GetAsyncProfileData (char *buf, size_t buf_size, Error &error);
+    
     //----------------------------------------------------------------------
     // Process Breakpoints
     //----------------------------------------------------------------------
@@ -3005,7 +3110,7 @@ public:
     GetSoftwareBreakpointTrapOpcode (BreakpointSite* bp_site);
 
     virtual Error
-    EnableBreakpoint (BreakpointSite *bp_site)
+    EnableBreakpointSite (BreakpointSite *bp_site)
     {
         Error error;
         error.SetErrorStringWithFormat("error: %s does not support enabling breakpoints", GetShortPluginName());
@@ -3014,7 +3119,7 @@ public:
 
 
     virtual Error
-    DisableBreakpoint (BreakpointSite *bp_site)
+    DisableBreakpointSite (BreakpointSite *bp_site)
     {
         Error error;
         error.SetErrorStringWithFormat("error: %s does not support disabling breakpoints", GetShortPluginName());
@@ -3073,10 +3178,10 @@ public:
     // Process Watchpoints (optional)
     //----------------------------------------------------------------------
     virtual Error
-    EnableWatchpoint (Watchpoint *wp);
+    EnableWatchpoint (Watchpoint *wp, bool notify = true);
 
     virtual Error
-    DisableWatchpoint (Watchpoint *wp);
+    DisableWatchpoint (Watchpoint *wp, bool notify = true);
 
     //------------------------------------------------------------------
     // Thread Queries
@@ -3092,10 +3197,25 @@ public:
     {
         return m_thread_list;
     }
-
-
+    
+    // This is obsoleted and will be removed very soon.
     uint32_t
     GetNextThreadIndexID ();
+    
+    uint32_t
+    GetNextThreadIndexID (uint64_t thread_id);
+    
+    lldb::ThreadSP
+    CreateOSPluginThread (lldb::tid_t tid, lldb::addr_t context);
+    
+    // Returns true if an index id has been assigned to a thread.
+    bool
+    HasAssignedIndexIDToThread(uint64_t sb_thread_id);
+    
+    // Given a thread_id, it will assign a more reasonable index id for display to the user.
+    // If the thread_id has previously been assigned, the same index id will be used.
+    uint32_t
+    AssignIndexIDToThread(uint64_t thread_id);
 
     //------------------------------------------------------------------
     // Event Handling
@@ -3118,8 +3238,7 @@ public:
     {
     public:
         ProcessEventHijacker (Process &process, Listener *listener) :
-            m_process (process),
-            m_listener (listener)
+            m_process (process)
         {
             m_process.HijackProcessEvents (listener);
         }
@@ -3130,7 +3249,6 @@ public:
          
     private:
         Process &m_process;
-        Listener *m_listener;
     };
     friend class ProcessEventHijacker;
     //------------------------------------------------------------------
@@ -3425,7 +3543,9 @@ protected:
     Predicate<bool>             m_private_state_control_wait; /// This Predicate is used to signal that a control operation is complete.
     lldb::thread_t              m_private_state_thread;  // Thread ID for the thread that watches interal state events
     ProcessModID                m_mod_id;               ///< Tracks the state of the process over stops and other alterations.
+    uint32_t                    m_process_unique_id;    ///< Each lldb_private::Process class that is created gets a unique integer ID that increments with each new instance
     uint32_t                    m_thread_index_id;      ///< Each thread is created with a 1 based index that won't get re-used.
+    std::map<uint64_t, uint32_t> m_thread_id_to_index_id_map;
     int                         m_exit_status;          ///< The exit status of the process, or -1 if not set.
     std::string                 m_exit_string;          ///< A textual description of why a process exited.
     ThreadList                  m_thread_list;          ///< The threads for this process.
@@ -3439,20 +3559,23 @@ protected:
     UnixSignals                 m_unix_signals;         /// This is the current signal set for this process.
     lldb::ABISP                 m_abi_sp;
     lldb::InputReaderSP         m_process_input_reader;
-    Communication 				m_stdio_communication;
-    Mutex        				m_stdio_communication_mutex;
+    Communication               m_stdio_communication;
+    Mutex                       m_stdio_communication_mutex;
     std::string                 m_stdout_data;
     std::string                 m_stderr_data;
+    Mutex                       m_profile_data_comm_mutex;
+    std::vector<std::string>    m_profile_data;
     MemoryCache                 m_memory_cache;
     AllocatedMemoryCache        m_allocated_memory_cache;
     bool                        m_should_detach;   /// Should we detach if the process object goes away with an explicit call to Kill or Detach?
-    LanguageRuntimeCollection 	m_language_runtimes;
+    LanguageRuntimeCollection   m_language_runtimes;
     std::auto_ptr<NextEventAction> m_next_event_action_ap;
     std::vector<PreResumeCallbackAndBaton> m_pre_resume_actions;
     ReadWriteLock               m_run_lock;
     Predicate<bool>             m_currently_handling_event;
     bool                        m_finalize_called;
-
+    lldb::StateType             m_last_broadcast_state;   /// This helps with the Public event coalescing in ShouldBroadcastEvent.
+    
     enum {
         eCanJITDontKnow= 0,
         eCanJITYes,
@@ -3518,6 +3641,9 @@ protected:
     void
     AppendSTDERR (const char *s, size_t len);
     
+    void
+    BroadcastAsyncProfileData(const char *s, size_t len);
+    
     static void
     STDIOReadThreadBytesReceived (void *baton, const void *src, size_t src_len);
     
@@ -3543,7 +3669,7 @@ private:
     // For Process only
     //------------------------------------------------------------------
     void ControlPrivateStateThread (uint32_t signal);
-
+    
     DISALLOW_COPY_AND_ASSIGN (Process);
 
 };

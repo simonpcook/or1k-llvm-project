@@ -59,6 +59,8 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
     // start of the value object which holds the dynamic type.
     //
     
+    class_type_or_name.Clear();
+    
     // Only a pointer or reference type can have a different dynamic and static type:
     if (CouldHaveDynamicValue (in_value))
     {
@@ -88,10 +90,10 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
             return false;
         }
         
-        uint32_t offset_ptr = 0;
-        lldb::addr_t vtable_address_point = data.GetAddress (&offset_ptr);
+        lldb::offset_t offset = 0;
+        lldb::addr_t vtable_address_point = data.GetAddress (&offset);
             
-        if (offset_ptr == 0)
+        if (offset == 0)
             return false;
         
         // Now find the symbol that contains this address:
@@ -111,7 +113,7 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                     {
                         LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
                         if (log)
-                            log->Printf ("0x%16.16llx: static-type = '%s' has vtable symbol '%s'\n",
+                            log->Printf ("0x%16.16" PRIx64 ": static-type = '%s' has vtable symbol '%s'\n",
                                          original_ptr,
                                          in_value.GetTypeName().GetCString(),
                                          name);
@@ -149,14 +151,14 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                         if (num_matches == 0)
                         {
                             if (log)
-                                log->Printf("0x%16.16llx: is not dynamic\n", original_ptr);
+                                log->Printf("0x%16.16" PRIx64 ": is not dynamic\n", original_ptr);
                             return false;
                         }
                         if (num_matches == 1)
                         {
                             type_sp = class_types.GetTypeAtIndex(0);
                             if (log)
-                                log->Printf ("0x%16.16llx: static-type = '%s' has dynamic type: uid={0x%llx}, type-name='%s'\n",
+                                log->Printf ("0x%16.16" PRIx64 ": static-type = '%s' has dynamic type: uid={0x%" PRIx64 "}, type-name='%s'\n",
                                              original_ptr,
                                              in_value.GetTypeName().AsCString(),
                                              type_sp->GetID(),
@@ -175,7 +177,7 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                                     if (type_sp)
                                     {
                                         if (log)
-                                            log->Printf ("0x%16.16llx: static-type = '%s' has multiple matching dynamic types: uid={0x%llx}, type-name='%s'\n",
+                                            log->Printf ("0x%16.16" PRIx64 ": static-type = '%s' has multiple matching dynamic types: uid={0x%" PRIx64 "}, type-name='%s'\n",
                                                          original_ptr,
                                                          in_value.GetTypeName().AsCString(),
                                                          type_sp->GetID(),
@@ -192,7 +194,7 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                                     if (ClangASTContext::IsCXXClassType(type_sp->GetClangFullType()))
                                     {
                                         if (log)
-                                            log->Printf ("0x%16.16llx: static-type = '%s' has multiple matching dynamic types, picking this one: uid={0x%llx}, type-name='%s'\n",
+                                            log->Printf ("0x%16.16" PRIx64 ": static-type = '%s' has multiple matching dynamic types, picking this one: uid={0x%" PRIx64 "}, type-name='%s'\n",
                                                          original_ptr,
                                                          in_value.GetTypeName().AsCString(),
                                                          type_sp->GetID(),
@@ -206,7 +208,7 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                             if (i == num_matches)
                             {
                                 if (log)
-                                    log->Printf ("0x%16.16llx: static-type = '%s' has multiple matching dynamic types, didn't find a C++ match\n",
+                                    log->Printf ("0x%16.16" PRIx64 ": static-type = '%s' has multiple matching dynamic types, didn't find a C++ match\n",
                                                  original_ptr,
                                                  in_value.GetTypeName().AsCString());
                                 return false;
@@ -253,8 +255,8 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                                 return false;
                             }
                             
-                            offset_ptr = 0;
-                            int64_t offset_to_top = data.GetMaxS64(&offset_ptr, process->GetAddressByteSize());
+                            offset = 0;
+                            int64_t offset_to_top = data.GetMaxS64(&offset, process->GetAddressByteSize());
                             
                             // So the dynamic type is a value that starts at offset_to_top
                             // above the original address.
@@ -271,7 +273,7 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
         }
     }
     
-    return false;
+    return class_type_or_name.IsEmpty() == false;
 }
 
 bool
@@ -416,6 +418,8 @@ ItaniumABILanguageRuntime::SetExceptionBreakpoints ()
         SearchFilterSP filter_sp = target.GetSearchFilterForModule(NULL);
         
         m_cxx_exception_bp_sp = target.CreateBreakpoint (filter_sp, exception_resolver_sp, is_internal);
+        if (m_cxx_exception_bp_sp)
+            m_cxx_exception_bp_sp->SetBreakpointKind("c++ exception");
     }
     else
         m_cxx_exception_bp_sp->SetEnabled (true);

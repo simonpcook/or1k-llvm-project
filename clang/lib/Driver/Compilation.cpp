@@ -8,20 +8,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Driver/Compilation.h"
-
 #include "clang/Driver/Action.h"
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/ToolChain.h"
-
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Program.h"
-#include <sys/stat.h>
+#include "llvm/Support/raw_ostream.h"
 #include <errno.h>
+#include <sys/stat.h>
 
 using namespace clang::driver;
 using namespace clang;
@@ -113,7 +111,7 @@ static bool skipArg(const char *Flag, bool &SkipNextArg) {
   bool Res = llvm::StringSwitch<bool>(Flag)
     .Cases("-I", "-MF", "-MT", "-MQ", true)
     .Cases("-o", "-coverage-file", "-dependency-file", true)
-    .Cases("-fdebug-compilation-dir", "-fmodule-cache-path", "-idirafter", true)
+    .Cases("-fdebug-compilation-dir", "-idirafter", true)
     .Cases("-include", "-include-pch", "-internal-isystem", true)
     .Cases("-internal-externc-isystem", "-iprefix", "-iwithprefix", true)
     .Cases("-iwithprefixbefore", "-isysroot", "-isystem", "-iquote", true)
@@ -201,39 +199,56 @@ void Compilation::PrintDiagnosticJob(raw_ostream &OS, const Job &J) const {
   }
 }
 
+bool Compilation::CleanupFile(const char *File, bool IssueErrors) const {
+  llvm::sys::Path P(File);
+  std::string Error;
+
+  // Don't try to remove files which we don't have write access to (but may be
+  // able to remove), or non-regular files. Underlying tools may have
+  // intentionally not overwritten them.
+  if (!P.canWrite() || !P.isRegularFile())
+    return true;
+
+  if (P.eraseFromDisk(false, &Error)) {
+    // Failure is only failure if the file exists and is "regular". There is
+    // a race condition here due to the limited interface of
+    // llvm::sys::Path, we want to know if the removal gave ENOENT.
+    
+    // FIXME: Grumble, P.exists() is broken. PR3837.
+    struct stat buf;
+    if (::stat(P.c_str(), &buf) == 0 ? (buf.st_mode & S_IFMT) == S_IFREG :
+        (errno != ENOENT)) {
+      if (IssueErrors)
+        getDriver().Diag(clang::diag::err_drv_unable_to_remove_file)
+          << Error;
+      return false;
+    }
+  }
+  return true;
+}
+
 bool Compilation::CleanupFileList(const ArgStringList &Files,
                                   bool IssueErrors) const {
   bool Success = true;
-
   for (ArgStringList::const_iterator
+         it = Files.begin(), ie = Files.end(); it != ie; ++it)
+    Success &= CleanupFile(*it, IssueErrors);
+  return Success;
+}
+
+bool Compilation::CleanupFileMap(const ArgStringMap &Files,
+                                 const JobAction *JA,
+                                 bool IssueErrors) const {
+  bool Success = true;
+  for (ArgStringMap::const_iterator
          it = Files.begin(), ie = Files.end(); it != ie; ++it) {
 
-    llvm::sys::Path P(*it);
-    std::string Error;
-
-    // Don't try to remove files which we don't have write access to (but may be
-    // able to remove). Underlying tools may have intentionally not overwritten
-    // them.
-    if (!P.canWrite())
+    // If specified, only delete the files associated with the JobAction.
+    // Otherwise, delete all files in the map.
+    if (JA && it->first != JA)
       continue;
-
-    if (P.eraseFromDisk(false, &Error)) {
-      // Failure is only failure if the file exists and is "regular". There is
-      // a race condition here due to the limited interface of
-      // llvm::sys::Path, we want to know if the removal gave ENOENT.
-
-      // FIXME: Grumble, P.exists() is broken. PR3837.
-      struct stat buf;
-      if (::stat(P.c_str(), &buf) == 0 ? (buf.st_mode & S_IFMT) == S_IFREG :
-                                         (errno != ENOENT)) {
-        if (IssueErrors)
-          getDriver().Diag(clang::diag::err_drv_unable_to_remove_file)
-            << Error;
-        Success = false;
-      }
-    }
+    Success &= CleanupFile(it->second, IssueErrors);
   }
-
   return Success;
 }
 
@@ -292,21 +307,21 @@ int Compilation::ExecuteCommand(const Command &C,
   return Res;
 }
 
-int Compilation::ExecuteJob(const Job &J,
-                            const Command *&FailingCommand) const {
+void Compilation::ExecuteJob(const Job &J,
+    SmallVectorImpl< std::pair<int, const Command *> > &FailingCommands) const {
   if (const Command *C = dyn_cast<Command>(&J)) {
-    return ExecuteCommand(*C, FailingCommand);
+    const Command *FailingCommand = 0;
+    if (int Res = ExecuteCommand(*C, FailingCommand))
+      FailingCommands.push_back(std::make_pair(Res, FailingCommand));
   } else {
     const JobList *Jobs = cast<JobList>(&J);
-    for (JobList::const_iterator
-           it = Jobs->begin(), ie = Jobs->end(); it != ie; ++it)
-      if (int Res = ExecuteJob(**it, FailingCommand))
-        return Res;
-    return 0;
+    for (JobList::const_iterator it = Jobs->begin(), ie = Jobs->end();
+         it != ie; ++it)
+      ExecuteJob(**it, FailingCommands);
   }
 }
 
-void Compilation::initCompilationForDiagnostics(void) {
+void Compilation::initCompilationForDiagnostics() {
   // Free actions and jobs.
   DeleteContainerPointers(Actions);
   Jobs.clear();
@@ -314,6 +329,7 @@ void Compilation::initCompilationForDiagnostics(void) {
   // Clear temporary/results file lists.
   TempFiles.clear();
   ResultFiles.clear();
+  FailureResultFiles.clear();
 
   // Remove any user specified output.  Claim any unclaimed arguments, so as
   // to avoid emitting warnings about unused args.
@@ -331,6 +347,6 @@ void Compilation::initCompilationForDiagnostics(void) {
   Redirects[2] = new const llvm::sys::Path();
 }
 
-StringRef Compilation::getSysRoot(void) const {
+StringRef Compilation::getSysRoot() const {
   return getDriver().SysRoot;
 }

@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "CommandObjectBreakpoint.h"
 #include "CommandObjectBreakpointCommand.h"
 
@@ -118,17 +120,15 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
 
             switch (short_option)
             {
                 case 'a':
-                    m_load_addr = Args::StringToUInt64(option_arg, LLDB_INVALID_ADDRESS, 0);
-                    if (m_load_addr == LLDB_INVALID_ADDRESS)
-                        m_load_addr = Args::StringToUInt64(option_arg, LLDB_INVALID_ADDRESS, 16);
-
-                    if (m_load_addr == LLDB_INVALID_ADDRESS)
-                        error.SetErrorStringWithFormat ("invalid address string '%s'", option_arg);
+                    {
+                        ExecutionContext exe_ctx (m_interpreter.GetExecutionContext());
+                        m_load_addr = Args::StringToAddress(&exe_ctx, option_arg, LLDB_INVALID_ADDRESS, &error);
+                    }
                     break;
 
                 case 'b':
@@ -396,7 +396,7 @@ protected:
             case eSetTypeFileAndLine: // Breakpoint by source position
                 {
                     FileSpec file;
-                    uint32_t num_files = m_options.m_filenames.GetSize();
+                    const size_t num_files = m_options.m_filenames.GetSize();
                     if (num_files == 0)
                     {
                         if (!GetDefaultFile (target, file, result))
@@ -469,7 +469,7 @@ protected:
                 break;
             case eSetTypeSourceRegexp: // Breakpoint by regexp on source text.
                 {
-                    int num_files = m_options.m_filenames.GetSize();
+                    const size_t num_files = m_options.m_filenames.GetSize();
                     
                     if (num_files == 0)
                     {
@@ -561,7 +561,7 @@ private:
         // Then use the current stack frame's file.
         if (!target->GetSourceManager().GetDefaultFileAndLine(file, default_line))
         {
-            StackFrame *cur_frame = m_interpreter.GetExecutionContext().GetFramePtr();
+            StackFrame *cur_frame = m_exe_ctx.GetFramePtr();
             if (cur_frame == NULL)
             {
                 result.AppendError ("No selected frame to use to find the default file.");
@@ -629,7 +629,10 @@ CommandObjectBreakpointSet::CommandOptions::g_option_table[] =
         "The breakpoint stops only for threads in the queue whose name is given by this argument."},
 
     { LLDB_OPT_FILE, false, "file", 'f', required_argument, NULL, CommandCompletions::eSourceFileCompletion, eArgTypeFilename,
-        "Specifies the source file in which to set this breakpoint."},
+        "Specifies the source file in which to set this breakpoint.  "
+        "Note, by default lldb only looks for files that are #included if they use the standard include file extensions.  "
+        "To set breakpoints on .c/.cpp/.m/.mm files that are #included, set target.inline-breakpoint-strategy"
+        " to \"always\"."},
 
     { LLDB_OPT_SET_1, true, "line", 'l', required_argument, NULL, 0, eArgTypeLineNum,
         "Specifies the line number on which to set this breakpoint."},
@@ -639,7 +642,7 @@ CommandObjectBreakpointSet::CommandOptions::g_option_table[] =
     //    { 0, false, "column",     'C', required_argument, NULL, "<column>",
     //    "Set the breakpoint by source location at this particular column."},
 
-    { LLDB_OPT_SET_2, true, "address", 'a', required_argument, NULL, 0, eArgTypeAddress,
+    { LLDB_OPT_SET_2, true, "address", 'a', required_argument, NULL, 0, eArgTypeAddressOrExpression,
         "Set the breakpoint by address, at the specified address."},
 
     { LLDB_OPT_SET_3, true, "name", 'n', required_argument, NULL, CommandCompletions::eSymbolCompletion, eArgTypeFunctionName,
@@ -746,7 +749,7 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
 
             switch (short_option)
             {
@@ -1253,7 +1256,7 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
 
             switch (short_option)
             {
@@ -1441,7 +1444,7 @@ public:
         SetOptionValue (uint32_t option_idx, const char *option_arg)
         {
             Error error;
-            char short_option = (char) m_getopt_table[option_idx].val;
+            const int short_option = m_getopt_table[option_idx].val;
 
             switch (short_option)
             {
@@ -1794,7 +1797,7 @@ CommandObjectMultiwordBreakpoint::VerifyBreakpointIDs (Args &args, Target *targe
             Breakpoint *breakpoint = target->GetBreakpointByID (cur_bp_id.GetBreakpointID()).get();
             if (breakpoint != NULL)
             {
-                int num_locations = breakpoint->GetNumLocations();
+                const size_t num_locations = breakpoint->GetNumLocations();
                 if (cur_bp_id.GetLocationID() > num_locations)
                 {
                     StreamString id_str;

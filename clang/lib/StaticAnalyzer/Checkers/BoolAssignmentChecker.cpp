@@ -13,17 +13,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangSACheckers.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 
 using namespace clang;
 using namespace ento;
 
 namespace {
   class BoolAssignmentChecker : public Checker< check::Bind > {
-    mutable llvm::OwningPtr<BuiltinBug> BT;
+    mutable OwningPtr<BuiltinBug> BT;
     void emitReport(ProgramStateRef state, CheckerContext &C) const;
   public:
     void checkBind(SVal loc, SVal val, const Stmt *S, CheckerContext &C) const;

@@ -128,7 +128,7 @@ BreakpointLocationList::Dump (Stream *s) const
     s->Printf("%p: ", this);
     //s->Indent();
     Mutex::Locker locker (m_mutex);
-    s->Printf("BreakpointLocationList with %llu BreakpointLocations:\n", (uint64_t)m_locations.size());
+    s->Printf("BreakpointLocationList with %" PRIu64 " BreakpointLocations:\n", (uint64_t)m_locations.size());
     s->IndentMore();
     collection::const_iterator pos, end = m_locations.end();
     for (pos = m_locations.begin(); pos != end; ++pos)
@@ -138,7 +138,7 @@ BreakpointLocationList::Dump (Stream *s) const
 
 
 BreakpointLocationSP
-BreakpointLocationList::GetByIndex (uint32_t i)
+BreakpointLocationList::GetByIndex (size_t i)
 {
     Mutex::Locker locker (m_mutex);
     BreakpointLocationSP bp_loc_sp;
@@ -149,7 +149,7 @@ BreakpointLocationList::GetByIndex (uint32_t i)
 }
 
 const BreakpointLocationSP
-BreakpointLocationList::GetByIndex (uint32_t i) const
+BreakpointLocationList::GetByIndex (size_t i) const
 {
     Mutex::Locker locker (m_mutex);
     BreakpointLocationSP bp_loc_sp;

@@ -11,8 +11,6 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclGroup.h"
-#include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/ChainedIncludesSource.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -20,15 +18,18 @@
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Frontend/LayoutOverrideSource.h"
 #include "clang/Frontend/MultiplexConsumer.h"
+#include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Parse/ParseAST.h"
 #include "clang/Serialization/ASTDeserializationListener.h"
 #include "clang/Serialization/ASTReader.h"
+#include "clang/Serialization/GlobalModuleIndex.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
-#include "llvm/Support/Timer.h"
 using namespace clang;
 
 namespace {
@@ -198,7 +199,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     if (!BeginSourceFileAction(CI, InputFile))
       goto failure;
 
-    /// Create the AST consumer.
+    // Create the AST consumer.
     CI.setASTConsumer(CreateWrappedASTConsumer(CI, InputFile));
     if (!CI.hasASTConsumer())
       goto failure;
@@ -246,16 +247,8 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
                                            CI.getLangOpts(),
                                            CI.getTargetOpts(),
                                            CI.getPreprocessorOpts())) {
-          for (unsigned I = 0, N = PPOpts.Includes.size(); I != N; ++I) {
-            if (PPOpts.Includes[I] == PPOpts.ImplicitPCHInclude) {
-              PPOpts.Includes[I] = Dir->path();
-              PPOpts.ImplicitPCHInclude = Dir->path();
-              Found = true;
-              break;
-            }
-          }
-
-          assert(Found && "Implicit PCH include not in includes list?");
+          PPOpts.ImplicitPCHInclude = Dir->path();
+          Found = true;
           break;
         }
       }
@@ -279,8 +272,8 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   if (!BeginSourceFileAction(CI, InputFile))
     goto failure;
 
-  /// Create the AST context and consumer unless this is a preprocessor only
-  /// action.
+  // Create the AST context and consumer unless this is a preprocessor only
+  // action.
   if (!usesPreprocessorOnly()) {
     CI.createASTContext();
 
@@ -379,6 +372,15 @@ bool FrontendAction::Execute() {
     ExecuteAction();
   }
   else ExecuteAction();
+
+  // If we are supposed to rebuild the global module index, do so now unless
+  // there were any module-build failures.
+  if (CI.shouldBuildGlobalModuleIndex() && CI.hasFileManager() &&
+      CI.hasPreprocessor()) {
+    GlobalModuleIndex::writeIndex(
+      CI.getFileManager(),
+      CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+  }
 
   return true;
 }

@@ -7,12 +7,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/API/SBTypeNameSpecifier.h"
 
 #include "lldb/API/SBStream.h"
 #include "lldb/API/SBType.h"
 
-#include "lldb/Core/DataVisualization.h"
+#include "lldb/DataFormatters/DataVisualization.h"
 
 using namespace lldb;
 using namespace lldb_private;

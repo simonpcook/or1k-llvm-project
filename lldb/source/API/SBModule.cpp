@@ -50,12 +50,14 @@ SBModule::SBModule (lldb::SBProcess &process, lldb::addr_t header_addr) :
     ProcessSP process_sp (process.GetSP());
     if (process_sp)
     {
-        const bool add_image_to_target = true;
-        const bool load_image_sections_in_target = true;
-        m_opaque_sp = process_sp->ReadModuleFromMemory (FileSpec(), 
-                                                        header_addr, 
-                                                        add_image_to_target,
-                                                        load_image_sections_in_target);
+        m_opaque_sp = process_sp->ReadModuleFromMemory (FileSpec(), header_addr);
+        if (m_opaque_sp)
+        {
+            Target &target = process_sp->GetTarget();
+            bool changed = false;
+            m_opaque_sp->SetLoadAddress(target, 0, changed);
+            target.GetImages().Append(m_opaque_sp);
+        }
     }
 }
 
@@ -328,6 +330,68 @@ SBModule::GetSymbolAtIndex (size_t idx)
     return sb_symbol;
 }
 
+lldb::SBSymbol
+SBModule::FindSymbol (const char *name,
+                      lldb::SymbolType symbol_type)
+{
+    SBSymbol sb_symbol;
+    if (name && name[0])
+    {
+        ModuleSP module_sp (GetSP ());
+        if (module_sp)
+        {
+            ObjectFile *obj_file = module_sp->GetObjectFile();
+            if (obj_file)
+            {
+                Symtab *symtab = obj_file->GetSymtab();
+                if (symtab)
+                    sb_symbol.SetSymbol(symtab->FindFirstSymbolWithNameAndType(ConstString(name), symbol_type, Symtab::eDebugAny, Symtab::eVisibilityAny));
+            }
+        }
+    }
+    return sb_symbol;
+}
+
+
+lldb::SBSymbolContextList
+SBModule::FindSymbols (const char *name, lldb::SymbolType symbol_type)
+{
+    SBSymbolContextList sb_sc_list;
+    if (name && name[0])
+    {
+        ModuleSP module_sp (GetSP ());
+        if (module_sp)
+        {
+            ObjectFile *obj_file = module_sp->GetObjectFile();
+            if (obj_file)
+            {
+                Symtab *symtab = obj_file->GetSymtab();
+                if (symtab)
+                {
+                    std::vector<uint32_t> matching_symbol_indexes;
+                    const size_t num_matches = symtab->FindAllSymbolsWithNameAndType(ConstString(name), symbol_type, matching_symbol_indexes);
+                    if (num_matches)
+                    {
+                        SymbolContext sc;
+                        sc.module_sp = module_sp;
+                        SymbolContextList &sc_list = *sb_sc_list;
+                        for (size_t i=0; i<num_matches; ++i)
+                        {
+                            sc.symbol = symtab->SymbolAtIndex (matching_symbol_indexes[i]);
+                            if (sc.symbol)
+                                sc_list.Append(sc);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return sb_sc_list;
+    
+}
+
+
+
 size_t
 SBModule::GetNumSections ()
 {
@@ -403,19 +467,27 @@ SBModule::FindGlobalVariables (SBTarget &target, const char *name, uint32_t max_
 
         if (match_count > 0)
         {
-            ValueObjectList &value_object_list = sb_value_list.ref();
             for (uint32_t i=0; i<match_count; ++i)
             {
                 lldb::ValueObjectSP valobj_sp;
                 TargetSP target_sp (target.GetSP());
                 valobj_sp = ValueObjectVariable::Create (target_sp.get(), variable_list.GetVariableAtIndex(i));
                 if (valobj_sp)
-                    value_object_list.Append(valobj_sp);
+                    sb_value_list.Append(SBValue(valobj_sp));
             }
         }
     }
     
     return sb_value_list;
+}
+
+lldb::SBValue
+SBModule::FindFirstGlobalVariable (lldb::SBTarget &target, const char *name)
+{
+    SBValueList sb_value_list(FindGlobalVariables(target, name, 1));
+    if (sb_value_list.IsValid() && sb_value_list.GetSize() > 0)
+        return sb_value_list.GetValueAtIndex(0);
+    return SBValue();
 }
 
 lldb::SBType
@@ -426,27 +498,29 @@ SBModule::FindFirstType (const char *name_cstr)
     if (name_cstr && module_sp)
     {
         SymbolContext sc;
-        TypeList type_list;
-        uint32_t num_matches = 0;
         const bool exact_match = false;
         ConstString name(name_cstr);
 
-        num_matches = module_sp->FindTypes (sc,
-                                            name,
-                                            exact_match,
-                                            1,
-                                            type_list);
+        sb_type = SBType (module_sp->FindFirstType(sc, name, exact_match));
         
-        if (num_matches)
-            sb_type = lldb::SBType(type_list.GetTypeAtIndex(0));
+        if (!sb_type.IsValid())
+            sb_type = SBType (ClangASTType::GetBasicType (module_sp->GetClangASTContext().getASTContext(), name));
     }
     return sb_type;
+}
+
+lldb::SBType
+SBModule::GetBasicType(lldb::BasicType type)
+{
+    ModuleSP module_sp (GetSP ());
+    if (module_sp)
+        return SBType (ClangASTType::GetBasicType (module_sp->GetClangASTContext().getASTContext(), type));
+    return SBType();
 }
 
 lldb::SBTypeList
 SBModule::FindTypes (const char *type)
 {
-    
     SBTypeList retval;
     
     ModuleSP module_sp (GetSP ());
@@ -455,20 +529,27 @@ SBModule::FindTypes (const char *type)
         SymbolContext sc;
         TypeList type_list;
         const bool exact_match = false;
-        uint32_t num_matches = 0;
         ConstString name(type);
+        const uint32_t num_matches = module_sp->FindTypes (sc,
+                                                           name,
+                                                           exact_match,
+                                                           UINT32_MAX,
+                                                           type_list);
         
-        num_matches = module_sp->FindTypes (sc,
-                                            name,
-                                            exact_match,
-                                            UINT32_MAX,
-                                            type_list);
-            
-        for (size_t idx = 0; idx < num_matches; idx++)
+        if (num_matches > 0)
         {
-            TypeSP type_sp (type_list.GetTypeAtIndex(idx));
-            if (type_sp)
-                retval.Append(SBType(type_sp));
+            for (size_t idx = 0; idx < num_matches; idx++)
+            {
+                TypeSP type_sp (type_list.GetTypeAtIndex(idx));
+                if (type_sp)
+                    retval.Append(SBType(type_sp));
+            }
+        }
+        else
+        {
+            SBType sb_type(ClangASTType::GetBasicType (module_sp->GetClangASTContext().getASTContext(), name));
+            if (sb_type.IsValid())
+                retval.Append(sb_type);
         }
     }
 

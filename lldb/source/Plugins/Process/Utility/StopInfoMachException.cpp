@@ -16,6 +16,8 @@
 #include "lldb/Breakpoint/Watchpoint.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/StreamString.h"
+#include "lldb/Symbol/Symbol.h"
+#include "lldb/Target/DynamicLoader.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -208,6 +210,12 @@ StopInfoMachException::GetDescription ()
         case 10:
             exc_desc = "EXC_CRASH";
             break;
+        case 11:
+            exc_desc = "EXC_RESOURCE";
+            break;
+        case 12:
+            exc_desc = "EXC_GUARD";
+            break;
         }
         
         StreamString strm;
@@ -215,14 +223,14 @@ StopInfoMachException::GetDescription ()
         if (exc_desc)
             strm.PutCString(exc_desc);
         else
-            strm.Printf("EXC_??? (%llu)", m_value);
+            strm.Printf("EXC_??? (%" PRIu64 ")", m_value);
 
         if (m_exc_data_count >= 1)
         {
             if (code_desc)
                 strm.Printf(" (%s=%s", code_label, code_desc);
             else
-                strm.Printf(" (%s=%llu", code_label, m_exc_code);
+                strm.Printf(" (%s=%" PRIu64, code_label, m_exc_code);
         }
 
         if (m_exc_data_count >= 2)
@@ -230,7 +238,7 @@ StopInfoMachException::GetDescription ()
             if (subcode_desc)
                 strm.Printf(", %s=%s", subcode_label, subcode_desc);
             else
-                strm.Printf(", %s=0x%llx", subcode_label, m_exc_subcode);
+                strm.Printf(", %s=0x%" PRIx64, subcode_label, m_exc_subcode);
         }
         
         if (m_exc_data_count > 0)
@@ -300,13 +308,45 @@ StopInfoMachException::CreateStopReasonWithMachException
 
         case 5: // EXC_SOFTWARE
             if (exc_code == 0x10003) // EXC_SOFT_SIGNAL
+            {
+                if (exc_sub_code == 5)
+                {
+                    // On MacOSX, a SIGTRAP can signify that a process has called
+                    // exec, so we should check with our dynamic loader to verify.
+                    ProcessSP process_sp (thread.GetProcess());
+                    if (process_sp)
+                    {
+                        DynamicLoader *dynamic_loader = process_sp->GetDynamicLoader();
+                        if (dynamic_loader && dynamic_loader->ProcessDidExec())
+                        {
+                            // The program was re-exec'ed
+                            return StopInfo::CreateStopReasonWithExec (thread);
+                        }
+//                        if (!process_did_exec)
+//                        {
+//                            // We have a SIGTRAP, make sure we didn't exec by checking
+//                            // for the PC being at "_dyld_start"...
+//                            lldb::StackFrameSP frame_sp (thread.GetStackFrameAtIndex(0));
+//                            if (frame_sp)
+//                            {
+//                                const Symbol *symbol = frame_sp->GetSymbolContext(eSymbolContextSymbol).symbol;
+//                                if (symbol)
+//                                {
+//                                    if (symbol->GetName() == ConstString("_dyld_start"))
+//                                        process_did_exec = true;
+//                                }
+//                            }
+//                        }
+                    }
+                }
                 return StopInfo::CreateStopReasonWithSignal (thread, exc_sub_code);
+            }
             break;
         
         case 6: // EXC_BREAKPOINT
             {
-                bool is_software_breakpoint = false;
-                bool is_trace_if_software_breakpoint_missing = false;
+                bool is_actual_breakpoint = false;
+                bool is_trace_if_actual_breakpoint_missing = false;
                 switch (cpu)
                 {
                 case llvm::Triple::x86:
@@ -335,9 +375,9 @@ StopInfoMachException::CreateStopReasonWithMachException
                     {
                         // KDP returns EXC_I386_BPTFLT for trace breakpoints
                         if (exc_code == 3)
-                            is_trace_if_software_breakpoint_missing = true;
+                            is_trace_if_actual_breakpoint_missing = true;
 
-                        is_software_breakpoint = true;
+                        is_actual_breakpoint = true;
                         if (!pc_already_adjusted)
                             pc_decrement = 1;
                     }
@@ -345,11 +385,11 @@ StopInfoMachException::CreateStopReasonWithMachException
 
                 case llvm::Triple::ppc:
                 case llvm::Triple::ppc64:
-                    is_software_breakpoint = exc_code == 1; // EXC_PPC_BREAKPOINT
+                    is_actual_breakpoint = exc_code == 1; // EXC_PPC_BREAKPOINT
                     break;
                 
                 case llvm::Triple::arm:
-                    if (exc_code == 0x102)
+                    if (exc_code == 0x102) // EXC_ARM_DA_DEBUG
                     {
                         // It's a watchpoint, then, if the exc_sub_code indicates a known/enabled
                         // data break address from our watchpoint list.
@@ -368,10 +408,10 @@ StopInfoMachException::CreateStopReasonWithMachException
                         if (thread.GetTemporaryResumeState() == eStateStepping)
                             return StopInfo::CreateStopReasonToTrace(thread);
                     }
-                    else if (exc_code == 1)
+                    else if (exc_code == 1) // EXC_ARM_BREAKPOINT
                     {
-                        is_software_breakpoint = true;
-                        is_trace_if_software_breakpoint_missing = true;
+                        is_actual_breakpoint = true;
+                        is_trace_if_actual_breakpoint_missing = true;
                     }
                     break;
 
@@ -379,7 +419,7 @@ StopInfoMachException::CreateStopReasonWithMachException
                     break;
                 }
 
-                if (is_software_breakpoint)
+                if (is_actual_breakpoint)
                 {
                     RegisterContextSP reg_ctx_sp (thread.GetRegisterContext());
                     addr_t pc = reg_ctx_sp->GetPC() - pc_decrement;
@@ -407,7 +447,7 @@ StopInfoMachException::CreateStopReasonWithMachException
                     }
                     
                     // Don't call this a trace if we weren't single stepping this thread.
-                    if (is_trace_if_software_breakpoint_missing && thread.GetTemporaryResumeState() == eStateStepping)
+                    if (is_trace_if_actual_breakpoint_missing && thread.GetTemporaryResumeState() == eStateStepping)
                     {
                         return StopInfo::CreateStopReasonToTrace (thread);
                     }

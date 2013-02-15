@@ -596,19 +596,19 @@ public:
     static lldb::clang_type_t
     GetDirectBaseClassAtIndex (clang::ASTContext *ast, 
                                lldb::clang_type_t clang_type,
-                               uint32_t idx, 
+                               size_t idx, 
                                uint32_t *bit_offset_ptr);
 
     static lldb::clang_type_t
     GetVirtualBaseClassAtIndex (clang::ASTContext *ast, 
                                 lldb::clang_type_t clang_type,
-                                uint32_t idx, 
+                                size_t idx, 
                                 uint32_t *bit_offset_ptr);
 
     static lldb::clang_type_t
     GetFieldAtIndex (clang::ASTContext *ast, 
                      lldb::clang_type_t clang_type,
-                     uint32_t idx, 
+                     size_t idx, 
                      std::string& name,
                      uint64_t *bit_offset_ptr,
                      uint32_t *bitfield_bit_size_ptr,
@@ -621,7 +621,7 @@ public:
     GetChildClangTypeAtIndex (ExecutionContext *exe_ctx,
                               const char *parent_name,
                               lldb::clang_type_t  parent_clang_type,
-                              uint32_t idx,
+                              size_t idx,
                               bool transparent_pointers,
                               bool omit_empty_base_classes,
                               bool ignore_array_bounds,
@@ -638,7 +638,7 @@ public:
                               clang::ASTContext *ast,
                               const char *parent_name,
                               lldb::clang_type_t  parent_clang_type,
-                              uint32_t idx,
+                              size_t idx,
                               bool transparent_pointers,
                               bool omit_empty_base_classes,
                               bool ignore_array_bounds,
@@ -785,9 +785,8 @@ public:
     //------------------------------------------------------------------
 
     lldb::clang_type_t
-    CreateArrayType (lldb::clang_type_t  element_type,
-                     size_t element_count,
-                     uint32_t bit_stride);
+    CreateArrayType (lldb::clang_type_t element_type,
+                     size_t element_count);
 
     //------------------------------------------------------------------
     // Tag Declarations
@@ -887,15 +886,17 @@ public:
     
     static lldb::clang_type_t
     GetAsArrayType (lldb::clang_type_t clang_type, 
-                    lldb::clang_type_t *member_type = NULL, 
-                    uint64_t *size = NULL);
+                    lldb::clang_type_t *member_type,
+                    uint64_t *size,
+                    bool *is_incomplete);
     
     static bool
     IsArrayType (lldb::clang_type_t clang_type,
-                 lldb::clang_type_t *member_type = NULL,
-                 uint64_t *size = NULL)
+                 lldb::clang_type_t *member_type,
+                 uint64_t *size,
+                 bool *is_incomplete)
     {
-        return GetAsArrayType(clang_type, member_type, size) != 0;
+        return GetAsArrayType(clang_type, member_type, size, is_incomplete) != 0;
     }
 
     //------------------------------------------------------------------

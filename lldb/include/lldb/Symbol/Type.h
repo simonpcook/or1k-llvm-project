@@ -302,7 +302,7 @@ protected:
     SymbolFile *m_symbol_file;
     SymbolContextScope *m_context; // The symbol context in which this type is defined
     Type *m_encoding_type;
-    uint32_t m_encoding_uid;
+    lldb::user_id_t m_encoding_uid;
     EncodingDataType m_encoding_uid_type;
     uint32_t m_byte_size;
     Declaration m_decl;
@@ -340,6 +340,12 @@ public:
     TypeAndOrName &
     operator= (const TypeAndOrName &rhs);
     
+    bool
+    operator==(const TypeAndOrName &other) const;
+    
+    bool
+    operator!=(const TypeAndOrName &other) const;
+    
     ConstString GetName () const;
 
     lldb::TypeSP
@@ -359,6 +365,21 @@ public:
     
     bool
     IsEmpty ();
+    
+    bool
+    HasName ();
+    
+    bool
+    HasTypeSP ();
+    
+    void
+    Clear ();
+    
+    operator
+    bool ()
+    {
+        return !IsEmpty();
+    }
     
 private:
     lldb::TypeSP m_type_sp;

@@ -6,6 +6,8 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// XFAIL: with_system_lib=x86_64-apple-darwin11
 
 // <locale>
 
@@ -19,8 +21,8 @@
 #include <cassert>
 #include <streambuf>
 #include <cmath>
-#include "iterators.h"
-#include "../../../../../hexfloat.h"
+#include "test_iterators.h"
+#include "hexfloat.h"
 
 typedef std::num_get<char, input_iterator<const char*> > F;
 

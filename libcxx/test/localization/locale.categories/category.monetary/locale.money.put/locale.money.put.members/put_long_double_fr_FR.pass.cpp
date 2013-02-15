@@ -6,6 +6,8 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// XFAIL: apple-darwin
 
 // <locale>
 
@@ -18,9 +20,9 @@
 #include <ios>
 #include <streambuf>
 #include <cassert>
-#include "iterators.h"
+#include "test_iterators.h"
 
-#include "../../../../../platform_support.h" // locale name macros
+#include "platform_support.h" // locale name macros
 
 typedef std::money_put<char, output_iterator<char*> > Fn;
 

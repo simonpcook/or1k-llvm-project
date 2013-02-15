@@ -24,6 +24,7 @@ USEDLIBS = lldbAPI.a \
 	lldbBreakpoint.a \
 	lldbCommands.a \
 	lldbCore.a \
+	lldbDataFormatters.a \
 	lldbExpression.a \
 	lldbHostCommon.a \
 	lldbInitAndLog.a \
@@ -66,6 +67,14 @@ USEDLIBS = lldbAPI.a \
 	lldbPluginPlatformMacOSX.a \
 	lldbPluginPlatformLinux.a \
 	lldbPluginPlatformFreeBSD.a
+
+# Because GCC requires RTTI enabled for lldbCore (see source/Core/Makefile) it is
+# necessary to also link the clang rewriter libraries so vtable references can
+# be resolved correctly, if we are building with GCC.
+ifeq (g++,$(shell basename $(CXX)))
+  USEDLIBS += clangRewriteCore.a \
+              clangRewriteFrontend.a
+endif
 
 include $(LLDB_LEVEL)/../../Makefile.config
 
@@ -127,7 +136,7 @@ ifeq ($(HOST_OS),Darwin)
     endif
 endif
 
-ifeq ($(HOST_OS),Linux)
+ifeq ($(HOST_OS), $(filter $(HOST_OS), Linux GNU))
     # Include everything from the .a's into the shared library.
     ProjLibsOptions := -Wl,--whole-archive $(ProjLibsOptions) \
                        -Wl,--no-whole-archive
@@ -135,6 +144,7 @@ ifeq ($(HOST_OS),Linux)
     LLVMLibsOptions += -Wl,--no-undefined
     # Link in python
     LLVMLibsOptions += $(PYTHON_BUILD_FLAGS) -lrt
+    LLVMLibsOptions += -Wl,--soname,lib$(LIBRARYNAME)$(SHLIBEXT)
 endif
 
 ifeq ($(HOST_OS),FreeBSD)

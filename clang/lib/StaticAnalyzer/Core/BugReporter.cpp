@@ -13,23 +13,23 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/Analysis/CFG.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/StmtObjC.h"
-#include "clang/Basic/SourceManager.h"
+#include "clang/Analysis/CFG.h"
 #include "clang/Analysis/ProgramPoint.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
-#include "llvm/Support/raw_ostream.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/raw_ostream.h"
 #include <queue>
 
 using namespace clang;
@@ -191,9 +191,8 @@ static void removeRedundantMsgs(PathPieces &path) {
 
 /// Recursively scan through a path and prune out calls and macros pieces
 /// that aren't needed.  Return true if afterwards the path contains
-/// "interesting stuff" which means it should be pruned from the parent path.
-bool BugReporter::RemoveUneededCalls(PathPieces &pieces, BugReport *R,
-                                     PathDiagnosticCallPiece *CallWithLoc) {
+/// "interesting stuff" which means it shouldn't be pruned from the parent path.
+bool BugReporter::RemoveUnneededCalls(PathPieces &pieces, BugReport *R) {
   bool containsSomethingInteresting = false;
   const unsigned N = pieces.size();
   
@@ -203,7 +202,9 @@ bool BugReporter::RemoveUneededCalls(PathPieces &pieces, BugReport *R,
     IntrusiveRefCntPtr<PathDiagnosticPiece> piece(pieces.front());
     pieces.pop_front();
     
-    // Throw away pieces with invalid locations.
+    // Throw away pieces with invalid locations. Note that we can't throw away
+    // calls just yet because they might have something interesting inside them.
+    // If so, their locations will be adjusted as necessary later.
     if (piece->getKind() != PathDiagnosticPiece::Call &&
         piece->getLocation().asLocation().isInvalid())
       continue;
@@ -217,25 +218,16 @@ bool BugReporter::RemoveUneededCalls(PathPieces &pieces, BugReport *R,
           containsSomethingInteresting = true;
           break;
         }
-        // Recursively clean out the subclass.  Keep this call around if
-        // it contains any informative diagnostics.
-        PathDiagnosticCallPiece *NewCallWithLoc =
-          call->getLocation().asLocation().isValid()
-            ? call : CallWithLoc;
-        
-        if (!RemoveUneededCalls(call->path, R, NewCallWithLoc))
-          continue;
 
-        if (NewCallWithLoc == CallWithLoc && CallWithLoc) {
-          call->callEnter = CallWithLoc->callEnter;
-        }
+        if (!RemoveUnneededCalls(call->path, R))
+          continue;
         
         containsSomethingInteresting = true;
         break;
       }
       case PathDiagnosticPiece::Macro: {
         PathDiagnosticMacroPiece *macro = cast<PathDiagnosticMacroPiece>(piece);
-        if (!RemoveUneededCalls(macro->subPieces, R))
+        if (!RemoveUnneededCalls(macro->subPieces, R))
           continue;
         containsSomethingInteresting = true;
         break;
@@ -256,6 +248,42 @@ bool BugReporter::RemoveUneededCalls(PathPieces &pieces, BugReport *R,
   }
   
   return containsSomethingInteresting;
+}
+
+/// Recursively scan through a path and make sure that all call pieces have
+/// valid locations. Note that all other pieces with invalid locations should
+/// have already been pruned out.
+static void adjustCallLocations(PathPieces &Pieces,
+                                PathDiagnosticLocation *LastCallLocation = 0) {
+  for (PathPieces::iterator I = Pieces.begin(), E = Pieces.end(); I != E; ++I) {
+    PathDiagnosticCallPiece *Call = dyn_cast<PathDiagnosticCallPiece>(*I);
+
+    if (!Call) {
+      assert((*I)->getLocation().asLocation().isValid());
+      continue;
+    }
+
+    if (LastCallLocation) {
+      if (!Call->callEnter.asLocation().isValid() ||
+          Call->getCaller()->isImplicit())
+        Call->callEnter = *LastCallLocation;
+      if (!Call->callReturn.asLocation().isValid() ||
+          Call->getCaller()->isImplicit())
+        Call->callReturn = *LastCallLocation;
+    }
+
+    // Recursively clean out the subclass.  Keep this call around if
+    // it contains any informative diagnostics.
+    PathDiagnosticLocation *ThisCallLocation;
+    if (Call->callEnterWithin.asLocation().isValid() &&
+        !Call->getCallee()->isImplicit())
+      ThisCallLocation = &Call->callEnterWithin;
+    else
+      ThisCallLocation = &Call->callEnter;
+
+    assert(ThisCallLocation && "Outermost call has an invalid location");
+    adjustCallLocations(Call->path, ThisCallLocation);
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -281,7 +309,6 @@ public:
 class PathDiagnosticBuilder : public BugReporterContext {
   BugReport *R;
   PathDiagnosticConsumer *PDC;
-  OwningPtr<ParentMap> PM;
   NodeMapClosure NMC;
 public:
   const LocationContext *LC;
@@ -1267,7 +1294,25 @@ static void reversePropagateInterestingSymbols(BugReport &R,
     }
   }
 }
-                                               
+
+/// Return true if the terminator is a loop and the destination is the
+/// false branch.
+static bool isLoopJumpPastBody(const Stmt *Term, const BlockEdge *BE) {
+  switch (Term->getStmtClass()) {
+    case Stmt::ForStmtClass:
+    case Stmt::WhileStmtClass:
+      break;
+    default:
+      // Note that we intentionally do not include do..while here.
+      return false;
+  }
+
+  // Did we take the false branch?
+  const CFGBlock *Src = BE->getSrc();
+  assert(Src->succ_size() == 2);
+  return (*(Src->succ_begin()+1) == BE->getDst());
+}
+
 static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
                                             PathDiagnosticBuilder &PDB,
                                             const ExplodedNode *N,
@@ -1276,6 +1321,11 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
   const SourceManager& SM = PDB.getSourceManager();
   StackDiagVector CallStack;
   InterestingExprs IE;
+
+  // Record the last "looping back" diagnostic.  This is used
+  // for determining if we should emit a diagnostic for skipped loops.
+  std::pair<const Stmt *, PathDiagnosticEventPiece *>
+    LastLoopDiagnostic((Stmt*)0, (PathDiagnosticEventPiece*)0);
 
   const ExplodedNode *NextNode = N->pred_empty() ? NULL : *(N->pred_begin());
   while (NextNode) {
@@ -1388,6 +1438,12 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
                                         "Looping back to the head of the loop");
           p->setPrunable(true);
 
+          // Record the loop diagnostic for later consultation.  We can
+          // use this to determine whether or not to emit a "skipped loop"
+          // event.
+          LastLoopDiagnostic.first = Loop;
+          LastLoopDiagnostic.second = p;
+
           EB.addEdge(p->getLocation(), true);
           PD.getActivePath().push_front(p);
 
@@ -1397,9 +1453,29 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
             EB.addEdge(BL);
           }
         }
-        
-        if (const Stmt *Term = BE->getSrc()->getTerminator())
+
+        if (const Stmt *Term = BE->getSrc()->getTerminator()) {
+          // Are we jumping past the loop body without ever executing the
+          // loop (because the condition was false)?
+          if (isLoopJumpPastBody(Term, BE) &&
+              !PD.getActivePath().empty() &&
+              PD.getActivePath().front() != LastLoopDiagnostic.second &&
+              Term != LastLoopDiagnostic.first)
+          {
+            PathDiagnosticLocation L(Term, SM, PDB.LC);
+            PathDiagnosticEventPiece *PE =
+            new PathDiagnosticEventPiece(L,
+                                         "Loop body executed 0 times");
+            PE->setPrunable(true);
+            LastLoopDiagnostic.first = 0;
+            LastLoopDiagnostic.second = 0;
+
+            EB.addEdge(PE->getLocation(), true);
+            PD.getActivePath().push_front(PE);
+          }
+
           EB.addContext(Term);
+        }
 
         break;
       }
@@ -1502,8 +1578,9 @@ const Decl *BugReport::getDeclWithIssue() const {
 void BugReport::Profile(llvm::FoldingSetNodeID& hash) const {
   hash.AddPointer(&BT);
   hash.AddString(Description);
-  if (UniqueingLocation.isValid()) {
-    UniqueingLocation.Profile(hash);
+  PathDiagnosticLocation UL = getUniqueingLocation();
+  if (UL.isValid()) {
+    UL.Profile(hash);
   } else if (Location.isValid()) {
     Location.Profile(hash);
   } else {
@@ -1666,6 +1743,9 @@ PathDiagnosticLocation BugReport::getLocation(const SourceManager &SM) const {
       // For binary operators, return the location of the operator.
       if (const BinaryOperator *B = dyn_cast<BinaryOperator>(S))
         return PathDiagnosticLocation::createOperatorLoc(B, SM);
+
+      if (isa<PostStmtPurgeDeadSymbols>(ErrorNode->getLocation()))
+        return PathDiagnosticLocation::createEnd(S, SM, LC);
 
       return PathDiagnosticLocation::createBegin(S, SM, LC);
     }
@@ -2015,6 +2095,7 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
   // Register additional node visitors.
   R->addVisitor(new NilReceiverBRVisitor());
   R->addVisitor(new ConditionBRVisitor());
+  R->addVisitor(new LikelyFalsePositiveSuppressionBRVisitor());
 
   BugReport::VisitorList visitors;
   unsigned originalReportConfigToken, finalReportConfigToken;
@@ -2035,16 +2116,17 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
 
     // Generate the very last diagnostic piece - the piece is visible before 
     // the trace is expanded.
-    if (PDB.getGenerationScheme() != PathDiagnosticConsumer::None) {
-      PathDiagnosticPiece *LastPiece = 0;
-      for (BugReport::visitor_iterator I = visitors.begin(), E = visitors.end();
-           I != E; ++I) {
-        if (PathDiagnosticPiece *Piece = (*I)->getEndPath(PDB, N, *R)) {
-          assert (!LastPiece &&
-                  "There can only be one final piece in a diagnostic.");
-          LastPiece = Piece;
-        }
+    PathDiagnosticPiece *LastPiece = 0;
+    for (BugReport::visitor_iterator I = visitors.begin(), E = visitors.end();
+        I != E; ++I) {
+      if (PathDiagnosticPiece *Piece = (*I)->getEndPath(PDB, N, *R)) {
+        assert (!LastPiece &&
+            "There can only be one final piece in a diagnostic.");
+        LastPiece = Piece;
       }
+    }
+
+    if (PDB.getGenerationScheme() != PathDiagnosticConsumer::None) {
       if (!LastPiece)
         LastPiece = BugReporterVisitor::getDefaultEndPath(PDB, N, *R);
       if (LastPiece)
@@ -2091,12 +2173,15 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
     // Remove messages that are basically the same.
     removeRedundantMsgs(PD.getMutablePieces());
 
-    if (R->shouldPrunePath()) {
-      bool hasSomethingInteresting = RemoveUneededCalls(PD.getMutablePieces(),
-                                                        R);
+    if (R->shouldPrunePath() &&
+        getEngine().getAnalysisManager().options.shouldPrunePaths()) {
+      bool hasSomethingInteresting = RemoveUnneededCalls(PD.getMutablePieces(),
+                                                         R);
       assert(hasSomethingInteresting);
       (void) hasSomethingInteresting;
     }
+
+    adjustCallLocations(PD.getMutablePieces());
   }
 
   return true;
@@ -2265,7 +2350,9 @@ void BugReporter::FlushReport(BugReport *exampleReport,
                          exampleReport->getBugType().getName(),
                          exampleReport->getDescription(),
                          exampleReport->getShortDescription(/*Fallback=*/false),
-                         BT.getCategory()));
+                         BT.getCategory(),
+                         exampleReport->getUniqueingLocation(),
+                         exampleReport->getUniqueingDecl()));
 
   // Generate the full path diagnostic, using the generation scheme
   // specified by the PathDiagnosticConsumer. Note that we have to generate

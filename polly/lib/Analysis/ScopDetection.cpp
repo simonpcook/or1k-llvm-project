@@ -50,7 +50,7 @@
 #include "polly/Support/ScopHelper.h"
 #include "polly/Support/SCEVValidator.h"
 
-#include "llvm/LLVMContext.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -70,9 +70,8 @@ using namespace llvm;
 using namespace polly;
 
 static cl::opt<std::string>
-OnlyFunction("polly-detect-only",
-             cl::desc("Only detect scops in function"), cl::Hidden,
-             cl::value_desc("The function name to detect scops in"),
+OnlyFunction("polly-detect-only", cl::desc("Only detect scops in function"),
+             cl::Hidden, cl::value_desc("The function name to detect scops in"),
              cl::ValueRequired, cl::init(""));
 
 static cl::opt<bool>
@@ -81,8 +80,7 @@ IgnoreAliasing("polly-ignore-aliasing",
                cl::Hidden, cl::init(false));
 
 static cl::opt<bool>
-ReportLevel("polly-report",
-            cl::desc("Print information about Polly"),
+ReportLevel("polly-report", cl::desc("Print information about Polly"),
             cl::Hidden, cl::init(false));
 
 static cl::opt<bool>
@@ -95,49 +93,48 @@ AllowNonAffine("polly-allow-nonaffine",
 
 STATISTIC(ValidRegion, "Number of regions that a valid part of Scop");
 
-#define BADSCOP_STAT(NAME, DESC) STATISTIC(Bad##NAME##ForScop, \
-                                           "Number of bad regions for Scop: "\
-                                           DESC)
+#define BADSCOP_STAT(NAME, DESC)                                               \
+  STATISTIC(Bad##NAME##ForScop, "Number of bad regions for Scop: " DESC)
 
-#define INVALID(NAME, MESSAGE) \
-  do { \
-    std::string Buf; \
-    raw_string_ostream fmt(Buf); \
-    fmt << MESSAGE; \
-    fmt.flush(); \
-    LastFailure = Buf; \
-    DEBUG(dbgs() << MESSAGE); \
-    DEBUG(dbgs() << "\n"); \
-    assert(!Context.Verifying && #NAME); \
-    if (!Context.Verifying) ++Bad##NAME##ForScop; \
-    return false; \
+#define INVALID(NAME, MESSAGE)                                                 \
+  do {                                                                         \
+    std::string Buf;                                                           \
+    raw_string_ostream fmt(Buf);                                               \
+    fmt << MESSAGE;                                                            \
+    fmt.flush();                                                               \
+    LastFailure = Buf;                                                         \
+    DEBUG(dbgs() << MESSAGE);                                                  \
+    DEBUG(dbgs() << "\n");                                                     \
+    assert(!Context.Verifying && #NAME);                                       \
+    if (!Context.Verifying)                                                    \
+      ++Bad##NAME##ForScop;                                                    \
+    return false;                                                              \
   } while (0);
 
-
-#define INVALID_NOVERIFY(NAME, MESSAGE) \
-  do { \
-    std::string Buf; \
-    raw_string_ostream fmt(Buf); \
-    fmt << MESSAGE; \
-    fmt.flush(); \
-    LastFailure = Buf; \
-    DEBUG(dbgs() << MESSAGE); \
-    DEBUG(dbgs() << "\n"); \
-    /* DISABLED: assert(!Context.Verifying && #NAME); */ \
-    if (!Context.Verifying) ++Bad##NAME##ForScop; \
-    return false; \
+#define INVALID_NOVERIFY(NAME, MESSAGE)                                        \
+  do {                                                                         \
+    std::string Buf;                                                           \
+    raw_string_ostream fmt(Buf);                                               \
+    fmt << MESSAGE;                                                            \
+    fmt.flush();                                                               \
+    LastFailure = Buf;                                                         \
+    DEBUG(dbgs() << MESSAGE);                                                  \
+    DEBUG(dbgs() << "\n");                                                     \
+    /* DISABLED: assert(!Context.Verifying && #NAME); */                       \
+    if (!Context.Verifying)                                                    \
+      ++Bad##NAME##ForScop;                                                    \
+    return false;                                                              \
   } while (0);
 
-
-BADSCOP_STAT(CFG,             "CFG too complex");
-BADSCOP_STAT(IndVar,          "Non canonical induction variable in loop");
-BADSCOP_STAT(LoopBound,       "Loop bounds can not be computed");
-BADSCOP_STAT(FuncCall,        "Function call with side effects appeared");
-BADSCOP_STAT(AffFunc,         "Expression not affine");
-BADSCOP_STAT(Scalar,          "Found scalar dependency");
-BADSCOP_STAT(Alias,           "Found base address alias");
-BADSCOP_STAT(SimpleRegion,    "Region not simple");
-BADSCOP_STAT(Other,           "Others");
+BADSCOP_STAT(CFG, "CFG too complex");
+BADSCOP_STAT(IndVar, "Non canonical induction variable in loop");
+BADSCOP_STAT(LoopBound, "Loop bounds can not be computed");
+BADSCOP_STAT(FuncCall, "Function call with side effects appeared");
+BADSCOP_STAT(AffFunc, "Expression not affine");
+BADSCOP_STAT(Scalar, "Found scalar dependency");
+BADSCOP_STAT(Alias, "Found base address alias");
+BADSCOP_STAT(SimpleRegion, "Region not simple");
+BADSCOP_STAT(Other, "Others");
 
 //===----------------------------------------------------------------------===//
 // ScopDetection.
@@ -153,8 +150,8 @@ std::string ScopDetection::regionIsInvalidBecause(const Region *R) const {
   return InvalidRegions.find(R)->second;
 }
 
-bool ScopDetection::isValidCFG(BasicBlock &BB, DetectionContext &Context) const
-{
+bool ScopDetection::isValidCFG(BasicBlock &BB,
+                               DetectionContext &Context) const {
   Region &RefRegion = Context.CurRegion;
   TerminatorInst *TI = BB.getTerminator();
 
@@ -167,14 +164,14 @@ bool ScopDetection::isValidCFG(BasicBlock &BB, DetectionContext &Context) const
   if (!Br)
     INVALID(CFG, "Non branch instruction terminates BB: " + BB.getName());
 
-  if (Br->isUnconditional()) return true;
+  if (Br->isUnconditional())
+    return true;
 
   Value *Condition = Br->getCondition();
 
   // UndefValue is not allowed as condition.
   if (isa<UndefValue>(Condition))
-    INVALID(AffFunc, "Condition based on 'undef' value in BB: "
-                     + BB.getName());
+    INVALID(AffFunc, "Condition based on 'undef' value in BB: " + BB.getName());
 
   // Only Constant and ICmpInst are allowed as condition.
   if (!(isa<Constant>(Condition) || isa<ICmpInst>(Condition)))
@@ -190,12 +187,12 @@ bool ScopDetection::isValidCFG(BasicBlock &BB, DetectionContext &Context) const
     //
     // TODO: This is not sufficient and just hides bugs. However it does pretty
     // well.
-    if(ICmp->isUnsigned())
+    if (ICmp->isUnsigned())
       return false;
 
     // Are both operands of the ICmp affine?
-    if (isa<UndefValue>(ICmp->getOperand(0))
-        || isa<UndefValue>(ICmp->getOperand(1)))
+    if (isa<UndefValue>(ICmp->getOperand(0)) ||
+        isa<UndefValue>(ICmp->getOperand(1)))
       INVALID(AffFunc, "undef operand in branch at BB: " + BB.getName());
 
     const SCEV *LHS = SE->getSCEV(ICmp->getOperand(0));
@@ -256,7 +253,8 @@ bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
 
   AccessFunction = SE->getMinusSCEV(AccessFunction, BasePointer);
 
-  if (!isAffineExpr(&Context.CurRegion, AccessFunction, *SE, BaseValue) && !AllowNonAffine)
+  if (!isAffineExpr(&Context.CurRegion, AccessFunction, *SE, BaseValue) &&
+      !AllowNonAffine)
     INVALID(AffFunc, "Non affine access function: " << *AccessFunction);
 
   // FIXME: Alias Analysis thinks IntToPtrInst aliases with alloca instructions
@@ -267,8 +265,8 @@ bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
   // Check if the base pointer of the memory access does alias with
   // any other pointer. This cannot be handled at the moment.
   AliasSet &AS =
-    Context.AST.getAliasSetForPointer(BaseValue, AliasAnalysis::UnknownSize,
-                                      Inst.getMetadata(LLVMContext::MD_tbaa));
+      Context.AST.getAliasSetForPointer(BaseValue, AliasAnalysis::UnknownSize,
+                                        Inst.getMetadata(LLVMContext::MD_tbaa));
 
   // INVALID triggers an assertion in verifying mode, if it detects that a SCoP
   // was detected by SCoP detection and that this SCoP was invalidated by a pass
@@ -277,14 +275,42 @@ bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
   // references which seem to alias, if -basicaa is not available. They actually
   // do not, but as we can not proof this without -basicaa we would fail. We
   // disable this check to not cause irrelevant verification failures.
-  if (!AS.isMustAlias() && !IgnoreAliasing)
-    INVALID_NOVERIFY(Alias,
-                     "Possible aliasing for value: " << BaseValue->getName()
-                     << "\n");
+  if (!AS.isMustAlias() && !IgnoreAliasing) {
+    std::string Message;
+    raw_string_ostream OS(Message);
+
+    OS << "Possible aliasing: ";
+
+    std::vector<Value *> Pointers;
+
+    for (AliasSet::iterator AI = AS.begin(), AE = AS.end(); AI != AE; ++AI)
+      Pointers.push_back(AI.getPointer());
+
+    std::sort(Pointers.begin(), Pointers.end());
+
+    for (std::vector<Value *>::iterator PI = Pointers.begin(),
+                                        PE = Pointers.end();
+         ;) {
+      Value *V = *PI;
+
+      if (V->getName().size() == 0)
+        OS << "\"" << *V << "\"";
+      else
+        OS << "\"" << V->getName() << "\"";
+
+      ++PI;
+
+      if (PI != PE)
+        OS << ", ";
+      else
+        break;
+    }
+
+    INVALID_NOVERIFY(Alias, OS.str())
+  }
 
   return true;
 }
-
 
 bool ScopDetection::hasScalarDependency(Instruction &Inst,
                                         Region &RefRegion) const {
@@ -380,7 +406,7 @@ bool ScopDetection::isValidLoop(Loop *L, DetectionContext &Context) const {
 Region *ScopDetection::expandRegion(Region &R) {
   // Initial no valid region was found (greater than R)
   Region *LastValidRegion = NULL;
-  Region *ExpandedRegion  = R.getExpandedRegion();
+  Region *ExpandedRegion = R.getExpandedRegion();
 
   DEBUG(dbgs() << "\tExpanding " << R.getNameStr() << "\n");
 
@@ -427,7 +453,6 @@ Region *ScopDetection::expandRegion(Region &R) {
   return LastValidRegion;
 }
 
-
 void ScopDetection::findScops(Region &R) {
   DetectionContext Context(R, *AA, false /*verifying*/);
 
@@ -450,13 +475,14 @@ void ScopDetection::findScops(Region &R) {
   // regions that form a Scop are not found. Therefore, those non canonical
   // regions are checked by expanding the canonical ones.
 
-  std::vector<Region*> ToExpand;
+  std::vector<Region *> ToExpand;
 
   for (Region::iterator I = R.begin(), E = R.end(); I != E; ++I)
     ToExpand.push_back(*I);
 
-  for (std::vector<Region*>::iterator RI = ToExpand.begin(),
-       RE = ToExpand.end(); RI != RE; ++RI) {
+  for (std::vector<Region *>::iterator RI = ToExpand.begin(),
+                                       RE = ToExpand.end();
+       RI != RE; ++RI) {
     Region *CurrentRegion = *RI;
 
     // Skip invalid regions. Regions may become invalid, if they are element of
@@ -496,7 +522,7 @@ bool ScopDetection::isValidExit(DetectionContext &Context) const {
   // PHI nodes are not allowed in the exit basic block.
   if (BasicBlock *Exit = R.getExit()) {
     BasicBlock::iterator I = Exit->begin();
-    if (I != Exit->end() && isa<PHINode> (*I))
+    if (I != Exit->end() && isa<PHINode>(*I))
       INVALID(Other, "PHI node in exit BB");
   }
 
@@ -561,7 +587,7 @@ void ScopDetection::getDebugLocation(const Region *R, unsigned &LineBegin,
       LineBegin = std::min(LineBegin, NewLine);
       LineEnd = std::max(LineEnd, NewLine);
       break;
-  }
+    }
 }
 
 void ScopDetection::printLocations() {
@@ -573,7 +599,7 @@ void ScopDetection::printLocations() {
 
     if (FileName.empty()) {
       outs() << "Scop detected at unknown location. Compile with debug info "
-        "(-g) to get more precise information. \n";
+                "(-g) to get more precise information. \n";
       return;
     }
 
@@ -594,7 +620,7 @@ bool ScopDetection::runOnFunction(llvm::Function &F) {
   if (OnlyFunction != "" && F.getName() != OnlyFunction)
     return false;
 
-  if(!isValidFunction(F))
+  if (!isValidFunction(F))
     return false;
 
   findScops(*TopRegion);
@@ -605,16 +631,16 @@ bool ScopDetection::runOnFunction(llvm::Function &F) {
   return false;
 }
 
-
 void polly::ScopDetection::verifyRegion(const Region &R) const {
   assert(isMaxRegionInScop(R) && "Expect R is a valid region.");
-  DetectionContext Context(const_cast<Region&>(R), *AA, true /*verifying*/);
+  DetectionContext Context(const_cast<Region &>(R), *AA, true /*verifying*/);
   isValidRegion(Context);
 }
 
 void polly::ScopDetection::verifyAnalysis() const {
   for (RegionSet::const_iterator I = ValidRegions.begin(),
-      E = ValidRegions.end(); I != E; ++I)
+                                 E = ValidRegions.end();
+       I != E; ++I)
     verifyRegion(**I);
 }
 
@@ -629,9 +655,10 @@ void ScopDetection::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
 }
 
-void ScopDetection::print(raw_ostream &OS, const Module *) const {
+void ScopDetection::print(raw_ostream &OS, const Module *)const {
   for (RegionSet::const_iterator I = ValidRegions.begin(),
-      E = ValidRegions.end(); I != E; ++I)
+                                 E = ValidRegions.end();
+       I != E; ++I)
     OS << "Valid Region for Scop: " << (*I)->getNameStr() << '\n';
 
   OS << "\n";

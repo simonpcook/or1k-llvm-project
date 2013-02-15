@@ -6,6 +6,11 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// This test uses new symbols that were not defined in the libc++ shipped on
+// darwin11 and darwin12:
+// XFAIL: with_system_lib=x86_64-apple-darwin11
+// XFAIL: with_system_lib=x86_64-apple-darwin12
 
 // <chrono>
 
@@ -15,6 +20,9 @@
 
 #include <chrono>
 
+template <class _Tp>
+void test(const _Tp &) {}
+
 int main()
 {
     typedef std::chrono::system_clock C;
@@ -23,4 +31,5 @@ int main()
     static_assert((std::is_same<C::duration, C::time_point::duration>::value), "");
     static_assert((std::is_same<C::time_point::clock, C>::value), "");
     static_assert((C::is_steady || !C::is_steady), "");
+    test(std::chrono::system_clock::is_steady);
 }

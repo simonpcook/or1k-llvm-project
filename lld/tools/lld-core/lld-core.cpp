@@ -8,23 +8,21 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/Core/Atom.h"
+#include "lld/Core/LinkerOptions.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Pass.h"
+#include "lld/Core/PassManager.h"
 #include "lld/Core/Resolver.h"
+#include "lld/Passes/LayoutPass.h"
+#include "lld/ReaderWriter/ELFTargetInfo.h"
+#include "lld/ReaderWriter/MachOTargetInfo.h"
 #include "lld/ReaderWriter/Reader.h"
-#include "lld/ReaderWriter/ReaderNative.h"
-#include "lld/ReaderWriter/ReaderYAML.h"
-#include "lld/ReaderWriter/ReaderELF.h"
-#include "lld/ReaderWriter/ReaderPECOFF.h"
-#include "lld/ReaderWriter/ReaderMachO.h"
+#include "lld/ReaderWriter/ReaderArchive.h"
 #include "lld/ReaderWriter/Writer.h"
-#include "lld/ReaderWriter/WriterELF.h"
-#include "lld/ReaderWriter/WriterMachO.h"
-#include "lld/ReaderWriter/WriterNative.h"
-#include "lld/ReaderWriter/WriterPECOFF.h"
-#include "lld/ReaderWriter/WriterYAML.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Triple.h"
+#include "llvm/Support/ELF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -63,17 +61,26 @@ cmdLineOutputFilePath("o",
               llvm::cl::desc("Specify output filename"), 
               llvm::cl::value_desc("filename"));
 
-llvm::cl::opt<bool> 
-cmdLineDoStubsPass("stubs-pass", 
-          llvm::cl::desc("Run pass to create stub atoms"));
+llvm::cl::opt<bool> cmdLineDoStubsPass(
+    "stubs-pass", llvm::cl::desc("Run pass to create stub atoms"));
 
-llvm::cl::opt<bool> 
-cmdLineDoGotPass("got-pass", 
-          llvm::cl::desc("Run pass to create GOT atoms"));
+llvm::cl::opt<bool>
+cmdLineDoGotPass("got-pass", llvm::cl::desc("Run pass to create GOT atoms"));
 
-llvm::cl::opt<bool> 
-cmdLineUndefinesIsError("undefines-are-errors", 
-          llvm::cl::desc("Any undefined symbols at end is an error"));
+llvm::cl::opt<bool>
+cmdLineDoLayoutPass("layout-pass", llvm::cl::desc("Run pass to layout atoms"));
+
+llvm::cl::opt<bool>
+cmdLineDoMergeStrings(
+  "merge-strings", 
+  llvm::cl::desc("make common strings merge possible"));
+
+llvm::cl::opt<bool> cmdLineUndefinesIsError(
+    "undefines-are-errors",
+    llvm::cl::desc("Any undefined symbols at end is an error"));
+
+llvm::cl::opt<bool> cmdLineForceLoad(
+    "force-load", llvm::cl::desc("force load all members of the archive"));
 
 llvm::cl::opt<bool> 
 cmdLineCommonsSearchArchives("commons-search-archives", 
@@ -86,6 +93,11 @@ cmdLineDeadStrip("dead-strip",
 llvm::cl::opt<bool> 
 cmdLineGlobalsNotDeadStrip("keep-globals", 
           llvm::cl::desc("All global symbols are roots for dead-strip"));
+
+llvm::cl::opt<std::string>
+cmdLineEntryPoint("entry",
+              llvm::cl::desc("Specify entry point symbol"),
+              llvm::cl::value_desc("symbol"));
 
 
 enum WriteChoice {
@@ -100,7 +112,8 @@ writeSelected("writer",
     clEnumValN(writeMachO,  "mach-o", "link as darwin would"),
     clEnumValN(writePECOFF, "PECOFF", "link as windows would"),
     clEnumValN(writeELF,    "ELF",    "link as linux would"),
-    clEnumValEnd));
+    clEnumValEnd),
+  llvm::cl::init(writeYAML));
 
 enum ReaderChoice {
   readerYAML, readerMachO, readerPECOFF, readerELF
@@ -113,7 +126,8 @@ readerSelected("reader",
     clEnumValN(readerMachO,  "mach-o", "read as darwin would"),
     clEnumValN(readerPECOFF, "PECOFF", "read as windows would"),
     clEnumValN(readerELF,    "ELF",    "read as linux would"),
-    clEnumValEnd));
+    clEnumValEnd),
+  llvm::cl::init(readerYAML));
     
 enum ArchChoice {
   i386 = llvm::ELF::EM_386,
@@ -133,35 +147,67 @@ archSelected("arch",
                "hexagon", "output Hexagon, EM_HEXAGON file"),
     clEnumValN(ppc, 
                "ppc", "output PowerPC, EM_PPC file"),
-    clEnumValEnd));
+    clEnumValEnd),
+  llvm::cl::init(i386));
 
 
 enum endianChoice {
   little, big
 };
-llvm::cl::opt<endianChoice>
-endianSelected("endian",
-  llvm::cl::desc("Select endianness of ELF output"),
-  llvm::cl::values(
-    clEnumValN(big, "big", 
-               "output big endian format"),
-    clEnumValN(little, "little", 
-               "output little endian format"),
-    clEnumValEnd));
-    
+llvm::cl::opt<endianChoice> endianSelected(
+    "endian", llvm::cl::desc("Select endianness of ELF output"),
+    llvm::cl::values(clEnumValN(big, "big", "output big endian format"),
+                     clEnumValN(little, "little",
+                                "output little endian format"), clEnumValEnd));
 
-class TestingResolverOptions : public ResolverOptions {
+class TestingTargetInfo : public TargetInfo {
 public:
-  TestingResolverOptions() {
-    _undefinesAreErrors = cmdLineUndefinesIsError;
-    _searchArchivesToOverrideTentativeDefinitions = cmdLineCommonsSearchArchives;
-    _deadCodeStrip = cmdLineDeadStrip;
-    _globalsAreDeadStripRoots = cmdLineGlobalsNotDeadStrip;
+  TestingTargetInfo(const LinkerOptions &lo, bool stubs, bool got, bool layout)
+      : TargetInfo(lo), _doStubs(stubs), _doGOT(got), _doLayout(layout) {
   }
 
+  virtual uint64_t getPageSize() const { return 0x1000; }
+
+  virtual void addPasses(PassManager &pm) const {
+    if (_doStubs)
+      pm.add(std::unique_ptr<Pass>(new TestingStubsPass(*this)));
+    if (_doGOT)
+      pm.add(std::unique_ptr<Pass>(new TestingGOTPass(*this)));
+    if (_doLayout)
+      pm.add(std::unique_ptr<Pass>(new LayoutPass()));
+  }
+
+  virtual ErrorOr<int32_t> relocKindFromString(StringRef str) const {
+    // Try parsing as a number.
+    if (auto kind = TargetInfo::relocKindFromString(str))
+      return kind;
+    for (const auto *kinds = sKinds; kinds->string; ++kinds)
+      if (str == kinds->string)
+        return kinds->value;
+    return llvm::make_error_code(llvm::errc::invalid_argument);
+  }
+
+  virtual ErrorOr<std::string> stringFromRelocKind(int32_t kind) const {
+    for (const TestingKindMapping *p = sKinds; p->string != nullptr; ++p) {
+      if (kind == p->value)
+        return std::string(p->string);
+    }
+    return llvm::make_error_code(llvm::errc::invalid_argument);
+  }
+
+  virtual ErrorOr<Reader &> getReader(const LinkerInput &input) const {
+    llvm_unreachable("Unimplemented!");
+  }
+
+  virtual ErrorOr<Writer &> getWriter() const {
+    llvm_unreachable("Unimplemented!");
+  }
+
+private:
+  bool _doStubs;
+  bool _doGOT;
+  bool _doLayout;
 };
-
-
 
 int main(int argc, char *argv[]) {
   // Print a stack trace if we signal out.
@@ -180,34 +226,55 @@ int main(int argc, char *argv[]) {
   if (cmdLineOutputFilePath.empty())
     cmdLineOutputFilePath.assign("-");
 
-  // create writer for final output, default to i386 if none selected
-  WriterOptionsELF writerOptionsELF(false,
-                                    endianSelected == big
-                                    ? llvm::support::big
-                                    : llvm::support::little,
-                                    llvm::ELF::ET_EXEC,
-                                    archSelected.getValue() == 0
-                                    ? i386
-                                    : archSelected);
+  LinkerOptions lo;
+  lo._noInhibitExec = !cmdLineUndefinesIsError;
+  lo._searchArchivesToOverrideTentativeDefinitions =
+      cmdLineCommonsSearchArchives;
+  lo._deadStrip = cmdLineDeadStrip;
+  lo._globalsAreDeadStripRoots = cmdLineGlobalsNotDeadStrip;
+  lo._forceLoadArchives = cmdLineForceLoad;
+  lo._outputKind = OutputKind::StaticExecutable;
+  lo._entrySymbol = cmdLineEntryPoint;
+  lo._mergeCommonStrings = cmdLineDoMergeStrings;
 
-  TestingWriterOptionsYAML  writerOptionsYAML(cmdLineDoStubsPass, 
-                                              cmdLineDoGotPass);
-  WriterOptionsMachO        writerOptionsMachO;
-  WriterOptionsPECOFF       writerOptionsPECOFF;
+  switch (archSelected) {
+  case i386:
+    lo._target = "i386";
+    break;
+  case x86_64:
+    lo._target = "x86_64";
+    break;
+  case hexagon:
+    lo._target = "hexagon";
+    break;
+  case ppc:
+    lo._target = "powerpc";
+    break;
+  }
 
-  Writer* writer = nullptr;
+  TestingTargetInfo tti(lo, cmdLineDoStubsPass, cmdLineDoGotPass,
+                        cmdLineDoLayoutPass);
+
+  std::unique_ptr<ELFTargetInfo> eti = ELFTargetInfo::create(lo);
+  std::unique_ptr<MachOTargetInfo> mti = MachOTargetInfo::create(lo);
+  std::unique_ptr<Writer> writer;
+  const TargetInfo *ti = 0;
   switch ( writeSelected ) {
     case writeYAML:
-      writer = createWriterYAML(writerOptionsYAML);
+      writer = createWriterYAML(tti);
+      ti = &tti;
       break;
     case writeMachO:
-      writer = createWriterMachO(writerOptionsMachO);
+      writer = createWriterMachO(*mti);
+      ti = mti.get();
       break;
     case writePECOFF:
-      writer = createWriterPECOFF(writerOptionsPECOFF);
+      writer = createWriterPECOFF(tti);
+      ti = &tti;
       break;
     case writeELF:
-      writer = createWriterELF(writerOptionsELF);
+      writer = createWriterELF(*eti);
+      ti = eti.get();
       break;
   }
   
@@ -215,12 +282,10 @@ int main(int argc, char *argv[]) {
   InputFiles inputFiles;
 
   // read input files into in-memory File objects
-
-  TestingReaderOptionsYAML  readerOptionsYAML;
-  Reader *reader = nullptr;
+  std::unique_ptr<Reader> reader;
   switch ( readerSelected ) {
     case readerYAML:
-      reader = createReaderYAML(readerOptionsYAML);
+      reader = createReaderYAML(tti);
       break;
 #if 0
     case readerMachO:
@@ -228,13 +293,19 @@ int main(int argc, char *argv[]) {
       break;
 #endif
     case readerPECOFF:
-      reader = createReaderPECOFF(lld::ReaderOptionsPECOFF());
+      reader = createReaderPECOFF(tti,
+      [&] (const LinkerInput &) -> ErrorOr<Reader&> {
+        return *reader;
+      });
       break;
     case readerELF:
-      reader = createReaderELF(lld::ReaderOptionsELF());
+      reader = createReaderELF(*eti,
+      [&] (const LinkerInput &) -> ErrorOr<Reader&> {
+        return *reader;
+      });
       break;
     default:
-      reader = createReaderYAML(readerOptionsYAML);
+      reader = createReaderYAML(tti);
       break;
   }
 
@@ -248,21 +319,18 @@ int main(int argc, char *argv[]) {
   // given writer a chance to add files
   writer->addFiles(inputFiles);
 
-  // create options for resolving
-  TestingResolverOptions options;
+  // assign an ordinal to each file so sort() can preserve command line order
+  inputFiles.assignFileOrdinals();
 
   // merge all atom graphs
-  Resolver resolver(options, inputFiles);
+  Resolver resolver(tti, inputFiles);
   resolver.resolve();
-  File &mergedMasterFile = resolver.resultFile();
+  MutableFile &mergedMasterFile = resolver.resultFile();
 
-  // run passes
-  if ( GOTPass *pass = writer->gotPass() ) {
-    pass->perform(mergedMasterFile);
-  }
-  if ( StubsPass *pass = writer->stubPass() ) {
-    pass->perform(mergedMasterFile);
-  }
+  PassManager pm;
+  if (ti)
+    ti->addPasses(pm);
+  pm.runOnFile(mergedMasterFile);
 
   // showing yaml at this stage can help when debugging
   const bool dumpIntermediateYAML = false;
@@ -277,14 +345,12 @@ int main(int argc, char *argv[]) {
   }
   
   // write as native file
-  WriterOptionsNative  optionsNativeWriter;
-  Writer *natWriter = createWriterNative(optionsNativeWriter);
+  std::unique_ptr<Writer> natWriter = createWriterNative(tti);
   if (error(natWriter->writeFile(mergedMasterFile, tmpNativePath.c_str())))
     return 1;
   
   // read as native file
-  ReaderOptionsNative  optionsNativeReader;
-  Reader *natReader = createReaderNative(optionsNativeReader);
+  std::unique_ptr<Reader> natReader = createReaderNative(tti);
   std::vector<std::unique_ptr<File>> readNativeFiles;
   if (error(natReader->readFile(tmpNativePath.c_str(), readNativeFiles)))
     return 1;

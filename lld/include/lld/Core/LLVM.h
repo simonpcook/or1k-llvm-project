@@ -17,7 +17,10 @@
 
 // This should be the only #include, force #includes of all the others on
 // clients.
+#include "llvm/ADT/Hashing.h"
 #include "llvm/Support/Casting.h"
+
+#include <utility>
 
 namespace llvm {
   // ADT's.
@@ -33,6 +36,9 @@ namespace llvm {
   template<typename T>
   struct SaveAndRestore;
 
+  template<typename T>
+  class ErrorOr;
+
   // Reference counting.
   template <typename T> class IntrusiveRefCntPtr;
   template <typename T> struct IntrusiveRefCntPtrInfo;
@@ -43,7 +49,6 @@ namespace llvm {
   class raw_ostream;
   // TODO: DenseMap, ...
 }
-
 
 namespace lld {
   // Casting operators.
@@ -63,6 +68,7 @@ namespace lld {
   using llvm::SmallVector;
   using llvm::SmallVectorImpl;
   using llvm::SaveAndRestore;
+  using llvm::ErrorOr;
 
   // Reference counting.
   using llvm::IntrusiveRefCntPtr;
@@ -73,5 +79,14 @@ namespace lld {
   using llvm::error_code;
   using llvm::raw_ostream;
 } // end namespace clang.
+
+namespace std {
+template <> struct hash<llvm::StringRef> {
+public:
+  size_t operator()(const llvm::StringRef &s) const {
+    return llvm::hash_value(s);
+  }
+};
+}
 
 #endif

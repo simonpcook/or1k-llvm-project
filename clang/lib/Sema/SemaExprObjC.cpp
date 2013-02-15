@@ -12,20 +12,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
-#include "clang/Sema/Lookup.h"
-#include "clang/Sema/Scope.h"
-#include "clang/Sema/ScopeInfo.h"
-#include "clang/Sema/Initialization.h"
-#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
-#include "clang/Edit/Rewriters.h"
-#include "clang/Edit/Commit.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/AST/TypeLoc.h"
-#include "llvm/ADT/SmallString.h"
+#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
+#include "clang/Edit/Commit.h"
+#include "clang/Edit/Rewriters.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/Initialization.h"
+#include "clang/Sema/Lookup.h"
+#include "clang/Sema/Scope.h"
+#include "clang/Sema/ScopeInfo.h"
+#include "llvm/ADT/SmallString.h"
 
 using namespace clang;
 using namespace sema;
@@ -981,7 +981,7 @@ ExprResult Sema::ParseObjCSelectorExpression(Selector Sel,
     llvm::DenseMap<Selector, SourceLocation>::iterator Pos
       = ReferencedSelectors.find(Sel);
     if (Pos == ReferencedSelectors.end())
-      ReferencedSelectors.insert(std::make_pair(Sel, SelLoc));
+      ReferencedSelectors.insert(std::make_pair(Sel, AtLoc));
   }
 
   // In ARC, forbid the user from using @selector for 
@@ -1195,6 +1195,19 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
     if (argExpr->hasPlaceholderType(BuiltinType::ARCUnbridgedCast) &&
         !param->hasAttr<CFConsumedAttr>())
       argExpr = stripARCUnbridgedCast(argExpr);
+
+    // If the parameter is __unknown_anytype, infer its type
+    // from the argument.
+    if (param->getType() == Context.UnknownAnyTy) {
+      QualType paramType = checkUnknownAnyArg(argExpr);
+      if (paramType.isNull()) {
+        IsError = true;
+        continue;
+      }
+
+      // Update the parameter type in-place.
+      param->setType(paramType);
+    }
 
     if (RequireCompleteType(argExpr->getSourceRange().getBegin(),
                             param->getType(),
@@ -2223,7 +2236,8 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
 
           if (!Method && getLangOpts().ObjCAutoRefCount) {
             Diag(Loc, diag::err_arc_may_not_respond)
-              << OCIType->getPointeeType() << Sel;
+              << OCIType->getPointeeType() << Sel 
+              << SourceRange(SelectorLocs.front(), SelectorLocs.back());
             return ExprError();
           }
 
@@ -2447,6 +2461,18 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
   return MaybeBindToTemporary(Result);
 }
 
+static void RemoveSelectorFromWarningCache(Sema &S, Expr* Arg) {
+  if (ObjCSelectorExpr *OSE =
+      dyn_cast<ObjCSelectorExpr>(Arg->IgnoreParenCasts())) {
+    Selector Sel = OSE->getSelector();
+    SourceLocation Loc = OSE->getAtLoc();
+    llvm::DenseMap<Selector, SourceLocation>::iterator Pos
+    = S.ReferencedSelectors.find(Sel);
+    if (Pos != S.ReferencedSelectors.end() && Pos->second == Loc)
+      S.ReferencedSelectors.erase(Pos);
+  }
+}
+
 // ActOnInstanceMessage - used for both unary and keyword messages.
 // ArgExprs is optional - if it is present, the number of expressions
 // is obtained from Sel.getNumArgs().
@@ -2459,7 +2485,14 @@ ExprResult Sema::ActOnInstanceMessage(Scope *S,
                                       MultiExprArg Args) {
   if (!Receiver)
     return ExprError();
-
+  
+  if (RespondsToSelectorSel.isNull()) {
+    IdentifierInfo *SelectorId = &Context.Idents.get("respondsToSelector");
+    RespondsToSelectorSel = Context.Selectors.getUnarySelector(SelectorId);
+  }
+  if (Sel == RespondsToSelectorSel)
+    RemoveSelectorFromWarningCache(*this, Args[0]);
+    
   return BuildInstanceMessage(Receiver, Receiver->getType(),
                               /*SuperLoc=*/SourceLocation(), Sel, /*Method=*/0, 
                               LBracLoc, SelectorLocs, RBracLoc, Args);

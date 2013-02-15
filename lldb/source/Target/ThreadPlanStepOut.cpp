@@ -107,6 +107,7 @@ ThreadPlanStepOut::ThreadPlanStepOut
         {
             return_bp->SetThreadID(m_thread.GetID());
             m_return_bp_id = return_bp->GetID();
+            return_bp->SetBreakpointKind ("step-out");
         }
         
         if (immediate_return_from_sp)
@@ -148,7 +149,7 @@ ThreadPlanStepOut::GetDescription (Stream *s, lldb::DescriptionLevel level)
         else if (m_step_through_inline_plan_sp)
             s->Printf ("Stepping out by stepping through inlined function.");
         else
-            s->Printf ("Stepping out from address 0x%llx to return address 0x%llx using breakpoint site %d",
+            s->Printf ("Stepping out from address 0x%" PRIx64 " to return address 0x%" PRIx64 " using breakpoint site %d",
                        (uint64_t)m_step_from_insn,
                        (uint64_t)m_return_addr,
                        m_return_bp_id);
@@ -173,7 +174,7 @@ ThreadPlanStepOut::ValidatePlan (Stream *error)
 }
 
 bool
-ThreadPlanStepOut::PlanExplainsStop ()
+ThreadPlanStepOut::PlanExplainsStop (Event *event_ptr)
 {
     // If one of our child plans just finished, then we do explain the stop.
     if (m_step_out_plan_sp)
@@ -251,6 +252,8 @@ ThreadPlanStepOut::PlanExplainsStop ()
         case eStopReasonWatchpoint:
         case eStopReasonSignal:
         case eStopReasonException:
+        case eStopReasonExec:
+        case eStopReasonThreadExiting:
             return false;
 
         default:

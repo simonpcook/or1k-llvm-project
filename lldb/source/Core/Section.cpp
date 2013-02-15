@@ -41,7 +41,7 @@ Section::Section (const ModuleSP &module_sp,
     m_linked_section_wp(),
     m_linked_offset (0)
 {
-//    printf ("Section::Section(%p): module=%p, sect_id = 0x%16.16llx, addr=[0x%16.16llx - 0x%16.16llx), file [0x%16.16llx - 0x%16.16llx), flags = 0x%8.8x, name = %s\n",
+//    printf ("Section::Section(%p): module=%p, sect_id = 0x%16.16" PRIx64 ", addr=[0x%16.16" PRIx64 " - 0x%16.16" PRIx64 "), file [0x%16.16" PRIx64 " - 0x%16.16" PRIx64 "), flags = 0x%8.8x, name = %s\n",
 //            this, module_sp.get(), sect_id, file_addr, file_addr + byte_size, file_offset, file_offset + file_size, flags, name.GetCString());
 }
 
@@ -72,7 +72,7 @@ Section::Section (const lldb::SectionSP &parent_section_sp,
     m_linked_section_wp(),
     m_linked_offset (0)
 {
-//    printf ("Section::Section(%p): module=%p, sect_id = 0x%16.16llx, addr=[0x%16.16llx - 0x%16.16llx), file [0x%16.16llx - 0x%16.16llx), flags = 0x%8.8x, name = %s.%s\n",
+//    printf ("Section::Section(%p): module=%p, sect_id = 0x%16.16" PRIx64 ", addr=[0x%16.16" PRIx64 " - 0x%16.16" PRIx64 "), file [0x%16.16" PRIx64 " - 0x%16.16" PRIx64 "), flags = 0x%8.8x, name = %s.%s\n",
 //            this, module_sp.get(), sect_id, file_addr, file_addr + byte_size, file_offset, file_offset + file_size, flags, parent_section_sp->GetName().GetCString(), name.GetCString());
     if (parent_section_sp)
         m_parent_wp = parent_section_sp;
@@ -162,10 +162,10 @@ Section::GetLoadBaseAddress (Target *target) const
 bool
 Section::ResolveContainedAddress (addr_t offset, Address &so_addr) const
 {
-    const uint32_t num_children = m_children.GetSize();
+    const size_t num_children = m_children.GetSize();
     if (num_children > 0)
     {
-        for (uint32_t i=0; i<num_children; i++)
+        for (size_t i=0; i<num_children; i++)
         {
             Section* child_section = m_children.GetSectionAtIndex (i).get();
 
@@ -257,7 +257,7 @@ Section::Dump (Stream *s, Target *target, uint32_t depth) const
 {
 //    s->Printf("%.*p: ", (int)sizeof(void*) * 2, this);
     s->Indent();
-    s->Printf("0x%8.8llx %-16s ", GetID(), GetSectionTypeAsCString (m_type));
+    s->Printf("0x%8.8" PRIx64 " %-16s ", GetID(), GetSectionTypeAsCString (m_type));
     bool resolved = true;
     addr_t addr = LLDB_INVALID_ADDRESS;
 
@@ -280,7 +280,7 @@ Section::Dump (Stream *s, Target *target, uint32_t depth) const
         range.Dump (s, 0);
     }
 
-    s->Printf("%c 0x%8.8llx 0x%8.8llx 0x%8.8x ", resolved ? ' ' : '*', m_file_offset, m_file_size, Get());
+    s->Printf("%c 0x%8.8" PRIx64 " 0x%8.8" PRIx64 " 0x%8.8x ", resolved ? ' ' : '*', m_file_offset, m_file_size, Get());
 
     DumpName (s);
 
@@ -312,7 +312,7 @@ Section::Dump (Stream *s, Target *target, uint32_t depth) const
         s->Printf("%c%*.*s", resolved ? ' ' : '*', indent, indent, "");
 
         linked_section_sp->DumpName(s);
-        s->Printf(" + 0x%llx\n", m_linked_offset);
+        s->Printf(" + 0x%" PRIx64 "\n", m_linked_offset);
     }
 
     if (depth > 0)
@@ -395,17 +395,17 @@ SectionList::~SectionList ()
 {
 }
 
-uint32_t
+size_t
 SectionList::AddSection (const lldb::SectionSP& section_sp)
 {
     assert (section_sp.get());
-    uint32_t section_index = m_sections.size();
+    size_t section_index = m_sections.size();
     m_sections.push_back(section_sp);
     InvalidateRangeCache();
     return section_index;
 }
 
-uint32_t
+size_t
 SectionList::FindSectionIndex (const Section* sect)
 {
     iterator sect_iter;
@@ -422,10 +422,10 @@ SectionList::FindSectionIndex (const Section* sect)
     return UINT32_MAX;
 }
 
-uint32_t
+size_t
 SectionList::AddUniqueSection (const lldb::SectionSP& sect_sp)
 {
-    uint32_t sect_idx = FindSectionIndex (sect_sp.get());
+    size_t sect_idx = FindSectionIndex (sect_sp.get());
     if (sect_idx == UINT32_MAX)
         sect_idx = AddSection (sect_sp);
     return sect_idx;
@@ -470,7 +470,7 @@ SectionList::GetNumSections (uint32_t depth) const
 }
 
 SectionSP
-SectionList::GetSectionAtIndex (uint32_t idx) const
+SectionList::GetSectionAtIndex (size_t idx) const
 {
     SectionSP sect_sp;
     if (idx < m_sections.size())
@@ -530,11 +530,11 @@ SectionList::FindSectionByID (user_id_t sect_id) const
 
 
 SectionSP
-SectionList::FindSectionByType (SectionType sect_type, bool check_children, uint32_t start_idx) const
+SectionList::FindSectionByType (SectionType sect_type, bool check_children, size_t start_idx) const
 {
     SectionSP sect_sp;
-    uint32_t num_sections = m_sections.size();
-    for (uint32_t idx = start_idx; idx < num_sections; ++idx)
+    size_t num_sections = m_sections.size();
+    for (size_t idx = start_idx; idx < num_sections; ++idx)
     {
         if (m_sections[idx]->GetType() == sect_type)
         {

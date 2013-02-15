@@ -51,10 +51,10 @@ public:
     GetSelectedThread ();
 
     bool
-    SetSelectedThreadByID (lldb::tid_t tid);
+    SetSelectedThreadByID (lldb::tid_t tid, bool notify = false);
 
     bool
-    SetSelectedThreadByIndexID (uint32_t index_id);
+    SetSelectedThreadByIndexID (uint32_t index_id, bool notify = false);
 
     void
     Clear();
@@ -73,6 +73,9 @@ public:
 
     lldb::ThreadSP
     FindThreadByID (lldb::tid_t tid, bool can_update = true);
+
+    lldb::ThreadSP
+    RemoveThreadByID (lldb::tid_t tid, bool can_update = true);
 
     lldb::ThreadSP
     FindThreadByIndexID (uint32_t index_id, bool can_update = true);
@@ -130,6 +133,9 @@ public:
     Update (ThreadList &rhs);
     
 protected:
+
+    void
+    NotifySelectedThreadChanged (lldb::tid_t tid);
 
     typedef std::vector<lldb::ThreadSP> collection;
     //------------------------------------------------------------------

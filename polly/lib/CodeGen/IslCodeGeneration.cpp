@@ -26,17 +26,18 @@
 #include "polly/TempScopInfo.h"
 #include "polly/CodeGen/IslAst.h"
 #include "polly/CodeGen/BlockGenerators.h"
+#include "polly/CodeGen/CodeGeneration.h"
 #include "polly/CodeGen/LoopGenerators.h"
 #include "polly/CodeGen/Utils.h"
 #include "polly/Support/GICHelper.h"
 
-#include "llvm/Module.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolutionExpander.h"
 #define DEBUG_TYPE "polly-codegen-isl"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #include "isl/union_map.h"
@@ -92,8 +93,8 @@ Function *RuntimeDebugBuilder::getPrintF() {
 
   if (!F) {
     GlobalValue::LinkageTypes Linkage = Function::ExternalLinkage;
-    FunctionType *Ty = FunctionType::get(Builder.getInt32Ty(),
-                                         Builder.getInt8PtrTy(), true);
+    FunctionType *Ty =
+        FunctionType::get(Builder.getInt32Ty(), Builder.getInt8PtrTy(), true);
     F = Function::Create(Ty, Linkage, Name, M);
   }
 
@@ -107,8 +108,8 @@ void RuntimeDebugBuilder::createFlush() {
 
   if (!F) {
     GlobalValue::LinkageTypes Linkage = Function::ExternalLinkage;
-    FunctionType *Ty = FunctionType::get(Builder.getInt32Ty(),
-                                         Builder.getInt8PtrTy(), false);
+    FunctionType *Ty =
+        FunctionType::get(Builder.getInt32Ty(), Builder.getInt8PtrTy(), false);
     F = Function::Create(Ty, Linkage, Name, M);
   }
 
@@ -147,7 +148,7 @@ public:
 
 private:
   IRBuilder<> &Builder;
-  std::map<isl_id *, Value*> &IDToValue;
+  std::map<isl_id *, Value *> &IDToValue;
 
   Value *createOp(__isl_take isl_ast_expr *Expr);
   Value *createOpUnary(__isl_take isl_ast_expr *Expr);
@@ -170,8 +171,8 @@ Type *IslExprBuilder::getWidestType(Type *T1, Type *T2) {
 }
 
 Value *IslExprBuilder::createOpUnary(__isl_take isl_ast_expr *Expr) {
-  assert (isl_ast_expr_get_op_type(Expr) == isl_ast_op_minus
-          && "Unsupported unary operation");
+  assert(isl_ast_expr_get_op_type(Expr) == isl_ast_op_minus &&
+         "Unsupported unary operation");
 
   Value *V;
   Type *MaxType = getType(Expr);
@@ -187,10 +188,10 @@ Value *IslExprBuilder::createOpUnary(__isl_take isl_ast_expr *Expr) {
 }
 
 Value *IslExprBuilder::createOpNAry(__isl_take isl_ast_expr *Expr) {
-  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_op
-         && "isl ast expression not of type isl_ast_op");
-  assert(isl_ast_expr_get_op_n_arg(Expr) >= 2
-         && "We need at least two operands in an n-ary operation");
+  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_op &&
+         "isl ast expression not of type isl_ast_op");
+  assert(isl_ast_expr_get_op_n_arg(Expr) >= 2 &&
+         "We need at least two operands in an n-ary operation");
 
   Value *V;
 
@@ -212,18 +213,16 @@ Value *IslExprBuilder::createOpNAry(__isl_take isl_ast_expr *Expr) {
     default:
       llvm_unreachable("This is no n-ary isl ast expression");
 
-    case isl_ast_op_max:
-      {
-        Value *Cmp = Builder.CreateICmpSGT(V, OpV);
-        V = Builder.CreateSelect(Cmp, V, OpV);
-        continue;
-      }
-    case isl_ast_op_min:
-      {
-        Value *Cmp = Builder.CreateICmpSLT(V, OpV);
-        V = Builder.CreateSelect(Cmp, V, OpV);
-        continue;
-      }
+    case isl_ast_op_max: {
+      Value *Cmp = Builder.CreateICmpSGT(V, OpV);
+      V = Builder.CreateSelect(Cmp, V, OpV);
+      continue;
+    }
+    case isl_ast_op_min: {
+      Value *Cmp = Builder.CreateICmpSLT(V, OpV);
+      V = Builder.CreateSelect(Cmp, V, OpV);
+      continue;
+    }
     }
   }
 
@@ -240,10 +239,10 @@ Value *IslExprBuilder::createOpBin(__isl_take isl_ast_expr *Expr) {
   Type *MaxType;
   isl_ast_op_type OpType;
 
-  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_op
-         && "isl ast expression not of type isl_ast_op");
-  assert(isl_ast_expr_get_op_n_arg(Expr) == 2
-         && "not a binary isl ast expression");
+  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_op &&
+         "isl ast expression not of type isl_ast_op");
+  assert(isl_ast_expr_get_op_n_arg(Expr) == 2 &&
+         "not a binary isl ast expression");
 
   OpType = isl_ast_expr_get_op_type(Expr);
 
@@ -260,7 +259,7 @@ Value *IslExprBuilder::createOpBin(__isl_take isl_ast_expr *Expr) {
   // result type cannot be larger than the type of the individual operand. isl
   // does not calculate correct types for these operations and we consequently
   // exclude those operations here.
-  switch(OpType) {
+  switch (OpType) {
   case isl_ast_op_pdiv_q:
   case isl_ast_op_pdiv_r:
   case isl_ast_op_div:
@@ -298,21 +297,20 @@ Value *IslExprBuilder::createOpBin(__isl_take isl_ast_expr *Expr) {
   case isl_ast_op_pdiv_q: // Dividend is non-negative
     Res = Builder.CreateSDiv(LHS, RHS);
     break;
-  case isl_ast_op_fdiv_q: // Round towards -infty
-    {
-      // TODO: Review code and check that this calculation does not yield
-      //       incorrect overflow in some bordercases.
-      //
-      // floord(n,d) ((n < 0) ? (n - d + 1) : n) / d
-      Value *One = ConstantInt::get(MaxType, 1);
-      Value *Zero = ConstantInt::get(MaxType, 0);
-      Value *Sum1 = Builder.CreateSub(LHS, RHS);
-      Value *Sum2 = Builder.CreateAdd(Sum1, One);
-      Value *isNegative = Builder.CreateICmpSLT(LHS, Zero);
-      Value *Dividend = Builder.CreateSelect(isNegative, Sum2, LHS);
-      Res = Builder.CreateSDiv(Dividend, RHS);
-      break;
-    }
+  case isl_ast_op_fdiv_q: { // Round towards -infty
+    // TODO: Review code and check that this calculation does not yield
+    //       incorrect overflow in some bordercases.
+    //
+    // floord(n,d) ((n < 0) ? (n - d + 1) : n) / d
+    Value *One = ConstantInt::get(MaxType, 1);
+    Value *Zero = ConstantInt::get(MaxType, 0);
+    Value *Sum1 = Builder.CreateSub(LHS, RHS);
+    Value *Sum2 = Builder.CreateAdd(Sum1, One);
+    Value *isNegative = Builder.CreateICmpSLT(LHS, Zero);
+    Value *Dividend = Builder.CreateSelect(isNegative, Sum2, LHS);
+    Res = Builder.CreateSDiv(Dividend, RHS);
+    break;
+  }
   case isl_ast_op_pdiv_r: // Dividend is non-negative
     Res = Builder.CreateSRem(LHS, RHS);
     break;
@@ -327,8 +325,8 @@ Value *IslExprBuilder::createOpBin(__isl_take isl_ast_expr *Expr) {
 }
 
 Value *IslExprBuilder::createOpSelect(__isl_take isl_ast_expr *Expr) {
-  assert (isl_ast_expr_get_op_type(Expr) == isl_ast_op_select
-          && "Unsupported unary isl ast expression");
+  assert(isl_ast_expr_get_op_type(Expr) == isl_ast_op_select &&
+         "Unsupported unary isl ast expression");
   Value *LHS, *RHS, *Cond;
   Type *MaxType = getType(Expr);
 
@@ -439,8 +437,8 @@ Value *IslExprBuilder::createOpBoolean(__isl_take isl_ast_expr *Expr) {
 }
 
 Value *IslExprBuilder::createOp(__isl_take isl_ast_expr *Expr) {
-  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_op
-         && "Expression not of type isl_ast_expr_op");
+  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_op &&
+         "Expression not of type isl_ast_expr_op");
   switch (isl_ast_expr_get_op_type(Expr)) {
   case isl_ast_op_error:
   case isl_ast_op_cond:
@@ -478,8 +476,8 @@ Value *IslExprBuilder::createOp(__isl_take isl_ast_expr *Expr) {
 }
 
 Value *IslExprBuilder::createId(__isl_take isl_ast_expr *Expr) {
-  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_id
-         && "Expression not of type isl_ast_expr_ident");
+  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_id &&
+         "Expression not of type isl_ast_expr_ident");
 
   isl_id *Id;
   Value *V;
@@ -505,8 +503,8 @@ IntegerType *IslExprBuilder::getType(__isl_keep isl_ast_expr *Expr) {
 }
 
 Value *IslExprBuilder::createInt(__isl_take isl_ast_expr *Expr) {
-  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_int
-         && "Expression not of type isl_ast_expr_int");
+  assert(isl_ast_expr_get_type(Expr) == isl_ast_expr_int &&
+         "Expression not of type isl_ast_expr_int");
   isl_int Int;
   Value *V;
   APInt APValue;
@@ -555,7 +553,7 @@ private:
   // This maps an isl_id* to the Value* it has in the generated program. For now
   // on, the only isl_ids that are stored here are the newly calculated loop
   // ivs.
-  std::map<isl_id *, Value*> IDToValue;
+  std::map<isl_id *, Value *> IDToValue;
 
   // Extract the upper bound of this loop
   //
@@ -576,17 +574,31 @@ private:
   //    of loop iterations.
   //
   // 3. With the existing code, upper bounds have been easier to implement.
-  __isl_give isl_ast_expr *getUpperBound(__isl_keep isl_ast_node *For,
-                                         CmpInst::Predicate &Predicate);
+  __isl_give isl_ast_expr *
+  getUpperBound(__isl_keep isl_ast_node *For, CmpInst::Predicate &Predicate);
+
+  unsigned getNumberOfIterations(__isl_keep isl_ast_node *For);
 
   void createFor(__isl_take isl_ast_node *For);
+  void createForVector(__isl_take isl_ast_node *For, int VectorWidth);
+  void createForSequential(__isl_take isl_ast_node *For);
+  void createSubstitutions(__isl_take isl_pw_multi_aff *PMA,
+                           __isl_take isl_ast_build *Context, ScopStmt *Stmt,
+                           ValueMapT &VMap);
+  void createSubstitutionsVector(
+      __isl_take isl_pw_multi_aff *PMA, __isl_take isl_ast_build *Context,
+      ScopStmt *Stmt, VectorValueMapT &VMap, std::vector<Value *> &IVS,
+      __isl_take isl_id *IteratorID);
   void createIf(__isl_take isl_ast_node *If);
+  void createUserVector(
+      __isl_take isl_ast_node *User, std::vector<Value *> &IVS,
+      __isl_take isl_id *IteratorID, __isl_take isl_union_map *Schedule);
   void createUser(__isl_take isl_ast_node *User);
   void createBlock(__isl_take isl_ast_node *Block);
 };
 
 __isl_give isl_ast_expr *IslNodeBuilder::getUpperBound(
-  __isl_keep isl_ast_node *For, ICmpInst::Predicate &Predicate) {
+    __isl_keep isl_ast_node *For, ICmpInst::Predicate &Predicate) {
   isl_id *UBID, *IteratorID;
   isl_ast_expr *Cond, *Iterator, *UB, *Arg0;
   isl_ast_op_type Type;
@@ -595,34 +607,34 @@ __isl_give isl_ast_expr *IslNodeBuilder::getUpperBound(
   Iterator = isl_ast_node_for_get_iterator(For);
   Type = isl_ast_expr_get_op_type(Cond);
 
-  assert(isl_ast_expr_get_type(Cond) == isl_ast_expr_op
-         && "conditional expression is not an atomic upper bound");
+  assert(isl_ast_expr_get_type(Cond) == isl_ast_expr_op &&
+         "conditional expression is not an atomic upper bound");
 
   switch (Type) {
-    case isl_ast_op_le:
-      Predicate = ICmpInst::ICMP_SLE;
-      break;
-    case isl_ast_op_lt:
-      Predicate = ICmpInst::ICMP_SLT;
-      break;
-    default:
-      llvm_unreachable("Unexpected comparision type in loop conditon");
+  case isl_ast_op_le:
+    Predicate = ICmpInst::ICMP_SLE;
+    break;
+  case isl_ast_op_lt:
+    Predicate = ICmpInst::ICMP_SLT;
+    break;
+  default:
+    llvm_unreachable("Unexpected comparision type in loop conditon");
   }
 
   Arg0 = isl_ast_expr_get_op_arg(Cond, 0);
 
-  assert(isl_ast_expr_get_type(Arg0) == isl_ast_expr_id
-         && "conditional expression is not an atomic upper bound");
+  assert(isl_ast_expr_get_type(Arg0) == isl_ast_expr_id &&
+         "conditional expression is not an atomic upper bound");
 
   UBID = isl_ast_expr_get_id(Arg0);
 
-  assert(isl_ast_expr_get_type(Iterator) == isl_ast_expr_id
-         && "Could not get the iterator");
+  assert(isl_ast_expr_get_type(Iterator) == isl_ast_expr_id &&
+         "Could not get the iterator");
 
   IteratorID = isl_ast_expr_get_id(Iterator);
 
-  assert(UBID == IteratorID
-         && "conditional expression is not an atomic upper bound");
+  assert(UBID == IteratorID &&
+         "conditional expression is not an atomic upper bound");
 
   UB = isl_ast_expr_get_op_arg(Cond, 1);
 
@@ -635,7 +647,128 @@ __isl_give isl_ast_expr *IslNodeBuilder::getUpperBound(
   return UB;
 }
 
-void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
+unsigned IslNodeBuilder::getNumberOfIterations(__isl_keep isl_ast_node *For) {
+  isl_id *Annotation = isl_ast_node_get_annotation(For);
+  if (!Annotation)
+    return -1;
+
+  struct IslAstUser *Info = (struct IslAstUser *)isl_id_get_user(Annotation);
+  if (!Info) {
+    isl_id_free(Annotation);
+    return -1;
+  }
+
+  isl_union_map *Schedule = isl_ast_build_get_schedule(Info->Context);
+  isl_set *LoopDomain = isl_set_from_union_set(isl_union_map_range(Schedule));
+  isl_id_free(Annotation);
+  int NumberOfIterations = polly::getNumberOfIterations(LoopDomain);
+  if (NumberOfIterations == -1)
+    return -1;
+  return NumberOfIterations + 1;
+}
+
+void IslNodeBuilder::createUserVector(
+    __isl_take isl_ast_node *User, std::vector<Value *> &IVS,
+    __isl_take isl_id *IteratorID, __isl_take isl_union_map *Schedule) {
+  isl_id *Annotation = isl_ast_node_get_annotation(User);
+  assert(Annotation && "Vector user statement is not annotated");
+
+  struct IslAstUser *Info = (struct IslAstUser *)isl_id_get_user(Annotation);
+  assert(Info && "Vector user statement annotation does not contain info");
+
+  isl_id *Id = isl_pw_multi_aff_get_tuple_id(Info->PMA, isl_dim_out);
+  ScopStmt *Stmt = (ScopStmt *)isl_id_get_user(Id);
+  VectorValueMapT VectorMap(IVS.size());
+
+  isl_union_set *Domain = isl_union_set_from_set(Stmt->getDomain());
+  Schedule = isl_union_map_intersect_domain(Schedule, Domain);
+  isl_map *S = isl_map_from_union_map(Schedule);
+
+  createSubstitutionsVector(isl_pw_multi_aff_copy(Info->PMA),
+                            isl_ast_build_copy(Info->Context), Stmt, VectorMap,
+                            IVS, IteratorID);
+  VectorBlockGenerator::generate(Builder, *Stmt, VectorMap, S, P);
+
+  isl_map_free(S);
+  isl_id_free(Annotation);
+  isl_id_free(Id);
+  isl_ast_node_free(User);
+}
+
+void IslNodeBuilder::createForVector(__isl_take isl_ast_node *For,
+                                     int VectorWidth) {
+  isl_ast_node *Body = isl_ast_node_for_get_body(For);
+  isl_ast_expr *Init = isl_ast_node_for_get_init(For);
+  isl_ast_expr *Inc = isl_ast_node_for_get_inc(For);
+  isl_ast_expr *Iterator = isl_ast_node_for_get_iterator(For);
+  isl_id *IteratorID = isl_ast_expr_get_id(Iterator);
+  CmpInst::Predicate Predicate;
+  isl_ast_expr *UB = getUpperBound(For, Predicate);
+
+  Value *ValueLB = ExprBuilder.create(Init);
+  Value *ValueUB = ExprBuilder.create(UB);
+  Value *ValueInc = ExprBuilder.create(Inc);
+
+  Type *MaxType = ExprBuilder.getType(Iterator);
+  MaxType = ExprBuilder.getWidestType(MaxType, ValueLB->getType());
+  MaxType = ExprBuilder.getWidestType(MaxType, ValueUB->getType());
+  MaxType = ExprBuilder.getWidestType(MaxType, ValueInc->getType());
+
+  if (MaxType != ValueLB->getType())
+    ValueLB = Builder.CreateSExt(ValueLB, MaxType);
+  if (MaxType != ValueUB->getType())
+    ValueUB = Builder.CreateSExt(ValueUB, MaxType);
+  if (MaxType != ValueInc->getType())
+    ValueInc = Builder.CreateSExt(ValueInc, MaxType);
+
+  std::vector<Value *> IVS(VectorWidth);
+  IVS[0] = ValueLB;
+
+  for (int i = 1; i < VectorWidth; i++)
+    IVS[i] = Builder.CreateAdd(IVS[i - 1], ValueInc, "p_vector_iv");
+
+  isl_id *Annotation = isl_ast_node_get_annotation(For);
+  assert(Annotation && "For statement is not annotated");
+
+  struct IslAstUser *Info = (struct IslAstUser *)isl_id_get_user(Annotation);
+  assert(Info && "For statement annotation does not contain info");
+
+  isl_union_map *Schedule = isl_ast_build_get_schedule(Info->Context);
+  assert(Schedule && "For statement annotation does not contain its schedule");
+
+  IDToValue[IteratorID] = ValueLB;
+
+  switch (isl_ast_node_get_type(Body)) {
+  case isl_ast_node_user:
+    createUserVector(Body, IVS, isl_id_copy(IteratorID),
+                     isl_union_map_copy(Schedule));
+    break;
+  case isl_ast_node_block: {
+    isl_ast_node_list *List = isl_ast_node_block_get_children(Body);
+
+    for (int i = 0; i < isl_ast_node_list_n_ast_node(List); ++i)
+      createUserVector(isl_ast_node_list_get_ast_node(List, i), IVS,
+                       isl_id_copy(IteratorID), isl_union_map_copy(Schedule));
+
+    isl_ast_node_free(Body);
+    isl_ast_node_list_free(List);
+    break;
+  }
+  default:
+    isl_ast_node_dump(Body);
+    llvm_unreachable("Unhandled isl_ast_node in vectorizer");
+  }
+
+  IDToValue.erase(IteratorID);
+  isl_id_free(IteratorID);
+  isl_id_free(Annotation);
+  isl_union_map_free(Schedule);
+
+  isl_ast_node_free(For);
+  isl_ast_expr_free(Iterator);
+}
+
+void IslNodeBuilder::createForSequential(__isl_take isl_ast_node *For) {
   isl_ast_node *Body;
   isl_ast_expr *Init, *Inc, *Iterator, *UB;
   isl_id *IteratorID;
@@ -681,8 +814,8 @@ void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
   //       executed at least once, which will enable a lot of loop invariant
   //       code motion.
 
-  IV = createLoop(ValueLB, ValueUB, ValueInc, Builder, P, AfterBlock,
-                  Predicate);
+  IV =
+      createLoop(ValueLB, ValueUB, ValueInc, Builder, P, AfterBlock, Predicate);
   IDToValue[IteratorID] = IV;
 
   create(Body);
@@ -696,14 +829,27 @@ void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
   isl_id_free(IteratorID);
 }
 
+void IslNodeBuilder::createFor(__isl_take isl_ast_node *For) {
+  bool Vector = PollyVectorizerChoice != VECTORIZER_NONE;
+
+  if (Vector && isInnermostParallel(For)) {
+    int VectorWidth = getNumberOfIterations(For);
+    if (1 < VectorWidth && VectorWidth <= 16) {
+      createForVector(For, VectorWidth);
+      return;
+    }
+  }
+  createForSequential(For);
+}
+
 void IslNodeBuilder::createIf(__isl_take isl_ast_node *If) {
   isl_ast_expr *Cond = isl_ast_node_if_get_cond(If);
 
   Function *F = Builder.GetInsertBlock()->getParent();
   LLVMContext &Context = F->getContext();
 
-  BasicBlock *CondBB = SplitBlock(Builder.GetInsertBlock(),
-                                  Builder.GetInsertPoint(), P);
+  BasicBlock *CondBB =
+      SplitBlock(Builder.GetInsertBlock(), Builder.GetInsertPoint(), P);
   CondBB->setName("polly.cond");
   BasicBlock *MergeBB = SplitBlock(CondBB, CondBB->begin(), P);
   MergeBB->setName("polly.merge");
@@ -738,26 +884,17 @@ void IslNodeBuilder::createIf(__isl_take isl_ast_node *If) {
   isl_ast_node_free(If);
 }
 
-void IslNodeBuilder::createUser(__isl_take isl_ast_node *User) {
-  ValueMapT VMap;
-  struct IslAstUser *UserInfo;
-  isl_id *Annotation, *Id;
-  ScopStmt *Stmt;
-
-  Annotation = isl_ast_node_get_annotation(User);
-  UserInfo = (struct IslAstUser *) isl_id_get_user(Annotation);
-  Id = isl_pw_multi_aff_get_tuple_id(UserInfo->PMA, isl_dim_out);
-  Stmt = (ScopStmt *) isl_id_get_user(Id);
-
-  for (unsigned i = 0; i < isl_pw_multi_aff_dim(UserInfo->PMA, isl_dim_out);
-       ++i) {
+void IslNodeBuilder::createSubstitutions(__isl_take isl_pw_multi_aff *PMA,
+                                         __isl_take isl_ast_build *Context,
+                                         ScopStmt *Stmt, ValueMapT &VMap) {
+  for (unsigned i = 0; i < isl_pw_multi_aff_dim(PMA, isl_dim_out); ++i) {
     isl_pw_aff *Aff;
     isl_ast_expr *Expr;
     const Value *OldIV;
     Value *V;
 
-    Aff = isl_pw_multi_aff_get_pw_aff(UserInfo->PMA, i);
-    Expr = isl_ast_build_expr_from_pw_aff(UserInfo->Context, Aff);
+    Aff = isl_pw_multi_aff_get_pw_aff(PMA, i);
+    Expr = isl_ast_build_expr_from_pw_aff(Context, Aff);
     OldIV = Stmt->getInductionVariableForDimension(i);
     V = ExprBuilder.create(Expr);
 
@@ -767,6 +904,49 @@ void IslNodeBuilder::createUser(__isl_take isl_ast_node *User) {
     V = Builder.CreateIntCast(V, OldIV->getType(), true);
     VMap[OldIV] = V;
   }
+
+  isl_pw_multi_aff_free(PMA);
+  isl_ast_build_free(Context);
+}
+
+void IslNodeBuilder::createSubstitutionsVector(
+    __isl_take isl_pw_multi_aff *PMA, __isl_take isl_ast_build *Context,
+    ScopStmt *Stmt, VectorValueMapT &VMap, std::vector<Value *> &IVS,
+    __isl_take isl_id *IteratorID) {
+  int i = 0;
+
+  Value *OldValue = IDToValue[IteratorID];
+  for (std::vector<Value *>::iterator II = IVS.begin(), IE = IVS.end();
+       II != IE; ++II) {
+    IDToValue[IteratorID] = *II;
+    createSubstitutions(isl_pw_multi_aff_copy(PMA), isl_ast_build_copy(Context),
+                        Stmt, VMap[i]);
+    i++;
+  }
+
+  IDToValue[IteratorID] = OldValue;
+  isl_id_free(IteratorID);
+  isl_pw_multi_aff_free(PMA);
+  isl_ast_build_free(Context);
+}
+
+void IslNodeBuilder::createUser(__isl_take isl_ast_node *User) {
+  ValueMapT VMap;
+  struct IslAstUser *Info;
+  isl_id *Annotation, *Id;
+  ScopStmt *Stmt;
+
+  Annotation = isl_ast_node_get_annotation(User);
+  assert(Annotation && "Scalar user statement is not annotated");
+
+  Info = (struct IslAstUser *)isl_id_get_user(Annotation);
+  assert(Info && "Scalar user statement annotation does not contain info");
+
+  Id = isl_pw_multi_aff_get_tuple_id(Info->PMA, isl_dim_out);
+  Stmt = (ScopStmt *)isl_id_get_user(Id);
+
+  createSubstitutions(isl_pw_multi_aff_copy(Info->PMA),
+                      isl_ast_build_copy(Info->Context), Stmt, VMap);
 
   BlockGenerator::generate(Builder, *Stmt, VMap, P);
 
@@ -816,7 +996,7 @@ void IslNodeBuilder::addParameters(__isl_take isl_set *Context) {
     Instruction *InsertLocation;
 
     Id = isl_set_get_dim_id(Context, isl_dim_param, i);
-    Scev = (const SCEV*) isl_id_get_user(Id);
+    Scev = (const SCEV *)isl_id_get_user(Id);
     T = dyn_cast<IntegerType>(Scev->getType());
     InsertLocation = --(Builder.GetInsertBlock()->end());
     Value *V = Rewriter.expandCodeFor(Scev, T, InsertLocation);
@@ -830,7 +1010,7 @@ void IslNodeBuilder::addParameters(__isl_take isl_set *Context) {
 
 namespace {
 class IslCodeGeneration : public ScopPass {
-  public:
+public:
   static char ID;
 
   IslCodeGeneration() : ScopPass(ID) {}
@@ -849,8 +1029,7 @@ class IslCodeGeneration : public ScopPass {
     return true;
   }
 
-  virtual void printScop(raw_ostream &OS) const {
-  }
+  virtual void printScop(raw_ostream &OS) const {}
 
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequired<DominatorTree>();

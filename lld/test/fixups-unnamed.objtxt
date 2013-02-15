@@ -1,16 +1,16 @@
 # RUN: lld-core %s | FileCheck %s
 
 #
-# Test fixups to unnamed atoms
+# Test references to unnamed atoms
 #
 
 ---
-atoms:
+defined-atoms:
     - name:              foo
       type:              code
       content:           [ 48, 8D, 3D, 00, 00, 00, 00, 
                            48, 8D, 3D, 00, 00, 00, 00 ]
-      fixups:
+      references:
       - offset:          3
         kind:            3
         target:          LC1
@@ -20,20 +20,20 @@ atoms:
   
 
     - ref-name:          LC1
-      scope:             hidden
       type:              c-string
+      merge:             by-content
       content:           [ 68, 65, 6c, 6c, 6f, 00 ]
 
     - ref-name:          LC2
-      scope:             hidden
       type:              c-string
+      merge:             by-content
       content:           [ 74, 68, 65, 72, 65, 00 ]
   
 
 ...
 
 # CHECK:      name: foo
-# CHECK:      fixups:
+# CHECK:      references:
 # CHECK:      offset: 3
 # CHECK:      offset: 10
 # CHECK:      ref-name:

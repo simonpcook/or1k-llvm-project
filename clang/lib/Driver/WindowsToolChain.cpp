@@ -8,13 +8,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "ToolChains.h"
-
+#include "clang/Basic/CharInfo.h"
+#include "clang/Basic/Version.h"
 #include "clang/Driver/Arg.h"
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/Options.h"
-#include "clang/Basic/Version.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Path.h"
 
@@ -37,7 +37,12 @@ Windows::Windows(const Driver &D, const llvm::Triple& Triple)
 
 Tool &Windows::SelectTool(const Compilation &C, const JobAction &JA,
                           const ActionList &Inputs) const {
-  Action::ActionClass Key = JA.getKind();
+  Action::ActionClass Key;
+  if (getDriver().ShouldUseClangCompiler(C, JA, getTriple()))
+    Key = Action::AnalyzeJobClass;
+  else
+    Key = JA.getKind();
+
   bool UseIntegratedAs = C.getArgs().hasFlag(options::OPT_integrated_as,
                                              options::OPT_no_integrated_as,
                                              IsIntegratedAssemblerDefault());
@@ -50,6 +55,7 @@ Tool &Windows::SelectTool(const Compilation &C, const JobAction &JA,
     case Action::LipoJobClass:
     case Action::DsymutilJobClass:
     case Action::VerifyJobClass:
+    case Action::SplitDebugJobClass:
       llvm_unreachable("Invalid tool kind.");
     case Action::PreprocessJobClass:
     case Action::PrecompileJobClass:
@@ -79,14 +85,12 @@ bool Windows::IsUnwindTablesDefault() const {
   return getArch() == llvm::Triple::x86_64;
 }
 
-const char *Windows::GetDefaultRelocationModel() const {
-  return "static";
+bool Windows::isPICDefault() const {
+  return getArch() == llvm::Triple::x86_64;
 }
 
-const char *Windows::GetForcedPicModel() const {
-  if (getArch() == llvm::Triple::x86_64)
-    return "pic";
-  return 0;
+bool Windows::isPICDefaultForced() const {
+  return getArch() == llvm::Triple::x86_64;
 }
 
 // FIXME: This probably should goto to some platform utils place.
@@ -155,12 +159,12 @@ static bool getSystemRegistryString(const char *keyPath, const char *valueName,
       for (index = 0; RegEnumKeyEx(hTopKey, index, keyName, &size, NULL,
           NULL, NULL, NULL) == ERROR_SUCCESS; index++) {
         const char *sp = keyName;
-        while (*sp && !isdigit(*sp))
+        while (*sp && !isDigit(*sp))
           sp++;
         if (!*sp)
           continue;
         const char *ep = sp + 1;
-        while (*ep && (isdigit(*ep) || (*ep == '.')))
+        while (*ep && (isDigit(*ep) || (*ep == '.')))
           ep++;
         char numBuf[32];
         strncpy(numBuf, sp, sizeof(numBuf) - 1);

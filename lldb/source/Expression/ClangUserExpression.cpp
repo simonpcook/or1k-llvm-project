@@ -58,7 +58,7 @@ ClangUserExpression::ClangUserExpression (const char *expr,
     m_language (language),
     m_transformed_text (),
     m_desired_type (desired_type),
-    m_enforce_valid_object (false),
+    m_enforce_valid_object (true),
     m_cplusplus (false),
     m_objectivec (false),
     m_static_method(false),
@@ -106,31 +106,56 @@ ClangUserExpression::ASTTransformer (clang::ASTConsumer *passthrough)
 void
 ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Error &err)
 {
+    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+
+    if (log)
+        log->Printf("ClangUserExpression::ScanContext()");
+    
     m_target = exe_ctx.GetTargetPtr();
     
     if (!(m_allow_cxx || m_allow_objc))
+    {
+        if (log)
+            log->Printf("  [CUE::SC] Settings inhibit C++ and Objective-C");
         return;
+    }
     
     StackFrame *frame = exe_ctx.GetFramePtr();
     if (frame == NULL)
+    {
+        if (log)
+            log->Printf("  [CUE::SC] Null stack frame");
         return;
+    }
     
     SymbolContext sym_ctx = frame->GetSymbolContext(lldb::eSymbolContextFunction | lldb::eSymbolContextBlock);
     
     if (!sym_ctx.function)
+    {
+        if (log)
+            log->Printf("  [CUE::SC] Null function");
         return;
+    }
     
     // Find the block that defines the function represented by "sym_ctx"
     Block *function_block = sym_ctx.GetFunctionBlock();
     
     if (!function_block)
+    {
+        if (log)
+            log->Printf("  [CUE::SC] Null function block");
         return;
+    }
 
     clang::DeclContext *decl_context = function_block->GetClangDeclContext();
 
     if (!decl_context)
+    {
+        if (log)
+            log->Printf("  [CUE::SC] Null decl context");
         return;
-            
+    }
+    
     if (clang::CXXMethodDecl *method_decl = llvm::dyn_cast<clang::CXXMethodDecl>(decl_context))
     {
         if (m_allow_cxx && method_decl->isInstance())
@@ -209,13 +234,94 @@ ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Error &err)
             lldb::LanguageType language = metadata->GetObjectPtrLanguage();
             if (language == lldb::eLanguageTypeC_plus_plus)
             {
+                if (m_enforce_valid_object)
+                {
+                    lldb::VariableListSP variable_list_sp (function_block->GetBlockVariableList (true));
+                    
+                    const char *thisErrorString = "Stopped in a context claiming to capture a C++ object pointer, but 'this' isn't available; pretending we are in a generic context";
+                    
+                    if (!variable_list_sp)
+                    {
+                        err.SetErrorString(thisErrorString);
+                        return;
+                    }
+                    
+                    lldb::VariableSP this_var_sp (variable_list_sp->FindVariable(ConstString("this")));
+                    
+                    if (!this_var_sp ||
+                        !this_var_sp->IsInScope(frame) ||
+                        !this_var_sp->LocationIsValidForFrame (frame))
+                    {
+                        err.SetErrorString(thisErrorString);
+                        return;
+                    }
+                }
+                
                 m_cplusplus = true;
                 m_needs_object_ptr = true;
             }
             else if (language == lldb::eLanguageTypeObjC)
             {
-                m_objectivec = true;
-                m_needs_object_ptr = true;
+                if (m_enforce_valid_object)
+                {
+                    lldb::VariableListSP variable_list_sp (function_block->GetBlockVariableList (true));
+                    
+                    const char *selfErrorString = "Stopped in a context claiming to capture an Objective-C object pointer, but 'self' isn't available; pretending we are in a generic context";
+                    
+                    if (!variable_list_sp)
+                    {
+                        err.SetErrorString(selfErrorString);
+                        return;
+                    }
+                    
+                    lldb::VariableSP self_variable_sp = variable_list_sp->FindVariable(ConstString("self"));
+                    
+                    if (!self_variable_sp ||
+                        !self_variable_sp->IsInScope(frame) ||
+                        !self_variable_sp->LocationIsValidForFrame (frame))
+                    {
+                        err.SetErrorString(selfErrorString);
+                        return;
+                    }
+                    
+                    Type *self_type = self_variable_sp->GetType();
+                    
+                    if (!self_type)
+                    {
+                        err.SetErrorString(selfErrorString);
+                        return;
+                    }
+                    
+                    lldb::clang_type_t self_opaque_type = self_type->GetClangForwardType();
+                    
+                    if (!self_opaque_type)
+                    {
+                        err.SetErrorString(selfErrorString);
+                        return;
+                    }
+                    
+                    clang::QualType self_qual_type = clang::QualType::getFromOpaquePtr(self_opaque_type);
+                    
+                    if (self_qual_type->isObjCClassType())
+                    {
+                        return;
+                    }
+                    else if (self_qual_type->isObjCObjectPointerType())
+                    {
+                        m_objectivec = true;
+                        m_needs_object_ptr = true;
+                    }
+                    else
+                    {
+                        err.SetErrorString(selfErrorString);
+                        return;
+                    }
+                }
+                else
+                {
+                    m_objectivec = true;
+                    m_needs_object_ptr = true;
+                }
             }
         }
     }
@@ -463,19 +569,19 @@ ClangUserExpression::PrepareToExecuteJITExpression (Stream &error_stream,
 #if 0
 		// jingham: look here
         StreamFile logfile ("/tmp/exprs.txt", "a");
-        logfile.Printf("0x%16.16llx: thread = 0x%4.4x, expr = '%s'\n", m_jit_start_addr, exe_ctx.thread ? exe_ctx.thread->GetID() : -1, m_expr_text.c_str());
+        logfile.Printf("0x%16.16" PRIx64 ": thread = 0x%4.4x, expr = '%s'\n", m_jit_start_addr, exe_ctx.thread ? exe_ctx.thread->GetID() : -1, m_expr_text.c_str());
 #endif
         
         if (log)
         {
             log->Printf("-- [ClangUserExpression::PrepareToExecuteJITExpression] Materializing for execution --");
             
-            log->Printf("  Function address  : 0x%llx", (uint64_t)m_jit_start_addr);
+            log->Printf("  Function address  : 0x%" PRIx64, (uint64_t)m_jit_start_addr);
             
             if (m_needs_object_ptr)
-                log->Printf("  Object pointer    : 0x%llx", (uint64_t)object_ptr);
+                log->Printf("  Object pointer    : 0x%" PRIx64, (uint64_t)object_ptr);
             
-            log->Printf("  Structure address : 0x%llx", (uint64_t)struct_address);
+            log->Printf("  Structure address : 0x%" PRIx64, (uint64_t)struct_address);
                     
             StreamString args;
             
@@ -512,12 +618,16 @@ ClangUserExpression::GetThreadPlanToExecuteJITExpression (Stream &error_stream,
     // ClangUserExpression resources before the thread plan finishes execution in the target.  But because we are 
     // forcing unwind_on_error to be true here, in practical terms that can't happen.
     
+    const bool stop_others = true;
+    const bool unwind_on_error = true;
+    const bool ignore_breakpoints = false;
     return ClangFunction::GetThreadPlanToCallFunction (exe_ctx, 
                                                        m_jit_start_addr, 
                                                        struct_address, 
                                                        error_stream,
-                                                       true,
-                                                       true, 
+                                                       stop_others,
+                                                       unwind_on_error,
+                                                       ignore_breakpoints,
                                                        (m_needs_object_ptr ? &object_ptr : NULL),
                                                        (m_needs_object_ptr && m_objectivec) ? &cmd_ptr : NULL);
 }
@@ -568,7 +678,8 @@ ClangUserExpression::FinalizeJITExecution (Stream &error_stream,
 ExecutionResults
 ClangUserExpression::Execute (Stream &error_stream,
                               ExecutionContext &exe_ctx,
-                              bool discard_on_error,
+                              bool unwind_on_error,
+                              bool ignore_breakpoints,
                               ClangUserExpression::ClangUserExpressionSP &shared_ptr_to_me,
                               lldb::ClangExpressionVariableSP &result,
                               bool run_others,
@@ -592,14 +703,15 @@ ClangUserExpression::Execute (Stream &error_stream,
         }
         
         const bool stop_others = true;
-        const bool try_all_threads = true;
+        const bool try_all_threads = run_others;
         
         Address wrapper_address (m_jit_start_addr);
         lldb::ThreadPlanSP call_plan_sp(new ThreadPlanCallUserExpression (exe_ctx.GetThreadRef(), 
                                                                           wrapper_address, 
                                                                           struct_address, 
                                                                           stop_others, 
-                                                                          discard_on_error, 
+                                                                          unwind_on_error,
+                                                                          ignore_breakpoints,
                                                                           (m_needs_object_ptr ? &object_ptr : NULL),
                                                                           ((m_needs_object_ptr && m_objectivec) ? &cmd_ptr : NULL),
                                                                           shared_ptr_to_me));
@@ -608,9 +720,7 @@ ClangUserExpression::Execute (Stream &error_stream,
             return eExecutionSetupError;
         
         lldb::addr_t function_stack_pointer = static_cast<ThreadPlanCallFunction *>(call_plan_sp.get())->GetFunctionStackPointer();
-    
-        call_plan_sp->SetPrivate(true);
-    
+
         if (log)
             log->Printf("-- [ClangUserExpression::Execute] Execution of expression begins --");
         
@@ -621,7 +731,8 @@ ClangUserExpression::Execute (Stream &error_stream,
                                                                                    call_plan_sp, 
                                                                                    stop_others, 
                                                                                    try_all_threads, 
-                                                                                   discard_on_error,
+                                                                                   unwind_on_error,
+                                                                                   ignore_breakpoints,
                                                                                    timeout_usec, 
                                                                                    error_stream);
         
@@ -631,7 +742,7 @@ ClangUserExpression::Execute (Stream &error_stream,
         if (log)
             log->Printf("-- [ClangUserExpression::Execute] Execution of expression completed --");
 
-        if (execution_result == eExecutionInterrupted)
+        if (execution_result == eExecutionInterrupted || execution_result == eExecutionHitBreakpoint)
         {
             const char *error_desc = NULL;
             
@@ -646,10 +757,11 @@ ClangUserExpression::Execute (Stream &error_stream,
             else
                 error_stream.Printf ("Execution was interrupted.");
                 
-            if (discard_on_error)
-                error_stream.Printf ("\nThe process has been returned to the state before execution.");
+            if ((execution_result == eExecutionInterrupted && unwind_on_error)
+                || (execution_result == eExecutionHitBreakpoint && ignore_breakpoints))
+                error_stream.Printf ("\nThe process has been returned to the state before expression evaluation.");
             else
-                error_stream.Printf ("\nThe process has been left at the point where it was interrupted.");
+                error_stream.Printf ("\nThe process has been left at the point where it was interrupted, use \"thread return -x\" to return to the state before expression evaluation.");
 
             return execution_result;
         }
@@ -679,7 +791,8 @@ ClangUserExpression::Evaluate (ExecutionContext &exe_ctx,
                                lldb_private::ExecutionPolicy execution_policy,
                                lldb::LanguageType language,
                                ResultType desired_type,
-                               bool discard_on_error,
+                               bool unwind_on_error,
+                               bool ignore_breakpoints,
                                const char *expr_cstr,
                                const char *expr_prefix,
                                lldb::ValueObjectSP &result_valobj_sp,
@@ -691,7 +804,8 @@ ClangUserExpression::Evaluate (ExecutionContext &exe_ctx,
                               execution_policy,
                               language,
                               desired_type,
-                              discard_on_error,
+                              unwind_on_error,
+                              ignore_breakpoints,
                               expr_cstr,
                               expr_prefix,
                               result_valobj_sp,
@@ -705,7 +819,8 @@ ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
                                         lldb_private::ExecutionPolicy execution_policy,
                                         lldb::LanguageType language,
                                         ResultType desired_type,
-                                        bool discard_on_error,
+                                        bool unwind_on_error,
+                                        bool ignore_breakpoints,
                                         const char *expr_cstr,
                                         const char *expr_prefix,
                                         lldb::ValueObjectSP &result_valobj_sp,
@@ -784,7 +899,8 @@ ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
 
             execution_results = user_expression_sp->Execute (error_stream, 
                                                              exe_ctx, 
-                                                             discard_on_error,
+                                                             unwind_on_error,
+                                                             ignore_breakpoints,
                                                              user_expression_sp, 
                                                              expr_result,
                                                              run_others,

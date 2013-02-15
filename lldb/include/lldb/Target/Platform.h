@@ -297,8 +297,9 @@ namespace lldb_private {
         // Locating the file should happen only on the local computer or using
         // the current computers global settings.
         //----------------------------------------------------------------------
-        virtual FileSpec
-        LocateExecutableScriptingResource (const ModuleSpec &module_spec);
+        virtual FileSpecList
+        LocateExecutableScriptingResources (Target *target,
+                                            Module &module);
         
         virtual Error
         GetSharedModule (const ModuleSpec &module_spec, 
@@ -347,7 +348,9 @@ namespace lldb_private {
         /// architecture and the target triple contained within.
         //------------------------------------------------------------------
         virtual bool
-        IsCompatibleArchitecture (const ArchSpec &arch, ArchSpec *compatible_arch_ptr = NULL);
+        IsCompatibleArchitecture (const ArchSpec &arch,
+                                  bool exact_arch_match,
+                                  ArchSpec *compatible_arch_ptr);
 
         //------------------------------------------------------------------
         /// Not all platforms will support debugging a process by spawning
@@ -477,13 +480,13 @@ namespace lldb_private {
         }
 
         // Used for column widths
-        uint32_t
+        size_t
         GetMaxUserIDNameLength() const
         {
             return m_max_uid_name_len;
         }
         // Used for column widths
-        uint32_t
+        size_t
         GetMaxGroupIDNameLength() const
         {
             return m_max_gid_name_len;
@@ -547,8 +550,8 @@ namespace lldb_private {
         Mutex m_gid_map_mutex;
         IDToNameMap m_uid_map;
         IDToNameMap m_gid_map;
-        uint32_t m_max_uid_name_len;
-        uint32_t m_max_gid_name_len;
+        size_t m_max_uid_name_len;
+        size_t m_max_gid_name_len;
         
         const char *
         GetCachedUserName (uint32_t uid)

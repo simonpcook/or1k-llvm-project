@@ -6,6 +6,9 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// XFAIL: with_system_lib=x86_64-apple-darwin11
+// XFAIL: with_system_lib=x86_64-apple-darwin12
 
 // <string>
 
@@ -32,23 +35,24 @@ int main()
     idx = 0;
     assert(std::stof(L"10g", &idx) == 10);
     assert(idx == 2);
+    idx = 0;
     try
     {
         assert(std::stof("1.e60", &idx) == INFINITY);
-        assert(idx == 5);
+        assert(false);
     }
     catch (const std::out_of_range&)
     {
-        assert(false);
+        assert(idx == 0);
     }
     try
     {
         assert(std::stof(L"1.e60", &idx) == INFINITY);
-        assert(idx == 5);
+        assert(false);
     }
     catch (const std::out_of_range&)
     {
-        assert(false);
+        assert(idx == 0);
     }
     idx = 0;
     try

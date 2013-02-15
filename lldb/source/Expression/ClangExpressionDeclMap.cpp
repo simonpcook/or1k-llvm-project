@@ -40,6 +40,7 @@
 #include "lldb/Symbol/Variable.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/ExecutionContext.h"
+#include "lldb/Target/ObjCLanguageRuntime.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
 #include "lldb/Target/StackFrame.h"
@@ -119,11 +120,12 @@ ClangExpressionDeclMap::DidParse()
             ClangExpressionVariableSP var_sp(m_found_entities.GetVariableAtIndex(entity_index));
             if (var_sp)
             {
-                if (var_sp->m_parser_vars.get() &&
-                    var_sp->m_parser_vars->m_lldb_value)
-                delete var_sp->m_parser_vars->m_lldb_value;
+                ClangExpressionVariable::ParserVars *parser_vars = var_sp->GetParserVars(GetParserID());
+                
+                if (parser_vars && parser_vars->m_lldb_value)
+                    delete parser_vars->m_lldb_value;
             
-                var_sp->DisableParserVars();
+                var_sp->DisableParserVars(GetParserID());
             }
         }
         
@@ -133,7 +135,7 @@ ClangExpressionDeclMap::DidParse()
         {
             ClangExpressionVariableSP pvar_sp(m_parser_vars->m_persistent_vars->GetVariableAtIndex(pvar_index));
             if (pvar_sp)
-                pvar_sp->DisableParserVars();
+                pvar_sp->DisableParserVars(GetParserID());
         }
         
         DisableParserVars();
@@ -289,10 +291,10 @@ ClangExpressionDeclMap::BuildCastVariable (const ConstString &name,
 
     ASTContext *context(target->GetScratchClangASTContext()->getASTContext());
     
-    ClangExpressionVariableSP var_sp (m_found_entities.GetVariable(decl));
+    ClangExpressionVariableSP var_sp (m_found_entities.GetVariable(decl, GetParserID()));
     
     if (!var_sp)
-        var_sp = m_parser_vars->m_persistent_vars->GetVariable(decl);
+        var_sp = m_parser_vars->m_persistent_vars->GetVariable(decl, GetParserID());
     
     if (!var_sp)
         return ClangExpressionVariableSP();
@@ -501,10 +503,12 @@ ClangExpressionDeclMap::AddPersistentVariable
     if (log)
         log->Printf("Created persistent variable with flags 0x%hx", var_sp->m_flags);
     
-    var_sp->EnableParserVars();
+    var_sp->EnableParserVars(GetParserID());
     
-    var_sp->m_parser_vars->m_named_decl = decl;
-    var_sp->m_parser_vars->m_parser_type = parser_type;
+    ClangExpressionVariable::ParserVars *parser_vars = var_sp->GetParserVars(GetParserID());
+    
+    parser_vars->m_named_decl = decl;
+    parser_vars->m_parser_type = parser_type;
     
     return true;
 }
@@ -526,13 +530,13 @@ ClangExpressionDeclMap::AddValueToStruct
     
     m_struct_vars->m_struct_laid_out = false;
     
-    if (m_struct_members.GetVariable(decl))
+    if (m_struct_members.GetVariable(decl, GetParserID()))
         return true;
     
-    ClangExpressionVariableSP var_sp (m_found_entities.GetVariable(decl));
+    ClangExpressionVariableSP var_sp (m_found_entities.GetVariable(decl, GetParserID()));
     
     if (!var_sp)
-        var_sp = m_parser_vars->m_persistent_vars->GetVariable(decl);
+        var_sp = m_parser_vars->m_persistent_vars->GetVariable(decl, GetParserID());
     
     if (!var_sp)
         return false;
@@ -545,11 +549,17 @@ ClangExpressionDeclMap::AddValueToStruct
     
     // We know entity->m_parser_vars is valid because we used a parser variable
     // to find it
-    var_sp->m_parser_vars->m_llvm_value = value;
     
-    var_sp->EnableJITVars();
-    var_sp->m_jit_vars->m_alignment = alignment;
-    var_sp->m_jit_vars->m_size = size;
+    ClangExpressionVariable::ParserVars *parser_vars = var_sp->GetParserVars(GetParserID());
+
+    parser_vars->m_llvm_value = value;
+    
+    var_sp->EnableJITVars(GetParserID());
+    
+    ClangExpressionVariable::JITVars *jit_vars = var_sp->GetJITVars(GetParserID());
+
+    jit_vars->m_alignment = alignment;
+    jit_vars->m_size = size;
     
     m_struct_members.AddVariable(var_sp);
     
@@ -576,18 +586,20 @@ ClangExpressionDeclMap::DoStructLayout ()
         ClangExpressionVariableSP member_sp(m_struct_members.GetVariableAtIndex(member_index));
         if (!member_sp)
             return false;
+        
+        ClangExpressionVariable::JITVars *jit_vars = member_sp->GetJITVars(GetParserID());
 
-        if (!member_sp->m_jit_vars.get())
+        if (!jit_vars)
             return false;
         
         if (member_index == 0)
-            m_struct_vars->m_struct_alignment = member_sp->m_jit_vars->m_alignment;
+            m_struct_vars->m_struct_alignment = jit_vars->m_alignment;
         
-        if (cursor % member_sp->m_jit_vars->m_alignment)
-            cursor += (member_sp->m_jit_vars->m_alignment - (cursor % member_sp->m_jit_vars->m_alignment));
+        if (cursor % jit_vars->m_alignment)
+            cursor += (jit_vars->m_alignment - (cursor % jit_vars->m_alignment));
         
-        member_sp->m_jit_vars->m_offset = cursor;
-        cursor += member_sp->m_jit_vars->m_size;
+        jit_vars->m_offset = cursor;
+        cursor += jit_vars->m_size;
     }
     
     m_struct_vars->m_struct_size = cursor;
@@ -635,15 +647,20 @@ ClangExpressionDeclMap::GetStructElement
     
     ClangExpressionVariableSP member_sp(m_struct_members.GetVariableAtIndex(index));
     
-    if (!member_sp ||
-        !member_sp->m_parser_vars.get() ||
-        !member_sp->m_jit_vars.get() ||
+    if (!member_sp)
+        return false;
+    
+    ClangExpressionVariable::ParserVars *parser_vars = member_sp->GetParserVars(GetParserID());
+    ClangExpressionVariable::JITVars *jit_vars = member_sp->GetJITVars(GetParserID());
+    
+    if (!parser_vars ||
+        !jit_vars ||
         !member_sp->GetValueObject())
         return false;
     
-    decl = member_sp->m_parser_vars->m_named_decl;
-    value = member_sp->m_parser_vars->m_llvm_value;
-    offset = member_sp->m_jit_vars->m_offset;
+    decl = parser_vars->m_named_decl;
+    value = parser_vars->m_llvm_value;
+    offset = jit_vars->m_offset;
     name = member_sp->GetName();
         
     return true;
@@ -656,7 +673,7 @@ ClangExpressionDeclMap::GetFunctionInfo
     uint64_t &ptr
 )
 {
-    ClangExpressionVariableSP entity_sp(m_found_entities.GetVariable(decl));
+    ClangExpressionVariableSP entity_sp(m_found_entities.GetVariable(decl, GetParserID()));
 
     if (!entity_sp)
         return false;
@@ -664,7 +681,9 @@ ClangExpressionDeclMap::GetFunctionInfo
     // We know m_parser_vars is valid since we searched for the variable by
     // its NamedDecl
     
-    ptr = entity_sp->m_parser_vars->m_lldb_value->GetScalar().ULongLong();
+    ClangExpressionVariable::ParserVars *parser_vars = entity_sp->GetParserVars(GetParserID());
+
+    ptr = parser_vars->m_lldb_value->GetScalar().ULongLong();
     
     return true;
 }
@@ -749,7 +768,7 @@ ClangExpressionDeclMap::GetFunctionAddress
 }
 
 addr_t
-ClangExpressionDeclMap::GetSymbolAddress (Target &target, const ConstString &name, lldb::SymbolType symbol_type)
+ClangExpressionDeclMap::GetSymbolAddress (Target &target, Process *process, const ConstString &name, lldb::SymbolType symbol_type)
 {
     SymbolContextList sc_list;
     
@@ -808,6 +827,16 @@ ClangExpressionDeclMap::GetSymbolAddress (Target &target, const ConstString &nam
         }
     }
     
+    if (symbol_load_addr == LLDB_INVALID_ADDRESS && process)
+    {
+        ObjCLanguageRuntime *runtime = process->GetObjCLanguageRuntime();
+        
+        if (runtime)
+        {
+            symbol_load_addr = runtime->LookupRuntimeSymbol(name);
+        }
+    }
+    
     return symbol_load_addr;
 }
 
@@ -819,7 +848,7 @@ ClangExpressionDeclMap::GetSymbolAddress (const ConstString &name, lldb::SymbolT
     if (!m_parser_vars->m_exe_ctx.GetTargetPtr())
         return false;
     
-    return GetSymbolAddress(m_parser_vars->m_exe_ctx.GetTargetRef(), name, symbol_type);
+    return GetSymbolAddress(m_parser_vars->m_exe_ctx.GetTargetRef(), m_parser_vars->m_exe_ctx.GetProcessPtr(), name, symbol_type);
 }
 
 // Interface for IRInterpreter
@@ -1000,21 +1029,23 @@ ClangExpressionDeclMap::LookupDecl (clang::NamedDecl *decl, ClangExpressionVaria
 {
     assert (m_parser_vars.get());
             
-    ClangExpressionVariableSP expr_var_sp (m_found_entities.GetVariable(decl));
-    ClangExpressionVariableSP persistent_var_sp (m_parser_vars->m_persistent_vars->GetVariable(decl));
+    ClangExpressionVariableSP expr_var_sp (m_found_entities.GetVariable(decl, GetParserID()));
+    ClangExpressionVariableSP persistent_var_sp (m_parser_vars->m_persistent_vars->GetVariable(decl, GetParserID()));
     
     if (expr_var_sp)
     {
         flags = expr_var_sp->m_flags;
 
-        if (!expr_var_sp->m_parser_vars.get())
+        ClangExpressionVariable::ParserVars *parser_vars = expr_var_sp->GetParserVars(GetParserID());
+
+        if (!parser_vars)
             return Value();
         
         bool is_reference = expr_var_sp->m_flags & ClangExpressionVariable::EVTypeIsReference;
 
-        if (expr_var_sp->m_parser_vars->m_lldb_var)
+        if (parser_vars->m_lldb_var)
         {
-            std::auto_ptr<Value> value(GetVariableValue(expr_var_sp->m_parser_vars->m_lldb_var, NULL));
+            std::auto_ptr<Value> value(GetVariableValue(parser_vars->m_lldb_var, NULL));
             
             if (is_reference && value.get() && value->GetValueType() == Value::eValueTypeLoadAddress)
             {
@@ -1038,9 +1069,9 @@ ClangExpressionDeclMap::LookupDecl (clang::NamedDecl *decl, ClangExpressionVaria
             else
                 return Value();
         }
-        else if (expr_var_sp->m_parser_vars->m_lldb_sym)
+        else if (parser_vars->m_lldb_sym)
         {
-            const Address sym_address = expr_var_sp->m_parser_vars->m_lldb_sym->GetAddress();
+            const Address sym_address = parser_vars->m_lldb_sym->GetAddress();
             
             if (!sym_address.IsValid())
                 return Value();
@@ -1406,16 +1437,18 @@ ClangExpressionDeclMap::DumpMaterializedStruct
 
         s.Printf("[%s]\n", member_sp->GetName().GetCString());
         
-        if (!member_sp->m_jit_vars.get())
+        ClangExpressionVariable::JITVars *jit_vars = member_sp->GetJITVars(GetParserID());
+
+        if (!jit_vars)
             return false;
         
         extractor.Dump (&s,                                                                          // stream
-                        member_sp->m_jit_vars->m_offset,                                             // offset
+                        jit_vars->m_offset,                                                          // offset
                         lldb::eFormatBytesWithASCII,                                                 // format
                         1,                                                                           // byte size of individual entries
-                        member_sp->m_jit_vars->m_size,                                               // number of entries
+                        jit_vars->m_size,                                                            // number of entries
                         16,                                                                          // entries per line
-                        m_material_vars->m_materialized_location + member_sp->m_jit_vars->m_offset,  // address to print
+                        m_material_vars->m_materialized_location + jit_vars->m_offset,               // address to print
                         0,                                                                           // bit size (bitfields only; 0 means ignore)
                         0);                                                                          // bit alignment (bitfields only; 0 means ignore)
         
@@ -1488,7 +1521,7 @@ ClangExpressionDeclMap::DoMaterialize
         
         if (mem == LLDB_INVALID_ADDRESS)
         {
-            err.SetErrorStringWithFormat("Couldn't allocate 0x%llx bytes for materialized argument struct", 
+            err.SetErrorStringWithFormat("Couldn't allocate 0x%llx bytes for materialized argument struct",
                                          (unsigned long long)(m_struct_vars->m_struct_alignment + m_struct_vars->m_struct_size));
             return false;
         }
@@ -1506,6 +1539,14 @@ ClangExpressionDeclMap::DoMaterialize
          ++member_index)
     {
         ClangExpressionVariableSP member_sp(m_struct_members.GetVariableAtIndex(member_index));
+        
+        ClangExpressionVariable::JITVars *jit_vars = member_sp->GetJITVars(GetParserID());
+        
+        if (!jit_vars)
+        {
+            err.SetErrorString("Variable being materialized doesn't have JIT state");
+            return false;
+        }
         
         if (m_found_entities.ContainsVariable (member_sp))
         {
@@ -1531,22 +1572,16 @@ ClangExpressionDeclMap::DoMaterialize
                 if (!DoMaterializeOneRegister (dematerialize, 
                                                *reg_ctx, 
                                                *reg_info, 
-                                               m_material_vars->m_materialized_location + member_sp->m_jit_vars->m_offset, 
+                                               m_material_vars->m_materialized_location + jit_vars->m_offset,
                                                err))
                     return false;
             }
             else
-            {
-                if (!member_sp->m_jit_vars.get())
-                {
-                    err.SetErrorString("Variable being materialized doesn't have necessary state");
-                    return false;
-                }
-                
+            {                
                 if (!DoMaterializeOneVariable (dematerialize, 
                                                sym_ctx,
                                                member_sp,
-                                               m_material_vars->m_materialized_location + member_sp->m_jit_vars->m_offset, 
+                                               m_material_vars->m_materialized_location + jit_vars->m_offset,
                                                err))
                     return false;
             }
@@ -1570,7 +1605,7 @@ ClangExpressionDeclMap::DoMaterialize
 
                 if (!DoMaterializeOnePersistentVariable (dematerialize, 
                                                          member_sp, 
-                                                         m_material_vars->m_materialized_location + member_sp->m_jit_vars->m_offset,
+                                                         m_material_vars->m_materialized_location + jit_vars->m_offset,
                                                          stack_frame_top,
                                                          stack_frame_bottom,
                                                          err))
@@ -1672,7 +1707,7 @@ ClangExpressionDeclMap::DoMaterializeOnePersistentVariable
                 mem = var_sp->m_live_sp->GetValue().GetScalar().ULongLong();
                 
                 if (log)
-                    log->Printf("Dematerializing %s from 0x%llx (size = %u)", var_sp->GetName().GetCString(), (uint64_t)mem, (unsigned)pvar_byte_size);
+                    log->Printf("Dematerializing %s from 0x%" PRIx64 " (size = %u)", var_sp->GetName().GetCString(), (uint64_t)mem, (unsigned)pvar_byte_size);
                 
                 // Read the contents of the spare memory area
                                 
@@ -1747,7 +1782,7 @@ ClangExpressionDeclMap::DoMaterializeOnePersistentVariable
             }
             
             if (log)
-                log->Printf("Allocated %s (0x%llx) sucessfully", var_sp->GetName().GetCString(), mem);
+                log->Printf("Allocated %s (0x%" PRIx64 ") sucessfully", var_sp->GetName().GetCString(), mem);
             
             // Put the location of the spare memory into the live data of the ValueObject.
             
@@ -1800,13 +1835,80 @@ ClangExpressionDeclMap::DoMaterializeOnePersistentVariable
     return true;
 }
 
-bool 
+bool
+ClangExpressionDeclMap::CreateLiveMemoryForExpressionVariable
+(
+    Process &process,
+    ClangExpressionVariableSP &expr_var,
+    Error &err
+)
+{
+    Error allocate_error;
+    TypeFromUser type(expr_var->GetTypeFromUser());
+    const ConstString &name(expr_var->GetName());
+    
+    size_t value_bit_size = ClangASTType::GetClangTypeBitWidth(type.GetASTContext(), type.GetOpaqueQualType());
+    size_t value_byte_size = value_bit_size % 8 ? ((value_bit_size + 8) / 8) : (value_bit_size / 8);
+
+    Scalar val_addr (process.AllocateMemory (value_byte_size,
+                                             lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                             allocate_error));
+    
+    if (val_addr.ULongLong() == LLDB_INVALID_ADDRESS)
+    {
+        err.SetErrorStringWithFormat ("Couldn't allocate a memory area to store %s: %s",
+                                      name.GetCString(),
+                                      allocate_error.AsCString());
+        return false;
+    }
+    
+    // Put the location of the spare memory into the live data of the ValueObject.
+    
+    expr_var->m_live_sp = ValueObjectConstResult::Create (m_parser_vars->m_exe_ctx.GetBestExecutionContextScope(),
+                                                          type.GetASTContext(),
+                                                          type.GetOpaqueQualType(),
+                                                          name,
+                                                          val_addr.ULongLong(),
+                                                          eAddressTypeLoad,
+                                                          value_byte_size);
+    
+    return true;
+}
+
+bool
+ClangExpressionDeclMap::DeleteLiveMemoryForExpressionVariable
+(
+    Process &process,
+    ClangExpressionVariableSP &expr_var,
+    Error &err
+)
+{
+    const ConstString &name(expr_var->GetName());
+    
+    Scalar &val_addr = expr_var->m_live_sp->GetValue().GetScalar();
+    
+    Error deallocate_error = process.DeallocateMemory(val_addr.ULongLong());
+    
+    if (!deallocate_error.Success())
+    {
+        err.SetErrorStringWithFormat ("Couldn't deallocate spare memory area for %s: %s",
+                                      name.GetCString(),
+                                      deallocate_error.AsCString());
+        return false;
+    }
+    
+    expr_var->m_live_sp.reset();
+    
+    return true;
+}
+
+bool
 ClangExpressionDeclMap::DoMaterializeOneVariable
 (
     bool dematerialize,
     const SymbolContext &sym_ctx,
     ClangExpressionVariableSP &expr_var,
-    lldb::addr_t addr, 
+    lldb::addr_t addr,
     Error &err
 )
 {
@@ -1814,8 +1916,10 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
     Target *target = m_parser_vars->m_exe_ctx.GetTargetPtr();
     Process *process = m_parser_vars->m_exe_ctx.GetProcessPtr();
     StackFrame *frame = m_parser_vars->m_exe_ctx.GetFramePtr();
+    
+    ClangExpressionVariable::ParserVars *var_parser_vars = expr_var->GetParserVars(GetParserID());
 
-    if (!frame || !process || !target || !m_parser_vars.get() || !expr_var->m_parser_vars.get())
+    if (!frame || !process || !target || !m_parser_vars.get() || !var_parser_vars)
     {
         err.SetErrorString("Necessary state for variable materialization isn't present");
         return false;
@@ -1826,8 +1930,8 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
     const ConstString &name(expr_var->GetName());
     TypeFromUser type(expr_var->GetTypeFromUser());
     
-    VariableSP &var(expr_var->m_parser_vars->m_lldb_var);
-    lldb_private::Symbol *sym(expr_var->m_parser_vars->m_lldb_sym);
+    VariableSP &var(var_parser_vars->m_lldb_var);
+    const lldb_private::Symbol *symbol = var_parser_vars->m_lldb_sym;
     
     bool is_reference(expr_var->m_flags & ClangExpressionVariable::EVTypeIsReference);
     
@@ -1838,9 +1942,9 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
         location_value.reset(GetVariableValue(var,
                                               NULL));
     }
-    else if (sym)
+    else if (symbol)
     {
-        addr_t location_load_addr = GetSymbolAddress(*target, name, lldb::eSymbolTypeAny);
+        addr_t location_load_addr = GetSymbolAddress(*target, process, name, lldb::eSymbolTypeAny);
         
         if (location_load_addr == LLDB_INVALID_ADDRESS)
         {
@@ -1900,6 +2004,66 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
                                           name.GetCString(), 
                                           ss.GetString().c_str());
             return false;
+        }
+        break;
+    case Value::eValueTypeHostAddress:
+        {
+            if (dematerialize)
+            {
+                if (!DeleteLiveMemoryForExpressionVariable(*process, expr_var, err))
+                    return false;
+            }
+            else
+            {                
+                DataExtractor value_data_extractor;
+                
+                if (location_value->GetData(value_data_extractor))
+                {
+                    if (value_byte_size != value_data_extractor.GetByteSize())
+                    {
+                        err.SetErrorStringWithFormat ("Size mismatch for %s: %llu versus %llu",
+                                                      name.GetCString(),
+                                                      (uint64_t)value_data_extractor.GetByteSize(),
+                                                      (uint64_t)value_byte_size);
+                        return false;
+                    }
+                    
+                    if (!CreateLiveMemoryForExpressionVariable(*process, expr_var, err))
+                        return false;
+                    
+                    Scalar &buf_addr = expr_var->m_live_sp->GetValue().GetScalar();
+
+                    Error write_error;
+                    
+                    if (!process->WriteMemory(buf_addr.ULongLong(),
+                                              value_data_extractor.GetDataStart(),
+                                              value_data_extractor.GetByteSize(),
+                                              write_error))
+                    {
+                        err.SetErrorStringWithFormat ("Couldn't write %s to the target: %s",
+                                                      name.GetCString(),
+                                                      write_error.AsCString());
+                        return false;
+                    }
+                    
+                    if (!process->WriteScalarToMemory(addr,
+                                                      buf_addr,
+                                                      process->GetAddressByteSize(),
+                                                      write_error))
+                    {
+                        err.SetErrorStringWithFormat ("Couldn't write the address of %s to the target: %s",
+                                                      name.GetCString(),
+                                                      write_error.AsCString());
+                        return false;
+                    }
+                }
+                else
+                {
+                    err.SetErrorStringWithFormat ("%s is marked as a host address but doesn't contain any data",
+                                                  name.GetCString());
+                    return false;
+                }
+            }
         }
         break;
     case Value::eValueTypeLoadAddress:
@@ -2020,19 +2184,8 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
                     return false;
                 }
                 
-                // Deallocate the spare area and clear the variable's live data.
-                
-                Error deallocate_error = process->DeallocateMemory(reg_addr.ULongLong());
-                
-                if (!deallocate_error.Success())
-                {
-                    err.SetErrorStringWithFormat ("Couldn't deallocate spare memory area for %s: %s", 
-                                                  name.GetCString(), 
-                                                  deallocate_error.AsCString());
+                if (!DeleteLiveMemoryForExpressionVariable(*process, expr_var, err))
                     return false;
-                }
-                
-                expr_var->m_live_sp.reset();
             }
             else
             {
@@ -2066,36 +2219,17 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
                     
                     return true;
                 }
-
+                
                 // Allocate a spare memory area to place the register's contents into.  This memory area will be pointed to by the slot in the
                 // struct.
                 
-                Error allocate_error;
-                
-                Scalar reg_addr (process->AllocateMemory (value_byte_size, 
-                                                          lldb::ePermissionsReadable | lldb::ePermissionsWritable, 
-                                                          allocate_error));
-                
-                if (reg_addr.ULongLong() == LLDB_INVALID_ADDRESS)
-                {
-                    err.SetErrorStringWithFormat ("Couldn't allocate a memory area to store %s: %s", 
-                                                  name.GetCString(), 
-                                                  allocate_error.AsCString());
+                if (!CreateLiveMemoryForExpressionVariable (*process, expr_var, err))
                     return false;
-                }
-                
-                // Put the location of the spare memory into the live data of the ValueObject.
-                
-                expr_var->m_live_sp = ValueObjectConstResult::Create (m_parser_vars->m_exe_ctx.GetBestExecutionContextScope(),
-                                                                      type.GetASTContext(),
-                                                                      type.GetOpaqueQualType(),
-                                                                      name,
-                                                                      reg_addr.ULongLong(),
-                                                                      eAddressTypeLoad,
-                                                                      value_byte_size);
                 
                 // Now write the location of the area into the struct.
-                                
+                
+                Scalar &reg_addr = expr_var->m_live_sp->GetValue().GetScalar();
+                
                 if (!process->WriteScalarToMemory (addr, 
                                                    reg_addr, 
                                                    process->GetAddressByteSize(), 
@@ -2198,9 +2332,13 @@ ClangExpressionDeclMap::FindVariableInScope
     VariableSP var_sp;
     Error err;
     
-    valobj = frame.GetValueForVariableExpressionPath(name.GetCString(), 
+    valobj = frame.GetValueForVariableExpressionPath(name.GetCString(),
                                                      eNoDynamicValues, 
-                                                     StackFrame::eExpressionPathOptionCheckPtrVsMember,
+                                                     StackFrame::eExpressionPathOptionCheckPtrVsMember ||
+                                                     StackFrame::eExpressionPathOptionsAllowDirectIVarAccess ||
+                                                     StackFrame::eExpressionPathOptionsNoFragileObjcIvar ||
+                                                     StackFrame::eExpressionPathOptionsNoSyntheticChildren ||
+                                                     StackFrame::eExpressionPathOptionsNoSyntheticArrayRange,
                                                      var_sp,
                                                      err);
         
@@ -2270,25 +2408,69 @@ ClangExpressionDeclMap::FindVariableInScope
     return lldb::VariableSP();
 }
 
-Symbol *
-ClangExpressionDeclMap::FindGlobalDataSymbol
-(
-    Target &target,
-    const ConstString &name
-)
+const Symbol *
+ClangExpressionDeclMap::FindGlobalDataSymbol (Target &target,
+                                              const ConstString &name)
 {
     SymbolContextList sc_list;
     
-    target.GetImages().FindSymbolsWithNameAndType(name, 
-                                                  eSymbolTypeData, 
-                                                  sc_list);
+    target.GetImages().FindSymbolsWithNameAndType(name, eSymbolTypeAny, sc_list);
     
-    if (sc_list.GetSize())
+    const uint32_t matches = sc_list.GetSize();
+    for (uint32_t i=0; i<matches; ++i)
     {
         SymbolContext sym_ctx;
-        sc_list.GetContextAtIndex(0, sym_ctx);
-        
-        return sym_ctx.symbol;
+        sc_list.GetContextAtIndex(i, sym_ctx);
+        if (sym_ctx.symbol)
+        {
+            const Symbol *symbol = sym_ctx.symbol;
+            const Address *sym_address = &symbol->GetAddress();
+            
+            if (sym_address && sym_address->IsValid())
+            {
+                switch (symbol->GetType())
+                {
+                    case eSymbolTypeData:
+                    case eSymbolTypeRuntime:
+                    case eSymbolTypeAbsolute:
+                    case eSymbolTypeObjCClass:
+                    case eSymbolTypeObjCMetaClass:
+                    case eSymbolTypeObjCIVar:
+                        if (symbol->GetDemangledNameIsSynthesized())
+                        {
+                            // If the demangled name was synthesized, then don't use it
+                            // for expressions. Only let the symbol match if the mangled
+                            // named matches for these symbols.
+                            if (symbol->GetMangled().GetMangledName() != name)
+                                break;
+                        }
+                        return symbol;
+
+                    case eSymbolTypeCode: // We already lookup functions elsewhere
+                    case eSymbolTypeVariable:
+                    case eSymbolTypeLocal:
+                    case eSymbolTypeParam:
+                    case eSymbolTypeTrampoline:
+                    case eSymbolTypeInvalid:
+                    case eSymbolTypeException:
+                    case eSymbolTypeSourceFile:
+                    case eSymbolTypeHeaderFile:
+                    case eSymbolTypeObjectFile:
+                    case eSymbolTypeCommonBlock:
+                    case eSymbolTypeBlock:
+                    case eSymbolTypeVariableType:
+                    case eSymbolTypeLineEntry:
+                    case eSymbolTypeLineHeader:
+                    case eSymbolTypeScopeBegin:
+                    case eSymbolTypeScopeEnd:
+                    case eSymbolTypeAdditional:
+                    case eSymbolTypeCompiler:
+                    case eSymbolTypeInstrumentation:
+                    case eSymbolTypeUndefined:
+                        break;
+                }
+            }
+        }
     }
     
     return NULL;
@@ -2472,7 +2654,6 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
             
             if (method_decl)
             {
-            
                 clang::CXXRecordDecl *class_decl = method_decl->getParent();
                 
                 QualType class_qual_type(class_decl->getTypeForDecl(), 0);
@@ -2486,7 +2667,28 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                     log->Printf("  CEDM::FEVD[%u] Adding type for $__lldb_class: %s", current_id, ast_dumper.GetCString());
                 }
                 
-                AddOneType(context, class_user_type, current_id, true);
+                TypeFromParser class_type = CopyClassType(class_user_type, current_id);
+                
+                if (!class_type.IsValid())
+                    return;
+                
+                TypeSourceInfo *type_source_info = m_ast_context->CreateTypeSourceInfo(QualType::getFromOpaquePtr(class_type.GetOpaqueQualType()));
+                
+                if (!type_source_info)
+                    return;
+                
+                TypedefDecl *typedef_decl = TypedefDecl::Create(*m_ast_context,
+                                                                m_ast_context->getTranslationUnitDecl(),
+                                                                SourceLocation(),
+                                                                SourceLocation(),
+                                                                context.m_decl_name.getAsIdentifierInfo(),
+                                                                type_source_info);
+                
+                
+                if (!typedef_decl)
+                    return;
+                
+                context.AddNamedDecl(typedef_decl);
                 
                 if (method_decl->isInstance())
                 {
@@ -2537,7 +2739,7 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                         
                         TypeFromUser class_user_type (class_type.getAsOpaquePtr(),
                                                         this_type->GetClangAST());
-                        AddOneType(context, class_user_type, current_id, false);
+                        AddOneType(context, class_user_type, current_id);
                                     
                                     
                         TypeFromUser this_user_type(this_type->GetClangFullType(),
@@ -2580,7 +2782,6 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
             
             if (method_decl)
             {
-
                 ObjCInterfaceDecl* self_interface = method_decl->getClassInterface();
                 
                 if (!self_interface)
@@ -2597,7 +2798,7 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                     log->Printf("  FEVD[%u] Adding type for $__lldb_objc_class: %s", current_id, ast_dumper.GetCString());
                 }
                     
-                AddOneType(context, class_user_type, current_id, false);
+                AddOneType(context, class_user_type, current_id);
                                 
                 if (method_decl->isInstanceMethod())
                 {
@@ -2644,10 +2845,15 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                         return;
                     
                     QualType self_qual_type = QualType::getFromOpaquePtr(self_type->GetClangFullType());
-                    const ObjCObjectPointerType *class_pointer_type = self_qual_type->getAs<ObjCObjectPointerType>();
                     
-                    if (class_pointer_type)
+                    if (self_qual_type->isObjCClassType())
                     {
+                        return;
+                    }
+                    else if (self_qual_type->isObjCObjectPointerType())
+                    {
+                        const ObjCObjectPointerType *class_pointer_type = self_qual_type->getAs<ObjCObjectPointerType>();
+                    
                         QualType class_type = class_pointer_type->getPointeeType();
                         
                         if (log)
@@ -2657,9 +2863,9 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                         }
                         
                         TypeFromUser class_user_type (class_type.getAsOpaquePtr(),
-                                                        self_type->GetClangAST());
-                        AddOneType(context, class_user_type, current_id, false);
-                                    
+                                                      self_type->GetClangAST());
+                        
+                        AddOneType(context, class_user_type, current_id);
                                     
                         TypeFromUser self_user_type(self_type->GetClangFullType(),
                                                     self_type->GetClangAST());
@@ -2746,8 +2952,11 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
         {
             valobj = frame->GetValueForVariableExpressionPath(name_unique_cstr, 
                                                               eNoDynamicValues, 
-                                                              StackFrame::eExpressionPathOptionCheckPtrVsMember
-                                                              | StackFrame::eExpressionPathOptionsAllowDirectIVarAccess,
+                                                              StackFrame::eExpressionPathOptionCheckPtrVsMember ||
+                                                              StackFrame::eExpressionPathOptionsAllowDirectIVarAccess ||
+                                                              StackFrame::eExpressionPathOptionsNoFragileObjcIvar ||
+                                                              StackFrame::eExpressionPathOptionsNoSyntheticChildren ||
+                                                              StackFrame::eExpressionPathOptionsNoSyntheticArrayRange,
                                                               var,
                                                               err);
             
@@ -2867,7 +3076,7 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                 // We couldn't find a non-symbol variable for this.  Now we'll hunt for a generic 
                 // data symbol, and -- if it is found -- treat it as a variable.
                 
-                Symbol *data_symbol = FindGlobalDataSymbol(*target, name);
+                const Symbol *data_symbol = FindGlobalDataSymbol(*target, name);
                 
                 if (data_symbol)
                 {
@@ -2974,7 +3183,23 @@ ClangExpressionDeclMap::GetVariableValue
     }
     Error err;
     
-    if (!var_location_expr.Evaluate(&m_parser_vars->m_exe_ctx, ast, NULL, NULL, NULL, loclist_base_load_addr, NULL, *var_location.get(), &err))
+    if (var->GetLocationIsConstantValueData())
+    {
+        DataExtractor const_value_extractor;
+        
+        if (var_location_expr.GetExpressionData(const_value_extractor))
+        {
+            var_location->operator=(Value(const_value_extractor.GetDataStart(), const_value_extractor.GetByteSize()));
+            var_location->SetValueType(Value::eValueTypeHostAddress);
+        }
+        else
+        {
+            if (log)
+                log->Printf("Error evaluating constant variable: %s", err.AsCString());
+            return NULL;
+        }
+    }
+    else if (!var_location_expr.Evaluate(&m_parser_vars->m_exe_ctx, ast, NULL, NULL, NULL, loclist_base_load_addr, NULL, *var_location.get(), &err))
     {
         if (log)
             log->Printf("Error evaluating location: %s", err.AsCString());
@@ -3077,12 +3302,13 @@ ClangExpressionDeclMap::AddOneVariable (NameSearchContext &context, VariableSP v
     ClangExpressionVariableSP entity(m_found_entities.CreateVariable (valobj));
     
     assert (entity.get());
-    entity->EnableParserVars();
-    entity->m_parser_vars->m_parser_type = pt;
-    entity->m_parser_vars->m_named_decl  = var_decl;
-    entity->m_parser_vars->m_llvm_value  = NULL;
-    entity->m_parser_vars->m_lldb_value  = var_location;
-    entity->m_parser_vars->m_lldb_var    = var;
+    entity->EnableParserVars(GetParserID());
+    ClangExpressionVariable::ParserVars *parser_vars = entity->GetParserVars(GetParserID());
+    parser_vars->m_parser_type = pt;
+    parser_vars->m_named_decl  = var_decl;
+    parser_vars->m_llvm_value  = NULL;
+    parser_vars->m_lldb_value  = var_location;
+    parser_vars->m_lldb_var    = var;
     
     if (is_reference)
         entity->m_flags |= ClangExpressionVariable::EVTypeIsReference;
@@ -3118,11 +3344,12 @@ ClangExpressionDeclMap::AddOneVariable(NameSearchContext &context,
     
     NamedDecl *var_decl = context.AddVarDecl(ClangASTContext::CreateLValueReferenceType(parser_type.GetASTContext(), parser_type.GetOpaqueQualType()));
     
-    pvar_sp->EnableParserVars();
-    pvar_sp->m_parser_vars->m_parser_type = parser_type;
-    pvar_sp->m_parser_vars->m_named_decl  = var_decl;
-    pvar_sp->m_parser_vars->m_llvm_value  = NULL;
-    pvar_sp->m_parser_vars->m_lldb_value  = NULL;
+    pvar_sp->EnableParserVars(GetParserID());
+    ClangExpressionVariable::ParserVars *parser_vars = pvar_sp->GetParserVars(GetParserID());
+    parser_vars->m_parser_type = parser_type;
+    parser_vars->m_named_decl  = var_decl;
+    parser_vars->m_llvm_value  = NULL;
+    parser_vars->m_lldb_value  = NULL;
     
     if (log)
     {
@@ -3133,7 +3360,7 @@ ClangExpressionDeclMap::AddOneVariable(NameSearchContext &context,
 
 void
 ClangExpressionDeclMap::AddOneGenericVariable(NameSearchContext &context, 
-                                              Symbol &symbol, 
+                                              const Symbol &symbol,
                                               unsigned int current_id)
 {
     assert(m_parser_vars.get());
@@ -3147,10 +3374,10 @@ ClangExpressionDeclMap::AddOneGenericVariable(NameSearchContext &context,
 
     ASTContext *scratch_ast_context = target->GetScratchClangASTContext()->getASTContext();
     
-    TypeFromUser user_type (ClangASTContext::CreateLValueReferenceType(scratch_ast_context, ClangASTContext::GetVoidPtrType(scratch_ast_context, true)),
+    TypeFromUser user_type (ClangASTContext::CreateLValueReferenceType(scratch_ast_context, ClangASTContext::GetVoidPtrType(scratch_ast_context, false)),
                             scratch_ast_context);
     
-    TypeFromParser parser_type (ClangASTContext::CreateLValueReferenceType(scratch_ast_context, ClangASTContext::GetVoidPtrType(m_ast_context, true)),
+    TypeFromParser parser_type (ClangASTContext::CreateLValueReferenceType(m_ast_context, ClangASTContext::GetVoidPtrType(m_ast_context, false)),
                                 m_ast_context);
     
     NamedDecl *var_decl = context.AddVarDecl(parser_type.GetOpaqueQualType());
@@ -3166,19 +3393,20 @@ ClangExpressionDeclMap::AddOneGenericVariable(NameSearchContext &context,
     
     std::auto_ptr<Value> symbol_location(new Value);
     
-    Address &symbol_address = symbol.GetAddress();
+    const Address &symbol_address = symbol.GetAddress();
     lldb::addr_t symbol_load_addr = symbol_address.GetLoadAddress(target);
     
     symbol_location->SetContext(Value::eContextTypeClangType, user_type.GetOpaqueQualType());
     symbol_location->GetScalar() = symbol_load_addr;
     symbol_location->SetValueType(Value::eValueTypeLoadAddress);
     
-    entity->EnableParserVars();
-    entity->m_parser_vars->m_parser_type = parser_type;
-    entity->m_parser_vars->m_named_decl  = var_decl;
-    entity->m_parser_vars->m_llvm_value  = NULL;
-    entity->m_parser_vars->m_lldb_value  = symbol_location.release();
-    entity->m_parser_vars->m_lldb_sym    = &symbol;
+    entity->EnableParserVars(GetParserID());
+    ClangExpressionVariable::ParserVars *parser_vars = entity->GetParserVars(GetParserID());
+    parser_vars->m_parser_type = parser_type;
+    parser_vars->m_named_decl  = var_decl;
+    parser_vars->m_llvm_value  = NULL;
+    parser_vars->m_lldb_value  = symbol_location.release();
+    parser_vars->m_lldb_sym    = &symbol;
     
     if (log)
     {
@@ -3202,9 +3430,11 @@ ClangExpressionDeclMap::ResolveUnknownTypes()
     {
         ClangExpressionVariableSP entity = m_found_entities.GetVariableAtIndex(index);
         
+        ClangExpressionVariable::ParserVars *parser_vars = entity->GetParserVars(GetParserID());
+        
         if (entity->m_flags & ClangExpressionVariable::EVUnknownType)
         {
-            const NamedDecl *named_decl = entity->m_parser_vars->m_named_decl;
+            const NamedDecl *named_decl = parser_vars->m_named_decl;
             const VarDecl *var_decl = dyn_cast<VarDecl>(named_decl);
             
             if (!var_decl)
@@ -3235,8 +3465,8 @@ ClangExpressionDeclMap::ResolveUnknownTypes()
             
             TypeFromUser user_type(copied_type, scratch_ast_context);
                         
-            entity->m_parser_vars->m_lldb_value->SetContext(Value::eContextTypeClangType, user_type.GetOpaqueQualType());
-            entity->m_parser_vars->m_parser_type = parser_type;
+            parser_vars->m_lldb_value->SetContext(Value::eContextTypeClangType, user_type.GetOpaqueQualType());
+            parser_vars->m_parser_type = parser_type;
             
             entity->SetClangAST(user_type.GetASTContext());
             entity->SetClangType(user_type.GetOpaqueQualType());
@@ -3278,11 +3508,12 @@ ClangExpressionDeclMap::AddOneRegister (NameSearchContext &context,
     std::string decl_name(context.m_decl_name.getAsString());
     entity->SetName (ConstString (decl_name.c_str()));
     entity->SetRegisterInfo (reg_info);
-    entity->EnableParserVars();
-    entity->m_parser_vars->m_parser_type = parser_type;
-    entity->m_parser_vars->m_named_decl  = var_decl;
-    entity->m_parser_vars->m_llvm_value  = NULL;
-    entity->m_parser_vars->m_lldb_value  = NULL;
+    entity->EnableParserVars(GetParserID());
+    ClangExpressionVariable::ParserVars *parser_vars = entity->GetParserVars(GetParserID());
+    parser_vars->m_parser_type = parser_type;
+    parser_vars->m_named_decl  = var_decl;
+    parser_vars->m_llvm_value  = NULL;
+    parser_vars->m_lldb_value  = NULL;
     entity->m_flags |= ClangExpressionVariable::EVBareRegister;
     
     if (log)
@@ -3343,7 +3574,7 @@ ClangExpressionDeclMap::AddOneFunction (NameSearchContext &context,
             // We failed to copy the type we found
             if (log)
             {
-                log->Printf ("  Failed to import the function type '%s' {0x%8.8llx} into the expression parser AST contenxt",
+                log->Printf ("  Failed to import the function type '%s' {0x%8.8" PRIx64 "} into the expression parser AST contenxt",
                              fun_type->GetName().GetCString(), 
                              fun_type->GetID());
             }
@@ -3378,10 +3609,11 @@ ClangExpressionDeclMap::AddOneFunction (NameSearchContext &context,
     entity->SetClangType (fun_opaque_type);
     entity->SetClangAST (fun_ast_context);
     
-    entity->EnableParserVars();
-    entity->m_parser_vars->m_named_decl  = fun_decl;
-    entity->m_parser_vars->m_llvm_value  = NULL;
-    entity->m_parser_vars->m_lldb_value  = fun_location.release();
+    entity->EnableParserVars(GetParserID());
+    ClangExpressionVariable::ParserVars *parser_vars = entity->GetParserVars(GetParserID());
+    parser_vars->m_named_decl  = fun_decl;
+    parser_vars->m_llvm_value  = NULL;
+    parser_vars->m_lldb_value  = fun_location.release();
         
     if (log)
     {
@@ -3400,28 +3632,26 @@ ClangExpressionDeclMap::AddOneFunction (NameSearchContext &context,
     }
 }
 
-void 
-ClangExpressionDeclMap::AddOneType(NameSearchContext &context, 
-                                   TypeFromUser &ut,
-                                   unsigned int current_id,
-                                   bool add_method)
+TypeFromParser
+ClangExpressionDeclMap::CopyClassType(TypeFromUser &ut,
+                                      unsigned int current_id)
 {
     ASTContext *parser_ast_context = m_ast_context;
     ASTContext *user_ast_context = ut.GetASTContext();
-    
+
     void *copied_type = GuardedCopyType(parser_ast_context, user_ast_context, ut.GetOpaqueQualType());
     
     if (!copied_type)
     {
         lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-
-        if (log)
-            log->Printf("ClangExpressionDeclMap::AddOneType - Couldn't import the type");
         
-        return;
+        if (log)
+            log->Printf("ClangExpressionDeclMap::CopyClassType - Couldn't import the type");
+        
+        return TypeFromParser();
     }
-     
-    if (add_method && ClangASTContext::IsAggregateType(copied_type) && ClangASTContext::GetCompleteType (parser_ast_context, copied_type))
+
+    if (ClangASTContext::IsAggregateType(copied_type) && ClangASTContext::GetCompleteType (parser_ast_context, copied_type))
     {
         void *args[1];
         
@@ -3452,6 +3682,29 @@ ClangExpressionDeclMap::AddOneType(NameSearchContext &context,
                                                    is_explicit,
                                                    is_attr_used,
                                                    is_artificial);
+    }
+    
+    return TypeFromParser(copied_type, parser_ast_context);
+}
+
+void 
+ClangExpressionDeclMap::AddOneType(NameSearchContext &context, 
+                                   TypeFromUser &ut,
+                                   unsigned int current_id)
+{
+    ASTContext *parser_ast_context = m_ast_context;
+    ASTContext *user_ast_context = ut.GetASTContext();
+    
+    void *copied_type = GuardedCopyType(parser_ast_context, user_ast_context, ut.GetOpaqueQualType());
+    
+    if (!copied_type)
+    {
+        lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+
+        if (log)
+            log->Printf("ClangExpressionDeclMap::AddOneType - Couldn't import the type");
+        
+        return;
     }
     
     context.AddTypeDecl(copied_type);

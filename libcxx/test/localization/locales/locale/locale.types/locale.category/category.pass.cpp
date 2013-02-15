@@ -6,6 +6,11 @@
 // Source Licenses. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// This test uses new symbols that were not defined in the libc++ shipped on
+// darwin11 and darwin12:
+// XFAIL: with_system_lib=x86_64-apple-darwin11
+// XFAIL: with_system_lib=x86_64-apple-darwin12
 
 // <locale>
 
@@ -14,6 +19,10 @@
 #include <locale>
 #include <type_traits>
 #include <cassert>
+
+template <class _Tp>
+void test(const _Tp &) {}
+
 
 int main()
 {
@@ -38,4 +47,13 @@ int main()
           | std::locale::time
           | std::locale::messages)
          == std::locale::all);
+
+    test(std::locale::none);
+    test(std::locale::collate);
+    test(std::locale::ctype);
+    test(std::locale::monetary);
+    test(std::locale::numeric);
+    test(std::locale::time);
+    test(std::locale::messages);
+    test(std::locale::all);
 }

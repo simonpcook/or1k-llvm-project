@@ -22,6 +22,7 @@ class STLTestCase(TestBase):
         self.step_stl_exprs()
 
     # rdar://problem/10400981
+    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
     @unittest2.expectedFailure
     @dwarf_test
     def test_with_dwarf(self):
@@ -36,6 +37,7 @@ class STLTestCase(TestBase):
         self.buildDsym()
         self.sbtype_template_apis()
 
+    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
     @python_api_test
     @dwarf_test
     def test_SBType_template_aspects_with_dwarf(self):

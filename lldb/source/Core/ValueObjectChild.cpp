@@ -62,7 +62,7 @@ ValueObjectChild::GetValueType() const
     return m_parent->GetValueType();
 }
 
-uint32_t
+size_t
 ValueObjectChild::CalculateNumChildren()
 {
     return ClangASTContext::GetNumChildren (GetClangAST (), GetClangType(), true);
@@ -164,7 +164,6 @@ ValueObjectChild::UpdateValue ()
                             m_value.SetValueType(Value::eValueTypeHostAddress);
                             break;
                         case eAddressTypeInvalid:
-                        default:
                             // TODO: does this make sense?
                             m_value.SetValueType(Value::eValueTypeScalar);
                             break;

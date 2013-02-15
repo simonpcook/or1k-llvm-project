@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/Core/SourceManager.h"
 
 // C Includes
@@ -40,6 +42,7 @@ SourceManager::SourceManager(Target &target) :
     m_last_file_context_before (0),
     m_last_file_context_after (10),
     m_default_set(false),
+    m_first_reverse(true),
     m_target (&target),
     m_debugger(NULL)
 {
@@ -52,6 +55,7 @@ SourceManager::SourceManager(Debugger &debugger) :
     m_last_file_context_before (0),
     m_last_file_context_after (10),
     m_default_set(false),
+    m_first_reverse (true),
     m_target (NULL),
     m_debugger (&debugger)
 {
@@ -62,26 +66,6 @@ SourceManager::SourceManager(Debugger &debugger) :
 //----------------------------------------------------------------------
 SourceManager::~SourceManager()
 {
-}
-
-size_t
-SourceManager::DisplaySourceLines
-(
-    const FileSpec &file_spec,
-    uint32_t line,
-    uint32_t context_before,
-    uint32_t context_after,
-    Stream *s
-)
-{
-    m_last_file_sp = GetFile (file_spec);
-    m_last_file_line = line + context_after + 1;
-    m_last_file_context_before = context_before;
-    m_last_file_context_after = context_after;
-    if (m_last_file_sp.get())
-        return m_last_file_sp->DisplaySourceLines (line, context_before, context_after, s);
-
-    return 0;
 }
 
 SourceManager::FileSP
@@ -110,6 +94,7 @@ SourceManager::DisplaySourceLinesWithLineNumbersUsingLastFile
     const SymbolContextList *bp_locs
 )
 {
+    m_first_reverse = true;
     size_t return_value = 0;
     if (line == 0)
     {
@@ -197,13 +182,67 @@ SourceManager::DisplaySourceLinesWithLineNumbers
 }
 
 size_t
-SourceManager::DisplayMoreWithLineNumbers (Stream *s, const SymbolContextList *bp_locs)
+SourceManager::DisplayMoreWithLineNumbers (Stream *s, const SymbolContextList *bp_locs, bool reverse)
 {
+    // If we get called before anybody has set a default file and line, then try to figure it out here.
+    if (!m_default_set)
+    {
+        FileSpec tmp_spec;
+        uint32_t tmp_line;
+        GetDefaultFileAndLine(tmp_spec, tmp_line);
+    }
+    
     if (m_last_file_sp)
     {
         if (m_last_file_line == UINT32_MAX)
             return 0;
-        return DisplaySourceLinesWithLineNumbersUsingLastFile (0, m_last_file_context_before, m_last_file_context_after, "", s, bp_locs);
+        
+        if (reverse && m_last_file_line == 1)
+            return 0;
+        
+        uint32_t line;
+        uint32_t new_last_file_line = 0;
+        
+        if (m_last_file_line != 0
+            && m_last_file_line != UINT32_MAX)
+        {
+            if (reverse)
+            {
+                // If this is the first time we've done a reverse, then back up one more time so we end
+                // up showing the chunk before the last one we've shown:
+                if (m_first_reverse)
+                {
+                    if (m_last_file_line > m_last_file_context_after)
+                        m_last_file_line -= m_last_file_context_after + 1;
+                }
+                
+                if (m_last_file_line > m_last_file_context_after)
+                {
+                    line = m_last_file_line - m_last_file_context_after;
+                    if (line > m_last_file_context_before)
+                        new_last_file_line = line - m_last_file_context_before - 1;
+                    else
+                        new_last_file_line = 1;
+                }
+                else
+                {
+                    line = 1;
+                    new_last_file_line = 1;
+                }
+            }
+            else
+                line = m_last_file_line + m_last_file_context_before;
+        }
+        else
+            line = 1;
+        
+        size_t num_chars_shown = DisplaySourceLinesWithLineNumbersUsingLastFile (line, m_last_file_context_before, m_last_file_context_after, "", s, bp_locs);
+        if (new_last_file_line != 0)
+            m_last_file_line = new_last_file_line;
+        if (reverse)
+            m_first_reverse = false;
+        
+        return num_chars_shown;
     }
     return 0;
 }
@@ -245,13 +284,18 @@ SourceManager::GetDefaultFileAndLine (FileSpec &file_spec, uint32_t &line)
         if (executable_ptr)
         {
             SymbolContextList sc_list;
-            uint32_t num_matches;
             ConstString main_name("main");
             bool symbols_okay = false;  // Force it to be a debug symbol.
             bool inlines_okay = true;
             bool append = false;
-            num_matches = executable_ptr->FindFunctions (main_name, NULL, lldb::eFunctionNameTypeBase, inlines_okay, symbols_okay, append, sc_list);
-            for (uint32_t idx = 0; idx < num_matches; idx++)
+            size_t num_matches = executable_ptr->FindFunctions (main_name,
+                                                                NULL,
+                                                                lldb::eFunctionNameTypeBase,
+                                                                inlines_okay,
+                                                                symbols_okay,
+                                                                append,
+                                                                sc_list);
+            for (size_t idx = 0; idx < num_matches; idx++)
             {
                 SymbolContext sc;
                 sc_list.GetContextAtIndex(idx, sc);
@@ -525,11 +569,14 @@ SourceManager::File::CalculateLineOffsets (uint32_t line)
                     register char curr_ch = *s;
                     if (is_newline_char (curr_ch))
                     {
-                        register char next_ch = s[1];
-                        if (is_newline_char (next_ch))
+                        if (s + 1 < end)
                         {
-                            if (curr_ch != next_ch)
-                                ++s;
+                            register char next_ch = s[1];
+                            if (is_newline_char (next_ch))
+                            {
+                                if (curr_ch != next_ch)
+                                    ++s;
+                            }
                         }
                         m_offsets.push_back(s + 1 - start);
                     }
@@ -545,14 +592,14 @@ SourceManager::File::CalculateLineOffsets (uint32_t line)
         else
         {
             // Some lines have been populated, start where we last left off
-            assert(!"Not implemented yet");
+            assert("Not implemented yet" == NULL);
         }
 
     }
     else
     {
         // Calculate all line offsets up to "line"
-        assert(!"Not implemented yet");
+        assert("Not implemented yet" == NULL);
     }
     return false;
 }
@@ -563,8 +610,8 @@ SourceManager::File::GetLine (uint32_t line_no, std::string &buffer)
     if (!LineIsValid(line_no))
         return false;
 
-    uint32_t start_offset = GetLineOffset (line_no);
-    uint32_t end_offset = GetLineOffset (line_no + 1);
+    size_t start_offset = GetLineOffset (line_no);
+    size_t end_offset = GetLineOffset (line_no + 1);
     if (end_offset == UINT32_MAX)
     {
         end_offset = m_data_sp->GetByteSize();

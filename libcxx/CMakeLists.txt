@@ -39,6 +39,14 @@ option(LIBCXX_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
 option(LIBCXX_ENABLE_CXX0X "Enable -std=c++0x and use of c++0x language features if the compiler supports it." ON)
 option(LIBCXX_ENABLE_SHARED "Build libc++ as a shared library." ON)
 
+set(CXXABIS none libcxxabi libcxxrt libsupc++)
+if (NOT DEFINED LIBCXX_CXX_ABI)
+  set(LIBCXX_CXX_ABI "none")
+endif()
+set(LIBCXX_CXX_ABI "${LIBCXX_CXX_ABI}" CACHE STRING
+    "Specify C++ ABI library to use." FORCE)
+set_property(CACHE LIBCXX_CXX_ABI PROPERTY STRINGS "";${CXXABIS})
+
 #===============================================================================
 # Configure System
 #===============================================================================
@@ -57,6 +65,91 @@ get_target_triple(LIBCXX_TARGET_TRIPLE
   LIBCXX_TARGET_OS
   )
 set(LIBCXX_TARGET_TRIPLE ${LIBCXX_TARGET_TRIPLE} CACHE STRING "Target triple.")
+
+#===============================================================================
+# Add an ABI library if appropriate
+#===============================================================================
+
+#
+# _setup_abi: Set up the build to use an ABI library
+#
+# Parameters:
+#   abidefines: A list of defines needed to compile libc++ with the ABI library
+#   abilibs   : A list of libraries to link against
+#   abifiles  : A list of files (which may be relative paths) to copy into the
+#               libc++ build tree for the build.  These files will also be
+#               installed alongside the libc++ headers.
+#   abidirs   : A list of relative paths to create under an include directory
+#               in the libc++ build directory.
+#
+macro(setup_abi_lib abipathvar abidefines abilibs abifiles abidirs)
+  list(APPEND LIBCXX_CXX_FEATURE_FLAGS ${abidefines})
+  set(${abipathvar} "${${abipathvar}}"
+    CACHE STRINGS
+    "Paths to ABI include directories separate by ';'."
+    )
+  set(LIBCXX_CXX_ABI_LIBRARIES ${abilibs})
+  set(LIBCXX_ABILIB_FILES ${abifiles})
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include")
+  foreach(_d ${abidirs})
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include/${_d}")
+  endforeach()
+  set(LIBCXX_ABILIB_FILE_PATHS)
+  foreach(fpath ${LIBCXX_ABILIB_FILES})
+    set(found FALSE)
+    foreach(incpath ${${abipathvar}})
+      if (EXISTS "${incpath}/${fpath}")
+        set(found TRUE)
+        get_filename_component(dstdir ${fpath} PATH)
+        get_filename_component(ifile ${fpath} NAME)
+        add_custom_command(
+          OUTPUT "${CMAKE_BINARY_DIR}/include/${dstdir}/${ifile}"
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${incpath}/${fpath}"
+            "${CMAKE_BINARY_DIR}/include/${dstdir}/"
+          MAIN_DEPENDENCY "${incpath}/${fpath}"
+          )
+        list(APPEND LIBCXX_CXX_ABI_DEPS
+          "${CMAKE_BINARY_DIR}/include/${dstdir}/${ifile}"
+          )
+      endif()
+    endforeach()
+    if (NOT found)
+      message(FATAL_ERROR "Failed to find ${fpath}")
+    endif()
+  endforeach()
+  add_custom_target(abilib_headers DEPENDS ${LIBCXX_CXX_ABI_DEPS})
+  set(LIBCXX_CXX_ABI_DEPS abilib_headers)
+  include_directories("${CMAKE_BINARY_DIR}/include")
+  install(DIRECTORY "${CMAKE_BINARY_DIR}/include/"
+    DESTINATION include/c++/v1
+    FILES_MATCHING
+    PATTERN "*"
+    )
+endmacro()
+
+if ("${LIBCXX_CXX_ABI}" STREQUAL "libsupc++")
+  set(_LIBSUPCXX_INCLUDE_FILES
+    cxxabi.h bits/c++config.h bits/os_defines.h bits/cpu_defines.h
+    bits/cxxabi_tweaks.h bits/cxxabi_forced.h
+    )
+  setup_abi_lib("LIBCXX_LIBSUPCXX_INCLUDE_PATHS" "-D__GLIBCXX__"
+    "supc++" "${_LIBSUPCXX_INCLUDE_FILES}" "bits"
+    )
+elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxabi")
+  setup_abi_lib("LIBCXX_LIBCXXABI_INCLUDE_PATHS" ""
+    "c++abi" "cxxabi.h;cxa_demangle.h" ""
+    )
+elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxrt")
+  setup_abi_lib("LIBCXX_LIBCXXRT_INCLUDE_PATHS" "-DLIBCXXRT"
+    "cxxrt" "cxxabi.h;unwind.h;unwind-arm.h;unwind-itanium.h" ""
+    )
+elseif (NOT "${LIBCXX_CXX_ABI}" STREQUAL "none")
+  message(FATAL_ERROR
+    "Currently libsupc++, libcxxabi, libcxxrt and none are "
+    "supported for c++ abi."
+    )
+endif ()
 
 # Configure compiler.
 include(config-ix)

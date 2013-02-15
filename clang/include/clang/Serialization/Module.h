@@ -15,9 +15,9 @@
 #ifndef LLVM_CLANG_SERIALIZATION_MODULE_H
 #define LLVM_CLANG_SERIALIZATION_MODULE_H
 
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/ContinuousRangeMap.h"
-#include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Bitcode/BitstreamReader.h"
@@ -68,6 +68,9 @@ public:
   ~ModuleFile();
 
   // === General information ===
+
+  /// \brief The index of this module in the list of modules.
+  unsigned Index;
 
   /// \brief The type of this module.
   ModuleKind Kind;
@@ -121,8 +124,15 @@ public:
   /// \brief The main bitstream cursor for the main block.
   llvm::BitstreamCursor Stream;
 
+  /// \brief The source location where the module was explicitly or implicitly
+  /// imported in the local translation unit.
+  ///
+  /// If module A depends on and imports module B, both modules will have the
+  /// same DirectImportLoc, but different ImportLoc (B's ImportLoc will be a
+  /// source location inside module A).
+  SourceLocation DirectImportLoc;
+
   /// \brief The source location where this module was first imported.
-  /// FIXME: This is not properly initialized yet.
   SourceLocation ImportLoc;
 
   /// \brief The first source location in this module.

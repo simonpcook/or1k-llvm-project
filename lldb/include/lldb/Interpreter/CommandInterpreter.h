@@ -278,7 +278,7 @@ public:
                              const char *command_word,
                              const char *separator,
                              const char *help_text,
-                             uint32_t max_word_len);
+                             size_t max_word_len);
     
     // this mimics OutputFormattedHelpText but it does perform a much simpler
     // formatting, basically ensuring line alignment. This is only good if you have
@@ -391,20 +391,6 @@ public:
     const char *
     FindHistoryString (const char *input_str) const;
 
-
-#ifndef SWIG
-    void
-    AddLogChannel (const char *name, 
-                   const Log::Callbacks &log_callbacks);
-
-    bool
-    GetLogChannelCallbacks (const char *channel, 
-                            Log::Callbacks &log_callbacks);
-
-    bool
-    RemoveLogChannel (const char *name);
-#endif
-
     size_t
     FindLongestCommandWord (CommandObject::CommandMap &dict);
 
@@ -450,6 +436,9 @@ public:
     bool
     GetExpandRegexAliases () const;
     
+    bool
+    GetPromptOnQuit () const;
+
 protected:
     friend class Debugger;
 

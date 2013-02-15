@@ -23,7 +23,7 @@ namespace lldb_private {
 
 class StopInfo
 {
-    friend Process::ProcessEventData;
+    friend class Process::ProcessEventData;
     friend class ThreadPlanBase;
     
 public:
@@ -106,7 +106,32 @@ public:
         else
             m_description.clear();
     }
-
+    
+    // Sometimes the thread plan logic will know that it wants a given stop to stop or not,
+    // regardless of what the ordinary logic for that StopInfo would dictate.  The main example
+    // of this is the ThreadPlanCallFunction, which for instance knows - based on how that particular
+    // expression was executed - whether it wants all breakpoints to auto-continue or not.
+    // Use OverrideShouldStop on the StopInfo to implement this.
+    
+    void
+    OverrideShouldStop (bool override_value)
+    {
+        m_override_set = true;
+        m_override_value = override_value;
+    }
+    
+    bool
+    GetOverrideShouldStop()
+    {
+        return m_override_set;
+    }
+    
+    bool
+    GetOverriddenShouldStopValue ()
+    {
+        return m_override_value;
+    }
+    
     static lldb::StopInfoSP
     CreateStopReasonWithBreakpointSiteID (Thread &thread, lldb::break_id_t break_id);
 
@@ -129,12 +154,16 @@ public:
     static lldb::StopInfoSP
     CreateStopReasonWithException (Thread &thread, const char *description);
     
+    static lldb::StopInfoSP
+    CreateStopReasonWithExec (Thread &thread);
+
     static lldb::ValueObjectSP
     GetReturnValueObject (lldb::StopInfoSP &stop_info_sp);
 
 protected:
     // Perform any action that is associated with this stop.  This is done as the
     // Event is removed from the event queue.  ProcessEventData::DoOnRemoval does the job.
+ 
     virtual void
     PerformAction (Event *event_ptr)
     {
@@ -160,6 +189,8 @@ protected:
     uint32_t        m_resume_id; // This is the resume ID when we made this stop ID.
     uint64_t        m_value;    // A generic value that can be used for things pertaining to this stop info
     std::string     m_description; // A textual description describing this stop.
+    bool            m_override_set;
+    bool            m_override_value;
     
     // This determines whether the target has run since this stop info.
     // N.B. running to evaluate a user expression does not count. 

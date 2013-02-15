@@ -22,21 +22,22 @@
 
 namespace lld {
 
+class AbsoluteAtom;
 class Atom;
 class DefinedAtom;
-class UndefinedAtom;
-class SharedLibraryAtom;
-class AbsoluteAtom;
 class ResolverOptions;
+class SharedLibraryAtom;
+class TargetInfo;
+class UndefinedAtom;
 
-/// The SymbolTable class is responsible for coalescing atoms.
+/// \brief The SymbolTable class is responsible for coalescing atoms.
 ///
 /// All atoms coalescable by-name or by-content should be added.
 /// The method replacement() can be used to find the replacement atom
 /// if an atom has been coalesced away.
 class SymbolTable {
 public:
-      SymbolTable(ResolverOptions&);
+  SymbolTable(const TargetInfo &);
 
   /// @brief add atom to symbol table
   void add(const DefinedAtom &);
@@ -58,7 +59,7 @@ public:
   const Atom *findByName(StringRef sym);
 
   /// @brief returns vector of remaining UndefinedAtoms
-  void undefines(std::vector<const Atom *>&);
+  void undefines(std::vector<const UndefinedAtom *>&);
   
   /// returns vector of tentative definitions
   void tentativeDefinitions(std::vector<StringRef> &);
@@ -95,7 +96,7 @@ private:
   void addByName(const Atom &);
   void addByContent(const DefinedAtom &);
 
-  ResolverOptions &_options;
+  const TargetInfo &_targetInfo;
   AtomToAtom       _replacedAtoms;
   NameToAtom       _nameTable;
   AtomContentSet   _contentTable;

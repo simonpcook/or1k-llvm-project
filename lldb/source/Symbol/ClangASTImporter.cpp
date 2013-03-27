@@ -21,7 +21,32 @@
 using namespace lldb_private;
 using namespace clang;
 
-clang::QualType 
+ClangASTMetrics::Counters ClangASTMetrics::global_counters = { 0, 0, 0, 0, 0, 0 };
+ClangASTMetrics::Counters ClangASTMetrics::local_counters = { 0, 0, 0, 0, 0, 0 };
+
+void ClangASTMetrics::DumpCounters (lldb::LogSP log, ClangASTMetrics::Counters &counters)
+{
+    log->Printf("  Number of visible Decl queries by name     : %" PRIu64, counters.m_visible_query_count);
+    log->Printf("  Number of lexical Decl queries             : %" PRIu64, counters.m_lexical_query_count);
+    log->Printf("  Number of imports initiated by LLDB        : %" PRIu64, counters.m_lldb_import_count);
+    log->Printf("  Number of imports conducted by Clang       : %" PRIu64, counters.m_clang_import_count);
+    log->Printf("  Number of Decls completed                  : %" PRIu64, counters.m_decls_completed_count);
+    log->Printf("  Number of records laid out                 : %" PRIu64, counters.m_record_layout_count);
+}
+
+void ClangASTMetrics::DumpCounters (lldb::LogSP log)
+{
+    if (!log)
+        return;
+    
+    log->Printf("== ClangASTMetrics output ==");
+    log->Printf("-- Global metrics --");
+    DumpCounters (log, global_counters);
+    log->Printf("-- Local metrics --");
+    DumpCounters (log, local_counters);
+}
+
+clang::QualType
 ClangASTImporter::CopyType (clang::ASTContext *dst_ast,
                             clang::ASTContext *src_ast,
                             clang::QualType type)
@@ -126,11 +151,20 @@ ClangASTImporter::DeportDecl (clang::ASTContext *dst_ctx,
                               clang::ASTContext *src_ctx,
                               clang::Decl *decl)
 {
+    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    
+    if (log)
+        log->Printf("    [ClangASTImporter] DeportDecl called on (%sDecl*)%p from (ASTContext*)%p to (ASTContex*)%p",
+                    decl->getDeclKindName(),
+                    decl,
+                    src_ctx,
+                    dst_ctx);
+    
     clang::Decl *result = CopyDecl(dst_ctx, src_ctx, decl);
     
     if (!result)
         return NULL;
-    
+        
     ClangASTContext::GetCompleteDecl (src_ctx, decl);
 
     MinionSP minion_sp (GetMinion (dst_ctx, src_ctx));
@@ -140,11 +174,24 @@ ClangASTImporter::DeportDecl (clang::ASTContext *dst_ctx,
     
     ASTContextMetadataSP to_context_md = GetContextMetadata(dst_ctx);
 
-    OriginMap::iterator oi = to_context_md->m_origins.find(decl);
+    OriginMap::iterator oi = to_context_md->m_origins.find(result);
     
     if (oi != to_context_md->m_origins.end() &&
         oi->second.ctx == src_ctx)
         to_context_md->m_origins.erase(oi);
+    
+    if (TagDecl *result_tag_decl = dyn_cast<TagDecl>(result))
+    {
+        result_tag_decl->setHasExternalLexicalStorage(false);
+        result_tag_decl->setHasExternalVisibleStorage(false);
+    }
+    
+    if (log)
+        log->Printf("    [ClangASTImporter] DeportDecl deported (%sDecl*)%p to (%sDecl*)%p",
+                    decl->getDeclKindName(),
+                    decl,
+                    result->getDeclKindName(),
+                    result);
     
     return result;
 }
@@ -189,7 +236,9 @@ ClangASTImporter::CompleteDecl (clang::Decl *decl)
 
 bool
 ClangASTImporter::CompleteTagDecl (clang::TagDecl *decl)
-{   
+{
+    ClangASTMetrics::RegisterDeclCompletion();
+    
     DeclOrigin decl_origin = GetDeclOrigin(decl);
     
     if (!decl_origin.Valid())
@@ -209,6 +258,8 @@ ClangASTImporter::CompleteTagDecl (clang::TagDecl *decl)
 bool
 ClangASTImporter::CompleteTagDeclWithOrigin(clang::TagDecl *decl, clang::TagDecl *origin_decl)
 {
+    ClangASTMetrics::RegisterDeclCompletion();
+
     clang::ASTContext *origin_ast_ctx = &origin_decl->getASTContext();
         
     if (!ClangASTContext::GetCompleteDecl(origin_ast_ctx, origin_decl))
@@ -231,6 +282,8 @@ ClangASTImporter::CompleteTagDeclWithOrigin(clang::TagDecl *decl, clang::TagDecl
 bool
 ClangASTImporter::CompleteObjCInterfaceDecl (clang::ObjCInterfaceDecl *interface_decl)
 {
+    ClangASTMetrics::RegisterDeclCompletion();
+
     lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     DeclOrigin decl_origin = GetDeclOrigin(interface_decl);
@@ -249,15 +302,44 @@ ClangASTImporter::CompleteObjCInterfaceDecl (clang::ObjCInterfaceDecl *interface
     return true;
 }
 
+bool
+ClangASTImporter::RequireCompleteType (clang::QualType type)
+{
+    if (type.isNull())
+        return false;
+    
+    if (const TagType *tag_type = type->getAs<TagType>())
+    {
+        return CompleteTagDecl(tag_type->getDecl());
+    }
+    if (const ObjCObjectType *objc_object_type = type->getAs<ObjCObjectType>())
+    {
+        if (ObjCInterfaceDecl *objc_interface_decl = objc_object_type->getInterface())
+            return CompleteObjCInterfaceDecl(objc_interface_decl);
+        else
+            return false;
+    }
+    if (const ArrayType *array_type = type->getAsArrayTypeUnsafe())
+    {
+        return RequireCompleteType(array_type->getElementType());
+    }
+    if (const AtomicType *atomic_type = type->getAs<AtomicType>())
+    {
+        return RequireCompleteType(atomic_type->getPointeeType());
+    }
+    
+    return true;
+}
+
 ClangASTMetadata *
 ClangASTImporter::GetDeclMetadata (const clang::Decl *decl)
 {
     DeclOrigin decl_origin = GetDeclOrigin(decl);
     
     if (decl_origin.Valid())
-        return ClangASTContext::GetMetadata(decl_origin.ctx, (uintptr_t)decl_origin.decl);
+        return ClangASTContext::GetMetadata(decl_origin.ctx, decl_origin.decl);
     else
-        return ClangASTContext::GetMetadata(&decl->getASTContext(), (uintptr_t)decl);
+        return ClangASTContext::GetMetadata(&decl->getASTContext(), decl);
 }
 
 ClangASTImporter::DeclOrigin
@@ -452,6 +534,8 @@ ClangASTImporter::Minion::ImportDefinitionTo (clang::Decl *to, clang::Decl *from
 clang::Decl 
 *ClangASTImporter::Minion::Imported (clang::Decl *from, clang::Decl *to)
 {
+    ClangASTMetrics::RegisterClangImport();
+    
     lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
         
     if (log)

@@ -17,7 +17,6 @@ using namespace clang;
 
 MacroInfo::MacroInfo(SourceLocation DefLoc)
   : Location(DefLoc),
-    PreviousDefinition(0),
     ArgumentList(0),
     NumArguments(0),
     IsDefinitionLengthCached(false),
@@ -26,54 +25,11 @@ MacroInfo::MacroInfo(SourceLocation DefLoc)
     IsGNUVarargs(false),
     IsBuiltinMacro(false),
     HasCommaPasting(false),
-    IsFromAST(false),
-    ChangedAfterLoad(false),
     IsDisabled(false),
     IsUsed(false),
     IsAllowRedefinitionsWithoutWarning(false),
     IsWarnIfUnused(false),
-    IsPublic(true),
-    IsHidden(false),
-    IsAmbiguous(false) {
-}
-
-MacroInfo::MacroInfo(const MacroInfo &MI, llvm::BumpPtrAllocator &PPAllocator)
-  : Location(MI.Location),
-    EndLocation(MI.EndLocation),
-    UndefLocation(MI.UndefLocation),
-    PreviousDefinition(0),
-    ArgumentList(0),
-    NumArguments(0),
-    ReplacementTokens(MI.ReplacementTokens),
-    DefinitionLength(MI.DefinitionLength),
-    IsDefinitionLengthCached(MI.IsDefinitionLengthCached),
-    IsFunctionLike(MI.IsFunctionLike),
-    IsC99Varargs(MI.IsC99Varargs),
-    IsGNUVarargs(MI.IsGNUVarargs),
-    IsBuiltinMacro(MI.IsBuiltinMacro),
-    HasCommaPasting(MI.HasCommaPasting),
-    IsFromAST(MI.IsFromAST),
-    ChangedAfterLoad(MI.ChangedAfterLoad),
-    IsDisabled(MI.IsDisabled),
-    IsUsed(MI.IsUsed),
-    IsAllowRedefinitionsWithoutWarning(MI.IsAllowRedefinitionsWithoutWarning),
-    IsWarnIfUnused(MI.IsWarnIfUnused),
-    IsPublic(MI.IsPublic),
-    IsHidden(MI.IsHidden),
-    IsAmbiguous(MI.IsAmbiguous) {
-  setArgumentList(MI.ArgumentList, MI.NumArguments, PPAllocator);
-}
-
-const MacroInfo *MacroInfo::findDefinitionAtLoc(SourceLocation L,
-                                                SourceManager &SM) const {
-  assert(L.isValid() && "SourceLocation is invalid.");
-  for (const MacroInfo *MI = this; MI; MI = MI->PreviousDefinition) {
-    if (MI->Location.isInvalid() ||  // For macros defined on the command line.
-        SM.isBeforeInTranslationUnit(MI->Location, L))
-      return (MI->UndefLocation.isInvalid() ||
-              SM.isBeforeInTranslationUnit(L, MI->UndefLocation)) ? MI : NULL;
-  }
-  return NULL;
+    FromASTFile(false) {
 }
 
 unsigned MacroInfo::getDefinitionLengthSlow(SourceManager &SM) const {
@@ -105,10 +61,10 @@ unsigned MacroInfo::getDefinitionLengthSlow(SourceManager &SM) const {
   return DefinitionLength;
 }
 
-/// isIdenticalTo - Return true if the specified macro definition is equal to
-/// this macro in spelling, arguments, and whitespace.  This is used to emit
-/// duplicate definition warnings.  This implements the rules in C99 6.10.3.
-///
+// isIdenticalTo - Return true if the specified macro definition is equal to
+// this macro in spelling, arguments, and whitespace.  This is used to emit
+// duplicate definition warnings.  This implements the rules in C99 6.10.3.
+//
 bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const {
   // Check # tokens in replacement, number of args, and various flags all match.
   if (ReplacementTokens.size() != Other.ReplacementTokens.size() ||
@@ -150,4 +106,42 @@ bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const {
   }
 
   return true;
+}
+
+MacroDirective::DefInfo MacroDirective::getDefinition(bool AllowHidden) {
+  MacroDirective *MD = this;
+  SourceLocation UndefLoc;
+  Optional<bool> isPublic;
+  for (; MD; MD = MD->getPrevious()) {
+    if (!AllowHidden && MD->isHidden())
+      continue;
+
+    if (DefMacroDirective *DefMD = dyn_cast<DefMacroDirective>(MD))
+      return DefInfo(DefMD, UndefLoc,
+                     !isPublic.hasValue() || isPublic.getValue());
+
+    if (UndefMacroDirective *UndefMD = dyn_cast<UndefMacroDirective>(MD)) {
+      UndefLoc = UndefMD->getLocation();
+      continue;
+    }
+
+    VisibilityMacroDirective *VisMD = cast<VisibilityMacroDirective>(MD);
+    if (!isPublic.hasValue())
+      isPublic = VisMD->isPublic();
+  }
+
+  return DefInfo();
+}
+
+const MacroDirective::DefInfo
+MacroDirective::findDirectiveAtLoc(SourceLocation L, SourceManager &SM) const {
+  assert(L.isValid() && "SourceLocation is invalid.");
+  for (DefInfo Def = getDefinition(); Def; Def = Def.getPreviousDefinition()) {
+    if (Def.getLocation().isInvalid() ||  // For macros defined on the command line.
+        SM.isBeforeInTranslationUnit(Def.getLocation(), L))
+      return (!Def.isUndefined() ||
+              SM.isBeforeInTranslationUnit(L, Def.getUndefLocation()))
+                  ? Def : DefInfo();
+  }
+  return DefInfo();
 }

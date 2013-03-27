@@ -32,7 +32,8 @@
 #include <ctime>
 using namespace clang;
 
-MacroInfo *Preprocessor::getMacroInfoHistory(const IdentifierInfo *II) const {
+MacroDirective *
+Preprocessor::getMacroDirectiveHistory(const IdentifierInfo *II) const {
   assert(II->hadMacroDefinition() && "Identifier has not been not a macro!");
 
   macro_iterator Pos = Macros.find(II);
@@ -40,125 +41,31 @@ MacroInfo *Preprocessor::getMacroInfoHistory(const IdentifierInfo *II) const {
   return Pos->second;
 }
 
-/// setMacroInfo - Specify a macro for this identifier.
-///
-void Preprocessor::setMacroInfo(IdentifierInfo *II, MacroInfo *MI) {
-  assert(MI && "MacroInfo should be non-zero!");
-  assert(MI->getUndefLoc().isInvalid() &&
-         "Undefined macros cannot be registered");
+void Preprocessor::appendMacroDirective(IdentifierInfo *II, MacroDirective *MD){
+  assert(MD && "MacroDirective should be non-zero!");
+  assert(!MD->getPrevious() && "Already attached to a MacroDirective history.");
 
-  MacroInfo *&StoredMI = Macros[II];
-  MI->setPreviousDefinition(StoredMI);
-  StoredMI = MI;
-  II->setHasMacroDefinition(MI->getUndefLoc().isInvalid());
-  if (II->isFromAST())
+  MacroDirective *&StoredMD = Macros[II];
+  MD->setPrevious(StoredMD);
+  StoredMD = MD;
+  II->setHasMacroDefinition(MD->isDefined());
+  bool isImportedMacro = isa<DefMacroDirective>(MD) &&
+                         cast<DefMacroDirective>(MD)->isImported();
+  if (II->isFromAST() && !isImportedMacro)
     II->setChangedSinceDeserialization();
 }
 
-void Preprocessor::addLoadedMacroInfo(IdentifierInfo *II, MacroInfo *MI,
-                                      MacroInfo *Hint) {
-  assert(MI && "Missing macro?");
-  assert(MI->isFromAST() && "Macro is not from an AST?");
-  assert(!MI->getPreviousDefinition() && "Macro already in chain?");
-  
-  MacroInfo *&StoredMI = Macros[II];
-
-  // Easy case: this is the first macro definition for this macro.
-  if (!StoredMI) {
-    StoredMI = MI;
-
-    if (MI->isDefined())
-      II->setHasMacroDefinition(true);
-    return;
-  }
-
-  // If this macro is a definition and this identifier has been neither
-  // defined nor undef'd in the current translation unit, add this macro
-  // to the end of the chain of definitions.
-  if (MI->isDefined() && StoredMI->isFromAST()) {
-    // Simple case: if this is the first actual definition, just put it at
-    // th beginning.
-    if (!StoredMI->isDefined()) {
-      MI->setPreviousDefinition(StoredMI);
-      StoredMI = MI;
-
-      II->setHasMacroDefinition(true);
-      return;
-    }
-
-    // Find the end of the definition chain.
-    MacroInfo *Prev;
-    MacroInfo *PrevPrev = StoredMI;
-    bool Ambiguous = StoredMI->isAmbiguous();
-    bool MatchedOther = false;
-    do {
-      Prev = PrevPrev;
-
-      // If the macros are not identical, we have an ambiguity.
-      if (!Prev->isIdenticalTo(*MI, *this)) {
-        if (!Ambiguous) {
-          Ambiguous = true;
-          StoredMI->setAmbiguous(true);
-        }
-      } else {
-        MatchedOther = true;
-      }
-    } while ((PrevPrev = Prev->getPreviousDefinition()) &&
-             PrevPrev->isDefined());
-
-    // If there are ambiguous definitions, and we didn't match any other
-    // definition, then mark us as ambiguous.
-    if (Ambiguous && !MatchedOther)
-      MI->setAmbiguous(true);
-
-    // Wire this macro information into the chain.
-    MI->setPreviousDefinition(Prev->getPreviousDefinition());
-    Prev->setPreviousDefinition(MI);
-    return;
-  }
-
-  // The macro is not a definition; put it at the end of the list.
-  MacroInfo *Prev = Hint? Hint : StoredMI;
-  while (Prev->getPreviousDefinition())
-    Prev = Prev->getPreviousDefinition();
-  Prev->setPreviousDefinition(MI);
-}
-
-void Preprocessor::makeLoadedMacroInfoVisible(IdentifierInfo *II,
-                                              MacroInfo *MI) {
-  assert(MI->isFromAST() && "Macro must be from the AST");
-
-  MacroInfo *&StoredMI = Macros[II];
-  if (StoredMI == MI) {
-    // Easy case: this is the first macro anyway.
-    II->setHasMacroDefinition(MI->isDefined());
-    return;
-  }
-
-  // Go find the macro and pull it out of the list.
-  // FIXME: Yes, this is O(N), and making a pile of macros visible or hidden
-  // would be quadratic, but it's extremely rare.
-  MacroInfo *Prev = StoredMI;
-  while (Prev->getPreviousDefinition() != MI)
-    Prev = Prev->getPreviousDefinition();
-  Prev->setPreviousDefinition(MI->getPreviousDefinition());
-  MI->setPreviousDefinition(0);
-
-  // Add the macro back to the list.
-  addLoadedMacroInfo(II, MI);
-
-  II->setHasMacroDefinition(StoredMI->isDefined());
-  if (II->isFromAST())
-    II->setChangedSinceDeserialization();
-}
-
-/// \brief Undefine a macro for this identifier.
-void Preprocessor::clearMacroInfo(IdentifierInfo *II) {
-  assert(II->hasMacroDefinition() && "Macro is not defined!");
-  assert(Macros[II]->getUndefLoc().isValid() && "Macro is still defined!");
-  II->setHasMacroDefinition(false);
-  if (II->isFromAST())
-    II->setChangedSinceDeserialization();
+void Preprocessor::setLoadedMacroDirective(IdentifierInfo *II,
+                                           MacroDirective *MD) {
+  assert(II && MD);
+  MacroDirective *&StoredMD = Macros[II];
+  assert(!StoredMD &&
+         "the macro history was modified before initializing it from a pch");
+  StoredMD = MD;
+  // Setup the identifier as having associated macro history.
+  II->setHasMacroDefinition(true);
+  if (!MD->isDefined())
+    II->setHasMacroDefinition(false);
 }
 
 /// RegisterBuiltinMacro - Register the specified identifier in the identifier
@@ -170,7 +77,7 @@ static IdentifierInfo *RegisterBuiltinMacro(Preprocessor &PP, const char *Name){
   // Mark it as being a macro that is builtin.
   MacroInfo *MI = PP.AllocateMacroInfo(SourceLocation());
   MI->setIsBuiltinMacro();
-  PP.setMacroInfo(Id, MI);
+  PP.appendDefMacroDirective(Id, MI);
   return Id;
 }
 
@@ -303,7 +210,11 @@ bool Preprocessor::isNextPPTokenLParen() {
 /// HandleMacroExpandedIdentifier - If an identifier token is read that is to be
 /// expanded as a macro, handle it and return the next token as 'Identifier'.
 bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
-                                                 MacroInfo *MI) {
+                                                 MacroDirective *MD) {
+  MacroDirective::DefInfo Def = MD->getDefinition();
+  assert(Def.isValid());
+  MacroInfo *MI = Def.getMacroInfo();
+
   // If this is a macro expansion in the "#if !defined(x)" line for the file,
   // then the macro could expand to different things in other contexts, we need
   // to disable the optimization in this case.
@@ -311,7 +222,7 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
 
   // If this is a builtin macro, like __LINE__ or _Pragma, handle it specially.
   if (MI->isBuiltinMacro()) {
-    if (Callbacks) Callbacks->MacroExpands(Identifier, MI,
+    if (Callbacks) Callbacks->MacroExpands(Identifier, MD,
                                            Identifier.getLocation());
     ExpandBuiltinMacro(Identifier);
     return false;
@@ -364,38 +275,35 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
       // MacroExpands callbacks still happen in source order, queue this
       // callback to have it happen after the function macro callback.
       DelayedMacroExpandsCallbacks.push_back(
-                              MacroExpandsInfo(Identifier, MI, ExpansionRange));
+                              MacroExpandsInfo(Identifier, MD, ExpansionRange));
     } else {
-      Callbacks->MacroExpands(Identifier, MI, ExpansionRange);
+      Callbacks->MacroExpands(Identifier, MD, ExpansionRange);
       if (!DelayedMacroExpandsCallbacks.empty()) {
         for (unsigned i=0, e = DelayedMacroExpandsCallbacks.size(); i!=e; ++i) {
           MacroExpandsInfo &Info = DelayedMacroExpandsCallbacks[i];
-          Callbacks->MacroExpands(Info.Tok, Info.MI, Info.Range);
+          Callbacks->MacroExpands(Info.Tok, Info.MD, Info.Range);
         }
         DelayedMacroExpandsCallbacks.clear();
       }
     }
   }
 
-  // FIXME: Temporarily disable this warning that is currently bogus with a PCH
-  // that redefined a macro without undef'ing it first (test/PCH/macro-redef.c).
-#if 0
   // If the macro definition is ambiguous, complain.
-  if (MI->isAmbiguous()) {
+  if (Def.getDirective()->isAmbiguous()) {
     Diag(Identifier, diag::warn_pp_ambiguous_macro)
       << Identifier.getIdentifierInfo();
     Diag(MI->getDefinitionLoc(), diag::note_pp_ambiguous_macro_chosen)
       << Identifier.getIdentifierInfo();
-    for (MacroInfo *PrevMI = MI->getPreviousDefinition();
-         PrevMI && PrevMI->isDefined();
-         PrevMI = PrevMI->getPreviousDefinition()) {
-      if (PrevMI->isAmbiguous()) {
-        Diag(PrevMI->getDefinitionLoc(), diag::note_pp_ambiguous_macro_other)
+    for (MacroDirective::DefInfo PrevDef = Def.getPreviousDefinition();
+         PrevDef && !PrevDef.isUndefined();
+         PrevDef = PrevDef.getPreviousDefinition()) {
+      if (PrevDef.getDirective()->isAmbiguous()) {
+        Diag(PrevDef.getMacroInfo()->getDefinitionLoc(),
+             diag::note_pp_ambiguous_macro_other)
           << Identifier.getIdentifierInfo();
       }
     }
   }
-#endif
 
   // If we started lexing a macro, enter the macro expansion body.
 
@@ -619,8 +527,10 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
     EOFTok.setLength(0);
     ArgTokens.push_back(EOFTok);
     ++NumActuals;
-    assert(NumFixedArgsLeft != 0 && "Too many arguments parsed");
-    --NumFixedArgsLeft;
+    if (!ContainsCodeCompletionTok || NumFixedArgsLeft != 0) {
+      assert(NumFixedArgsLeft != 0 && "Too many arguments parsed");
+      --NumFixedArgsLeft;
+    }
   }
 
   // Okay, we either found the r_paren.  Check to see if we parsed too few

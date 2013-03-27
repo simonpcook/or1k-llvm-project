@@ -16,6 +16,7 @@ class ConstVariableTestCase(TestBase):
         self.buildDsym()
         self.const_variable()
 
+    @skipOnLinux # This test works with gcc, but fails with newer version of clang on Linux due to a clang issue.  Bug number TDB.
     @dwarf_test
     def test_with_dwarf_and_run_command(self):
         """Test interpreted and JITted expressions on constant values."""
@@ -44,6 +45,8 @@ class ConstVariableTestCase(TestBase):
         # The breakpoint should have a hit count of 1.
         self.expect("breakpoint list -f", BREAKPOINT_HIT_ONCE,
             substrs = [' resolved, hit count = 1'])
+
+        self.runCmd("next")
 
         # Try frame variable.
         self.expect("frame variable index", VARIABLES_DISPLAYED_CORRECTLY,

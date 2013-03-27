@@ -17,20 +17,15 @@ namespace lld {
 
 ///
 /// The ArchiveLibraryFile subclass of File is used to represent unix
-/// static library archives.  These libraries provide no atoms to the 
+/// static library archives.  These libraries provide no atoms to the
 /// initial set of atoms linked.  Instead, when the Resolver will query
 /// ArchiveLibraryFile instances for specific symbols names using the
 /// find() method.  If the archive contains an object file which has a
 /// DefinedAtom whose scope is not translationUnit, then that entire
 /// object file File is returned.
-/// 
+///
 class ArchiveLibraryFile : public File {
 public:
-
-  virtual Kind kind() const {
-    return kindArchiveLibrary;
-  }
-
   static inline bool classof(const File *f) {
     return f->kind() == kindArchiveLibrary;
   }
@@ -42,9 +37,9 @@ public:
   virtual const TargetInfo &getTargetInfo() const { return _targetInfo; }
 
 protected:
-  /// only subclasses of ArchiveLibraryFile can be instantiated 
+  /// only subclasses of ArchiveLibraryFile can be instantiated
   ArchiveLibraryFile(const TargetInfo &ti, StringRef path)
-      : File(path), _targetInfo(ti) {
+      : File(path, kindArchiveLibrary), _targetInfo(ti) {
   }
 
 private:

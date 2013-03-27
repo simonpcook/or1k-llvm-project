@@ -22,7 +22,6 @@ class STLTestCase(TestBase):
         self.step_stl_exprs()
 
     # rdar://problem/10400981
-    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
     @unittest2.expectedFailure
     @dwarf_test
     def test_with_dwarf(self):
@@ -37,7 +36,7 @@ class STLTestCase(TestBase):
         self.buildDsym()
         self.sbtype_template_apis()
 
-    @skipOnLinux #PR-15256: assertion failure in RecordLayoutBuilder::updateExternalFieldOffset
+    @skipIfGcc # llvm.org/pr15036: crashes during DWARF parsing when built with GCC
     @python_api_test
     @dwarf_test
     def test_SBType_template_aspects_with_dwarf(self):
@@ -112,7 +111,7 @@ class STLTestCase(TestBase):
         # Get Frame #0.
         self.assertTrue(process.GetState() == lldb.eStateStopped)
         thread = lldbutil.get_stopped_thread(process, lldb.eStopReasonBreakpoint)
-        self.assertTrue(thread != None, "There should be a thread stopped due to breakpoint condition")
+        self.assertTrue(thread.IsValid(), "There should be a thread stopped due to breakpoint condition")
         frame0 = thread.GetFrameAtIndex(0)
 
         # Get the type for variable 'associative_array'.

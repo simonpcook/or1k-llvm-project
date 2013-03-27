@@ -29,23 +29,31 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileOutputBuffer.h"
 
+namespace {
+LLVM_ATTRIBUTE_UNUSED std::string kindOrUnknown(llvm::ErrorOr<std::string> k) {
+  if (k)
+    return *k;
+  return "<unknown>";
+}
+}
+
 namespace lld {
 namespace elf {
+template <class> class MergedSections;
 using namespace llvm::ELF;
+template <class ELFT> class Segment;
 
 /// \brief An ELF section.
 template <class ELFT> class Section : public Chunk<ELFT> {
 public:
-  /// \param type the ELF SHT_* type of the section.
   Section(const ELFTargetInfo &ti, StringRef name,
           typename Chunk<ELFT>::Kind k = Chunk<ELFT>::K_ELFSection)
-      : Chunk<ELFT>(name, k, ti),
-        _flags(0),
-        _entSize(0),
-        _type(0),
-        _link(0),
-        _info(0),
-        _segmentType(SHT_NULL) {}
+      : Chunk<ELFT>(name, k, ti), _parent(nullptr), _flags(0), _entSize(0),
+        _type(0), _link(0), _info(0), _segmentType(SHT_NULL) {}
+
+  /// \brief Modify the section contents before assigning virtual addresses
+  //  or assigning file offsets
+  virtual void doPreFlight() {}
 
   /// \brief Finalize the section contents before writing
   virtual void finalize() {}
@@ -79,8 +87,12 @@ public:
   }
 
   /// \brief Records the segmentType, that this section belongs to
-  void setSegment(const Layout::SegmentType segmentType) {
+  void setSegmentType(const Layout::SegmentType segmentType) {
     this->_segmentType = segmentType;
+  }
+
+  void setMergedSection(MergedSections<ELFT> *ms) {
+    _parent = ms;
   }
 
   static bool classof(const Chunk<ELFT> *c) {
@@ -89,6 +101,8 @@ public:
   }
 
 protected:
+  /// \brief MergedSections this Section is a member of, or nullptr.
+  MergedSections<ELFT> *_parent;
   /// \brief ELF SHF_* flags.
   uint64_t _flags;
   /// \brief The size of each entity.
@@ -113,6 +127,7 @@ public:
     this->setOrder(order);
     switch (contentType) {
     case DefinedAtom::typeCode:
+    case DefinedAtom::typeDataFast:
     case DefinedAtom::typeData:
     case DefinedAtom::typeConstant:
     case DefinedAtom::typeGOT:
@@ -121,8 +136,10 @@ public:
     case DefinedAtom::typeTLVInitialData:
       this->_type = SHT_PROGBITS;
       break;
-    case DefinedAtom::typeZeroFill:
+
     case DefinedAtom::typeTLVInitialZeroFill:
+    case DefinedAtom::typeZeroFillFast:
+    case DefinedAtom::typeZeroFill:
       this->_type = SHT_NOBITS;
       break;
     }
@@ -153,7 +170,7 @@ public:
   // \brief Append an atom to a Section. The atom gets pushed into a vector
   // contains the atom, the atom file offset, the atom virtual address
   // the atom file offset is aligned appropriately as set by the Reader
-  const AtomLayout &appendAtom(const Atom *atom);
+  virtual const AtomLayout &appendAtom(const Atom *atom);
 
   /// \brief Set the virtual address of each Atom in the Section. This
   /// routine gets called after the linker fixes up the virtual address
@@ -187,7 +204,8 @@ public:
 
   /// \brief Does the Atom occupy any disk space
   bool occupiesNoDiskSpace() const {
-    return _contentType == DefinedAtom::typeZeroFill;
+    return ((_contentType == DefinedAtom::typeZeroFill) ||
+            (_contentType == DefinedAtom::typeZeroFillFast));
   }
 
   /// \brief The permission of the section is the most permissive permission
@@ -255,8 +273,9 @@ const AtomLayout &AtomSection<ELFT>::appendAtom(const Atom *atom) {
   case Atom::definitionRegular:
     switch(definedAtom->contentType()) {
     case DefinedAtom::typeCode:
-    case DefinedAtom::typeData:
     case DefinedAtom::typeConstant:
+    case DefinedAtom::typeData:
+    case DefinedAtom::typeDataFast:
     case DefinedAtom::typeGOT:
     case DefinedAtom::typeStub:
     case DefinedAtom::typeResolver:
@@ -269,8 +288,9 @@ const AtomLayout &AtomSection<ELFT>::appendAtom(const Atom *atom) {
                                    << "Adding atom: " << atom->name() << "@"
                                    << fOffset << "\n");
       break;
-    case DefinedAtom::typeZeroFill:
     case DefinedAtom::typeTLVInitialZeroFill:
+    case DefinedAtom::typeZeroFill:
+    case DefinedAtom::typeZeroFillFast:
       _atoms.push_back(new (_alloc) AtomLayout(atom, mOffset, 0));
       this->_msize = mOffset + definedAtom->size();
       break;
@@ -295,20 +315,22 @@ const AtomLayout &AtomSection<ELFT>::appendAtom(const Atom *atom) {
 ///        and printing purposes
 template <class ELFT> StringRef Section<ELFT>::segmentKindToStr() const {
   switch(_segmentType) {
+  case llvm::ELF::PT_DYNAMIC:
+    return "DYNAMIC";
   case llvm::ELF::PT_INTERP:
     return "INTERP";
   case llvm::ELF::PT_LOAD:
     return "LOAD";
   case llvm::ELF::PT_GNU_EH_FRAME:
     return "EH_FRAME";
-  case llvm::ELF::PT_NOTE:
-    return "NOTE";
-  case llvm::ELF::PT_DYNAMIC:
-    return "DYNAMIC";
   case llvm::ELF::PT_GNU_RELRO:
     return "RELRO";
+  case llvm::ELF::PT_NOTE:
+    return "NOTE";
   case llvm::ELF::PT_NULL:
     return "NULL";
+  case llvm::ELF::PT_TLS:
+    return "TLS";
   default:
     return "UNKNOWN";
   }
@@ -324,7 +346,8 @@ void AtomSection<ELFT>::write(ELFWriter *writer,
                     llvm::dbgs() << "Writing atom: " << ai->_atom->name()
                                  << " | " << ai->_fileOffset << "\n");
     const DefinedAtom *definedAtom = cast<DefinedAtom>(ai->_atom);
-    if (definedAtom->contentType() == DefinedAtom::typeZeroFill)
+    if ((definedAtom->contentType() == DefinedAtom::typeZeroFill) ||
+        (definedAtom->contentType() == DefinedAtom::typeZeroFillFast))
       continue;
     // Copy raw content of atom to file buffer.
     llvm::ArrayRef<uint8_t> content = definedAtom->rawContent();
@@ -332,7 +355,7 @@ void AtomSection<ELFT>::write(ELFWriter *writer,
     if (contentSize == 0)
       continue;
     uint8_t *atomContent = chunkBuffer + ai->_fileOffset;
-    std::copy_n(content.data(), contentSize, atomContent);
+    std::memcpy(atomContent, content.data(), contentSize);
     const TargetRelocationHandler<ELFT> &relHandler =
         this->_targetInfo.template getTargetHandler<ELFT>()
         .getRelocationHandler();
@@ -384,6 +407,10 @@ public:
   inline void setAddr(uint64_t addr) {
     _virtualAddr = addr;
   }
+
+  void setLink(uint64_t link) { _link = link; }
+
+  void setInfo(uint64_t info) { _shInfo = info; }
 
   inline range<ChunkIter> sections() { return _sections; }
 
@@ -451,7 +478,7 @@ MergedSections<ELFT>::MergedSections(StringRef name)
   ,_align2(0)
   ,_kind(0)
   ,_type(0) { }
-  
+
 
 template<class ELFT>
 void
@@ -459,12 +486,14 @@ MergedSections<ELFT>::appendSection(Chunk<ELFT> *c) {
   if (c->align2() > _align2)
     _align2 = c->align2();
   if (const auto section = dyn_cast<Section<ELFT>>(c)) {
+    assert(!_link && "Section already has a link!");
     _link = section->getLink();
     _shInfo = section->getInfo();
     _entSize = section->getEntSize();
     _type = section->getType();
     if (_flags < section->getFlags())
       _flags = section->getFlags();
+    section->setMergedSection(this);
   }
   _kind = c->kind();
   _sections.push_back(c);
@@ -474,7 +503,8 @@ MergedSections<ELFT>::appendSection(Chunk<ELFT> *c) {
 template<class ELFT>
 class StringTable : public Section<ELFT> {
 public:
-  StringTable(const ELFTargetInfo &, const char *str, int32_t order);
+  StringTable(const ELFTargetInfo &, const char *str, int32_t order,
+              bool dynamic = false);
 
   uint64_t addString(StringRef symname);
 
@@ -501,7 +531,7 @@ private:
 
 template <class ELFT>
 StringTable<ELFT>::StringTable(const ELFTargetInfo &ti, const char *str,
-                               int32_t order)
+                               int32_t order, bool dynamic)
     : Section<ELFT>(ti, str) {
   // the string table has a NULL entry for which
   // add an empty string
@@ -510,6 +540,10 @@ StringTable<ELFT>::StringTable(const ELFTargetInfo &ti, const char *str,
   this->_align2 = 1;
   this->setOrder(order);
   this->_type = SHT_STRTAB;
+  if (dynamic) {
+    this->_flags = SHF_ALLOC;
+    this->_msize = this->_fsize;
+  }
 }
 
 template <class ELFT> uint64_t StringTable<ELFT>::addString(StringRef symname) {
@@ -521,6 +555,8 @@ template <class ELFT> uint64_t StringTable<ELFT>::addString(StringRef symname) {
     _strings.push_back(symname);
     uint64_t offset = this->_fsize;
     this->_fsize += symname.size() + 1;
+    if (this->_flags & SHF_ALLOC)
+      this->_msize = this->_fsize;
     _stringMap[symname] = offset;
     return offset;
   }
@@ -543,12 +579,48 @@ void StringTable<ELFT>::write(ELFWriter *writer,
 /// \brief The SymbolTable class represents the symbol table in a ELF file
 template<class ELFT>
 class SymbolTable : public Section<ELFT> {
-public:
+  typedef typename llvm::object::ELFDataTypeTypedefHelper<ELFT>::Elf_Addr
+      Elf_Addr;
   typedef llvm::object::Elf_Sym_Impl<ELFT> Elf_Sym;
 
+  struct SymbolEntry {
+    SymbolEntry(const Atom *a, const Elf_Sym &sym,
+                const AtomLayout *layout) : _atom(a), _symbol(sym),
+                                            _atomLayout(layout) {}
+    SymbolEntry() : _atom(nullptr) {}
+
+    const Atom *_atom;
+    Elf_Sym _symbol;
+    const AtomLayout *_atomLayout;
+  };
+
+public:
   SymbolTable(const ELFTargetInfo &ti, const char *str, int32_t order);
 
-  void addSymbol(const Atom *atom, int32_t sectionIndex, uint64_t addr = 0);
+  void addSymbol(const Atom *atom, int32_t sectionIndex,
+                 uint64_t addr = 0, const AtomLayout *layout=nullptr);
+
+  /// \brief Get the symbol table index for an Atom. If it's not in the symbol
+  /// table, return STN_UNDEF.
+  uint32_t getSymbolTableIndex(const Atom *a) const {
+    auto se = std::find_if(_symbolTable.begin(), _symbolTable.end(),
+                           [=](const SymbolEntry &se) {
+      return se._atom == a;
+    });
+    if (se == _symbolTable.end())
+      return STN_UNDEF;
+    return std::distance(_symbolTable.begin(), se);
+  }
+
+  virtual void addAbsoluteAtom(Elf_Sym &sym, const AbsoluteAtom *aa,
+                               int64_t addr);
+
+  virtual void addDefinedAtom(Elf_Sym &sym, const DefinedAtom *da,
+                              int64_t addr);
+
+  virtual void addUndefinedAtom(Elf_Sym &sym, const UndefinedAtom *ua);
+
+  virtual void addSharedLibAtom(Elf_Sym &sym, const SharedLibraryAtom *sla);
 
   virtual void finalize();
 
@@ -556,113 +628,171 @@ public:
 
   void setStringSection(StringTable<ELFT> *s) { _stringSection = s; }
 
-private:
-  StringTable<ELFT> *_stringSection;
-  std::vector<Elf_Sym*> _symbolTable;
+  StringTable<ELFT> *getStringTable() const { return _stringSection; }
+
+protected:
   llvm::BumpPtrAllocator _symbolAllocate;
+  StringTable<ELFT> *_stringSection;
+  std::vector<SymbolEntry> _symbolTable;
 };
 
-/// ELF Symbol Table 
+/// ELF Symbol Table
 template <class ELFT>
 SymbolTable<ELFT>::SymbolTable(const ELFTargetInfo &ti, const char *str,
                                int32_t order)
     : Section<ELFT>(ti, str) {
   this->setOrder(order);
-  Elf_Sym *symbol = new (_symbolAllocate.Allocate<Elf_Sym>()) Elf_Sym;
-  memset((void *)symbol, 0, sizeof(Elf_Sym));
-  _symbolTable.push_back(symbol);
+  Elf_Sym symbol;
+  std::memset(&symbol, 0, sizeof(Elf_Sym));
+  _symbolTable.push_back(SymbolEntry(nullptr, symbol, nullptr));
   this->_entSize = sizeof(Elf_Sym);
   this->_fsize = sizeof(Elf_Sym);
-  this->_align2 = sizeof(void *);
+  this->_align2 = sizeof(Elf_Addr);
   this->_type = SHT_SYMTAB;
 }
 
 template <class ELFT>
-void SymbolTable<ELFT>::addSymbol(const Atom *atom, int32_t sectionIndex,
-                                  uint64_t addr) {
-  Elf_Sym *symbol = new(_symbolAllocate.Allocate<Elf_Sym>()) Elf_Sym;
+void SymbolTable<ELFT>::addDefinedAtom(Elf_Sym &sym, const DefinedAtom *da,
+                                       int64_t addr) {
   unsigned char binding = 0, type = 0;
-  symbol->st_name = _stringSection->addString(atom->name());
-  symbol->st_size = 0;
-  symbol->st_shndx = sectionIndex;
-  symbol->st_value = 0;
-  symbol->st_other = llvm::ELF::STV_DEFAULT;
-  if (const DefinedAtom *da = dyn_cast<const DefinedAtom>(atom)){
-    symbol->st_size = da->size();
-    DefinedAtom::ContentType ct;
-    switch (ct = da->contentType()){
-    case DefinedAtom::typeCode:
-    case DefinedAtom::typeStub:
-      symbol->st_value = addr;
-      type = llvm::ELF::STT_FUNC;
-      break;
-    case DefinedAtom::typeResolver:
-      symbol->st_value = addr;
-      type = llvm::ELF::STT_GNU_IFUNC;
-      break;
-    case DefinedAtom::typeData:
-    case DefinedAtom::typeConstant:
-    case DefinedAtom::typeGOT:
-      symbol->st_value = addr;
-      type = llvm::ELF::STT_OBJECT;
-      break;
-    case DefinedAtom::typeZeroFill:
-      type = llvm::ELF::STT_OBJECT;
-      symbol->st_value = addr;
-      break;
-    case DefinedAtom::typeTLVInitialData:
-    case DefinedAtom::typeTLVInitialZeroFill:
-      type = llvm::ELF::STT_TLS;
-      symbol->st_value = addr;
-      break;
-    default:
-      type = llvm::ELF::STT_NOTYPE;
-    }
-    if (da->scope() == DefinedAtom::scopeTranslationUnit)
-      binding = llvm::ELF::STB_LOCAL;
-    else
-      binding = llvm::ELF::STB_GLOBAL;
-  } else if (const AbsoluteAtom *aa = dyn_cast<const AbsoluteAtom>(atom)){
+  sym.st_size = da->size();
+  DefinedAtom::ContentType ct;
+  switch (ct = da->contentType()) {
+  case DefinedAtom::typeCode:
+  case DefinedAtom::typeStub:
+    sym.st_value = addr;
+    type = llvm::ELF::STT_FUNC;
+    break;
+  case DefinedAtom::typeResolver:
+    sym.st_value = addr;
+    type = llvm::ELF::STT_GNU_IFUNC;
+    break;
+  case DefinedAtom::typeDataFast:
+  case DefinedAtom::typeData:
+  case DefinedAtom::typeConstant:
+    sym.st_value = addr;
     type = llvm::ELF::STT_OBJECT;
-    symbol->st_shndx = llvm::ELF::SHN_ABS;
-    switch (aa->scope()) {
-    case AbsoluteAtom::scopeLinkageUnit:
-      symbol->st_other = llvm::ELF::STV_HIDDEN;
-      binding = llvm::ELF::STB_LOCAL;
-      break;
-    case AbsoluteAtom::scopeTranslationUnit:
-      binding = llvm::ELF::STB_LOCAL;
-      break;
-    case AbsoluteAtom::scopeGlobal:
-      binding = llvm::ELF::STB_GLOBAL;
-      break;
-    }
-    symbol->st_value = addr;
-  } else {
-   symbol->st_value = 0;
-   type = llvm::ELF::STT_NOTYPE;
-   binding = llvm::ELF::STB_WEAK;
+    break;
+  case DefinedAtom::typeGOT:
+    sym.st_value = addr;
+    type = llvm::ELF::STT_NOTYPE;
+    break;
+  case DefinedAtom::typeZeroFill:
+  case DefinedAtom::typeZeroFillFast:
+    type = llvm::ELF::STT_OBJECT;
+    sym.st_value = addr;
+    break;
+  case DefinedAtom::typeTLVInitialData:
+  case DefinedAtom::typeTLVInitialZeroFill:
+    type = llvm::ELF::STT_TLS;
+    sym.st_value = addr;
+    break;
+  default:
+    type = llvm::ELF::STT_NOTYPE;
   }
-  symbol->setBindingAndType(binding, type);
-  _symbolTable.push_back(symbol);
+  if (da->customSectionName() == da->name())
+    type = llvm::ELF::STT_SECTION;
+
+  if (da->scope() == DefinedAtom::scopeTranslationUnit)
+    binding = llvm::ELF::STB_LOCAL;
+  else
+    binding = llvm::ELF::STB_GLOBAL;
+
+  sym.setBindingAndType(binding, type);
+}
+
+template <class ELFT>
+void SymbolTable<ELFT>::addAbsoluteAtom(Elf_Sym &sym, const AbsoluteAtom *aa,
+                                        int64_t addr) {
+  unsigned char binding = 0, type = 0;
+  type = llvm::ELF::STT_OBJECT;
+  sym.st_shndx = llvm::ELF::SHN_ABS;
+  switch (aa->scope()) {
+  case AbsoluteAtom::scopeLinkageUnit:
+    sym.st_other = llvm::ELF::STV_HIDDEN;
+    binding = llvm::ELF::STB_LOCAL;
+    break;
+  case AbsoluteAtom::scopeTranslationUnit:
+    binding = llvm::ELF::STB_LOCAL;
+    break;
+  case AbsoluteAtom::scopeGlobal:
+    binding = llvm::ELF::STB_GLOBAL;
+    break;
+  }
+  sym.st_value = addr;
+  sym.setBindingAndType(binding, type);
+}
+
+template <class ELFT>
+void SymbolTable<ELFT>::addSharedLibAtom(Elf_Sym &sym,
+                                         const SharedLibraryAtom *aa) {
+  unsigned char binding = 0, type = 0;
+  type = llvm::ELF::STT_FUNC;
+  sym.st_shndx = llvm::ELF::SHN_UNDEF;
+  binding = llvm::ELF::STB_GLOBAL;
+  sym.setBindingAndType(binding, type);
+}
+
+template <class ELFT>
+void SymbolTable<ELFT>::addUndefinedAtom(Elf_Sym &sym,
+                                         const UndefinedAtom *ua) {
+  unsigned char binding = 0, type = 0;
+  sym.st_value = 0;
+  type = llvm::ELF::STT_NOTYPE;
+  binding = llvm::ELF::STB_WEAK;
+  sym.setBindingAndType(binding, type);
+}
+
+/// Add a symbol to the symbol Table, definedAtoms which get added to the symbol
+/// section dont have their virtual addresses set at the time of adding the
+/// symbol to the symbol table(Example: dynamic symbols), the addresses needs
+/// to be updated in the table before writing the dynamic symbol table
+/// information
+template <class ELFT>
+void SymbolTable<ELFT>::addSymbol(const Atom *atom, int32_t sectionIndex,
+                                  uint64_t addr, const AtomLayout *atomLayout) {
+  Elf_Sym symbol;
+  symbol.st_name = _stringSection->addString(atom->name());
+  symbol.st_size = 0;
+  symbol.st_shndx = sectionIndex;
+  symbol.st_value = 0;
+  symbol.st_other = llvm::ELF::STV_DEFAULT;
+
+  // Add all the atoms
+  if (const DefinedAtom *da = dyn_cast<const DefinedAtom>(atom))
+    addDefinedAtom(symbol, da, addr);
+  else if (const AbsoluteAtom *aa = dyn_cast<const AbsoluteAtom>(atom))
+    addAbsoluteAtom(symbol, aa, addr);
+  else if (isa<const SharedLibraryAtom>(atom))
+    addSharedLibAtom(symbol, llvm::dyn_cast<SharedLibraryAtom>(atom));
+  else
+    addUndefinedAtom(symbol, llvm::dyn_cast<UndefinedAtom>(atom));
+
+  _symbolTable.push_back(SymbolEntry(atom, symbol, atomLayout));
   this->_fsize += sizeof(Elf_Sym);
+  if (this->_flags & SHF_ALLOC)
+    this->_msize = this->_fsize;
 }
 
 template <class ELFT> void SymbolTable<ELFT>::finalize() {
   // sh_info should be one greater than last symbol with STB_LOCAL binding
   // we sort the symbol table to keep all local symbols at the beginning
   std::stable_sort(_symbolTable.begin(), _symbolTable.end(),
-  [](const Elf_Sym *A, const Elf_Sym *B) {
-     return A->getBinding() < B->getBinding();
+                   [](const SymbolEntry & A, const SymbolEntry & B) {
+    return A._symbol.getBinding() < B._symbol.getBinding();
   });
   uint16_t shInfo = 0;
-  for (auto i : _symbolTable) {
-    if (i->getBinding() != llvm::ELF::STB_LOCAL)
+  for (const auto &i : _symbolTable) {
+    if (i._symbol.getBinding() != llvm::ELF::STB_LOCAL)
       break;
     shInfo++;
   }
   this->_info = shInfo;
   this->_link = _stringSection->ordinal();
+  if (this->_parent) {
+    this->_parent->setInfo(this->_info);
+    this->_parent->setLink(this->_link);
+  }
 }
 
 template <class ELFT>
@@ -670,18 +800,42 @@ void SymbolTable<ELFT>::write(ELFWriter *writer,
                               llvm::FileOutputBuffer &buffer) {
   uint8_t *chunkBuffer = buffer.getBufferStart();
   uint8_t *dest = chunkBuffer + this->fileOffset();
-  for (auto sti : _symbolTable) {
-    memcpy(dest, sti, sizeof(Elf_Sym));
+  for (const auto &sti : _symbolTable) {
+    memcpy(dest, &sti._symbol, sizeof(Elf_Sym));
     dest += sizeof(Elf_Sym);
   }
 }
+
+template <class ELFT> class DynamicSymbolTable : public SymbolTable<ELFT> {
+public:
+  DynamicSymbolTable(const ELFTargetInfo &ti, const char *str, int32_t order)
+      : SymbolTable<ELFT>(ti, str, order) {
+    this->_type = SHT_DYNSYM;
+    this->_flags = SHF_ALLOC;
+    this->_msize = this->_fsize;
+  }
+
+  virtual void finalize() {
+    // Defined symbols which have been added into the dynamic symbol table
+    // dont have their addresses known until addresses have been assigned
+    // so lets update the symbol values after they have got assigned
+    for (auto &ste: this->_symbolTable) {
+      const AtomLayout *atomLayout = ste._atomLayout;
+      if (!atomLayout)
+        continue;
+      ste._symbol.st_value = atomLayout->_virtualAddr;
+    }
+    SymbolTable<ELFT>::finalize();
+  }
+
+};
 
 template <class ELFT> class RelocationTable : public Section<ELFT> {
 public:
   typedef llvm::object::Elf_Rel_Impl<ELFT, true> Elf_Rela;
 
   RelocationTable(const ELFTargetInfo &ti, StringRef str, int32_t order)
-      : Section<ELFT>(ti, str) {
+      : Section<ELFT>(ti, str), _symbolTable(nullptr) {
     this->setOrder(order);
     this->_entSize = sizeof(Elf_Rela);
     this->_align2 = llvm::alignOf<Elf_Rela>();
@@ -689,10 +843,36 @@ public:
     this->_flags = SHF_ALLOC;
   }
 
-  void addRelocation(const DefinedAtom &da, const Reference &r) {
-    _relocs.emplace_back(da, r);
+  /// \returns the index of the relocation added.
+  uint32_t addRelocation(const DefinedAtom &da, const Reference &r) {
+    _relocs.emplace_back(&da, &r);
     this->_fsize = _relocs.size() * sizeof(Elf_Rela);
     this->_msize = this->_fsize;
+    return _relocs.size() - 1;
+  }
+
+  bool getRelocationIndex(const Reference &r, uint32_t &res) {
+    auto rel = std::find_if(
+        _relocs.begin(), _relocs.end(),
+        [&](const std::pair<const DefinedAtom *, const Reference *> &p) {
+      if (p.second == &r)
+        return true;
+      return false;
+    });
+    if (rel == _relocs.end())
+      return false;
+    res = std::distance(_relocs.begin(), rel);
+    return true;
+  }
+
+  void setSymbolTable(const SymbolTable<ELFT> *symbolTable) {
+    _symbolTable = symbolTable;
+  }
+
+  virtual void finalize() {
+    this->_link = _symbolTable ? _symbolTable->ordinal() : 0;
+    if (this->_parent)
+      this->_parent->setLink(this->_link);
   }
 
   virtual void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
@@ -700,21 +880,208 @@ public:
     uint8_t *dest = chunkBuffer + this->fileOffset();
     for (const auto &rel : _relocs) {
       Elf_Rela *r = reinterpret_cast<Elf_Rela *>(dest);
-      r->setSymbolAndType(0, rel.second.kind());
+      uint32_t index =
+          _symbolTable ? _symbolTable->getSymbolTableIndex(rel.second->target())
+                       : (uint32_t) STN_UNDEF;
+      r->setSymbolAndType(index, rel.second->kind());
       r->r_offset =
-          writer->addressOfAtom(&rel.first) + rel.second.offsetInAtom();
+          writer->addressOfAtom(rel.first) + rel.second->offsetInAtom();
       r->r_addend =
-          writer->addressOfAtom(rel.second.target()) + rel.second.addend();
+          writer->addressOfAtom(rel.second->target()) + rel.second->addend();
       dest += sizeof(Elf_Rela);
-      DEBUG_WITH_TYPE("ELFRelocationTable", llvm::dbgs()
-                      << "IRELATIVE relocation at " << rel.first.name() << "@"
-                      << r->r_offset << " to " << rel.second.target()->name()
-                      << "@" << r->r_addend << "\n");
+      DEBUG_WITH_TYPE("ELFRelocationTable",
+                      llvm::dbgs()
+                      << kindOrUnknown(this->_targetInfo.stringFromRelocKind(
+                             rel.second->kind())) << " relocation at "
+                      << rel.first->name() << "@" << r->r_offset << " to "
+                      << rel.second->target()->name() << "@" << r->r_addend
+                      << "\n");
     }
   }
 
 private:
-  std::vector<std::pair<const DefinedAtom &, const Reference &>> _relocs;
+  std::vector<std::pair<const DefinedAtom *, const Reference *>> _relocs;
+  const SymbolTable<ELFT> *_symbolTable;
+};
+
+template <class ELFT> class HashSection;
+
+template <class ELFT> class DynamicTable : public Section<ELFT> {
+  typedef llvm::object::Elf_Dyn_Impl<ELFT> Elf_Dyn;
+  typedef std::vector<Elf_Dyn> EntriesT;
+
+public:
+  DynamicTable(const ELFTargetInfo &ti, StringRef str, int32_t order)
+      : Section<ELFT>(ti, str) {
+    this->setOrder(order);
+    this->_entSize = sizeof(Elf_Dyn);
+    this->_align2 = llvm::alignOf<Elf_Dyn>();
+    // Reserve space for the DT_NULL entry.
+    this->_fsize = sizeof(Elf_Dyn);
+    this->_msize = sizeof(Elf_Dyn);
+    this->_type = SHT_DYNAMIC;
+    this->_flags = SHF_ALLOC;
+    _layout = &ti.getTargetHandler<ELFT>().targetLayout();
+  }
+
+  range<typename EntriesT::iterator> entries() { return _entries; }
+
+  /// \returns the index of the entry.
+  std::size_t addEntry(Elf_Dyn e) {
+    _entries.push_back(e);
+    this->_fsize = (_entries.size() * sizeof(Elf_Dyn)) + sizeof(Elf_Dyn);
+    this->_msize = this->_fsize;
+    return _entries.size() - 1;
+  }
+
+  void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
+    uint8_t *chunkBuffer = buffer.getBufferStart();
+    uint8_t *dest = chunkBuffer + this->fileOffset();
+    // Add the null entry.
+    Elf_Dyn d;
+    d.d_tag = 0;
+    d.d_un.d_val = 0;
+    _entries.push_back(d);
+    std::memcpy(dest, _entries.data(), this->_fsize);
+  }
+
+  void createDefaultEntries() {
+    Elf_Dyn dyn;
+    dyn.d_un.d_val = 0;
+
+    dyn.d_tag = DT_HASH;
+    _dt_hash = addEntry(dyn);
+    dyn.d_tag = DT_STRTAB;
+    _dt_strtab = addEntry(dyn);
+    dyn.d_tag = DT_SYMTAB;
+    _dt_symtab = addEntry(dyn);
+    dyn.d_tag = DT_STRSZ;
+    _dt_strsz = addEntry(dyn);
+    dyn.d_tag = DT_SYMENT;
+    _dt_syment = addEntry(dyn);
+    if (_layout->hasDynamicRelocationTable()) {
+      dyn.d_tag = DT_RELA;
+      _dt_rela = addEntry(dyn);
+      dyn.d_tag = DT_RELASZ;
+      _dt_relasz = addEntry(dyn);
+      dyn.d_tag = DT_RELAENT;
+      _dt_relaent = addEntry(dyn);
+    }
+    if (_layout->hasPLTRelocationTable()) {
+      dyn.d_tag = DT_PLTRELSZ;
+      _dt_pltrelsz = addEntry(dyn);
+      dyn.d_tag = DT_PLTGOT;
+      _dt_pltgot = addEntry(dyn);
+      dyn.d_tag = DT_PLTREL;
+      dyn.d_un.d_val = DT_RELA;
+      _dt_pltrel = addEntry(dyn);
+      dyn.d_un.d_val = 0;
+      dyn.d_tag = DT_JMPREL;
+      _dt_jmprel = addEntry(dyn);
+    }
+  }
+
+  void updateDynamicTable(HashSection<ELFT> *hashTable,
+                          DynamicSymbolTable<ELFT> *dynamicSymbolTable) {
+    StringTable<ELFT> *dynamicStringTable =
+        dynamicSymbolTable->getStringTable();
+    _entries[_dt_hash].d_un.d_val = hashTable->virtualAddr();
+    _entries[_dt_strtab].d_un.d_val = dynamicStringTable->virtualAddr();
+    _entries[_dt_symtab].d_un.d_val = dynamicSymbolTable->virtualAddr();
+    _entries[_dt_strsz].d_un.d_val = dynamicStringTable->memSize();
+    _entries[_dt_syment].d_un.d_val = dynamicSymbolTable->getEntSize();
+    if (_layout->hasDynamicRelocationTable()) {
+      auto relaTbl = _layout->getDynamicRelocationTable();
+      _entries[_dt_rela].d_un.d_val = relaTbl->virtualAddr();
+      _entries[_dt_relasz].d_un.d_val = relaTbl->memSize();
+      _entries[_dt_relaent].d_un.d_val = relaTbl->getEntSize();
+    }
+    if (_layout->hasPLTRelocationTable()) {
+      auto relaTbl = _layout->getPLTRelocationTable();
+      _entries[_dt_jmprel].d_un.d_val = relaTbl->virtualAddr();
+      _entries[_dt_pltrelsz].d_un.d_val = relaTbl->memSize();
+      auto gotplt = _layout->findOutputSection(".got.plt");
+      _entries[_dt_pltgot].d_un.d_val = gotplt->virtualAddr();
+    }
+  }
+
+private:
+  EntriesT _entries;
+  std::size_t _dt_hash;
+  std::size_t _dt_strtab;
+  std::size_t _dt_symtab;
+  std::size_t _dt_rela;
+  std::size_t _dt_relasz;
+  std::size_t _dt_relaent;
+  std::size_t _dt_strsz;
+  std::size_t _dt_syment;
+  std::size_t _dt_pltrelsz;
+  std::size_t _dt_pltgot;
+  std::size_t _dt_pltrel;
+  std::size_t _dt_jmprel;
+  TargetLayout<ELFT> *_layout;
+};
+
+template <class ELFT> class InterpSection : public Section<ELFT> {
+public:
+  InterpSection(const ELFTargetInfo &ti, StringRef str, int32_t order,
+                StringRef interp)
+      : Section<ELFT>(ti, str),
+        _interp(interp){
+    this->setOrder(order);
+    this->_align2 = 1;
+    // + 1 for null term.
+    this->_fsize = interp.size() + 1;
+    this->_msize = this->_fsize;
+    this->_type = SHT_PROGBITS;
+    this->_flags = SHF_ALLOC;
+  }
+
+  void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
+    uint8_t *chunkBuffer = buffer.getBufferStart();
+    uint8_t *dest = chunkBuffer + this->fileOffset();
+    std::memcpy(dest, _interp.data(), _interp.size());
+  }
+
+private:
+  StringRef _interp;
+};
+
+template <class ELFT> class HashSection : public Section<ELFT> {
+  struct SymbolTableEntry {
+    StringRef _name;
+    uint32_t _index;
+  };
+
+public:
+  HashSection(const ELFTargetInfo &ti, StringRef name, int32_t order)
+      : Section<ELFT>(ti, name) {
+    this->setOrder(order);
+    this->_align2 = 4; // Alignment of Elf32_Word.
+    this->_type = SHT_HASH;
+    this->_flags = SHF_ALLOC;
+    // The size of nbucket and nchain.
+    this->_fsize = 8;
+    this->_msize = this->_fsize;
+  }
+
+  void addSymbol(StringRef name, uint32_t index) {
+    SymbolTableEntry ste;
+    ste._name = name;
+    ste._index = index;
+    _entries.push_back(ste);
+  }
+
+  virtual void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
+    uint8_t *chunkBuffer = buffer.getBufferStart();
+    uint8_t *dest = chunkBuffer + this->fileOffset();
+    // TODO: Calculate hashes and build the hash table in finalize. We currently
+    // just emit an empty hash table so the dynamic loader doesn't crash.
+    std::memset(dest, 0, this->_fsize);
+  }
+
+private:
+  std::vector<SymbolTableEntry> _entries;
 };
 } // end namespace elf
 } // end namespace lld

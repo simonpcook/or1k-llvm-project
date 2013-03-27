@@ -13,6 +13,7 @@
 #include "TargetHandler.h"
 
 #include "lld/Core/LLVM.h"
+#include "lld/ReaderWriter/Simple.h"
 
 #include "llvm/ADT/ArrayRef.h"
 
@@ -34,27 +35,22 @@ public:
 
   ELFReference(const Elf_Rela *rela, uint64_t offset, const Atom *target)
       : _target(target), _targetSymbolIndex(rela->getSymbol()),
-        _offsetInAtom(offset), _addend(rela->r_addend),
-        _kind((Kind) rela->getType()) {
+        _offsetInAtom(offset), _addend(rela->r_addend) {
+    _kind = (Kind) rela->getType();
   }
 
   ELFReference(const Elf_Rel *rel, uint64_t offset, const Atom *target)
       : _target(target), _targetSymbolIndex(rel->getSymbol()),
-        _offsetInAtom(offset), _addend(0), _kind((Kind) rel->getType()) {
+        _offsetInAtom(offset), _addend(0) {
+    _kind = (Kind) rel->getType();
   }
 
   ELFReference(Kind kind)
-      : _target(nullptr), _targetSymbolIndex(0), _offsetInAtom(0), _addend(0),
-        _kind(kind) {
+      : _target(nullptr), _targetSymbolIndex(0), _offsetInAtom(0), _addend(0) {
+    _kind = kind;
   }
 
   virtual uint64_t offsetInAtom() const { return _offsetInAtom; }
-
-  virtual Kind kind() const { return _kind; }
-
-  virtual void setKind(Kind kind) {
-    _kind = kind;
-  }
 
   virtual const Atom *target() const {
     return _target;
@@ -80,7 +76,6 @@ private:
   uint64_t _targetSymbolIndex;
   uint64_t _offsetInAtom;
   Addend _addend;
-  Kind _kind;
 };
 
 /// \brief These atoms store symbols that are fixed to a particular address.
@@ -183,10 +178,8 @@ public:
     , _contentData(contentData)
     , _referenceStartIndex(referenceStart)
     , _referenceEndIndex(referenceEnd)
-    , _referenceList(referenceList) {
-    static uint64_t orderNumber = 0;
-    _ordinal = ++orderNumber;
-  }
+    , _referenceList(referenceList)
+    , _targetAtomHandler(nullptr) {}
 
   virtual const ELFFile<ELFT> &file() const {
     return _owningFile;
@@ -200,12 +193,28 @@ public:
     return _ordinal;
   }
 
+  const Elf_Sym *symbol() const { return _symbol; }
+
+  const Elf_Shdr *section() const { return _section; }
+
   virtual uint64_t size() const {
     // Common symbols are not allocated in object files,
     // so use st_size to tell how many bytes are required.
-    if ((_symbol->getType() == llvm::ELF::STT_COMMON)
-        || _symbol->st_shndx == llvm::ELF::SHN_COMMON)
-      return (uint64_t)_symbol->st_size;
+
+    // Treat target defined common symbols
+    if ((_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
+         _symbol->st_shndx < llvm::ELF::SHN_HIPROC)) {
+      if (!_targetAtomHandler) {
+        const ELFTargetInfo &eti = (_owningFile.getTargetInfo());
+        TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
+        _targetAtomHandler = &TargetHandler.targetAtomHandler();
+      }
+      if (_targetAtomHandler->getType(_symbol) == llvm::ELF::STT_COMMON)
+        return (uint64_t) _symbol->st_size;
+    }
+    if ((_symbol->getType() == llvm::ELF::STT_COMMON) ||
+        _symbol->st_shndx == llvm::ELF::SHN_COMMON)
+      return (uint64_t) _symbol->st_size;
 
     return _contentData.size();
   }
@@ -229,8 +238,22 @@ public:
     if (_symbol->getBinding() == llvm::ELF::STB_WEAK)
       return mergeAsWeak;
 
-    if ((_symbol->getType() == llvm::ELF::STT_COMMON)
-        || _symbol->st_shndx == llvm::ELF::SHN_COMMON)
+    // If the symbol is a target defined and if the target
+    // defines the symbol as a common symbol treat it as
+    // mergeTentative
+    if ((_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
+         _symbol->st_shndx < llvm::ELF::SHN_HIPROC)) {
+      if (!_targetAtomHandler) {
+        const ELFTargetInfo &eti = (_owningFile.getTargetInfo());
+        TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
+        _targetAtomHandler = &TargetHandler.targetAtomHandler();
+      }
+      if (_targetAtomHandler->getType(_symbol) == llvm::ELF::STT_COMMON)
+        return mergeAsTentative;
+    }
+
+    if ((_symbol->getType() == llvm::ELF::STT_COMMON) ||
+        _symbol->st_shndx == llvm::ELF::SHN_COMMON)
       return mergeAsTentative;
 
     return mergeNo;
@@ -240,15 +263,16 @@ public:
     ContentType ret = typeUnknown;
     uint64_t flags = _section->sh_flags;
 
-    if (_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
-        _symbol->st_shndx < llvm::ELF::SHN_HIPROC) {
-      const ELFTargetInfo &eti =
-          (_owningFile.getTargetInfo());
-      TargetHandler<ELFT> &TargetHandler =
-          eti.getTargetHandler<ELFT>();
-      TargetAtomHandler<ELFT> &elfAtomHandler =
-          TargetHandler.targetAtomHandler();
-      return elfAtomHandler.contentType(this);
+    // Treat target defined symbols
+    if ((_section->sh_flags & llvm::ELF::SHF_MASKPROC) ||
+        ((_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
+          _symbol->st_shndx < llvm::ELF::SHN_HIPROC))) {
+      if (!_targetAtomHandler) {
+        const ELFTargetInfo &eti = (_owningFile.getTargetInfo());
+        TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
+        _targetAtomHandler = &TargetHandler.targetAtomHandler();
+      }
+      return _targetAtomHandler->contentType(this);
     }
 
     if (_section->sh_flags ==
@@ -303,8 +327,21 @@ public:
   virtual Alignment alignment() const {
     // Unallocated common symbols specify their alignment constraints in
     // st_value.
-    if ((_symbol->getType() == llvm::ELF::STT_COMMON)
-        || _symbol->st_shndx == llvm::ELF::SHN_COMMON) {
+
+    // Treat target defined common symbols
+    if ((_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
+         _symbol->st_shndx < llvm::ELF::SHN_HIPROC)) {
+      if (!_targetAtomHandler) {
+        const ELFTargetInfo &eti = (_owningFile.getTargetInfo());
+        TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
+        _targetAtomHandler = &TargetHandler.targetAtomHandler();
+      }
+      if (_targetAtomHandler->getType(_symbol) == llvm::ELF::STT_COMMON)
+        return Alignment(llvm::Log2_64(_symbol->st_value));
+    }
+
+    if ((_symbol->getType() == llvm::ELF::STT_COMMON) ||
+        _symbol->st_shndx == llvm::ELF::SHN_COMMON) {
       return Alignment(llvm::Log2_64(_symbol->st_value));
     }
     return Alignment(llvm::Log2_64(_section->sh_addralign),
@@ -338,6 +375,16 @@ public:
 
   virtual ContentPermissions permissions() const {
     uint64_t flags = _section->sh_flags;
+    // Treat target defined symbols
+    if ((_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
+         _symbol->st_shndx < llvm::ELF::SHN_HIPROC)) {
+      if (!_targetAtomHandler) {
+        const ELFTargetInfo &eti = (_owningFile.getTargetInfo());
+        TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
+        _targetAtomHandler = &TargetHandler.targetAtomHandler();
+      }
+      return (_targetAtomHandler->contentPermissions(this));
+    }
     switch (_section->sh_type) {
     // permRW_L is for sections modified by the runtime
     // loader.
@@ -425,8 +472,9 @@ public:
     _referenceEndIndex = _referenceList.size();
   }
 
-private:
+  void setOrdinal(uint64_t ord) { _ordinal = ord; }
 
+private:
   const ELFFile<ELFT> &_owningFile;
   StringRef _symbolName;
   StringRef _sectionName;
@@ -439,6 +487,8 @@ private:
   unsigned int _referenceStartIndex;
   unsigned int _referenceEndIndex;
   std::vector<ELFReference<ELFT> *> &_referenceList;
+  // Cached size of the TLS segment.
+  mutable TargetAtomHandler<ELFT> *_targetAtomHandler;
 };
 
 /// \brief This atom stores mergeable Strings
@@ -450,10 +500,7 @@ public:
                const Elf_Shdr *section, llvm::ArrayRef<uint8_t> contentData,
                uint64_t offset)
       : _owningFile(file), _sectionName(sectionName), _section(section),
-        _contentData(contentData), _offset(offset) {
-    static uint64_t orderNumber = 0;
-    _ordinal = ++orderNumber;
-  }
+        _contentData(contentData), _offset(offset) {}
 
   virtual const class ELFFile<ELFT> &file() const {
     return _owningFile;
@@ -566,6 +613,141 @@ private:
   StringRef _loadName;
   const Elf_Sym *_symbol;
 };
+
+class GOTAtom : public SimpleDefinedAtom {
+  StringRef _section;
+
+public:
+  GOTAtom(const File &f, StringRef secName)
+      : SimpleDefinedAtom(f), _section(secName) {
+  }
+
+  virtual Scope scope() const { return scopeTranslationUnit; }
+
+  virtual SectionChoice sectionChoice() const { return sectionCustomRequired; }
+
+  virtual StringRef customSectionName() const { return _section; }
+
+  virtual ContentType contentType() const { return typeGOT; }
+
+  virtual uint64_t size() const { return rawContent().size(); }
+
+  virtual ContentPermissions permissions() const { return permRW_; }
+
+  virtual ArrayRef<uint8_t> rawContent() const = 0;
+
+  virtual Alignment alignment() const {
+    // The alignment should be 8 byte aligned
+    return Alignment(3);
+  }
+
+#ifndef NDEBUG
+  virtual StringRef name() const { return _name; }
+
+  std::string _name;
+#else
+  virtual StringRef name() const { return ""; }
+#endif
+};
+
+class PLTAtom : public SimpleDefinedAtom {
+  StringRef _section;
+
+public:
+  PLTAtom(const File &f, StringRef secName)
+      : SimpleDefinedAtom(f), _section(secName) {
+  }
+
+  virtual Scope scope() const { return scopeTranslationUnit; }
+
+  virtual SectionChoice sectionChoice() const { return sectionCustomRequired; }
+
+  virtual StringRef customSectionName() const { return _section; }
+
+  virtual ContentType contentType() const { return typeStub; }
+
+  virtual uint64_t size() const { return rawContent().size(); }
+
+  virtual ContentPermissions permissions() const { return permR_X; }
+
+  virtual ArrayRef<uint8_t> rawContent() const = 0;
+
+  virtual Alignment alignment() const {
+    return Alignment(4); // 16
+  }
+
+#ifndef NDEBUG
+  virtual StringRef name() const { return _name; }
+
+  std::string _name;
+#else
+  virtual StringRef name() const { return ""; }
+#endif
+};
+
+class PLT0Atom : public PLTAtom {
+
+public:
+  PLT0Atom(const File &f) : PLTAtom(f, ".plt") {
+#ifndef NDEBUG
+    _name = ".PLT0";
+#endif
+  }
+};
+
+class GLOBAL_OFFSET_TABLEAtom : public SimpleDefinedAtom {
+public:
+  GLOBAL_OFFSET_TABLEAtom(const File &f) : SimpleDefinedAtom(f) {}
+
+  virtual StringRef name() const { return "_GLOBAL_OFFSET_TABLE_"; }
+
+  virtual Scope scope() const { return scopeGlobal; }
+
+  virtual SectionChoice sectionChoice() const { return sectionCustomRequired; }
+
+  virtual StringRef customSectionName() const { return ".got.plt"; }
+
+  virtual ContentType contentType() const { return typeGOT; }
+
+  virtual uint64_t size() const { return 0; }
+
+  virtual ContentPermissions permissions() const { return permRW_; }
+
+  virtual Alignment alignment() const {
+    // Needs 8 byte alignment
+    return Alignment(3);
+  }
+
+  virtual ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>();
+  }
+};
+
+class TLSGETADDRAtom : public SimpleDefinedAtom {
+public:
+  TLSGETADDRAtom(const File &f) : SimpleDefinedAtom(f) {}
+
+  virtual StringRef name() const { return "__tls_get_addr"; }
+
+  virtual Scope scope() const { return scopeGlobal; }
+
+  virtual Merge merge() const { return mergeAsWeak; }
+
+  virtual SectionChoice sectionChoice() const { return sectionCustomRequired; }
+
+  virtual StringRef customSectionName() const { return ".text"; }
+
+  virtual ContentType contentType() const { return typeCode; }
+
+  virtual uint64_t size() const { return 0; }
+
+  virtual ContentPermissions permissions() const { return permR_X; }
+
+  virtual Alignment alignment() const { return Alignment(0); }
+
+  virtual ArrayRef<uint8_t> rawContent() const { return ArrayRef<uint8_t>(); }
+};
+
 } // end namespace elf
 } // end namespace lld
 

@@ -544,6 +544,7 @@ public:
   ObjCMethodDecl *getClassMethod(Selector Sel) const {
     return getMethod(Sel, false/*isInstance*/);
   }
+  bool HasUserDeclaredSetterMethod(const ObjCPropertyDecl *P) const;
   ObjCIvarDecl *getIvarDecl(IdentifierInfo *Id) const;
 
   ObjCPropertyDecl *FindPropertyDeclaration(IdentifierInfo *PropertyId) const;
@@ -651,6 +652,10 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
     /// completed by the external AST source when required.
     mutable bool ExternallyCompleted : 1;
 
+    /// \brief Indicates that the ivar cache does not yet include ivars
+    /// declared in the implementation.
+    mutable bool IvarListMissingImplementation : 1;
+
     /// \brief The location of the superclass, if any.
     SourceLocation SuperClassLoc;
     
@@ -660,7 +665,8 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
     SourceLocation EndLoc; 
 
     DefinitionData() : Definition(), SuperClass(), CategoryList(), IvarList(), 
-                       ExternallyCompleted() { }
+                       ExternallyCompleted(),
+                       IvarListMissingImplementation(true) { }
   };
 
   ObjCInterfaceDecl(DeclContext *DC, SourceLocation atLoc, IdentifierInfo *Id,

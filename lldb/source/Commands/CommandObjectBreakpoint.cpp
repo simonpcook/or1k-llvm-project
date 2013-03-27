@@ -189,7 +189,7 @@ public:
                     if (!success)
                         error.SetErrorStringWithFormat ("Invalid boolean value for on-catch option: '%s'", option_arg);
                 }
-
+                break;
                 case 'i':
                 {
                     m_ignore_count = Args::StringToUInt32(option_arg, UINT32_MAX, 0);
@@ -617,7 +617,7 @@ CommandObjectBreakpointSet::CommandOptions::g_option_table[] =
         "The breakpoint stops only if this condition expression evaluates to true."},
 
     { LLDB_OPT_SET_ALL, false, "thread-index", 'x', required_argument, NULL, 0, eArgTypeThreadIndex,
-        "The breakpoint stops only for the thread whose index matches this argument."},
+        "The breakpoint stops only for the thread whose indeX matches this argument."},
 
     { LLDB_OPT_SET_ALL, false, "thread-id", 't', required_argument, NULL, 0, eArgTypeThreadID,
         "The breakpoint stops only for the thread whose TID matches this argument."},
@@ -646,7 +646,7 @@ CommandObjectBreakpointSet::CommandOptions::g_option_table[] =
         "Set the breakpoint by address, at the specified address."},
 
     { LLDB_OPT_SET_3, true, "name", 'n', required_argument, NULL, CommandCompletions::eSymbolCompletion, eArgTypeFunctionName,
-        "Set the breakpoint by function name.  Can be repeated multiple times to make one breakpoint for multiple snames" },
+        "Set the breakpoint by function name.  Can be repeated multiple times to make one breakpoint for multiple names" },
 
     { LLDB_OPT_SET_4, true, "fullname", 'F', required_argument, NULL, CommandCompletions::eSymbolCompletion, eArgTypeFullName,
         "Set the breakpoint by fully qualified function names. For C++ this means namespaces and all arguments, and "
@@ -989,7 +989,7 @@ CommandObjectBreakpointModify::CommandOptions::g_option_table[] =
 {
 { LLDB_OPT_SET_ALL, false, "ignore-count", 'i', required_argument, NULL, 0, eArgTypeCount, "Set the number of times this breakpoint is skipped before stopping." },
 { LLDB_OPT_SET_ALL, false, "one-shot",     'o', required_argument, NULL, 0, eArgTypeBoolean, "The breakpoint is deleted the first time it stop causes a stop." },
-{ LLDB_OPT_SET_ALL, false, "thread-index", 'x', required_argument, NULL, 0, eArgTypeThreadIndex, "The breakpoint stops only for the thread whose indeX matches this argument."},
+{ LLDB_OPT_SET_ALL, false, "thread-index", 'x', required_argument, NULL, 0, eArgTypeThreadIndex, "The breakpoint stops only for the thread whose index matches this argument."},
 { LLDB_OPT_SET_ALL, false, "thread-id",    't', required_argument, NULL, 0, eArgTypeThreadID, "The breakpoint stops only for the thread whose TID matches this argument."},
 { LLDB_OPT_SET_ALL, false, "thread-name",  'T', required_argument, NULL, 0, eArgTypeThreadName, "The breakpoint stops only for the thread whose thread name matches this argument."},
 { LLDB_OPT_SET_ALL, false, "queue-name",   'q', required_argument, NULL, 0, eArgTypeQueueName, "The breakpoint stops only for threads in the queue whose name is given by this argument."},
@@ -1113,10 +1113,30 @@ public:
                              "Disable the specified breakpoint(s) without removing it/them.  If no breakpoints are specified, disable them all.",
                              NULL)
     {
+        SetHelpLong(
+"Disable the specified breakpoint(s) without removing it/them.  \n\
+If no breakpoints are specified, disable them all.\n\
+\n\
+Note: disabling a breakpoint will cause none of its locations to be hit\n\
+regardless of whether they are enabled or disabled.  So the sequence: \n\
+\n\
+    (lldb) break disable 1\n\
+    (lldb) break enable 1.1\n\
+\n\
+will NOT cause location 1.1 to get hit.  To achieve that, do:\n\
+\n\
+    (lldb) break disable 1.*\n\
+    (lldb) break enable 1.1\n\
+\n\
+The first command disables all the locations of breakpoint 1, \n\
+the second re-enables the first location."
+                    );
+        
         CommandArgumentEntry arg;
         CommandObject::AddIDsArgumentData(arg, eArgTypeBreakpointID, eArgTypeBreakpointIDRange);
         // Add the entry for the first argument for this command to the object's arguments vector.
-        m_arguments.push_back (arg);   
+        m_arguments.push_back (arg);
+
     }
 
 

@@ -75,23 +75,25 @@ ClangExpressionDeclMap::~ClangExpressionDeclMap()
 
 bool 
 ClangExpressionDeclMap::WillParse(ExecutionContext &exe_ctx)
-{    
+{
+    ClangASTMetrics::ClearLocalCounters();
+    
     EnableParserVars();
     m_parser_vars->m_exe_ctx = exe_ctx;
     
     Target *target = exe_ctx.GetTargetPtr();
     if (exe_ctx.GetFramePtr())
         m_parser_vars->m_sym_ctx = exe_ctx.GetFramePtr()->GetSymbolContext(lldb::eSymbolContextEverything);
-    else if (exe_ctx.GetThreadPtr())
+    else if (exe_ctx.GetThreadPtr() && exe_ctx.GetThreadPtr()->GetStackFrameAtIndex(0))
         m_parser_vars->m_sym_ctx = exe_ctx.GetThreadPtr()->GetStackFrameAtIndex(0)->GetSymbolContext(lldb::eSymbolContextEverything);
     else if (exe_ctx.GetProcessPtr())
     {
-        m_parser_vars->m_sym_ctx.Clear();
+        m_parser_vars->m_sym_ctx.Clear(true);
         m_parser_vars->m_sym_ctx.target_sp = exe_ctx.GetTargetSP();
     }
     else if (target)
     {
-        m_parser_vars->m_sym_ctx.Clear();
+        m_parser_vars->m_sym_ctx.Clear(true);
         m_parser_vars->m_sym_ctx.target_sp = exe_ctx.GetTargetSP();
     }
     
@@ -111,6 +113,11 @@ ClangExpressionDeclMap::WillParse(ExecutionContext &exe_ctx)
 void 
 ClangExpressionDeclMap::DidParse()
 {
+    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+
+    if (log)
+        ClangASTMetrics::DumpCounters(log);
+    
     if (m_parser_vars.get())
     {
         for (size_t entity_index = 0, num_entities = m_found_entities.GetSize();
@@ -696,11 +703,32 @@ FindCodeSymbolInContext
     SymbolContextList &sc_list
 )
 {
+    SymbolContextList temp_sc_list;
     if (sym_ctx.module_sp)
-       sym_ctx.module_sp->FindSymbolsWithNameAndType(name, eSymbolTypeCode, sc_list);
+        sym_ctx.module_sp->FindSymbolsWithNameAndType(name, eSymbolTypeAny, temp_sc_list);
     
-    if (!sc_list.GetSize())
-        sym_ctx.target_sp->GetImages().FindSymbolsWithNameAndType(name, eSymbolTypeCode, sc_list);
+    if (!sc_list.GetSize() && sym_ctx.target_sp)
+        sym_ctx.target_sp->GetImages().FindSymbolsWithNameAndType(name, eSymbolTypeAny, temp_sc_list);
+
+    unsigned temp_sc_list_size = temp_sc_list.GetSize();
+    for (unsigned i = 0; i < temp_sc_list_size; i++)
+    {
+        SymbolContext sym_ctx;
+        temp_sc_list.GetContextAtIndex(i, sym_ctx);
+        if (sym_ctx.symbol)
+        {
+            switch (sym_ctx.symbol->GetType())
+            {
+                case eSymbolTypeCode:
+                case eSymbolTypeResolver:
+                    sc_list.Append(sym_ctx);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
 }
 
 bool
@@ -724,7 +752,7 @@ ClangExpressionDeclMap::GetFunctionAddress
     SymbolContextList sc_list;
     
     FindCodeSymbolInContext(name, m_parser_vars->m_sym_ctx, sc_list);
-        
+
     if (!sc_list.GetSize())
     {
         // We occasionally get debug information in which a const function is reported 
@@ -746,23 +774,25 @@ ClangExpressionDeclMap::GetFunctionAddress
     
     if (!sc_list.GetSize())
         return false;
-    
+
     SymbolContext sym_ctx;
     sc_list.GetContextAtIndex(0, sym_ctx);
-    
+
     const Address *func_so_addr = NULL;
-    
+    bool is_indirect_function = false;
+
     if (sym_ctx.function)
         func_so_addr = &sym_ctx.function->GetAddressRange().GetBaseAddress();
-    else if (sym_ctx.symbol)
+    else if (sym_ctx.symbol) {
         func_so_addr = &sym_ctx.symbol->GetAddress();
-    else
+        is_indirect_function = sym_ctx.symbol->IsIndirect();
+    } else
         return false;
-    
+
     if (!func_so_addr || !func_so_addr->IsValid())
         return false;
-    
-    func_addr = func_so_addr->GetCallableLoadAddress (target);
+
+    func_addr = func_so_addr->GetCallableLoadAddress (target, is_indirect_function);
 
     return true;
 }
@@ -795,7 +825,11 @@ ClangExpressionDeclMap::GetSymbolAddress (Target &target, Process *process, cons
                 case eSymbolTypeTrampoline:
                     symbol_load_addr = sym_address->GetCallableLoadAddress (&target);
                     break;
-                    
+
+                case eSymbolTypeResolver:
+                    symbol_load_addr = sym_address->GetCallableLoadAddress (&target, true);
+                    break;
+
                 case eSymbolTypeData:
                 case eSymbolTypeRuntime:
                 case eSymbolTypeVariable:
@@ -1031,6 +1065,21 @@ ClangExpressionDeclMap::LookupDecl (clang::NamedDecl *decl, ClangExpressionVaria
             
     ClangExpressionVariableSP expr_var_sp (m_found_entities.GetVariable(decl, GetParserID()));
     ClangExpressionVariableSP persistent_var_sp (m_parser_vars->m_persistent_vars->GetVariable(decl, GetParserID()));
+    
+    if (isa<FunctionDecl>(decl))
+    {
+        ClangExpressionVariableSP entity_sp(m_found_entities.GetVariable(decl, GetParserID()));
+        
+        if (!entity_sp)
+            return Value();
+        
+        // We know m_parser_vars is valid since we searched for the variable by
+        // its NamedDecl
+        
+        ClangExpressionVariable::ParserVars *parser_vars = entity_sp->GetParserVars(GetParserID());
+        
+        return *parser_vars->m_lldb_value;
+    }
     
     if (expr_var_sp)
     {
@@ -2021,7 +2070,7 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
                 {
                     if (value_byte_size != value_data_extractor.GetByteSize())
                     {
-                        err.SetErrorStringWithFormat ("Size mismatch for %s: %llu versus %llu",
+                        err.SetErrorStringWithFormat ("Size mismatch for %s: %" PRIu64 " versus %" PRIu64,
                                                       name.GetCString(),
                                                       (uint64_t)value_data_extractor.GetByteSize(),
                                                       (uint64_t)value_byte_size);
@@ -2114,155 +2163,208 @@ ClangExpressionDeclMap::DoMaterializeOneVariable
         break;
     case Value::eValueTypeScalar:
         {
-            if (location_value->GetContextType() != Value::eContextTypeRegisterInfo)
+            if (location_value->GetContextType() == Value::eContextTypeRegisterInfo)
             {
-                StreamString ss;
-                location_value->Dump(&ss);
+                RegisterInfo *reg_info = location_value->GetRegisterInfo();
                 
-                err.SetErrorStringWithFormat ("%s is a scalar of unhandled type: %s", 
-                                              name.GetCString(), 
-                                              ss.GetString().c_str());
-                return false;
-            }
-            
-            RegisterInfo *reg_info = location_value->GetRegisterInfo();
-            
-            if (!reg_info)
-            {
-                err.SetErrorStringWithFormat ("Couldn't get the register information for %s", 
-                                              name.GetCString());
-                return false;
-            }
-            
-            RegisterValue reg_value;
-
-            RegisterContext *reg_ctx = m_parser_vars->m_exe_ctx.GetRegisterContext();
-            
-            if (!reg_ctx)
-            {
-                err.SetErrorStringWithFormat ("Couldn't read register context to read %s from %s", 
-                                              name.GetCString(), 
-                                              reg_info->name);
-                return false;
-            }
-            
-            uint32_t register_byte_size = reg_info->byte_size;
-            
-            if (dematerialize)
-            {
-                if (is_reference)
-                    return true; // reference types don't need demateralizing
-                
-                // Get the location of the spare memory area out of the variable's live data.
-                
-                if (!expr_var->m_live_sp)
+                if (!reg_info)
                 {
-                    err.SetErrorStringWithFormat("Couldn't find the memory area used to store %s", name.GetCString());
+                    err.SetErrorStringWithFormat ("Couldn't get the register information for %s", 
+                                                  name.GetCString());
                     return false;
                 }
-                
-                if (expr_var->m_live_sp->GetValue().GetValueAddressType() != eAddressTypeLoad)
-                {
-                    err.SetErrorStringWithFormat("The address of the memory area for %s is in an incorrect format", name.GetCString());
-                    return false;
-                }
-                
-                Scalar &reg_addr = expr_var->m_live_sp->GetValue().GetScalar();
-                
-                err = reg_ctx->ReadRegisterValueFromMemory (reg_info, 
-                                                            reg_addr.ULongLong(), 
-                                                            value_byte_size, 
-                                                            reg_value);
-                if (err.Fail())
-                    return false;
-
-                if (!reg_ctx->WriteRegister (reg_info, reg_value))
-                {
-                    err.SetErrorStringWithFormat ("Couldn't write %s to register %s", 
-                                                  name.GetCString(), 
-                                                  reg_info->name);
-                    return false;
-                }
-                
-                if (!DeleteLiveMemoryForExpressionVariable(*process, expr_var, err))
-                    return false;
-            }
-            else
-            {
-                Error write_error;
                 
                 RegisterValue reg_value;
+
+                RegisterContext *reg_ctx = m_parser_vars->m_exe_ctx.GetRegisterContext();
                 
-                if (!reg_ctx->ReadRegister (reg_info, reg_value))
+                if (!reg_ctx)
                 {
-                    err.SetErrorStringWithFormat ("Couldn't read %s from %s", 
+                    err.SetErrorStringWithFormat ("Couldn't read register context to read %s from %s", 
                                                   name.GetCString(), 
                                                   reg_info->name);
                     return false;
                 }
-
-                if (is_reference)
+                
+                uint32_t register_byte_size = reg_info->byte_size;
+                
+                if (dematerialize)
                 {
-                    write_error = reg_ctx->WriteRegisterValueToMemory(reg_info, 
-                                                                      addr,
-                                                                      process->GetAddressByteSize(), 
-                                                                      reg_value);
+                    if (is_reference)
+                        return true; // reference types don't need demateralizing
                     
-                    if (!write_error.Success())
+                    // Get the location of the spare memory area out of the variable's live data.
+                    
+                    if (!expr_var->m_live_sp)
                     {
-                        err.SetErrorStringWithFormat ("Couldn't write %s from register %s to the target: %s", 
-                                                      name.GetCString(),
-                                                      reg_info->name,
+                        err.SetErrorStringWithFormat("Couldn't find the memory area used to store %s", name.GetCString());
+                        return false;
+                    }
+                    
+                    if (expr_var->m_live_sp->GetValue().GetValueAddressType() != eAddressTypeLoad)
+                    {
+                        err.SetErrorStringWithFormat("The address of the memory area for %s is in an incorrect format", name.GetCString());
+                        return false;
+                    }
+                    
+                    Scalar &reg_addr = expr_var->m_live_sp->GetValue().GetScalar();
+                    
+                    err = reg_ctx->ReadRegisterValueFromMemory (reg_info, 
+                                                                reg_addr.ULongLong(), 
+                                                                value_byte_size, 
+                                                                reg_value);
+                    if (err.Fail())
+                        return false;
+
+                    if (!reg_ctx->WriteRegister (reg_info, reg_value))
+                    {
+                        err.SetErrorStringWithFormat ("Couldn't write %s to register %s", 
+                                                      name.GetCString(), 
+                                                      reg_info->name);
+                        return false;
+                    }
+                    
+                    if (!DeleteLiveMemoryForExpressionVariable(*process, expr_var, err))
+                        return false;
+                }
+                else
+                {
+                    Error write_error;
+                    
+                    RegisterValue reg_value;
+                    
+                    if (!reg_ctx->ReadRegister (reg_info, reg_value))
+                    {
+                        err.SetErrorStringWithFormat ("Couldn't read %s from %s", 
+                                                      name.GetCString(), 
+                                                      reg_info->name);
+                        return false;
+                    }
+
+                    if (is_reference)
+                    {
+                        write_error = reg_ctx->WriteRegisterValueToMemory(reg_info, 
+                                                                          addr,
+                                                                          process->GetAddressByteSize(), 
+                                                                          reg_value);
+                        
+                        if (!write_error.Success())
+                        {
+                            err.SetErrorStringWithFormat ("Couldn't write %s from register %s to the target: %s", 
+                                                          name.GetCString(),
+                                                          reg_info->name,
+                                                          write_error.AsCString());
+                            return false;
+                        }
+                        
+                        return true;
+                    }
+                    
+                    // Allocate a spare memory area to place the register's contents into.  This memory area will be pointed to by the slot in the
+                    // struct.
+                    
+                    if (!CreateLiveMemoryForExpressionVariable (*process, expr_var, err))
+                        return false;
+                    
+                    // Now write the location of the area into the struct.
+                    
+                    Scalar &reg_addr = expr_var->m_live_sp->GetValue().GetScalar();
+                    
+                    if (!process->WriteScalarToMemory (addr, 
+                                                      reg_addr, 
+                                                      process->GetAddressByteSize(), 
+                                                      write_error))
+                    {
+                        err.SetErrorStringWithFormat ("Couldn't write %s to the target: %s", 
+                                                      name.GetCString(), 
                                                       write_error.AsCString());
                         return false;
                     }
                     
-                    return true;
-                }
-                
-                // Allocate a spare memory area to place the register's contents into.  This memory area will be pointed to by the slot in the
-                // struct.
-                
-                if (!CreateLiveMemoryForExpressionVariable (*process, expr_var, err))
-                    return false;
-                
-                // Now write the location of the area into the struct.
-                
-                Scalar &reg_addr = expr_var->m_live_sp->GetValue().GetScalar();
-                
-                if (!process->WriteScalarToMemory (addr, 
-                                                   reg_addr, 
-                                                   process->GetAddressByteSize(), 
-                                                   write_error))
-                {
-                    err.SetErrorStringWithFormat ("Couldn't write %s to the target: %s", 
-                                                  name.GetCString(), 
-                                                  write_error.AsCString());
-                    return false;
-                }
-                
-                if (value_byte_size > register_byte_size)
-                {
-                    err.SetErrorStringWithFormat ("%s is too big to store in %s", 
-                                                  name.GetCString(), 
-                                                  reg_info->name);
-                    return false;
-                }
+                    if (value_byte_size > register_byte_size)
+                    {
+                        err.SetErrorStringWithFormat ("%s is too big to store in %s", 
+                                                      name.GetCString(), 
+                                                      reg_info->name);
+                        return false;
+                    }
 
-                if (!reg_ctx->ReadRegister (reg_info, reg_value))
-                {
-                    err.SetErrorStringWithFormat ("Couldn't read %s from %s", 
-                                                  name.GetCString(), 
-                                                  reg_info->name);
-                    return false;
+                    if (!reg_ctx->ReadRegister (reg_info, reg_value))
+                    {
+                        err.SetErrorStringWithFormat ("Couldn't read %s from %s", 
+                                                      name.GetCString(), 
+                                                      reg_info->name);
+                        return false;
+                    }
+                    
+                    err = reg_ctx->WriteRegisterValueToMemory (reg_info, 
+                                                              reg_addr.ULongLong(), 
+                                                              value_byte_size, 
+                                                              reg_value);
+                    if (err.Fail())
+                        return false;
                 }
-                
-                err = reg_ctx->WriteRegisterValueToMemory (reg_info, 
-                                                           reg_addr.ULongLong(), 
-                                                           value_byte_size, 
-                                                           reg_value);
-                if (err.Fail())
-                    return false;
+            }
+            else
+            {
+                // The location_value is a scalar. We need to make space for it
+                // or delete the space we made previously.
+                if (dematerialize)
+                {
+                    if (!DeleteLiveMemoryForExpressionVariable(*process, expr_var, err))
+                        return false;
+                }
+                else
+                {
+                    DataExtractor value_data_extractor;
+
+                    if (location_value->GetData(value_data_extractor))
+                    {
+                        if (value_byte_size != value_data_extractor.GetByteSize())
+                        {
+                            err.SetErrorStringWithFormat ("Size mismatch for %s: %" PRIu64 " versus %" PRIu64,
+                                                          name.GetCString(),
+                                                          (uint64_t)value_data_extractor.GetByteSize(),
+                                                          (uint64_t)value_byte_size);
+                            return false;
+                        }
+
+                        if (!CreateLiveMemoryForExpressionVariable(*process, expr_var, err))
+                            return false;
+
+                        Scalar &buf_addr = expr_var->m_live_sp->GetValue().GetScalar();
+
+                        Error write_error;
+
+                        if (!process->WriteMemory(buf_addr.ULongLong(),
+                                                  value_data_extractor.GetDataStart(),
+                                                  value_data_extractor.GetByteSize(),
+                                                  write_error))
+                        {
+                            err.SetErrorStringWithFormat ("Couldn't write %s to the target: %s",
+                                                          name.GetCString(),
+                                                          write_error.AsCString());
+                            return false;
+                        }
+
+                        if (!process->WriteScalarToMemory(addr,
+                                                          buf_addr,
+                                                          process->GetAddressByteSize(),
+                                                          write_error))
+                        {
+                            err.SetErrorStringWithFormat ("Couldn't write the address of %s to the target: %s",
+                                                          name.GetCString(),
+                                                          write_error.AsCString());
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        err.SetErrorStringWithFormat ("%s is marked as a scalar value but doesn't contain any data",
+                                                      name.GetCString());
+                        return false;
+                    }
+                }
             }
         }
     }
@@ -2467,6 +2569,7 @@ ClangExpressionDeclMap::FindGlobalDataSymbol (Target &target,
                     case eSymbolTypeCompiler:
                     case eSymbolTypeInstrumentation:
                     case eSymbolTypeUndefined:
+                    case eSymbolTypeResolver:
                         break;
                 }
             }
@@ -2523,6 +2626,8 @@ void
 ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context)
 {
     assert (m_ast_context);
+    
+    ClangASTMetrics::RegisterVisibleQuery();
     
     const ConstString name(context.m_decl_name.getAsString().c_str());
     
@@ -2672,7 +2777,7 @@ ClangExpressionDeclMap::FindExternalVisibleDecls (NameSearchContext &context,
                 if (!class_type.IsValid())
                     return;
                 
-                TypeSourceInfo *type_source_info = m_ast_context->CreateTypeSourceInfo(QualType::getFromOpaquePtr(class_type.GetOpaqueQualType()));
+                TypeSourceInfo *type_source_info = m_ast_context->getTrivialTypeSourceInfo(QualType::getFromOpaquePtr(class_type.GetOpaqueQualType()));
                 
                 if (!type_source_info)
                     return;
@@ -3540,7 +3645,9 @@ ClangExpressionDeclMap::AddOneFunction (NameSearchContext &context,
     // only valid for Functions, not for Symbols
     void *fun_opaque_type = NULL;
     ASTContext *fun_ast_context = NULL;
-    
+
+    bool is_indirect_function = false;
+
     if (fun)
     {
         Type *fun_type = fun->GetType();
@@ -3586,6 +3693,7 @@ ClangExpressionDeclMap::AddOneFunction (NameSearchContext &context,
     {
         fun_address = &symbol->GetAddress();
         fun_decl = context.AddGenericFunDecl();
+        is_indirect_function = symbol->IsIndirect();
     }
     else
     {
@@ -3596,9 +3704,22 @@ ClangExpressionDeclMap::AddOneFunction (NameSearchContext &context,
     
     Target *target = m_parser_vars->m_exe_ctx.GetTargetPtr();
 
-    lldb::addr_t load_addr = fun_address->GetCallableLoadAddress(target);
-    fun_location->SetValueType(Value::eValueTypeLoadAddress);
-    fun_location->GetScalar() = load_addr;
+    lldb::addr_t load_addr = fun_address->GetCallableLoadAddress(target, is_indirect_function);
+    
+    if (load_addr != LLDB_INVALID_ADDRESS)
+    {
+        fun_location->SetValueType(Value::eValueTypeLoadAddress);
+        fun_location->GetScalar() = load_addr;
+    }
+    else
+    {
+        // We have to try finding a file address.
+        
+        lldb::addr_t file_addr = fun_address->GetFileAddress();
+        
+        fun_location->SetValueType(Value::eValueTypeFileAddress);
+        fun_location->GetScalar() = file_addr;
+    }
     
     ClangExpressionVariableSP entity(m_found_entities.CreateVariable (m_parser_vars->m_exe_ctx.GetBestExecutionContextScope (),
                                                                       m_parser_vars->m_target_info.byte_order,

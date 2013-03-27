@@ -22,12 +22,14 @@
 
 #include "clang/AST/ASTContext.h"
 
-#include "lldb/Core/ConstString.h"
 #include "lldb/Core/dwarf.h"
+#include "lldb/Core/ConstString.h"
+#include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Scalar.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Expression/ClangExpressionDeclMap.h"
+#include "lldb/Expression/IRExecutionUnit.h"
 #include "lldb/Expression/IRInterpreter.h"
 #include "lldb/Host/Endian.h"
 #include "lldb/Symbol/ClangASTContext.h"
@@ -38,19 +40,32 @@ using namespace llvm;
 
 static char ID;
 
-IRForTarget::StaticDataAllocator::StaticDataAllocator()
+IRForTarget::StaticDataAllocator::StaticDataAllocator(lldb_private::IRExecutionUnit &execution_unit) :
+    m_execution_unit(execution_unit),
+    m_allocation(LLDB_INVALID_ADDRESS)
 {
 }
 
-IRForTarget::StaticDataAllocator::~StaticDataAllocator()
+lldb::addr_t IRForTarget::StaticDataAllocator::Allocate()
 {
+    lldb_private::Error err;
+    
+    if (m_allocation != LLDB_INVALID_ADDRESS)
+    {
+        m_execution_unit.FreeNow(m_allocation);
+        m_allocation = LLDB_INVALID_ADDRESS;
+    }
+    
+    m_allocation = m_execution_unit.WriteNow((const uint8_t*)m_stream_string.GetData(), m_stream_string.GetSize(), err);
+
+    return m_allocation;
 }
 
 IRForTarget::IRForTarget (lldb_private::ClangExpressionDeclMap *decl_map,
                           bool resolve_vars,
                           lldb_private::ExecutionPolicy execution_policy,
                           lldb::ClangExpressionVariableSP &const_result,
-                          StaticDataAllocator *data_allocator,
+                          lldb_private::IRExecutionUnit &execution_unit,
                           lldb_private::Stream *error_stream,
                           const char *func_name) :
     ModulePass(ID),
@@ -60,7 +75,7 @@ IRForTarget::IRForTarget (lldb_private::ClangExpressionDeclMap *decl_map,
     m_func_name(func_name),
     m_module(NULL),
     m_decl_map(decl_map),
-    m_data_allocator(data_allocator),
+    m_data_allocator(execution_unit),
     m_CFStringCreateWithBytes(NULL),
     m_sel_registerName(NULL),
     m_const_result(const_result),
@@ -707,7 +722,7 @@ IRForTarget::CreateResultVariable (llvm::Function &llvm_function)
     m_result_name = m_decl_map->GetPersistentResultName();
     
     if (log)
-        log->Printf("Creating a new result global: \"%s\" with size 0x%x", 
+        log->Printf("Creating a new result global: \"%s\" with size 0x%" PRIx64,
                     m_result_name.GetCString(),
                     m_result_type.GetClangTypeBitWidth() / 8);
         
@@ -1559,7 +1574,7 @@ IRForTarget::MaterializeInternalVariable (GlobalVariable *global_variable)
     if (global_variable == m_reloc_placeholder)
         return true;
     
-    uint64_t offset = m_data_allocator->GetStream().GetSize();
+    uint64_t offset = m_data_allocator.GetStream().GetSize();
     
     llvm::Type *variable_type = global_variable->getType();
     
@@ -1572,7 +1587,7 @@ IRForTarget::MaterializeInternalVariable (GlobalVariable *global_variable)
     
     const size_t mask = (align - 1);
     uint64_t aligned_offset = (offset + mask) & ~mask;
-    m_data_allocator->GetStream().PutNHex8(aligned_offset - offset, 0);
+    m_data_allocator.GetStream().PutNHex8(aligned_offset - offset, 0);
     offset = aligned_offset;
     
     lldb_private::DataBufferHeap data(size, '\0');
@@ -1581,7 +1596,7 @@ IRForTarget::MaterializeInternalVariable (GlobalVariable *global_variable)
         if (!MaterializeInitializer(data.GetBytes(), initializer))
             return false;
     
-    m_data_allocator->GetStream().Write(data.GetBytes(), data.GetByteSize());
+    m_data_allocator.GetStream().Write(data.GetBytes(), data.GetByteSize());
     
     Constant *new_pointer = BuildRelocation(variable_type, offset);
         
@@ -1674,11 +1689,11 @@ IRForTarget::MaybeHandleVariable (Value *llvm_value_ptr)
             value_type = global_variable->getType();
         }
                 
-        size_t value_size = (ast_context->getTypeSize(qual_type) + 7) / 8;
-        off_t value_alignment = (ast_context->getTypeAlign(qual_type) + 7) / 8;
+        uint64_t value_size = (ast_context->getTypeSize(qual_type) + 7ull) / 8ull;
+        off_t value_alignment = (ast_context->getTypeAlign(qual_type) + 7ull) / 8ull;
         
         if (log)
-            log->Printf("Type of \"%s\" is [clang \"%s\", llvm \"%s\"] [size %lu, align %" PRId64 "]",
+            log->Printf("Type of \"%s\" is [clang \"%s\", llvm \"%s\"] [size %" PRIu64 ", align %" PRId64 "]",
                         name.c_str(), 
                         qual_type.getAsString().c_str(), 
                         PrintType(value_type).c_str(), 
@@ -1799,17 +1814,17 @@ IRForTarget::HandleObjCClass(Value *classlist_reference)
     if (global_variable->use_begin() == global_variable->use_end())
         return false;
     
-    LoadInst *load_instruction = NULL;
-    
+    SmallVector<LoadInst *, 2> load_instructions;
+        
     for (Value::use_iterator i = global_variable->use_begin(), e = global_variable->use_end();
          i != e;
          ++i)
     {
-        if ((load_instruction = dyn_cast<LoadInst>(*i)))
-            break;
+        if (LoadInst *load_instruction = dyn_cast<LoadInst>(*i))
+            load_instructions.push_back(load_instruction);
     }
     
-    if (!load_instruction)
+    if (load_instructions.empty())
         return false;
     
     IntegerType *intptr_ty = Type::getIntNTy(m_module->getContext(),
@@ -1817,11 +1832,15 @@ IRForTarget::HandleObjCClass(Value *classlist_reference)
                                               == Module::Pointer64) ? 64 : 32);
     
     Constant *class_addr = ConstantInt::get(intptr_ty, (uint64_t)class_ptr);
-    Constant *class_bitcast = ConstantExpr::getIntToPtr(class_addr, load_instruction->getType());
     
-    load_instruction->replaceAllUsesWith(class_bitcast);
+    for (LoadInst *load_instruction : load_instructions)
+    {
+        Constant *class_bitcast = ConstantExpr::getIntToPtr(class_addr, load_instruction->getType());
     
-    load_instruction->eraseFromParent();
+        load_instruction->replaceAllUsesWith(class_bitcast);
+    
+        load_instruction->eraseFromParent();
+    }
     
     return true;
 }
@@ -1960,9 +1979,6 @@ IRForTarget::ReplaceStrings ()
 {
     lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
-    if (!m_data_allocator)
-        return true; // hope for the best; some clients may not want static allocation!
-    
     typedef std::map <GlobalVariable *, size_t> OffsetsTy;
     
     OffsetsTy offsets;
@@ -2014,9 +2030,9 @@ IRForTarget::ReplaceStrings ()
             str = gc_array->getAsString();
         }
             
-        offsets[gv] = m_data_allocator->GetStream().GetSize();
+        offsets[gv] = m_data_allocator.GetStream().GetSize();
         
-        m_data_allocator->GetStream().Write(str.c_str(), str.length() + 1);
+        m_data_allocator.GetStream().Write(str.c_str(), str.length() + 1);
     }
     
     Type *char_ptr_ty = Type::getInt8PtrTy(m_module->getContext());
@@ -2083,9 +2099,6 @@ bool
 IRForTarget::ReplaceStaticLiterals (llvm::BasicBlock &basic_block)
 {
     lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-        
-    if (!m_data_allocator)
-        return true;
     
     typedef SmallVector <Value*, 2> ConstantList;
     typedef SmallVector <llvm::Instruction*, 2> UserList;
@@ -2156,7 +2169,7 @@ IRForTarget::ReplaceStaticLiterals (llvm::BasicBlock &basic_block)
             
             lldb_private::DataBufferHeap data(operand_data_size, 0);
             
-            if (lldb::endian::InlHostByteOrder() != m_data_allocator->GetStream().GetByteOrder())
+            if (lldb::endian::InlHostByteOrder() != m_data_allocator.GetStream().GetByteOrder())
             {
                 uint8_t *data_bytes = data.GetBytes();
                 
@@ -2172,16 +2185,16 @@ IRForTarget::ReplaceStaticLiterals (llvm::BasicBlock &basic_block)
                 memcpy(data.GetBytes(), operand_raw_data, operand_data_size);
             }
             
-            uint64_t offset = m_data_allocator->GetStream().GetSize();
+            uint64_t offset = m_data_allocator.GetStream().GetSize();
             
             size_t align = m_target_data->getPrefTypeAlignment(operand_type);
             
             const size_t mask = (align - 1);
             uint64_t aligned_offset = (offset + mask) & ~mask;
-            m_data_allocator->GetStream().PutNHex8(aligned_offset - offset, 0);
+            m_data_allocator.GetStream().PutNHex8(aligned_offset - offset, 0);
             offset = aligned_offset;
             
-            m_data_allocator->GetStream().Write(data.GetBytes(), operand_data_size);
+            m_data_allocator.GetStream().Write(data.GetBytes(), operand_data_size);
             
             llvm::Type *fp_ptr_ty = operand_constant_fp->getType()->getPointerTo();
             
@@ -2603,16 +2616,13 @@ IRForTarget::BuildRelocation(llvm::Type *type,
 
 bool 
 IRForTarget::CompleteDataAllocation ()
-{
-    if (!m_data_allocator)
-        return true;
-    
+{    
     lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
-    if (!m_data_allocator->GetStream().GetSize())
+    if (!m_data_allocator.GetStream().GetSize())
         return true;
     
-    lldb::addr_t allocation = m_data_allocator->Allocate();
+    lldb::addr_t allocation = m_data_allocator.Allocate();
     
     if (log)
     {
@@ -2622,7 +2632,7 @@ IRForTarget::CompleteDataAllocation ()
             log->Printf("Failed to allocate static data");
     }
     
-    if (!allocation)
+    if (!allocation || allocation == LLDB_INVALID_ADDRESS)
         return false;
     
     IntegerType *intptr_ty = Type::getIntNTy(m_module->getContext(),

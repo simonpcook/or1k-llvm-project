@@ -34,12 +34,12 @@ public:
 
   /// \brief Describes the type of Chunk
   enum Kind {
-    K_Header, // ELF Header
-    K_ProgramHeader, // Program Header
-    K_ELFSegment, // Segment
-    K_ELFSection, // Section
-    K_AtomSection, //< A section containing atoms.
-    K_SectionHeader // Section header
+    K_Header, ///< ELF Header
+    K_ProgramHeader, ///< Program Header
+    K_ELFSegment, ///< Segment
+    K_ELFSection, ///< Section
+    K_AtomSection, ///< A section containing atoms.
+    K_SectionHeader ///< Section header
   };
   Chunk(StringRef name, Kind kind, const ELFTargetInfo &ti)
       : _name(name), _kind(kind), _fsize(0), _msize(0), _align2(0), _order(0),
@@ -69,9 +69,11 @@ public:
   uint64_t            virtualAddr() const { return _start; }
   // Does the chunk occupy memory during execution ?
   uint64_t            memSize() const { return _msize; }
-  void               setMemSize(uint64_t msize) { _msize = msize; }
+  void setMemSize(uint64_t msize) { _msize = msize; }
   // Writer the chunk
   virtual void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) = 0;
+  // Finalize the chunk before assigning offsets/virtual addresses
+  virtual void doPreFlight() = 0;
   // Finalize the chunk before writing
   virtual void finalize() = 0;
 

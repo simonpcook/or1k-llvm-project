@@ -74,15 +74,11 @@ int LoopConvertTransform::apply(const FileContentsByPath &InputStates,
   // FIXME: Do something if some replacements didn't get applied?
   LoopTool.applyAllReplacements(Rewrite.getRewriter());
 
-  collectResults(Rewrite.getRewriter(), ResultStates);
+  collectResults(Rewrite.getRewriter(), InputStates, ResultStates);
 
-  if (AcceptedChanges > 0) {
-    setChangesMade();
-  }
-
-  if (RejectedChanges > 0 || DeferredChanges > 0) {
-    setChangesNotMade();
-  }
+  setAcceptedChanges(AcceptedChanges);
+  setRejectedChanges(RejectedChanges);
+  setDeferredChanges(DeferredChanges);
 
   return 0;
 }

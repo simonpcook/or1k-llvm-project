@@ -373,6 +373,32 @@ int main(int argc_, const char **argv_) {
     }
   }
 
+  // Handle QA_OVERRIDE_GCC3_OPTIONS and CCC_ADD_ARGS, used for editing a
+  // command line behind the scenes.
+  if (const char *OverrideStr = ::getenv("QA_OVERRIDE_GCC3_OPTIONS")) {
+    // FIXME: Driver shouldn't take extra initial argument.
+    ApplyQAOverride(argv, OverrideStr, SavedStrings);
+  } else if (const char *Cur = ::getenv("CCC_ADD_ARGS")) {
+    // FIXME: Driver shouldn't take extra initial argument.
+    std::vector<const char*> ExtraArgs;
+
+    for (;;) {
+      const char *Next = strchr(Cur, ',');
+
+      if (Next) {
+        ExtraArgs.push_back(SaveStringInSet(SavedStrings,
+                                            std::string(Cur, Next)));
+        Cur = Next + 1;
+      } else {
+        if (*Cur != '\0')
+          ExtraArgs.push_back(SaveStringInSet(SavedStrings, Cur));
+        break;
+      }
+    }
+
+    argv.insert(&argv[1], ExtraArgs.begin(), ExtraArgs.end());
+  }
+
   llvm::sys::Path Path = GetExecutablePath(argv[0], CanonicalPrefixes);
 
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions;
@@ -391,7 +417,7 @@ int main(int argc_, const char **argv_) {
   // DiagnosticOptions instance.
   TextDiagnosticPrinter *DiagClient
     = new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts);
-  DiagClient->setPrefix(llvm::sys::path::stem(Path.str()));
+  DiagClient->setPrefix(llvm::sys::path::filename(Path.str()));
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
 
   DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagClient);
@@ -438,32 +464,6 @@ int main(int argc_, const char **argv_) {
   if (TheDriver.CCLogDiagnostics)
     TheDriver.CCLogDiagnosticsFilename = ::getenv("CC_LOG_DIAGNOSTICS_FILE");
 
-  // Handle QA_OVERRIDE_GCC3_OPTIONS and CCC_ADD_ARGS, used for editing a
-  // command line behind the scenes.
-  if (const char *OverrideStr = ::getenv("QA_OVERRIDE_GCC3_OPTIONS")) {
-    // FIXME: Driver shouldn't take extra initial argument.
-    ApplyQAOverride(argv, OverrideStr, SavedStrings);
-  } else if (const char *Cur = ::getenv("CCC_ADD_ARGS")) {
-    // FIXME: Driver shouldn't take extra initial argument.
-    std::vector<const char*> ExtraArgs;
-
-    for (;;) {
-      const char *Next = strchr(Cur, ',');
-
-      if (Next) {
-        ExtraArgs.push_back(SaveStringInSet(SavedStrings,
-                                            std::string(Cur, Next)));
-        Cur = Next + 1;
-      } else {
-        if (*Cur != '\0')
-          ExtraArgs.push_back(SaveStringInSet(SavedStrings, Cur));
-        break;
-      }
-    }
-
-    argv.insert(&argv[1], ExtraArgs.begin(), ExtraArgs.end());
-  }
-
   OwningPtr<Compilation> C(TheDriver.BuildCompilation(argv));
   int Res = 0;
   SmallVector<std::pair<int, const Command *>, 4> FailingCommands;
@@ -489,9 +489,6 @@ int main(int argc_, const char **argv_) {
     // In these cases, generate additional diagnostic information if possible.
     if (CommandRes < 0 || CommandRes == 70) {
       TheDriver.generateCompilationDiagnostics(*C, FailingCommand);
-
-      // FIXME: generateCompilationDiagnostics() needs to be tested when there
-      // are multiple failing commands.
       break;
     }
   }

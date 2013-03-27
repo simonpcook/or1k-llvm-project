@@ -124,7 +124,7 @@ Sema::ResolveExceptionSpec(SourceLocation Loc, const FunctionProtoType *FPT) {
     return SourceFPT;
 
   // Compute or instantiate the exception specification now.
-  if (FPT->getExceptionSpecType() == EST_Unevaluated)
+  if (SourceFPT->getExceptionSpecType() == EST_Unevaluated)
     EvaluateImplicitExceptionSpec(Loc, cast<CXXMethodDecl>(SourceDecl));
   else
     InstantiateExceptionSpec(Loc, SourceDecl);
@@ -203,10 +203,11 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
       Old->isExternC()) {
     FunctionProtoType::ExtProtoInfo EPI = NewProto->getExtProtoInfo();
     EPI.ExceptionSpecType = EST_DynamicNone;
-    QualType NewType = Context.getFunctionType(NewProto->getResultType(),
-                                               NewProto->arg_type_begin(),
-                                               NewProto->getNumArgs(),
-                                               EPI);
+    QualType NewType =
+      Context.getFunctionType(NewProto->getResultType(),
+                              ArrayRef<QualType>(NewProto->arg_type_begin(),
+                                                 NewProto->getNumArgs()),
+                              EPI);
     New->setType(NewType);
     return false;
   }
@@ -227,10 +228,11 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
 
     // Update the type of the function with the appropriate exception
     // specification.
-    QualType NewType = Context.getFunctionType(NewProto->getResultType(),
-                                               NewProto->arg_type_begin(),
-                                               NewProto->getNumArgs(),
-                                               EPI);
+    QualType NewType =
+      Context.getFunctionType(NewProto->getResultType(),
+                              ArrayRef<QualType>(NewProto->arg_type_begin(),
+                                                 NewProto->getNumArgs()),
+                              EPI);
     New->setType(NewType);
 
     // If exceptions are disabled, suppress the warning about missing
@@ -294,8 +296,8 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     SourceLocation FixItLoc;
     if (TypeSourceInfo *TSInfo = New->getTypeSourceInfo()) {
       TypeLoc TL = TSInfo->getTypeLoc().IgnoreParens();
-      if (const FunctionTypeLoc *FTLoc = dyn_cast<FunctionTypeLoc>(&TL))
-        FixItLoc = PP.getLocForEndOfToken(FTLoc->getLocalRangeEnd());
+      if (FunctionTypeLoc FTLoc = TL.getAs<FunctionTypeLoc>())
+        FixItLoc = PP.getLocForEndOfToken(FTLoc.getLocalRangeEnd());
     }
 
     if (FixItLoc.isInvalid())

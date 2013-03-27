@@ -182,6 +182,9 @@ def ext_string_too_long : Extension<"string literal of length %0 exceeds "
   "support">, InGroup<OverlengthStrings>;
 def err_character_too_large : Error<
   "character too large for enclosing character literal type">;
+def warn_c99_compat_unicode_literal : Warning<
+  "unicode literals are incompatible with C99">,
+  InGroup<C99Compat>, DefaultIgnore;
 def warn_cxx98_compat_unicode_literal : Warning<
   "unicode literals are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
@@ -253,9 +256,10 @@ def pp_pragma_sysheader_in_main_file : Warning<
 def pp_poisoning_existing_macro : Warning<"poisoning existing macro">;
 def pp_out_of_date_dependency : Warning<
   "current file is older than dependency %0">;
-def pp_undef_builtin_macro : Warning<"undefining builtin macro">;
-def pp_redef_builtin_macro : Warning<"redefining builtin macro">,
-  InGroup<DiagGroup<"builtin-macro-redefined">>;
+def ext_pp_undef_builtin_macro : ExtWarn<"undefining builtin macro">,
+  InGroup<BuiltinMacroRedefined>;
+def ext_pp_redef_builtin_macro : ExtWarn<"redefining builtin macro">,
+  InGroup<BuiltinMacroRedefined>;
 def pp_disabled_macro_expansion : Warning<
   "disabled expansion of recursive macro">, DefaultIgnore,
   InGroup<DiagGroup<"disabled-macro-expansion">>;
@@ -528,6 +532,14 @@ def err_mmap_export_module_id : Error<
   "expected an exported module name or '*'">;
 def err_mmap_expected_library_name : Error<
   "expected %select{library|framework}0 name as a string">;
+def err_mmap_config_macro_submodule : Error<
+  "configuration macros are only allowed on top-level modules">;
+def err_mmap_expected_config_macro : Error<
+  "expected configuration macro name after ','">;
+def err_mmap_expected_conflicts_comma : Error<
+  "expected ',' after conflicting module name">;
+def err_mmap_expected_conflicts_message : Error<
+  "expected a message describing the conflict with '%0'">;
 def err_mmap_missing_module_unqualified : Error<
   "no module named '%0' visible from '%1'">;
 def err_mmap_missing_module_qualified : Error<

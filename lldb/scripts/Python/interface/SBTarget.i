@@ -389,6 +389,26 @@ public:
     
     lldb::SBProcess
     Launch (lldb::SBLaunchInfo &launch_info, lldb::SBError& error);
+
+    %feature("docstring", "
+    //------------------------------------------------------------------
+    /// Load a core file
+    ///
+    /// @param[in] core_file
+    ///     File path of the core dump.
+    ///
+    /// @return
+    ///      A process object for the newly created core file.
+    //------------------------------------------------------------------
+
+    For example,
+
+        process = target.LoadCore('./a.out.core')
+
+    loads a new core file and returns the process object.
+    ") LoadCore;
+    lldb::SBProcess
+    LoadCore(const char *core_file);
     
     lldb::SBProcess
     Attach (lldb::SBAttachInfo &attach_info, lldb::SBError& error);
@@ -704,7 +724,13 @@ public:
     ReadInstructions (lldb::SBAddress base_addr, uint32_t count);    
 
     lldb::SBInstructionList
+    ReadInstructions (lldb::SBAddress base_addr, uint32_t count, const char *flavor_string);
+
+    lldb::SBInstructionList
     GetInstructions (lldb::SBAddress base_addr, const void *buf, size_t size);
+    
+    lldb::SBInstructionList
+    GetInstructionsWithFlavor (lldb::SBAddress base_addr, const char *flavor_string, const void *buf, size_t size);
     
     lldb::SBSymbolContextList
     FindSymbols (const char *name, lldb::SymbolType type = eSymbolTypeAny);
@@ -745,12 +771,15 @@ public:
                             if module.file.fullpath == key:
                                 return module
                     # See if the string is a UUID
-                    the_uuid = uuid.UUID(key)
-                    if the_uuid:
-                        for idx in range(num_modules):
-                            module = self.sbtarget.GetModuleAtIndex(idx)
-                            if module.uuid == the_uuid:
-                                return module
+                    try:
+                        the_uuid = uuid.UUID(key)
+                        if the_uuid:
+                            for idx in range(num_modules):
+                                module = self.sbtarget.GetModuleAtIndex(idx)
+                                if module.uuid == the_uuid:
+                                    return module
+                    except:
+                        return None
                 elif type(key) is uuid.UUID:
                     for idx in range(num_modules):
                         module = self.sbtarget.GetModuleAtIndex(idx)

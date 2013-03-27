@@ -554,7 +554,7 @@ Debugger::Debugger (lldb::LogOutputCallback log_callback, void *baton) :
     m_target_list (*this),
     m_platform_list (),
     m_listener ("lldb.Debugger"),
-    m_source_manager(*this),
+    m_source_manager_ap(),
     m_source_file_cache(),
     m_command_interpreter_ap (new CommandInterpreter (*this, eScriptLanguageDefault, false)),
     m_input_reader_stack (),
@@ -607,10 +607,7 @@ Debugger::Clear()
         {
             ProcessSP process_sp (target_sp->GetProcessSP());
             if (process_sp)
-            {
-                if (process_sp->GetShouldDetach())
-                    process_sp->Detach();
-            }
+                process_sp->Finalize();
             target_sp->Destroy();
         }
     }
@@ -1560,8 +1557,7 @@ Debugger::FormatPrompt
                                     if (log)
                                         log->Printf("[Debugger::FormatPrompt] I am into array || pointer && !range");
                                     
-                                    if (target->HasSpecialPrintableRepresentation(val_obj_display,
-                                                                                  custom_format))
+                                    if (target->HasSpecialPrintableRepresentation(val_obj_display, custom_format))
                                     {
                                         // try to use the special cases
                                         var_success = target->DumpPrintableRepresentation(str_temp,
@@ -1571,9 +1567,7 @@ Debugger::FormatPrompt
                                             log->Printf("[Debugger::FormatPrompt] special cases did%s match", var_success ? "" : "n't");
                                         
                                         // should not happen
-                                        if (!var_success)
-                                            s << "<invalid usage of pointer value as object>";
-                                        else
+                                        if (var_success)
                                             s << str_temp.GetData();
                                         var_success = true;
                                         break;
@@ -1590,10 +1584,6 @@ Debugger::FormatPrompt
                                                                                  val_obj_display,
                                                                                  custom_format,
                                                                                  ValueObject::ePrintableRepresentationSpecialCasesDisable);
-                                        }
-                                        else
-                                        {
-                                            s << "<invalid usage of pointer value as object>";
                                         }
                                         var_success = true;
                                         break;
@@ -1999,8 +1989,7 @@ Debugger::FormatPrompt
                                                 ValueObjectSP return_valobj_sp = StopInfo::GetReturnValueObject (stop_info_sp);
                                                 if (return_valobj_sp)
                                                 {
-                                                    ValueObject::DumpValueObjectOptions dump_options;
-                                                    ValueObject::DumpValueObject (s, return_valobj_sp.get(), dump_options);
+                                                    ValueObject::DumpValueObject (s, return_valobj_sp.get());
                                                     var_success = true;
                                                 }
                                             }
@@ -2252,7 +2241,16 @@ Debugger::FormatPrompt
                                                     const char *open_paren = strchr (cstr, '(');
                                                     const char *close_paren = NULL;
                                                     if (open_paren)
-                                                        close_paren = strchr (open_paren, ')');
+                                                    {
+                                                        if (strncmp(open_paren, "(anonymous namespace)", strlen("(anonymous namespace)")) == 0)
+                                                        {
+                                                            open_paren = strchr (open_paren + strlen("(anonymous namespace)"), '(');
+                                                            if (open_paren)
+                                                                close_paren = strchr (open_paren, ')');
+                                                        }
+                                                        else
+                                                            close_paren = strchr (open_paren, ')');
+                                                    }
                                                     
                                                     if (open_paren)
                                                         s.Write(cstr, open_paren - cstr + 1);
@@ -2653,4 +2651,13 @@ Debugger::EnableLog (const char *channel, const char **categories, const char *l
     }
     return false;
 }
+
+SourceManager &
+Debugger::GetSourceManager ()
+{
+    if (m_source_manager_ap.get() == NULL)
+        m_source_manager_ap.reset (new SourceManager (shared_from_this()));
+    return *m_source_manager_ap;
+}
+
 

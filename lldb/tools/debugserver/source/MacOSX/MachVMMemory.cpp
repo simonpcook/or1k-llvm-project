@@ -186,7 +186,9 @@ static uint64_t GetStolenPages()
 			if(stolen >= mb128)
             {
                 stolen = (stolen & ~((128 * 1024 * 1024ULL) - 1)); // rounding down
-                stolenPages = stolen/vm_page_size;
+                vm_size_t pagesize = vm_page_size;
+                host_page_size(mach_host_self(), &pagesize);
+                stolenPages = stolen/pagesize;
 			}
 		}
 	}
@@ -222,7 +224,7 @@ static void GetRegionSizes(task_t task, mach_vm_size_t &rsize, mach_vm_size_t &d
     
     while (1)
     {
-        mach_msg_type_number_t  count;
+        mach_msg_type_number_t count;
         struct vm_region_submap_info_64 info;
         
         count = VM_REGION_SUBMAP_INFO_COUNT_64;
@@ -249,10 +251,7 @@ static void GetRegionSizes(task_t task, mach_vm_size_t &rsize, mach_vm_size_t &d
             // Don't count malloc stack logging data in the TOTAL VM usage lines.
             if (info.user_tag == VM_MEMORY_ANALYSIS_TOOL)
                 should_count = false;
-            // Don't count system shared library region not used by this process.
-            if (address >= SHARED_REGION_BASE && address < (SHARED_REGION_BASE + SHARED_REGION_SIZE))
-                should_count = false;
-
+            
             address = address+size;
         }
         
@@ -263,8 +262,16 @@ static void GetRegionSizes(task_t task, mach_vm_size_t &rsize, mach_vm_size_t &d
         }
     }
     
-    rsize = pages_resident * vm_page_size;
-    dirty_size = pages_dirtied * vm_page_size;
+    static vm_size_t pagesize;
+    static bool calculated = false;
+    if (!calculated)
+    {
+        calculated = true;
+        host_page_size(mach_host_self(), &pagesize);
+    }
+    
+    rsize = pages_resident * pagesize;
+    dirty_size = pages_dirtied * pagesize;
 }
 
 // Test whether the virtual address is within the architecture's shared region.
@@ -305,8 +312,15 @@ static void GetMemorySizes(task_t task, cpu_type_t cputype, nub_process_t pid, m
     mach_vm_size_t fw_private = 0;
     
     mach_vm_size_t aliased = 0;
-    mach_vm_size_t pagesize = vm_page_size;
     bool global_shared_text_data_mapped = false;
+    
+    static vm_size_t pagesize;
+    static bool calculated = false;
+    if (!calculated)
+    {
+        calculated = true;
+        host_page_size(mach_host_self(), &pagesize);
+    }
     
     for (mach_vm_address_t addr=0, size=0; ; addr += size)
     {
@@ -324,7 +338,7 @@ static void GetMemorySizes(task_t task, cpu_type_t cputype, nub_process_t pid, m
             
             // Check if this process has the globally shared text and data regions mapped in.  If so, set global_shared_text_data_mapped to TRUE and avoid checking again.
             if (global_shared_text_data_mapped == FALSE && info.share_mode == SM_EMPTY) {
-                vm_region_basic_info_data_64_t  b_info;
+                vm_region_basic_info_data_64_t b_info;
                 mach_vm_address_t b_addr = addr;
                 mach_vm_size_t b_size = size;
                 count = VM_REGION_BASIC_INFO_COUNT_64;
@@ -397,21 +411,29 @@ static void GetMemorySizes(task_t task, cpu_type_t cputype, nub_process_t pid, m
 }
 
 nub_bool_t
-MachVMMemory::GetMemoryProfile(task_t task, struct task_basic_info ti, cpu_type_t cputype, nub_process_t pid, vm_statistics_data_t &vm_stats, uint64_t &physical_memory, mach_vm_size_t &rprvt, mach_vm_size_t &rsize, mach_vm_size_t &vprvt, mach_vm_size_t &vsize, mach_vm_size_t &dirty_size)
+MachVMMemory::GetMemoryProfile(DNBProfileDataScanType scanType, task_t task, struct task_basic_info ti, cpu_type_t cputype, nub_process_t pid, vm_statistics_data_t &vm_stats, uint64_t &physical_memory, mach_vm_size_t &rprvt, mach_vm_size_t &rsize, mach_vm_size_t &vprvt, mach_vm_size_t &vsize, mach_vm_size_t &dirty_size)
 {
-    static mach_port_t localHost = mach_host_self();
-    mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
-    host_statistics(localHost, HOST_VM_INFO, (host_info_t)&vm_stats, &count);
-    vm_stats.wire_count += GetStolenPages();
-    physical_memory = GetPhysicalMemory();
-
-    // This uses vmmap strategy. We don't use the returned rsize for now. We prefer to match top's version since that's what we do for the rest of the metrics.
-    GetRegionSizes(task, rsize, dirty_size);
+    if (scanType & eProfileHostMemory)
+        physical_memory = GetPhysicalMemory();
     
-    GetMemorySizes(task, cputype, pid, rprvt, vprvt);
+    if (scanType & eProfileMemory)
+    {
+        static mach_port_t localHost = mach_host_self();
+        mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
+        host_statistics(localHost, HOST_VM_INFO, (host_info_t)&vm_stats, &count);
+        vm_stats.wire_count += GetStolenPages();
     
-    rsize = ti.resident_size;
-    vsize = ti.virtual_size;
+        GetMemorySizes(task, cputype, pid, rprvt, vprvt);
+    
+        rsize = ti.resident_size;
+        vsize = ti.virtual_size;
+        
+        if (scanType & eProfileMemoryDirtyPage)
+        {
+            // This uses vmmap strategy. We don't use the returned rsize for now. We prefer to match top's version since that's what we do for the rest of the metrics.
+            GetRegionSizes(task, rsize, dirty_size);
+        }
+    }
     
     return true;
 }

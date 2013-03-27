@@ -24,7 +24,6 @@
 #include "lldb/Core/Event.h"
 #include "lldb/Core/ModuleList.h"
 #include "lldb/Core/UserSettingsController.h"
-#include "lldb/Core/SourceManager.h"
 #include "lldb/Expression/ClangPersistentVariables.h"
 #include "lldb/Interpreter/Args.h"
 #include "lldb/Interpreter/OptionValueBoolean.h"
@@ -78,6 +77,12 @@ public:
     
     void
     SetDisableSTDIO (bool b);
+    
+    const char *
+    GetDisassemblyFlavor() const;
+
+//    void
+//    SetDisassemblyFlavor(const char *flavor);
     
     InlineStrategy
     GetInlineStrategy () const;
@@ -138,7 +143,10 @@ public:
     
     const char *
     GetExpressionPrefixContentsAsCString ();
-
+    
+    bool
+    GetUseFastStepping() const;
+    
 };
 
 typedef STD_SHARED_PTR(TargetProperties) TargetPropertiesSP;
@@ -1111,10 +1119,7 @@ public:
     }
 
     SourceManager &
-    GetSourceManager ()
-    {
-        return m_source_manager;
-    }
+    GetSourceManager ();
 
     //------------------------------------------------------------------
     // Methods.
@@ -1155,7 +1160,7 @@ protected:
     std::auto_ptr<ClangASTImporter> m_ast_importer_ap;
     ClangPersistentVariables m_persistent_variables;      ///< These are the persistent variables associated with this process for the expression parser.
 
-    SourceManager m_source_manager;
+    std::auto_ptr<SourceManager> m_source_manager_ap;
 
     typedef std::map<lldb::user_id_t, StopHookSP> StopHookCollection;
     StopHookCollection      m_stop_hooks;

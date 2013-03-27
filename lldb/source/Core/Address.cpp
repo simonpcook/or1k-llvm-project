@@ -311,8 +311,15 @@ Address::GetLoadAddress (Target *target) const
 }
 
 addr_t
-Address::GetCallableLoadAddress (Target *target) const
+Address::GetCallableLoadAddress (Target *target, bool is_indirect) const
 {
+    if (is_indirect && target) {
+        ProcessSP processSP = target->GetProcessSP();
+        Error error;
+        if (processSP.get())
+            return processSP->ResolveIndirectFunction(this, error);
+    }
+
     addr_t code_addr = GetLoadAddress (target);
 
     if (target)
@@ -762,7 +769,7 @@ Address::Dump (Stream *s, ExecutionContextScope *exe_scope, DumpStyle style, Dum
 uint32_t
 Address::CalculateSymbolContext (SymbolContext *sc, uint32_t resolve_scope) const
 {
-    sc->Clear();
+    sc->Clear(false);
     // Absolute addresses don't have enough information to reconstruct even their target.
 
     SectionSP section_sp (GetSection());
@@ -1006,29 +1013,6 @@ lldb_private::operator!= (const Address& a, const Address& rhs)
 {
     return  a.GetSection() != rhs.GetSection() ||
             a.GetOffset()  != rhs.GetOffset();
-}
-
-bool
-Address::IsLinkedAddress () const
-{
-    SectionSP section_sp (GetSection());
-    return section_sp && section_sp->GetLinkedSection();
-}
-
-
-void
-Address::ResolveLinkedAddress ()
-{
-    SectionSP section_sp (GetSection());
-    if (section_sp)
-    {
-        SectionSP linked_section_sp (section_sp->GetLinkedSection());
-        if (linked_section_sp)
-        {
-            m_offset += section_sp->GetLinkedOffset();
-            m_section_wp = linked_section_sp;
-        }
-    }
 }
 
 AddressClass

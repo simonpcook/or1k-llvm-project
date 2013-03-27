@@ -330,6 +330,7 @@ bool CloogInfo::runOnScop(Scop &S) {
   C = new Cloog(&S);
 
   Function *F = S.getRegion().getEntry()->getParent();
+  (void) F;
 
   DEBUG(dbgs() << ":: " << F->getName());
   DEBUG(dbgs() << " : " << S.getRegion().getNameStr() << "\n");
@@ -352,14 +353,12 @@ void CloogInfo::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 char CloogInfo::ID = 0;
 
-INITIALIZE_PASS_BEGIN(CloogInfo, "polly-cloog",
-                      "Execute Cloog code generation", false, false)
-INITIALIZE_PASS_DEPENDENCY(ScopInfo)
-INITIALIZE_PASS_END(CloogInfo, "polly-cloog",
-                    "Execute Cloog code generation", false, false)
+Pass *polly::createCloogInfoPass() { return new CloogInfo(); }
 
-Pass *polly::createCloogInfoPass() {
-  return new CloogInfo();
-}
+INITIALIZE_PASS_BEGIN(CloogInfo, "polly-cloog", "Execute Cloog code generation",
+                      false, false);
+INITIALIZE_PASS_DEPENDENCY(ScopInfo);
+INITIALIZE_PASS_END(CloogInfo, "polly-cloog", "Execute Cloog code generation",
+                    false, false)
 
 #endif // CLOOG_FOUND

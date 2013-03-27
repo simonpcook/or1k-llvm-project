@@ -221,6 +221,14 @@ public:
                 if (!count_option_set)
                     format_options.GetCountValue() = 8;
                 break;
+            case eFormatComplexInteger:
+                if (!byte_size_option_set)
+                    byte_size_value = 8;
+                if (!num_per_line_option_set)
+                    m_num_per_line = 1;
+                if (!count_option_set)
+                    format_options.GetCountValue() = 8;
+                break;
             case eFormatHex:
                 if (!byte_size_option_set)
                     byte_size_value = 4;
@@ -538,7 +546,7 @@ protected:
                 --pointer_count;
             }
 
-            m_format_options.GetByteSizeValue() = (clang_ast_type.GetClangTypeBitWidth () + 7) / 8;
+            m_format_options.GetByteSizeValue() = clang_ast_type.GetClangTypeByteSize();
             
             if (m_format_options.GetByteSizeValue() == 0)
             {
@@ -797,21 +805,8 @@ protected:
                     if (format != eFormatDefault)
                         valobj_sp->SetFormat (format);
 
-                    bool scope_already_checked = true;
+                    ValueObject::DumpValueObjectOptions options(m_varobj_options.GetAsDumpOptions(false,format));
                     
-                    ValueObject::DumpValueObjectOptions options;
-                    options.SetMaximumPointerDepth(m_varobj_options.ptr_depth)
-                    .SetMaximumDepth(m_varobj_options.max_depth)
-                    .SetShowLocation(m_varobj_options.show_location)
-                    .SetShowTypes(m_varobj_options.show_types)
-                    .SetUseObjectiveC(m_varobj_options.use_objc)
-                    .SetScopeChecked(scope_already_checked)
-                    .SetFlatOutput(m_varobj_options.flat_output)
-                    .SetUseSyntheticValue(m_varobj_options.be_raw ? false : m_varobj_options.use_synth)
-                    .SetOmitSummaryDepth(m_varobj_options.be_raw ? UINT32_MAX : m_varobj_options.no_summary_depth)
-                    .SetIgnoreCap(m_varobj_options.be_raw ? true : m_varobj_options.ignore_cap)
-                    .SetFormat(format)
-                    .SetSummary();
                     ValueObject::DumpValueObject (*output_stream,
                                                   valobj_sp.get(),
                                                   options);

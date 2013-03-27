@@ -149,6 +149,14 @@ def femit_coverage_data: Flag<["-"], "femit-coverage-data">,
 def coverage_file : Separate<["-"], "coverage-file">,
   HelpText<"Emit coverage data to this filename. The extension will be replaced.">;
 def coverage_file_EQ : Joined<["-"], "coverage-file=">, Alias<coverage_file>;
+def coverage_cfg_checksum : Flag<["-"], "coverage-cfg-checksum">,
+  HelpText<"Emit CFG checksum for functions in .gcno files.">;
+def coverage_no_function_names_in_data : Flag<["-"], "coverage-no-function-names-in-data">,
+  HelpText<"Emit function names in .gcda files.">;
+def coverage_version_EQ : Joined<["-"], "coverage-version=">,
+  HelpText<"Four-byte version string for gcov files.">;
+def test_coverage : Flag<["-"], "test-coverage">,
+  HelpText<"Do not generate coverage files or remove coverage changes from IR">;
 def fuse_register_sized_bitfield_access: Flag<["-"], "fuse-register-sized-bitfield-access">,
   HelpText<"Use register sized accesses to bit-fields, when possible.">;
 def relaxed_aliasing : Flag<["-"], "relaxed-aliasing">,
@@ -233,6 +241,9 @@ def fmessage_length : Separate<["-"], "fmessage-length">, MetaVarName<"<N>">,
 def Wno_rewrite_macros : Flag<["-"], "Wno-rewrite-macros">,
   HelpText<"Silence ObjC rewriting warnings">;
 
+def fwarn_on_spellcheck : Flag<["-"], "fwarn-on-spellcheck">,
+  HelpText<"Emit warning if spell-check is initiated, for testing">;
+
 //===----------------------------------------------------------------------===//
 // Frontend Options
 //===----------------------------------------------------------------------===//
@@ -271,8 +282,6 @@ def plugin_arg : JoinedAndSeparate<["-"], "plugin-arg-">,
     HelpText<"Pass <arg> to plugin <name>">;
 def add_plugin : Separate<["-"], "add-plugin">, MetaVarName<"<name>">,
   HelpText<"Use the named plugin action in addition to the default action">;
-def resource_dir : Separate<["-"], "resource-dir">,
-  HelpText<"The directory which holds the compiler resource files">;
 def version : Flag<["-"], "version">,
   HelpText<"Print the compiler version">;
 def ast_dump_filter : Separate<["-"], "ast-dump-filter">,
@@ -379,6 +388,8 @@ def fhidden_weak_vtables : Flag<["-"], "fhidden-weak-vtables">,
   HelpText<"Generate weak vtables and RTTI with hidden visibility">;
 def main_file_name : Separate<["-"], "main-file-name">,
   HelpText<"Main file name to use for debug info">;
+def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
+  HelpText<"File name to use for split dwarf debug info output">;
 def fno_signed_char : Flag<["-"], "fno-signed-char">,
   HelpText<"Char is unsigned">;
 def fno_wchar : Flag<["-"], "fno-wchar">,
@@ -415,11 +426,15 @@ def stack_protector : Separate<["-"], "stack-protector">,
 def stack_protector_buffer_size : Separate<["-"], "stack-protector-buffer-size">,
   HelpText<"Lower bound for a buffer to be considered for stack protection">;
 def fvisibility : Separate<["-"], "fvisibility">,
-  HelpText<"Default symbol visibility">;
+  HelpText<"Default type and symbol visibility">;
+def ftype_visibility : Separate<["-"], "ftype-visibility">,
+  HelpText<"Default type visibility">;
 def ftemplate_depth : Separate<["-"], "ftemplate-depth">,
   HelpText<"Maximum depth of recursive template instantiation">;
 def fconstexpr_depth : Separate<["-"], "fconstexpr-depth">,
   HelpText<"Maximum depth of recursive constexpr function calls">;
+def fbracket_depth : Separate<["-"], "fbracket-depth">,
+  HelpText<"Maximum nesting level for parentheses, brackets, and braces">;
 def fconst_strings : Flag<["-"], "fconst-strings">,
   HelpText<"Use a const qualified type for string literals in C and ObjC">;
 def fno_const_strings : Flag<["-"], "fno-const-strings">,

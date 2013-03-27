@@ -2894,6 +2894,28 @@ public:
     lldb::addr_t
     AllocateMemory (size_t size, uint32_t permissions, Error &error);
 
+
+    //------------------------------------------------------------------
+    /// Resolve dynamically loaded indirect functions.
+    ///
+    /// @param[in] address
+    ///     The load address of the indirect function to resolve.
+    ///
+    /// @param[out] error
+    ///     An error value in case the resolve fails.
+    ///
+    /// @return
+    ///     The address of the resolved function.
+    ///     LLDB_INVALID_ADDRESS if the resolution failed.
+    //------------------------------------------------------------------
+
+    virtual lldb::addr_t
+    ResolveIndirectFunction(const Address *address, Error &error)
+    {
+        error.SetErrorStringWithFormat("error: %s does not support indirect functions in the debug process", GetShortPluginName());
+        return LLDB_INVALID_ADDRESS;
+    }
+
     virtual Error
     GetMemoryRegionInfo (lldb::addr_t load_addr, 
                         MemoryRegionInfo &range_info)
@@ -3165,10 +3187,7 @@ public:
 
 
     // BreakpointLocations use RemoveOwnerFromBreakpointSite to remove
-    // themselves from the owner's list of this breakpoint sites.  This has to
-    // be a static function because you can't be sure that removing the
-    // breakpoint from it's containing map won't delete the breakpoint site,
-    // and doing that in an instance method isn't copasetic.
+    // themselves from the owner's list of this breakpoint sites.
     void
     RemoveOwnerFromBreakpointSite (lldb::user_id_t owner_id,
                                    lldb::user_id_t owner_loc_id,
@@ -3575,6 +3594,7 @@ protected:
     Predicate<bool>             m_currently_handling_event;
     bool                        m_finalize_called;
     lldb::StateType             m_last_broadcast_state;   /// This helps with the Public event coalescing in ShouldBroadcastEvent.
+    bool m_destroy_in_process;
     
     enum {
         eCanJITDontKnow= 0,

@@ -228,6 +228,11 @@ public:
     return false;
   }
 
+  /// \brief Returns true if this is a call to a variadic function or method.
+  virtual bool isVariadic() const {
+    return false;
+  }
+
   /// \brief Returns a source range for the entire call, suitable for
   /// outputting in diagnostics.
   virtual SourceRange getSourceRange() const {
@@ -331,7 +336,9 @@ public:
   /// of some kind.
   static bool isCallStmt(const Stmt *S);
 
-  /// \brief Returns the result type of a function, method declaration.
+  /// \brief Returns the result type of a function or method declaration.
+  ///
+  /// This will return a null QualType if the result type cannot be determined.
   static QualType getDeclaredResultType(const Decl *D);
 
   // Iterator access to formal parameters and their types.
@@ -414,6 +421,10 @@ public:
     }
 
     return RuntimeDefinition();
+  }
+
+  virtual bool isVariadic() const {
+    return getDecl()->isVariadic();
   }
 
   virtual bool argumentsMayEscape() const;
@@ -514,6 +525,10 @@ public:
 
   virtual RuntimeDefinition getRuntimeDefinition() const {
     return RuntimeDefinition(getBlockDecl());
+  }
+
+  virtual bool isVariadic() const {
+    return getBlockDecl()->isVariadic();
   }
 
   virtual void getInitialStackFrameContents(const StackFrameContext *CalleeCtx,
@@ -834,6 +849,9 @@ public:
   virtual const Expr *getArgExpr(unsigned Index) const {
     return getOriginExpr()->getArg(Index);
   }
+  virtual bool isVariadic() const {
+    return getDecl()->isVariadic();
+  }
 
   bool isInstanceMessage() const {
     return getOriginExpr()->isInstanceMessage();
@@ -1024,7 +1042,7 @@ namespace llvm {
     typedef const T *SimpleType;
 
     static SimpleType
-    getSimplifiedValue(const clang::ento::CallEventRef<T>& Val) {
+    getSimplifiedValue(clang::ento::CallEventRef<T>& Val) {
       return Val.getPtr();
     }
   };

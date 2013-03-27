@@ -125,7 +125,7 @@ static bool isPointerToConst(QualType Ty) {
 // Try to retrieve the function declaration and find the function parameter
 // types which are pointers/references to a non-pointer const.
 // We will not invalidate the corresponding argument regions.
-static void findPtrToConstParams(llvm::SmallSet<unsigned, 1> &PreserveArgs,
+static void findPtrToConstParams(llvm::SmallSet<unsigned, 4> &PreserveArgs,
                                  const CallEvent &Call) {
   unsigned Idx = 0;
   for (CallEvent::param_type_iterator I = Call.param_type_begin(),
@@ -137,61 +137,29 @@ static void findPtrToConstParams(llvm::SmallSet<unsigned, 1> &PreserveArgs,
 }
 
 ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
-                                              ProgramStateRef Orig) const {
+                                             ProgramStateRef Orig) const {
   ProgramStateRef Result = (Orig ? Orig : getState());
 
+  SmallVector<const MemRegion *, 8> ConstRegions;
   SmallVector<const MemRegion *, 8> RegionsToInvalidate;
   getExtraInvalidatedRegions(RegionsToInvalidate);
 
   // Indexes of arguments whose values will be preserved by the call.
-  llvm::SmallSet<unsigned, 1> PreserveArgs;
+  llvm::SmallSet<unsigned, 4> PreserveArgs;
   if (!argumentsMayEscape())
     findPtrToConstParams(PreserveArgs, *this);
 
   for (unsigned Idx = 0, Count = getNumArgs(); Idx != Count; ++Idx) {
+    const MemRegion *R = getArgSVal(Idx).getAsRegion();
+    if (!R)
+      continue;
+
+    // Mark this region for invalidation.  We batch invalidate regions
+    // below for efficiency.
     if (PreserveArgs.count(Idx))
-      continue;
-
-    SVal V = getArgSVal(Idx);
-
-    // If we are passing a location wrapped as an integer, unwrap it and
-    // invalidate the values referred by the location.
-    if (nonloc::LocAsInteger *Wrapped = dyn_cast<nonloc::LocAsInteger>(&V))
-      V = Wrapped->getLoc();
-    else if (!isa<Loc>(V))
-      continue;
-
-    if (const MemRegion *R = V.getAsRegion()) {
-      // Invalidate the value of the variable passed by reference.
-
-      // Are we dealing with an ElementRegion?  If the element type is
-      // a basic integer type (e.g., char, int) and the underlying region
-      // is a variable region then strip off the ElementRegion.
-      // FIXME: We really need to think about this for the general case
-      //   as sometimes we are reasoning about arrays and other times
-      //   about (char*), etc., is just a form of passing raw bytes.
-      //   e.g., void *p = alloca(); foo((char*)p);
-      if (const ElementRegion *ER = dyn_cast<ElementRegion>(R)) {
-        // Checking for 'integral type' is probably too promiscuous, but
-        // we'll leave it in for now until we have a systematic way of
-        // handling all of these cases.  Eventually we need to come up
-        // with an interface to StoreManager so that this logic can be
-        // appropriately delegated to the respective StoreManagers while
-        // still allowing us to do checker-specific logic (e.g.,
-        // invalidating reference counts), probably via callbacks.
-        if (ER->getElementType()->isIntegralOrEnumerationType()) {
-          const MemRegion *superReg = ER->getSuperRegion();
-          if (isa<VarRegion>(superReg) || isa<FieldRegion>(superReg) ||
-              isa<ObjCIvarRegion>(superReg))
-            R = cast<TypedRegion>(superReg);
-        }
-        // FIXME: What about layers of ElementRegions?
-      }
-
-      // Mark this region for invalidation.  We batch invalidate regions
-      // below for efficiency.
+      ConstRegions.push_back(R);
+    else
       RegionsToInvalidate.push_back(R);
-    }
   }
 
   // Invalidate designated regions using the batch invalidation API.
@@ -200,7 +168,7 @@ ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
   return Result->invalidateRegions(RegionsToInvalidate, getOriginExpr(),
                                    BlockCount, getLocationContext(),
                                    /*CausedByPointerEscape*/ true,
-                                   /*Symbols=*/0, this);
+                                   /*Symbols=*/0, this, ConstRegions);
 }
 
 ProgramPoint CallEvent::getProgramPoint(bool IsPreVisit,
@@ -270,7 +238,6 @@ bool CallEvent::isCallStmt(const Stmt *S) {
                           || isa<CXXNewExpr>(S);
 }
 
-/// \brief Returns the result type, adjusted for references.
 QualType CallEvent::getDeclaredResultType(const Decl *D) {
   assert(D);
   if (const FunctionDecl* FD = dyn_cast<FunctionDecl>(D))
@@ -419,7 +386,7 @@ SVal CXXInstanceCall::getCXXThisVal() const {
     return UnknownVal();
 
   SVal ThisVal = getSVal(Base);
-  assert(ThisVal.isUnknownOrUndef() || isa<Loc>(ThisVal));
+  assert(ThisVal.isUnknownOrUndef() || ThisVal.getAs<Loc>());
   return ThisVal;
 }
 
@@ -853,12 +820,11 @@ RuntimeDefinition ObjCMethodCall::getRuntimeDefinition() const {
         typedef std::pair<const ObjCInterfaceDecl*, Selector>
                 PrivateMethodKey;
         typedef llvm::DenseMap<PrivateMethodKey,
-                               llvm::Optional<const ObjCMethodDecl *> >
+                               Optional<const ObjCMethodDecl *> >
                 PrivateMethodCache;
 
         static PrivateMethodCache PMC;
-        llvm::Optional<const ObjCMethodDecl *> &Val =
-          PMC[std::make_pair(IDecl, Sel)];
+        Optional<const ObjCMethodDecl *> &Val = PMC[std::make_pair(IDecl, Sel)];
 
         // Query lookupPrivateMethod() if the cache does not hit.
         if (!Val.hasValue())
@@ -961,8 +927,9 @@ CallEventManager::getCaller(const StackFrameContext *CalleeCtx,
   // destructors, though this could change in the future.
   const CFGBlock *B = CalleeCtx->getCallSiteBlock();
   CFGElement E = (*B)[CalleeCtx->getIndex()];
-  assert(isa<CFGImplicitDtor>(E) && "All other CFG elements should have exprs");
-  assert(!isa<CFGTemporaryDtor>(E) && "We don't handle temporaries yet");
+  assert(E.getAs<CFGImplicitDtor>() &&
+         "All other CFG elements should have exprs");
+  assert(!E.getAs<CFGTemporaryDtor>() && "We don't handle temporaries yet");
 
   SValBuilder &SVB = State->getStateManager().getSValBuilder();
   const CXXDestructorDecl *Dtor = cast<CXXDestructorDecl>(CalleeCtx->getDecl());
@@ -970,11 +937,12 @@ CallEventManager::getCaller(const StackFrameContext *CalleeCtx,
   SVal ThisVal = State->getSVal(ThisPtr);
 
   const Stmt *Trigger;
-  if (const CFGAutomaticObjDtor *AutoDtor = dyn_cast<CFGAutomaticObjDtor>(&E))
+  if (Optional<CFGAutomaticObjDtor> AutoDtor = E.getAs<CFGAutomaticObjDtor>())
     Trigger = AutoDtor->getTriggerStmt();
   else
     Trigger = Dtor->getBody();
 
   return getCXXDestructorCall(Dtor, Trigger, ThisVal.getAsRegion(),
-                              isa<CFGBaseDtor>(E), State, CallerCtx);
+                              E.getAs<CFGBaseDtor>().hasValue(), State,
+                              CallerCtx);
 }

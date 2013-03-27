@@ -602,7 +602,7 @@ public:
     //------------------------------------------------------------------
     // Sublasses must implement the functions below.
     //------------------------------------------------------------------
-    virtual size_t
+    virtual uint64_t
     GetByteSize() = 0;
 
     virtual lldb::ValueType
@@ -992,7 +992,7 @@ public:
     bool
     IsCStringContainer (bool check_pointer = false);
     
-    void
+    size_t
     ReadPointedString (Stream& s,
                        Error& error,
                        uint32_t max_length = 0,
@@ -1004,7 +1004,7 @@ public:
                     uint32_t item_idx = 0,
 					uint32_t item_count = 1);
     
-    virtual size_t
+    virtual uint64_t
     GetData (DataExtractor& data);
 
     bool
@@ -1260,7 +1260,6 @@ protected:
                         m_is_deref_of_parent:1,
                         m_is_array_item_for_pointer:1,
                         m_is_bitfield_for_scalar:1,
-                        m_is_expression_path_child:1,
                         m_is_child_at_offset:1,
                         m_is_getting_summary:1,
                         m_did_calculate_complete_objc_class_type:1;

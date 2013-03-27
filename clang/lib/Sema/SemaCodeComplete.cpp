@@ -1476,7 +1476,7 @@ static const char *GetCompletionTypeString(QualType T,
     // Anonymous tag types are constant strings.
     if (const TagType *TagT = dyn_cast<TagType>(T))
       if (TagDecl *Tag = TagT->getDecl())
-        if (!Tag->getIdentifier() && !Tag->getTypedefNameForAnonDecl()) {
+        if (!Tag->hasNameForLinkage()) {
           switch (Tag->getTagKind()) {
           case TTK_Struct: return "struct <anonymous>";
           case TTK_Interface: return "__interface <anonymous>";
@@ -2147,36 +2147,35 @@ static std::string FormatFunctionParameter(ASTContext &Context,
   
   // The argument for a block pointer parameter is a block literal with
   // the appropriate type.
-  FunctionTypeLoc *Block = 0;
-  FunctionProtoTypeLoc *BlockProto = 0;
+  FunctionTypeLoc Block;
+  FunctionProtoTypeLoc BlockProto;
   TypeLoc TL;
   if (TypeSourceInfo *TSInfo = Param->getTypeSourceInfo()) {
     TL = TSInfo->getTypeLoc().getUnqualifiedLoc();
     while (true) {
       // Look through typedefs.
       if (!SuppressBlock) {
-        if (TypedefTypeLoc *TypedefTL = dyn_cast<TypedefTypeLoc>(&TL)) {
-          if (TypeSourceInfo *InnerTSInfo
-              = TypedefTL->getTypedefNameDecl()->getTypeSourceInfo()) {
+        if (TypedefTypeLoc TypedefTL = TL.getAs<TypedefTypeLoc>()) {
+          if (TypeSourceInfo *InnerTSInfo =
+                  TypedefTL.getTypedefNameDecl()->getTypeSourceInfo()) {
             TL = InnerTSInfo->getTypeLoc().getUnqualifiedLoc();
             continue;
           }
         }
         
         // Look through qualified types
-        if (QualifiedTypeLoc *QualifiedTL = dyn_cast<QualifiedTypeLoc>(&TL)) {
-          TL = QualifiedTL->getUnqualifiedLoc();
+        if (QualifiedTypeLoc QualifiedTL = TL.getAs<QualifiedTypeLoc>()) {
+          TL = QualifiedTL.getUnqualifiedLoc();
           continue;
         }
       }
       
       // Try to get the function prototype behind the block pointer type,
       // then we're done.
-      if (BlockPointerTypeLoc *BlockPtr
-          = dyn_cast<BlockPointerTypeLoc>(&TL)) {
-        TL = BlockPtr->getPointeeLoc().IgnoreParens();
-        Block = dyn_cast<FunctionTypeLoc>(&TL);
-        BlockProto = dyn_cast<FunctionProtoTypeLoc>(&TL);
+      if (BlockPointerTypeLoc BlockPtr = TL.getAs<BlockPointerTypeLoc>()) {
+        TL = BlockPtr.getPointeeLoc().IgnoreParens();
+        Block = TL.getAs<FunctionTypeLoc>();
+        BlockProto = TL.getAs<FunctionProtoTypeLoc>();
       }
       break;
     }
@@ -2204,27 +2203,27 @@ static std::string FormatFunctionParameter(ASTContext &Context,
   // We have the function prototype behind the block pointer type, as it was
   // written in the source.
   std::string Result;
-  QualType ResultType = Block->getTypePtr()->getResultType();
+  QualType ResultType = Block.getTypePtr()->getResultType();
   if (!ResultType->isVoidType() || SuppressBlock)
     ResultType.getAsStringInternal(Result, Policy);
 
   // Format the parameter list.
   std::string Params;
-  if (!BlockProto || Block->getNumArgs() == 0) {
-    if (BlockProto && BlockProto->getTypePtr()->isVariadic())
+  if (!BlockProto || Block.getNumArgs() == 0) {
+    if (BlockProto && BlockProto.getTypePtr()->isVariadic())
       Params = "(...)";
     else
       Params = "(void)";
   } else {
     Params += "(";
-    for (unsigned I = 0, N = Block->getNumArgs(); I != N; ++I) {
+    for (unsigned I = 0, N = Block.getNumArgs(); I != N; ++I) {
       if (I)
         Params += ", ";
-      Params += FormatFunctionParameter(Context, Policy, Block->getArg(I),
+      Params += FormatFunctionParameter(Context, Policy, Block.getArg(I),
                                         /*SuppressName=*/false, 
                                         /*SuppressBlock=*/true);
       
-      if (I == N - 1 && BlockProto->getTypePtr()->isVariadic())
+      if (I == N - 1 && BlockProto.getTypePtr()->isVariadic())
         Params += ", ...";
     }
     Params += ")";
@@ -2542,6 +2541,27 @@ CodeCompletionResult::CreateCodeCompletionString(ASTContext &Ctx,
     if (Declaration) {
       Result.addParentContext(Declaration->getDeclContext());
       Pattern->ParentName = Result.getParentName();
+      // Provide code completion comment for self.GetterName where
+      // GetterName is the getter method for a property with name
+      // different from the property name (declared via a property
+      // getter attribute.
+      const NamedDecl *ND = Declaration;
+      if (const ObjCMethodDecl *M = dyn_cast<ObjCMethodDecl>(ND))
+        if (M->isPropertyAccessor())
+          if (const ObjCPropertyDecl *PDecl = M->findPropertyDecl())
+            if (PDecl->getGetterName() == M->getSelector() &&
+                PDecl->getIdentifier() != M->getIdentifier()) {
+              if (const RawComment *RC = 
+                    Ctx.getRawCommentForAnyRedecl(M)) {
+                Result.addBriefComment(RC->getBriefText(Ctx));
+                Pattern->BriefComment = Result.getBriefComment();
+              }
+              else if (const RawComment *RC = 
+                         Ctx.getRawCommentForAnyRedecl(PDecl)) {
+                Result.addBriefComment(RC->getBriefText(Ctx));
+                Pattern->BriefComment = Result.getBriefComment();
+              }
+            }
     }
     
     return Pattern;
@@ -2553,8 +2573,9 @@ CodeCompletionResult::CreateCodeCompletionString(ASTContext &Ctx,
   }
   
   if (Kind == RK_Macro) {
-    MacroInfo *MI = PP.getMacroInfoHistory(Macro);
-    assert(MI && "Not a macro?");
+    const MacroDirective *MD = PP.getMacroDirectiveHistory(Macro);
+    assert(MD && "Not a macro?");
+    const MacroInfo *MI = MD->getMacroInfo();
 
     Result.AddTypedTextChunk(
                             Result.getAllocator().CopyString(Macro->getName()));
@@ -2605,7 +2626,12 @@ CodeCompletionResult::CreateCodeCompletionString(ASTContext &Ctx,
     // Add documentation comment, if it exists.
     if (const RawComment *RC = Ctx.getRawCommentForAnyRedecl(ND)) {
       Result.addBriefComment(RC->getBriefText(Ctx));
-    }
+    } 
+    else if (const ObjCMethodDecl *OMD = dyn_cast<ObjCMethodDecl>(ND))
+      if (OMD->isPropertyAccessor())
+        if (const ObjCPropertyDecl *PDecl = OMD->findPropertyDecl())
+          if (const RawComment *RC = Ctx.getRawCommentForAnyRedecl(PDecl))
+            Result.addBriefComment(RC->getBriefText(Ctx));
   }
 
   if (StartsNestedNameSpecifier) {
@@ -4472,6 +4498,14 @@ static void AddObjCTopLevelResults(ResultBuilder &Results, bool NeedAt) {
   Builder.AddChunk(CodeCompletionString::CK_HorizontalSpace);
   Builder.AddPlaceholderChunk("class");
   Results.AddResult(Result(Builder.TakeString()));
+
+  if (Results.getSema().getLangOpts().Modules) {
+    // @import name
+    Builder.AddTypedTextChunk(OBJC_AT_KEYWORD_NAME(NeedAt, "import"));
+    Builder.AddChunk(CodeCompletionString::CK_HorizontalSpace);
+    Builder.AddPlaceholderChunk("module");
+    Results.AddResult(Result(Builder.TakeString()));
+  }
 }
 
 void Sema::CodeCompleteObjCAtDirective(Scope *S) {
@@ -5302,7 +5336,7 @@ void Sema::CodeCompleteObjCSuperMessage(Scope *S, SourceLocation SuperLoc,
   } else {
     // "super" may be the name of a type or variable. Figure out which
     // it is.
-    IdentifierInfo *Super = &Context.Idents.get("super");
+    IdentifierInfo *Super = getSuperIdentifier();
     NamedDecl *ND = LookupSingleName(S, Super, SuperLoc, 
                                      LookupOrdinaryName);
     if ((CDecl = dyn_cast_or_null<ObjCInterfaceDecl>(ND))) {

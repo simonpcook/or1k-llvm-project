@@ -133,9 +133,9 @@ bool CallAndMessageChecker::PreVisitProcessArg(CheckerContext &C,
 
   if (!checkUninitFields)
     return false;
-  
-  if (const nonloc::LazyCompoundVal *LV =
-        dyn_cast<nonloc::LazyCompoundVal>(&V)) {
+
+  if (Optional<nonloc::LazyCompoundVal> LV =
+          V.getAs<nonloc::LazyCompoundVal>()) {
 
     class FindUninitializedField {
     public:
@@ -236,7 +236,8 @@ void CallAndMessageChecker::checkPreStmt(const CallExpr *CE,
   }
 
   ProgramStateRef StNonNull, StNull;
-  llvm::tie(StNonNull, StNull) = State->assume(cast<DefinedOrUnknownSVal>(L));
+  llvm::tie(StNonNull, StNull) =
+      State->assume(L.castAs<DefinedOrUnknownSVal>());
 
   if (StNull && !StNonNull) {
     if (!BT_call_null)
@@ -265,7 +266,8 @@ void CallAndMessageChecker::checkPreCall(const CallEvent &Call,
     }
 
     ProgramStateRef StNonNull, StNull;
-    llvm::tie(StNonNull, StNull) = State->assume(cast<DefinedOrUnknownSVal>(V));
+    llvm::tie(StNonNull, StNull) =
+        State->assume(V.castAs<DefinedOrUnknownSVal>());
 
     if (StNull && !StNonNull) {
       if (!BT_cxx_call_null)
@@ -344,7 +346,7 @@ void CallAndMessageChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
     return;
   } else {
     // Bifurcate the state into nil and non-nil ones.
-    DefinedOrUnknownSVal receiverVal = cast<DefinedOrUnknownSVal>(recVal);
+    DefinedOrUnknownSVal receiverVal = recVal.castAs<DefinedOrUnknownSVal>();
 
     ProgramStateRef state = C.getState();
     ProgramStateRef notNilState, nilState;
@@ -395,6 +397,7 @@ void CallAndMessageChecker::HandleNilReceiver(CheckerContext &C,
                                               ProgramStateRef state,
                                               const ObjCMethodCall &Msg) const {
   ASTContext &Ctx = C.getASTContext();
+  static SimpleProgramPointTag Tag("CallAndMessageChecker : NilReceiver");
 
   // Check the return type of the message expression.  A message to nil will
   // return different values depending on the return type and the architecture.
@@ -405,7 +408,7 @@ void CallAndMessageChecker::HandleNilReceiver(CheckerContext &C,
   if (CanRetTy->isStructureOrClassType()) {
     // Structure returns are safe since the compiler zeroes them out.
     SVal V = C.getSValBuilder().makeZeroVal(RetTy);
-    C.addTransition(state->BindExpr(Msg.getOriginExpr(), LCtx, V));
+    C.addTransition(state->BindExpr(Msg.getOriginExpr(), LCtx, V), &Tag);
     return;
   }
 
@@ -423,7 +426,7 @@ void CallAndMessageChecker::HandleNilReceiver(CheckerContext &C,
            Ctx.LongDoubleTy == CanRetTy ||
            Ctx.LongLongTy == CanRetTy ||
            Ctx.UnsignedLongLongTy == CanRetTy))) {
-      if (ExplodedNode *N = C.generateSink(state))
+      if (ExplodedNode *N = C.generateSink(state, 0 , &Tag))
         emitNilReceiverBug(C, Msg, N);
       return;
     }
@@ -442,7 +445,7 @@ void CallAndMessageChecker::HandleNilReceiver(CheckerContext &C,
     // of this case unless we have *a lot* more knowledge.
     //
     SVal V = C.getSValBuilder().makeZeroVal(RetTy);
-    C.addTransition(state->BindExpr(Msg.getOriginExpr(), LCtx, V));
+    C.addTransition(state->BindExpr(Msg.getOriginExpr(), LCtx, V), &Tag);
     return;
   }
 

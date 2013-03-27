@@ -18,24 +18,15 @@ namespace lld {
 
 ///
 /// The SharedLibraryFile subclass of File is used to represent dynamic
-/// shared libraries being linked against.  
+/// shared libraries being linked against.
 ///
 class SharedLibraryFile : public File {
 public:
-  virtual ~SharedLibraryFile() {
-  }
-
-  virtual Kind kind() const {
-    return kindSharedLibrary;
-  }
+  virtual ~SharedLibraryFile() {}
 
   static inline bool classof(const File *f) {
     return f->kind() == kindSharedLibrary;
   }
-  static inline bool classof(const SharedLibraryFile *) { 
-    return true; 
-  }
-
 
   /// Check if the shared library exports a symbol with the specified name.
   /// If so, return a SharedLibraryAtom which represents that exported
@@ -43,8 +34,8 @@ public:
   virtual const SharedLibraryAtom *exports(StringRef name,
                                            bool dataSymbolOnly) const = 0;
 protected:
-  /// only subclasses of SharedLibraryFile can be instantiated 
-  SharedLibraryFile(StringRef path) : File(path) {}
+  /// only subclasses of SharedLibraryFile can be instantiated
+  SharedLibraryFile(StringRef path) : File(path, kindSharedLibrary) {}
 };
 
 } // namespace lld

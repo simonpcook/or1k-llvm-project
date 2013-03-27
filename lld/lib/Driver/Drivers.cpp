@@ -115,6 +115,8 @@ public:
     std::unique_ptr<llvm::opt::DerivedArgList> newArgs(
       new llvm::opt::DerivedArgList(*_inputArgs));
 
+    bool isOutputDynamic = false;
+
     if (llvm::opt::Arg *A = _inputArgs->getLastArg(ld::OPT_target)) {
       newArgs->AddSeparateArg( A, _core.getOption(core::OPT_target)
                              , A->getValue());
@@ -133,6 +135,15 @@ public:
     else
       newArgs->AddJoinedArg(nullptr, _core.getOption(core::OPT_output),
                             "a.out");
+
+    if (llvm::opt::Arg *A = _inputArgs->getLastArg(ld::OPT_static))
+      newArgs->AddJoinedArg(A, _core.getOption(core::OPT_output_type),
+                            newArgs->MakeArgString("static"));
+    else {
+      newArgs->AddJoinedArg(nullptr, _core.getOption(core::OPT_output_type),
+                            newArgs->MakeArgString("dynamic"));
+      isOutputDynamic = true;
+    }
 
     if (llvm::opt::Arg *A = _inputArgs->getLastArg(ld::OPT_relocatable))
       newArgs->AddFlagArg(A, _core.getOption(core::OPT_relocatable));
@@ -159,7 +170,7 @@ public:
           *it, _core.getOption(core::OPT_input_search_path), (*it)->getValue());
       _inputSearchPaths.push_back((*it)->getValue());
     }
-      
+
     // Copy input args.
     for (llvm::opt::arg_iterator it = _inputArgs->filtered_begin(ld::OPT_INPUT,
                                  ld::OPT_l),
@@ -170,6 +181,14 @@ public:
         StringRef libName = (*it)->getValue();
         SmallString<128> p;
         for (const auto &path : _inputSearchPaths) {
+          if (isOutputDynamic) {
+            p = path;
+            llvm::sys::path::append(p, Twine("lib") + libName + ".so");
+            if (llvm::sys::fs::exists(p.str())) {
+              inputPath = newArgs->MakeArgString(p);
+              break;
+            }
+          }
           p = path;
           llvm::sys::path::append(p, Twine("lib") + libName + ".a");
           if (llvm::sys::fs::exists(p.str())) {
@@ -213,8 +232,9 @@ std::unique_ptr<Driver> Driver::create( Driver::Flavor flavor
   case Flavor::ld64:
   case Flavor::link:
   case Flavor::invalid:
-    llvm_unreachable("Unsupported flavor");
+    break;
   }
+  llvm_unreachable("Unsupported flavor");
 }
 
 std::unique_ptr<llvm::opt::ArgList>

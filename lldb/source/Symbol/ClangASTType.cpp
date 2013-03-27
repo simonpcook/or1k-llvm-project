@@ -38,6 +38,7 @@
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/UniqueCStringMap.h"
 #include "lldb/Symbol/ClangASTContext.h"
+#include "lldb/Symbol/ClangExternalASTSourceCommon.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
 
@@ -141,7 +142,7 @@ ClangASTType::GetPointeeType (clang_type_t clang_type)
 }
 
 lldb::clang_type_t
-ClangASTType::GetArrayElementType (uint32_t& stride)
+ClangASTType::GetArrayElementType (uint64_t& stride)
 {
     return GetArrayElementType(m_ast, m_type, stride);
 }
@@ -149,7 +150,7 @@ ClangASTType::GetArrayElementType (uint32_t& stride)
 lldb::clang_type_t
 ClangASTType::GetArrayElementType (clang::ASTContext* ast,
                                    lldb::clang_type_t opaque_clang_qual_type,
-                                   uint32_t& stride)
+                                   uint64_t& stride)
 {
     if (opaque_clang_qual_type)
     {
@@ -187,7 +188,7 @@ ClangASTType::GetPointerType (clang::ASTContext *ast_context,
 }
 
 lldb::Encoding
-ClangASTType::GetEncoding (uint32_t &count)
+ClangASTType::GetEncoding (uint64_t &count)
 {
     return GetEncoding(m_type, count);
 }
@@ -363,7 +364,7 @@ ClangASTType::GetMinimumLanguage (clang::ASTContext *ctx,
 }
 
 lldb::Encoding
-ClangASTType::GetEncoding (clang_type_t clang_type, uint32_t &count)
+ClangASTType::GetEncoding (clang_type_t clang_type, uint64_t &count)
 {
     count = 1;
     clang::QualType qual_type(clang::QualType::getFromOpaquePtr(clang_type));
@@ -631,7 +632,7 @@ ClangASTType::DumpValue
     Stream *s,
     lldb::Format format,
     const lldb_private::DataExtractor &data,
-    uint32_t data_byte_offset,
+    lldb::offset_t data_byte_offset,
     size_t data_byte_size,
     uint32_t bitfield_bit_size,
     uint32_t bitfield_bit_offset,
@@ -667,7 +668,7 @@ ClangASTType::DumpValue
     Stream *s,
     lldb::Format format,
     const lldb_private::DataExtractor &data,
-    uint32_t data_byte_offset,
+    lldb::offset_t data_byte_offset,
     size_t data_byte_size,
     uint32_t bitfield_bit_size,
     uint32_t bitfield_bit_offset,
@@ -965,7 +966,7 @@ bool
 ClangASTType::DumpTypeValue (Stream *s,
                              lldb::Format format,
                              const lldb_private::DataExtractor &data,
-                             uint32_t byte_offset,
+                             lldb::offset_t byte_offset,
                              size_t byte_size,
                              uint32_t bitfield_bit_size,
                              uint32_t bitfield_bit_offset,
@@ -990,7 +991,7 @@ ClangASTType::DumpTypeValue (clang::ASTContext *ast_context,
                              Stream *s,
                              lldb::Format format,
                              const lldb_private::DataExtractor &data,
-                             uint32_t byte_offset,
+                             lldb::offset_t byte_offset,
                              size_t byte_size,
                              uint32_t bitfield_bit_size,
                              uint32_t bitfield_bit_offset,
@@ -1037,20 +1038,38 @@ ClangASTType::DumpTypeValue (clang::ASTContext *ast_context,
                 const clang::EnumDecl *enum_decl = enum_type->getDecl();
                 assert(enum_decl);
                 clang::EnumDecl::enumerator_iterator enum_pos, enum_end_pos;
+                const bool is_signed = qual_type->isSignedIntegerOrEnumerationType();
                 lldb::offset_t offset = byte_offset;
-                const int64_t enum_value = data.GetMaxU64Bitfield (&offset, byte_size, bitfield_bit_size, bitfield_bit_offset);
-                for (enum_pos = enum_decl->enumerator_begin(), enum_end_pos = enum_decl->enumerator_end(); enum_pos != enum_end_pos; ++enum_pos)
+                if (is_signed)
                 {
-                    if (enum_pos->getInitVal() == enum_value)
+                    const int64_t enum_svalue = data.GetMaxS64Bitfield (&offset, byte_size, bitfield_bit_size, bitfield_bit_offset);
+                    for (enum_pos = enum_decl->enumerator_begin(), enum_end_pos = enum_decl->enumerator_end(); enum_pos != enum_end_pos; ++enum_pos)
                     {
-                        s->PutCString (enum_pos->getNameAsString().c_str());
-                        return true;
+                        if (enum_pos->getInitVal().getSExtValue() == enum_svalue)
+                        {
+                            s->PutCString (enum_pos->getNameAsString().c_str());
+                            return true;
+                        }
                     }
+                    // If we have gotten here we didn't get find the enumerator in the
+                    // enum decl, so just print the integer.                    
+                    s->Printf("%" PRIi64, enum_svalue);
                 }
-                // If we have gotten here we didn't get find the enumerator in the
-                // enum decl, so just print the integer.
-                
-                s->Printf("%" PRIi64, enum_value);
+                else
+                {
+                    const uint64_t enum_uvalue = data.GetMaxU64Bitfield (&offset, byte_size, bitfield_bit_size, bitfield_bit_offset);
+                    for (enum_pos = enum_decl->enumerator_begin(), enum_end_pos = enum_decl->enumerator_end(); enum_pos != enum_end_pos; ++enum_pos)
+                    {
+                        if (enum_pos->getInitVal().getZExtValue() == enum_uvalue)
+                        {
+                            s->PutCString (enum_pos->getNameAsString().c_str());
+                            return true;
+                        }
+                    }
+                    // If we have gotten here we didn't get find the enumerator in the
+                    // enum decl, so just print the integer.
+                    s->Printf("%" PRIu64, enum_uvalue);
+                }
                 return true;
             }
             // format was not enum, just fall through and dump the value as requested....
@@ -1135,7 +1154,7 @@ ClangASTType::DumpSummary
     ExecutionContext *exe_ctx,
     Stream *s,
     const lldb_private::DataExtractor &data,
-    uint32_t data_byte_offset,
+    lldb::offset_t data_byte_offset,
     size_t data_byte_size
 )
 {
@@ -1156,7 +1175,7 @@ ClangASTType::DumpSummary
     ExecutionContext *exe_ctx,
     Stream *s,
     const lldb_private::DataExtractor &data,
-    uint32_t data_byte_offset,
+    lldb::offset_t data_byte_offset,
     size_t data_byte_size
 )
 {
@@ -1201,19 +1220,19 @@ ClangASTType::DumpSummary
     }
 }
 
-uint32_t
+uint64_t
 ClangASTType::GetClangTypeByteSize ()
 {
     return (GetClangTypeBitWidth (m_ast, m_type) + 7) / 8;
 }
 
-uint32_t
+uint64_t
 ClangASTType::GetClangTypeBitWidth ()
 {
     return GetClangTypeBitWidth (m_ast, m_type);
 }
 
-uint32_t
+uint64_t
 ClangASTType::GetClangTypeBitWidth (clang::ASTContext *ast_context, clang_type_t clang_type)
 {
     if (ClangASTContext::GetCompleteType (ast_context, clang_type))
@@ -1292,6 +1311,18 @@ ClangASTType::IsConst (lldb::clang_type_t clang_type)
 }
 
 void
+ClangASTType::DumpTypeDescription ()
+{
+    StreamFile s (stdout, false);
+    DumpTypeDescription (&s);
+    ClangASTMetadata *metadata = ClangASTContext::GetMetadata (m_ast, m_type);
+    if (metadata)
+    {
+        metadata->Dump (&s);
+    }
+}
+
+void
 ClangASTType::DumpTypeDescription (Stream *s)
 {
     return DumpTypeDescription (m_ast, m_type, s);
@@ -1314,8 +1345,9 @@ ClangASTType::DumpTypeDescription (clang::ASTContext *ast_context, clang_type_t 
         {
         case clang::Type::ObjCObject:
         case clang::Type::ObjCInterface:
-            if (ClangASTContext::GetCompleteType (ast_context, clang_type))
             {
+                ClangASTContext::GetCompleteType (ast_context, clang_type);
+                
                 const clang::ObjCObjectType *objc_class_type = llvm::dyn_cast<clang::ObjCObjectType>(qual_type.getTypePtr());
                 assert (objc_class_type);
                 if (objc_class_type)
@@ -1353,8 +1385,9 @@ ClangASTType::DumpTypeDescription (clang::ASTContext *ast_context, clang_type_t 
             return;
 
         case clang::Type::Record:
-            if (ClangASTContext::GetCompleteType (ast_context, clang_type))
             {
+                ClangASTContext::GetCompleteType (ast_context, clang_type);
+                
                 const clang::RecordType *record_type = llvm::cast<clang::RecordType>(qual_type.getTypePtr());
                 const clang::RecordDecl *record_decl = record_type->getDecl();
                 const clang::CXXRecordDecl *cxx_record_decl = llvm::dyn_cast<clang::CXXRecordDecl>(record_decl);
@@ -1392,25 +1425,11 @@ ClangASTType::DumpTypeDescription (clang::ASTContext *ast_context, clang_type_t 
     }
 }
 
-void
-ClangASTType::DumpTypeCode (Stream *s)
-{
-    DumpTypeCode(m_type, s);
-}
-
-void
-ClangASTType::DumpTypeCode (void *type, 
-                            Stream *s)
-{
-    clang::QualType qual_type(clang::QualType::getFromOpaquePtr(type));
-    s->PutCString(qual_type.getAsString().c_str());
-}
-
 bool
 ClangASTType::GetValueAsScalar
 (
     const lldb_private::DataExtractor &data,
-    uint32_t data_byte_offset,
+    lldb::offset_t data_byte_offset,
     size_t data_byte_size,
     Scalar &value
 )
@@ -1429,7 +1448,7 @@ ClangASTType::GetValueAsScalar
     clang::ASTContext *ast_context,
     clang_type_t clang_type,
     const lldb_private::DataExtractor &data,
-    uint32_t data_byte_offset,
+    lldb::offset_t data_byte_offset,
     size_t data_byte_size,
     Scalar &value
 )
@@ -1442,14 +1461,14 @@ ClangASTType::GetValueAsScalar
     }
     else
     {
-        uint32_t count = 0;
+        uint64_t count = 0;
         lldb::Encoding encoding = GetEncoding (clang_type, count);
 
         if (encoding == lldb::eEncodingInvalid || count != 1)
             return false;
 
         uint64_t bit_width = ast_context->getTypeSize(qual_type);
-        uint32_t byte_size = (bit_width + 7 ) / 8;
+        uint64_t byte_size = (bit_width + 7 ) / 8;
         lldb::offset_t offset = data_byte_offset;
         switch (encoding)
         {
@@ -1585,18 +1604,18 @@ ClangASTType::SetValueFromScalar
     if (!ClangASTContext::IsAggregateType (clang_type))
     {
         strm.GetFlags().Set(Stream::eBinary);
-        uint32_t count = 0;
+        uint64_t count = 0;
         lldb::Encoding encoding = GetEncoding (clang_type, count);
 
         if (encoding == lldb::eEncodingInvalid || count != 1)
             return false;
 
-        uint64_t bit_width = ast_context->getTypeSize(qual_type);
+        const uint64_t bit_width = ast_context->getTypeSize(qual_type);
         // This function doesn't currently handle non-byte aligned assignments
         if ((bit_width % 8) != 0)
             return false;
 
-        uint32_t byte_size = (bit_width + 7 ) / 8;
+        const uint64_t byte_size = (bit_width + 7 ) / 8;
         switch (encoding)
         {
         case lldb::eEncodingInvalid:
@@ -1655,13 +1674,10 @@ ClangASTType::SetValueFromScalar
 }
 
 bool
-ClangASTType::ReadFromMemory
-(
-    lldb_private::ExecutionContext *exe_ctx,
-    lldb::addr_t addr,
-    AddressType address_type,
-    lldb_private::DataExtractor &data
-)
+ClangASTType::ReadFromMemory (lldb_private::ExecutionContext *exe_ctx,
+                              lldb::addr_t addr,
+                              AddressType address_type,
+                              lldb_private::DataExtractor &data)
 {
     return ReadFromMemory (m_ast,
                            m_type,
@@ -1671,24 +1687,21 @@ ClangASTType::ReadFromMemory
                            data);
 }
 
-uint32_t
+uint64_t
 ClangASTType::GetTypeByteSize() const
 {
-    return GetTypeByteSize(m_ast,
-                           m_type);
+    return GetTypeByteSize (m_ast, m_type);
 }
 
-uint32_t
-ClangASTType::GetTypeByteSize(
-                clang::ASTContext *ast_context,
-                lldb::clang_type_t opaque_clang_qual_type)
+uint64_t
+ClangASTType::GetTypeByteSize(clang::ASTContext *ast_context, lldb::clang_type_t opaque_clang_qual_type)
 {
     
     if (ClangASTContext::GetCompleteType (ast_context, opaque_clang_qual_type))
     {
         clang::QualType qual_type(clang::QualType::getFromOpaquePtr(opaque_clang_qual_type));
         
-        uint32_t byte_size = (ast_context->getTypeSize (qual_type) + 7) / 8;
+        uint64_t byte_size = (ast_context->getTypeSize (qual_type) + (uint64_t)7) / (uint64_t)8;
         
         if (ClangASTContext::IsObjCClassType(opaque_clang_qual_type))
             byte_size += ast_context->getTypeSize(ast_context->ObjCBuiltinClassTy) / 8; // isa
@@ -1700,15 +1713,12 @@ ClangASTType::GetTypeByteSize(
 
 
 bool
-ClangASTType::ReadFromMemory
-(
-    clang::ASTContext *ast_context,
-    clang_type_t clang_type,
-    lldb_private::ExecutionContext *exe_ctx,
-    lldb::addr_t addr,
-    AddressType address_type,
-    lldb_private::DataExtractor &data
-)
+ClangASTType::ReadFromMemory (clang::ASTContext *ast_context,
+                              clang_type_t clang_type,
+                              lldb_private::ExecutionContext *exe_ctx,
+                              lldb::addr_t addr,
+                              AddressType address_type,
+                              lldb_private::DataExtractor &data)
 {
     if (address_type == eAddressTypeFile)
     {
@@ -1722,7 +1732,7 @@ ClangASTType::ReadFromMemory
     
     clang::QualType qual_type(clang::QualType::getFromOpaquePtr(clang_type));
     
-    const uint32_t byte_size = (ast_context->getTypeSize (qual_type) + 7) / 8;
+    const uint64_t byte_size = (ast_context->getTypeSize (qual_type) + 7) / 8;
     if (data.GetByteSize() < byte_size)
     {
         lldb::DataBufferSP data_sp(new DataBufferHeap (byte_size, '\0'));
@@ -1734,6 +1744,8 @@ ClangASTType::ReadFromMemory
     {
         if (address_type == eAddressTypeHost)
         {
+            if (addr == 0)
+                return false;
             // The address is an address in this process, so just copy it
             memcpy (dst, (uint8_t*)NULL + addr, byte_size);
             return true;
@@ -1788,7 +1800,7 @@ ClangASTType::WriteToMemory
         return false;
     }
     clang::QualType qual_type(clang::QualType::getFromOpaquePtr(clang_type));
-    const uint32_t byte_size = (ast_context->getTypeSize (qual_type) + 7) / 8;
+    const uint64_t byte_size = (ast_context->getTypeSize (qual_type) + 7) / 8;
 
     if (byte_size > 0)
     {

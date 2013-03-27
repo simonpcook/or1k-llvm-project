@@ -27,6 +27,7 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/Section.h"
+#include "lldb/Core/SourceManager.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Core/ValueObject.h"
@@ -79,7 +80,7 @@ Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::Plat
     m_scratch_ast_source_ap (NULL),
     m_ast_importer_ap (NULL),
     m_persistent_variables (),
-    m_source_manager(*this),
+    m_source_manager_ap(),
     m_stop_hooks (),
     m_stop_hook_next_id (0),
     m_suppress_stop_hooks (false),
@@ -1908,6 +1909,15 @@ Target::GetOpcodeLoadAddress (lldb::addr_t load_addr, AddressClass addr_class) c
     return opcode_addr;
 }
 
+SourceManager &
+Target::GetSourceManager ()
+{
+    if (m_source_manager_ap.get() == NULL)
+        m_source_manager_ap.reset (new SourceManager(shared_from_this()));
+    return *m_source_manager_ap;
+}
+
+
 lldb::user_id_t
 Target::AddStopHook (Target::StopHookSP &new_hook_sp)
 {
@@ -2210,6 +2220,22 @@ g_inline_breakpoint_enums[] =
     { 0, NULL, NULL }
 };
 
+typedef enum x86DisassemblyFlavor
+{
+    eX86DisFlavorDefault,
+    eX86DisFlavorIntel,
+    eX86DisFlavorATT
+} x86DisassemblyFlavor;
+
+static OptionEnumValueElement
+g_x86_dis_flavor_value_types[] =
+{
+    { eX86DisFlavorDefault, "default", "Disassembler default (currently att)."},
+    { eX86DisFlavorIntel,   "intel",   "Intel disassembler flavor."},
+    { eX86DisFlavorATT,     "att",     "AT&T disassembler flavor."},
+    { 0, NULL, NULL }
+};
+
 static PropertyDefinition
 g_properties[] =
 {
@@ -2243,6 +2269,9 @@ g_properties[] =
         "Always checking for inlined breakpoint locations can be expensive (memory and time), so we try to minimize the "
         "times we look for inlined locations. This setting allows you to control exactly which strategy is used when settings "
         "file and line breakpoints." },
+    // FIXME: This is the wrong way to do per-architecture settings, but we don't have a general per architecture settings system in place yet.
+    { "x86-disassembly-flavor"             , OptionValue::eTypeEnum      , false, eX86DisFlavorDefault,       NULL, g_x86_dis_flavor_value_types, "The default disassembly flavor to use for x86 or x86-64 targets." },
+    { "use-fast-stepping"                  , OptionValue::eTypeBoolean   , false, false,                      NULL, NULL, "Use a fast stepping algorithm based on running from branch to branch rather than instruction single-stepping." },
     { NULL                                 , OptionValue::eTypeInvalid   , false, 0                         , NULL, NULL, NULL }
 };
 enum
@@ -2266,7 +2295,9 @@ enum
     ePropertyErrorPath,
     ePropertyDisableASLR,
     ePropertyDisableSTDIO,
-    ePropertyInlineStrategy
+    ePropertyInlineStrategy,
+    ePropertyDisassemblyFlavor,
+    ePropertyUseFastStepping
 };
 
 
@@ -2442,6 +2473,17 @@ TargetProperties::SetDisableSTDIO (bool b)
     m_collection_sp->SetPropertyAtIndexAsBoolean (NULL, idx, b);
 }
 
+const char *
+TargetProperties::GetDisassemblyFlavor () const
+{
+    const uint32_t idx = ePropertyDisassemblyFlavor;
+    const char *return_value;
+    
+    x86DisassemblyFlavor flavor_value = (x86DisassemblyFlavor) m_collection_sp->GetPropertyAtIndexAsEnumeration (NULL, idx, g_properties[idx].default_uint_value);
+    return_value = g_x86_dis_flavor_value_types[flavor_value].string_value;
+    return return_value;
+}
+
 InlineStrategy
 TargetProperties::GetInlineStrategy () const
 {
@@ -2591,6 +2633,13 @@ bool
 TargetProperties::GetBreakpointsConsultPlatformAvoidList ()
 {
     const uint32_t idx = ePropertyBreakpointUseAvoidList;
+    return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
+}
+
+bool
+TargetProperties::GetUseFastStepping () const
+{
+    const uint32_t idx = ePropertyUseFastStepping;
     return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
 }
 

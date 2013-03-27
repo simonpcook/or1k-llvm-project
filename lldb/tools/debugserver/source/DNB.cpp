@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "DNB.h"
+#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1219,22 +1220,22 @@ DNBProcessMemoryRegionInfo (nub_process_t pid, nub_addr_t addr, DNBRegionInfo *r
 }
 
 std::string
-DNBProcessGetProfileData (nub_process_t pid)
+DNBProcessGetProfileData (nub_process_t pid, DNBProfileDataScanType scanType)
 {
     MachProcessSP procSP;
     if (GetProcessSP (pid, procSP))
-        return procSP->Task().GetProfileData();
+        return procSP->Task().GetProfileData(scanType);
     
     return std::string("");
 }
 
 nub_bool_t
-DNBProcessSetEnableAsyncProfiling (nub_process_t pid, nub_bool_t enable, uint64_t interval_usec)
+DNBProcessSetEnableAsyncProfiling (nub_process_t pid, nub_bool_t enable, uint64_t interval_usec, DNBProfileDataScanType scan_type)
 {
     MachProcessSP procSP;
     if (GetProcessSP (pid, procSP))
     {
-        procSP->SetEnableAsyncProfiling(enable, interval_usec);
+        procSP->SetEnableAsyncProfiling(enable, interval_usec, scan_type);
         return true;
     }
     
@@ -1385,7 +1386,7 @@ DNBPrintf (nub_process_t pid, nub_thread_t tid, nub_addr_t base_addr, FILE *file
                                         }
                                         else
                                         {
-                                            fprintf(file, "error: unable to read register '%s' for process %#.4x and thread %#.4x\n", register_name.c_str(), pid, tid);
+                                            fprintf(file, "error: unable to read register '%s' for process %#.4x and thread %#.8" PRIx64 "\n", register_name.c_str(), pid, tid);
                                             return total_bytes_read;
                                         }
                                     }

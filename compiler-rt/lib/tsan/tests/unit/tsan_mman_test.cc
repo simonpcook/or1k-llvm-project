@@ -55,10 +55,10 @@ TEST(Mman, User) {
   EXPECT_NE(p2, p);
   MBlock *b = user_mblock(thr, p);
   EXPECT_NE(b, (MBlock*)0);
-  EXPECT_EQ(b->size, (uptr)10);
+  EXPECT_EQ(b->Size(), (uptr)10);
   MBlock *b2 = user_mblock(thr, p2);
   EXPECT_NE(b2, (MBlock*)0);
-  EXPECT_EQ(b2->size, (uptr)20);
+  EXPECT_EQ(b2->Size(), (uptr)20);
   for (int i = 0; i < 10; i++) {
     p[i] = 42;
     EXPECT_EQ(b, user_mblock(thr, p + i));
@@ -115,6 +115,19 @@ TEST(Mman, UserRealloc) {
       EXPECT_EQ(((char*)p2)[i], (char)0xde);
     user_free(thr, pc, p2);
   }
+}
+
+TEST(Mman, UsableSize) {
+  ScopedInRtl in_rtl;
+  ThreadState *thr = cur_thread();
+  uptr pc = 0;
+  char *p = (char*)user_alloc(thr, pc, 10);
+  char *p2 = (char*)user_alloc(thr, pc, 20);
+  EXPECT_EQ(0U, user_alloc_usable_size(thr, pc, NULL));
+  EXPECT_EQ(10U, user_alloc_usable_size(thr, pc, p));
+  EXPECT_EQ(20U, user_alloc_usable_size(thr, pc, p2));
+  user_free(thr, pc, p);
+  user_free(thr, pc, p2);
 }
 
 TEST(Mman, Stats) {

@@ -18,7 +18,7 @@ def err_fe_pch_malformed : Error<
 def err_fe_pch_malformed_block : Error<
     "malformed block record in PCH file: '%0'">, DefaultFatal;
 def err_fe_pch_file_modified : Error<
-    "file '%0' has been modified since the precompiled header was built">,
+    "file '%0' has been modified since the precompiled header '%1' was built">,
     DefaultFatal;
 def err_fe_pch_file_overridden : Error<
     "file '%0' from the precompiled header has been overridden">;
@@ -44,7 +44,10 @@ def warn_pch_different_branch : Error<
 def err_pch_with_compiler_errors : Error<
     "PCH file contains compiler errors">;
     
-    
+def warn_module_conflict : Warning<
+    "module '%0' conflicts with already-imported module '%1': %2">, 
+    InGroup<ModuleConflict>;
+
 def err_pch_macro_def_undef : Error<
     "macro '%0' was %select{defined|undef'd}1 in the precompiled header but "
     "%select{undef'd|defined}1 on the command line">;

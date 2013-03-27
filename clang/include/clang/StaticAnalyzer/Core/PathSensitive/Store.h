@@ -136,7 +136,8 @@ public:
   SVal evalDerivedToBase(SVal Derived, const CXXBasePath &CastPath);
 
   /// Evaluates a derived-to-base cast through a single level of derivation.
-  SVal evalDerivedToBase(SVal Derived, QualType DerivedPtrType);
+  SVal evalDerivedToBase(SVal Derived, QualType DerivedPtrType,
+                         bool IsVirtual);
 
   /// \brief Evaluates C++ dynamic_cast cast.
   /// The callback may result in the following 3 scenarios:
@@ -196,6 +197,7 @@ public:
                                      const LocationContext *LCtx,
                                      InvalidatedSymbols &IS,
                                      const CallEvent *Call,
+                                     ArrayRef<const MemRegion *> ConstRegions,
                                      InvalidatedRegions *Invalidated) = 0;
 
   /// enterStackFrame - Let the StoreManager to do something when execution

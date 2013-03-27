@@ -14,17 +14,23 @@ def output_e : Separate<["-"], "o">, Alias<output>;
 def relocatable : Flag<["--"], "relocatable">;
 def relocatable_r : Flag<["-"], "r">, Alias<relocatable>;
 
+def dynamic_linker : Separate<["-"], "dynamic-linker">;
+
 def OCTOTHORPE_OCTOTHORPE_OCTOTHORPE : Flag<["-"], "###">;
 
 def emit_yaml : Flag<["-"], "emit-yaml">;
 
 def m : Separate<["-"], "m">;
 def z : Separate<["-"], "z">;
+def rpath : Separate<["-"], "rpath">;
+def soname : Separate<["-"], "soname">;
 
 def static : Flag<["-"], "static">;
+def shared : Flag<["-"], "shared">;
 def start_group : Flag<["--"], "start-group">;
 def end_group : Flag<["--"], "end-group">;
 def build_id : Flag<["--"], "build-id">;
+def eh_frame_hdr : Flag<["--"], "eh-frame-hdr">;
 
 def L : Joined<["-"], "L">;
 def l : Joined<["-"], "l">;

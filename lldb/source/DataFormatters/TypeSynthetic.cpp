@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 // C Includes
 
 // C++ Includes
@@ -51,7 +53,7 @@ std::string
 CXXSyntheticChildren::GetDescription()
 {
     StreamString sstr;
-    sstr.Printf("%s%s%s Generator at %p - %s\n",
+    sstr.Printf("%s%s%s Generator at %p - %s",
                 Cascades() ? "" : " (not cascading)",
                 SkipsPointers() ? " (skip pointers)" : "",
                 SkipsReferences() ? " (skip references)" : "",

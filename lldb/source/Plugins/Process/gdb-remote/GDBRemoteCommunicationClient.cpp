@@ -540,11 +540,11 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
     // may change if we are interrupted and we continue after an async packet...
     std::string continue_packet(payload, packet_length);
     
-    bool got_stdout = false;
+    bool got_async_packet = false;
     
     while (state == eStateRunning)
     {
-        if (!got_stdout)
+        if (!got_async_packet)
         {
             if (log)
                 log->Printf ("GDBRemoteCommunicationClient::%s () sending continue packet: %s", __FUNCTION__, continue_packet.c_str());
@@ -554,7 +554,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
             m_private_is_running.SetValue (true, eBroadcastAlways);
         }
         
-        got_stdout = false;
+        got_async_packet = false;
 
         if (log)
             log->Printf ("GDBRemoteCommunicationClient::%s () WaitForPacket(%s)", __FUNCTION__, continue_packet.c_str());
@@ -737,7 +737,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
                 case 'O':
                     // STDOUT
                     {
-                        got_stdout = true;
+                        got_async_packet = true;
                         std::string inferior_stdout;
                         inferior_stdout.reserve(response.GetBytesLeft () / 2);
                         char ch;
@@ -750,6 +750,7 @@ GDBRemoteCommunicationClient::SendContinuePacketAndWaitForResponse
                 case 'A':
                     // Async miscellaneous reply. Right now, only profile data is coming through this channel.
                     {
+                        got_async_packet = true;
                         std::string input = response.GetStringRef().substr(1); // '1' to move beyond 'A'
                         if (m_partial_profile_data.length() > 0)
                         {
@@ -2114,17 +2115,17 @@ GDBRemoteCommunicationClient::LaunchGDBserverAndGetPort ()
 }
 
 bool
-GDBRemoteCommunicationClient::SetCurrentThread (int tid)
+GDBRemoteCommunicationClient::SetCurrentThread (uint64_t tid)
 {
     if (m_curr_tid == tid)
         return true;
-    
+
     char packet[32];
     int packet_len;
-    if (tid <= 0)
-        packet_len = ::snprintf (packet, sizeof(packet), "Hg%i", tid);
+    if (tid == UINT64_MAX)
+        packet_len = ::snprintf (packet, sizeof(packet), "Hg-1");
     else
-        packet_len = ::snprintf (packet, sizeof(packet), "Hg%x", tid);
+        packet_len = ::snprintf (packet, sizeof(packet), "Hg%" PRIx64, tid);
     assert (packet_len + 1 < sizeof(packet));
     StringExtractorGDBRemote response;
     if (SendPacketAndWaitForResponse(packet, packet_len, response, false))
@@ -2139,18 +2140,18 @@ GDBRemoteCommunicationClient::SetCurrentThread (int tid)
 }
 
 bool
-GDBRemoteCommunicationClient::SetCurrentThreadForRun (int tid)
+GDBRemoteCommunicationClient::SetCurrentThreadForRun (uint64_t tid)
 {
     if (m_curr_tid_run == tid)
         return true;
-    
+
     char packet[32];
     int packet_len;
-    if (tid <= 0)
-        packet_len = ::snprintf (packet, sizeof(packet), "Hc%i", tid);
+    if (tid == UINT64_MAX)
+        packet_len = ::snprintf (packet, sizeof(packet), "Hc-1");
     else
-        packet_len = ::snprintf (packet, sizeof(packet), "Hc%x", tid);
-    
+        packet_len = ::snprintf (packet, sizeof(packet), "Hc%" PRIx64, tid);
+
     assert (packet_len + 1 < sizeof(packet));
     StringExtractorGDBRemote response;
     if (SendPacketAndWaitForResponse(packet, packet_len, response, false))
@@ -2266,7 +2267,7 @@ GDBRemoteCommunicationClient::GetCurrentThreadIDs (std::vector<lldb::tid_t> &thr
             {
                 do
                 {
-                    tid_t tid = response.GetHexMaxU32(false, LLDB_INVALID_THREAD_ID);
+                    tid_t tid = response.GetHexMaxU64(false, LLDB_INVALID_THREAD_ID);
                     
                     if (tid != LLDB_INVALID_THREAD_ID)
                     {

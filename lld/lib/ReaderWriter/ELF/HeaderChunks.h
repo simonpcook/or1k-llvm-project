@@ -52,7 +52,9 @@ public:
 
   void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer);
 
-  void finalize() { }
+  virtual void doPreFlight() {}
+
+  void finalize() {}
 
 private:
   Elf_Ehdr _eh;
@@ -70,7 +72,7 @@ Header<ELFT>::Header(const ELFTargetInfo &ti)
   e_ident(llvm::ELF::EI_MAG2, 'L');
   e_ident(llvm::ELF::EI_MAG3, 'F');
   e_ehsize(sizeof(Elf_Ehdr));
-  e_flags(2);
+  e_flags(0);
 }
 
 template <class ELFT>
@@ -87,18 +89,19 @@ class ProgramHeader : public Chunk<ELFT> {
 public:
   typedef llvm::object::Elf_Phdr_Impl<ELFT> Elf_Phdr;
   typedef typename std::vector<Elf_Phdr *>::iterator PhIterT;
+  typedef typename std::reverse_iterator<PhIterT> ReversePhIterT;
 
   /// \brief Find a program header entry, given the type of entry that
   /// we are looking for
   class FindPhdr {
   public:
-    FindPhdr(uint64_t type, uint64_t flags, uint64_t flagsClear) 
+    FindPhdr(uint64_t type, uint64_t flags, uint64_t flagsClear)
              : _type(type)
              , _flags(flags)
              , _flagsClear(flagsClear)
     {}
 
-    bool operator()(const Elf_Phdr *j) const { 
+    bool operator()(const Elf_Phdr *j) const {
       return ((j->p_type == _type) &&
               ((j->p_flags & _flags) == _flags) &&
               (!(j->p_flags & _flagsClear)));
@@ -117,9 +120,7 @@ public:
 
   bool addSegment(Segment<ELFT> *segment);
 
-  void resetProgramHeaders() {
-    _phi = _ph.begin();
-  }
+  void resetProgramHeaders() { _phi = _ph.begin(); }
 
   uint64_t  fileSize() {
     return sizeof(Elf_Phdr) * _ph.size();
@@ -132,8 +133,9 @@ public:
   void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer);
 
   /// \brief find a program header entry in the list of program headers
-  PhIterT findProgramHeader(uint64_t type, uint64_t flags, uint64_t flagClear) {
-    return std::find_if(_ph.begin(), _ph.end(), 
+  ReversePhIterT
+  findProgramHeader(uint64_t type, uint64_t flags, uint64_t flagClear) {
+    return std::find_if(_ph.rbegin(), _ph.rend(),
                         FindPhdr(type, flags, flagClear));
   }
 
@@ -145,11 +147,15 @@ public:
     return _ph.end();
   }
 
-  void finalize() { }
+  ReversePhIterT rbegin() { return _ph.rbegin(); }
 
-  int64_t entsize() {
-    return sizeof(Elf_Phdr);
-  }
+  ReversePhIterT rend() { return _ph.rend(); }
+
+  virtual void doPreFlight() {}
+
+  void finalize() {}
+
+  int64_t entsize() { return sizeof(Elf_Phdr); }
 
   int64_t numHeaders() {
     return _ph.size();
@@ -180,21 +186,28 @@ private:
 template <class ELFT>
 bool ProgramHeader<ELFT>::addSegment(Segment<ELFT> *segment) {
   bool allocatedNew = false;
+  // For segments that are not a loadable segment, we
+  // just pick the values directly from the segment as there
+  // wouldnt be any slices within that
+  if (segment->segmentType() != llvm::ELF::PT_LOAD) {
+    auto phdr = allocateProgramHeader();
+    if (phdr.second)
+      allocatedNew = true;
+    phdr.first->p_type = segment->segmentType();
+    phdr.first->p_offset = segment->fileOffset();
+    phdr.first->p_vaddr = segment->virtualAddr();
+    phdr.first->p_paddr = segment->virtualAddr();
+    phdr.first->p_filesz = segment->fileSize();
+    phdr.first->p_memsz = segment->memSize();
+    phdr.first->p_flags = segment->flags();
+    phdr.first->p_align = segment->align2();
+    this->_fsize = fileSize();
+    this->_msize = this->_fsize;
+    return allocatedNew;
+  }
+  // For all other segments, use the slice
+  // to derive program headers
   for (auto slice : segment->slices()) {
-    // If we have a TLS segment, emit a LOAD first.
-    if (segment->segmentType() == llvm::ELF::PT_TLS) {
-      auto phdr = allocateProgramHeader();
-      if (phdr.second)
-        allocatedNew = true;
-      phdr.first->p_type = llvm::ELF::PT_LOAD;
-      phdr.first->p_offset = slice->fileOffset();
-      phdr.first->p_vaddr = slice->virtualAddr();
-      phdr.first->p_paddr = slice->virtualAddr();
-      phdr.first->p_filesz = slice->fileSize();
-      phdr.first->p_memsz = slice->memSize();
-      phdr.first->p_flags = segment->flags();
-      phdr.first->p_align = slice->align2();
-    }
     auto phdr = allocateProgramHeader();
     if (phdr.second)
       allocatedNew = true;
@@ -235,30 +248,30 @@ public:
   SectionHeader(const ELFTargetInfo &, int32_t order);
 
   void appendSection(MergedSections<ELFT> *section);
-  
+
   void updateSection(Section<ELFT> *section);
-  
+
   static inline bool classof(const Chunk<ELFT> *c) {
     return c->getChunkKind() == Chunk<ELFT>::K_SectionHeader;
   }
-  
+
   void setStringSection(StringTable<ELFT> *s) {
     _stringSection = s;
   }
 
   void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer);
-  
-  void finalize() { }
-  
-  inline uint16_t fileSize() {
-    return sizeof(Elf_Shdr) * _sectionInfo.size();
-  }
 
-  inline int64_t entsize() {
+  virtual void doPreFlight() {}
+
+  void finalize() {}
+
+  inline uint64_t fileSize() { return sizeof(Elf_Shdr) * _sectionInfo.size(); }
+
+  inline uint64_t entsize() {
     return sizeof(Elf_Shdr);
   }
-  
-  inline int64_t numHeaders() {
+
+  inline uint64_t numHeaders() {
     return _sectionInfo.size();
   }
 
@@ -282,7 +295,7 @@ SectionHeader<ELFT>::SectionHeader(const ELFTargetInfo &ti, int32_t order)
 }
 
 template<class ELFT>
-void 
+void
 SectionHeader<ELFT>::appendSection(MergedSections<ELFT> *section) {
   Elf_Shdr *shdr = new (_sectionAllocate.Allocate<Elf_Shdr>()) Elf_Shdr;
   shdr->sh_name   = _stringSection->addString(section->name());
@@ -299,7 +312,7 @@ SectionHeader<ELFT>::appendSection(MergedSections<ELFT> *section) {
 }
 
 template<class ELFT>
-void 
+void
 SectionHeader<ELFT>::updateSection(Section<ELFT> *section) {
   Elf_Shdr *shdr = _sectionInfo[section->ordinal()];
   shdr->sh_type = section->getType();

@@ -17,6 +17,7 @@
 #include "SegmentChunks.h"
 
 #include "lld/Core/LinkerOptions.h"
+#include "lld/Core/STDExtras.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -46,7 +47,7 @@ public:
   // If its determined, that the layout needs to change
   // just changing the order of enumerations would essentially
   // change the layout in the output file
-  // Change the enumerations so that Target can override and stick 
+  // Change the enumerations so that Target can override and stick
   // a section anywhere it wants to
   enum DefaultSectionOrder {
     ORDER_NOT_DEFINED = 0,
@@ -55,9 +56,11 @@ public:
     ORDER_HASH = 30,
     ORDER_DYNAMIC_SYMBOLS = 40,
     ORDER_DYNAMIC_STRINGS = 50,
+    ORDER_DYNAMIC_RELOCS = 52,
+    ORDER_DYNAMIC_PLT_RELOCS = 54,
     ORDER_INIT = 60,
-    ORDER_TEXT = 70,
-    ORDER_PLT = 80,
+    ORDER_PLT = 70,
+    ORDER_TEXT = 80,
     ORDER_FINI = 90,
     ORDER_REL = 95,
     ORDER_RODATA = 100,
@@ -109,15 +112,15 @@ public:
   };
 
   typedef typename std::vector<Chunk<ELFT> *>::iterator ChunkIter;
-  // The key used for Segments
+  // The additional segments are used to figure out
+  // if there is a segment by that type already created
+  // For example : PT_TLS, we have two sections .tdata/.tbss
+  // that are part of PT_TLS, we need to create this additional
+  // segment only once
+  typedef int64_t AdditionalSegmentKey;
   // The segments are created using
   // SegmentName, Segment flags
   typedef std::pair<StringRef, int64_t> SegmentKey;
-  // Merged Sections contain the map of Sectionnames to a vector of sections,
-  // that have been merged to form a single section
-  typedef std::map<StringRef, MergedSections<ELFT> *> MergedSectionMapT;
-  typedef typename std::vector<
-      MergedSections<ELFT> *>::iterator MergedSectionIter;
 
   // HashKey for the Segment
   class SegmentHashKey {
@@ -129,10 +132,17 @@ public:
     }
   };
 
+  // Merged Sections contain the map of Sectionnames to a vector of sections,
+  // that have been merged to form a single section
+  typedef std::map<StringRef, MergedSections<ELFT> *> MergedSectionMapT;
+  typedef typename std::vector<MergedSections<ELFT> *>::iterator
+  MergedSectionIter;
+
   typedef std::unordered_map<SectionKey, AtomSection<ELFT> *, SectionKeyHash,
                              SectionKeyEq> SectionMapT;
-  typedef std::unordered_map<SegmentKey, Segment<ELFT> *,
-                             SegmentHashKey> SegmentMapT;
+  typedef std::map<AdditionalSegmentKey, Segment<ELFT> *> AdditionalSegmentMapT;
+  typedef std::unordered_map<SegmentKey, Segment<ELFT> *, SegmentHashKey>
+  SegmentMapT;
 
   /// \brief find a absolute atom pair given a absolute atom name
   struct FindByName {
@@ -143,9 +153,7 @@ public:
 
   typedef typename std::vector<AtomLayout *>::iterator AbsoluteAtomIterT;
 
-  DefaultLayout(const ELFTargetInfo &ti)
-      : _relocationTable(nullptr), _targetInfo(ti) {
-  }
+  DefaultLayout(const ELFTargetInfo &ti) : _targetInfo(ti) {}
 
   /// \brief Return the section order for a input section
   virtual SectionOrder getSectionOrder(StringRef name, int32_t contentType,
@@ -173,7 +181,7 @@ public:
   /// \brief Find an output Section given a section name.
   MergedSections<ELFT> *findOutputSection(StringRef name) {
     auto iter = _mergedSectionMap.find(name);
-    if (iter == _mergedSectionMap.end()) 
+    if (iter == _mergedSectionMap.end())
       return nullptr;
     return iter->second;
   }
@@ -207,6 +215,11 @@ public:
       si->finalize();
   }
 
+  inline void doPreFlight() {
+    for (auto &si : _sections)
+      si->doPreFlight();
+  }
+
   inline bool findAtomAddrByName(StringRef name, uint64_t &addr) {
     for (auto sec : _sections)
       if (auto section = dyn_cast<Section<ELFT> >(sec))
@@ -237,14 +250,29 @@ public:
     return _programHeader;
   }
 
-  RelocationTable<ELFT> *getRelocationTable() {
-    // Only create the relocation table if it is needed.
-    if (!_relocationTable) {
-      _relocationTable = new (_allocator)
-          RelocationTable<ELFT>(_targetInfo, ".rela.plt", ORDER_REL);
-      addSection(_relocationTable);
+  bool hasDynamicRelocationTable() const { return !!_dynamicRelocationTable; }
+
+  bool hasPLTRelocationTable() const { return !!_pltRelocationTable; }
+
+  /// \brief Get or create the dynamic relocation table. All relocations in this
+  /// table are processed at startup.
+  RelocationTable<ELFT> *getDynamicRelocationTable() {
+    if (!_dynamicRelocationTable) {
+      _dynamicRelocationTable.reset(new (_allocator) RelocationTable<ELFT>(
+          _targetInfo, ".rela.dyn", ORDER_DYNAMIC_RELOCS));
+      addSection(_dynamicRelocationTable.get());
     }
-    return _relocationTable;
+    return _dynamicRelocationTable.get();
+  }
+
+  /// \brief Get or create the PLT relocation table. Referenced by DT_JMPREL.
+  RelocationTable<ELFT> *getPLTRelocationTable() {
+    if (!_pltRelocationTable) {
+      _pltRelocationTable.reset(new (_allocator) RelocationTable<ELFT>(
+          _targetInfo, ".rela.plt", ORDER_DYNAMIC_PLT_RELOCS));
+      addSection(_pltRelocationTable.get());
+    }
+    return _pltRelocationTable.get();
   }
 
   uint64_t getTLSSize() const {
@@ -262,17 +290,19 @@ protected:
       SectionOrder sectionOrder);
 
 private:
+  llvm::BumpPtrAllocator _allocator;
   SectionMapT _sectionMap;
   MergedSectionMapT _mergedSectionMap;
+  AdditionalSegmentMapT _additionalSegmentMap;
   SegmentMapT _segmentMap;
   std::vector<Chunk<ELFT> *> _sections;
   std::vector<Segment<ELFT> *> _segments;
   std::vector<MergedSections<ELFT> *> _mergedSections;
   Header<ELFT> *_header;
   ProgramHeader<ELFT> *_programHeader;
-  RelocationTable<ELFT> *_relocationTable;
+  LLD_UNIQUE_BUMP_PTR(RelocationTable<ELFT>) _dynamicRelocationTable;
+  LLD_UNIQUE_BUMP_PTR(RelocationTable<ELFT>) _pltRelocationTable;
   std::vector<AtomLayout *> _absoluteAtoms;
-  llvm::BumpPtrAllocator _allocator;
   const ELFTargetInfo &_targetInfo;
 };
 
@@ -289,20 +319,25 @@ Layout::SectionOrder DefaultLayout<ELFT>::getSectionOrder(
       .StartsWith(".fini", ORDER_FINI)
       .StartsWith(".hash", ORDER_HASH)
       .Default(ORDER_TEXT);
-  
+
   case DefinedAtom::typeConstant:
     return ORDER_RODATA;
-  
+
   case DefinedAtom::typeData:
+  case DefinedAtom::typeDataFast:
     return llvm::StringSwitch<Reference::Kind>(name)
-      .StartsWith(".init_array", ORDER_INIT_ARRAY)
-      .Default(ORDER_DATA);
-  
+        .StartsWith(".init_array", ORDER_INIT_ARRAY)
+        .Default(ORDER_DATA);
+
   case DefinedAtom::typeZeroFill:
+  case DefinedAtom::typeZeroFillFast:
     return ORDER_BSS;
 
   case DefinedAtom::typeGOT:
-    return ORDER_GOT;
+    return llvm::StringSwitch<Reference::Kind>(name)
+      .StartsWith(".got.plt", ORDER_GOT_PLT)
+      .Default(ORDER_GOT);
+
   case DefinedAtom::typeStub:
     return ORDER_PLT;
 
@@ -314,7 +349,7 @@ Layout::SectionOrder DefaultLayout<ELFT>::getSectionOrder(
     // If we get passed in a section push it to OTHER
     if (contentPermissions == DefinedAtom::perm___)
       return ORDER_OTHER;
-  
+
     return ORDER_NOT_DEFINED;
   }
 }
@@ -324,7 +359,8 @@ template <class ELFT>
 StringRef DefaultLayout<ELFT>::getSectionName(
     StringRef name, const int32_t contentType,
     const int32_t contentPermissions) {
-  if (contentType == DefinedAtom::typeZeroFill)
+  if ((contentType == DefinedAtom::typeZeroFill) ||
+      (contentType == DefinedAtom::typeZeroFillFast))
     return ".bss";
   if (name.startswith(".text"))
     return ".text";
@@ -350,6 +386,8 @@ Layout::SegmentType DefaultLayout<ELFT>::getSegmentType(
   case ORDER_HASH:
   case ORDER_DYNAMIC_SYMBOLS:
   case ORDER_DYNAMIC_STRINGS:
+  case ORDER_DYNAMIC_RELOCS:
+  case ORDER_DYNAMIC_PLT_RELOCS:
   case ORDER_REL:
   case ORDER_INIT:
   case ORDER_PLT:
@@ -393,6 +431,8 @@ bool DefaultLayout<ELFT>::hasOutputSegment(Section<ELFT> *section) {
   case ORDER_HASH:
   case ORDER_DYNAMIC_SYMBOLS:
   case ORDER_DYNAMIC_STRINGS:
+  case ORDER_DYNAMIC_RELOCS:
+  case ORDER_DYNAMIC_PLT_RELOCS:
   case ORDER_REL:
   case ORDER_INIT:
   case ORDER_PLT:
@@ -463,8 +503,10 @@ ErrorOr<const AtomLayout &> DefaultLayout<ELFT>::addAtom(const Atom *atom) {
         getSection(sectionName, contentType, permissions);
     // Add runtime relocations to the .rela section.
     for (const auto &reloc : *definedAtom)
-      if (_targetInfo.isRuntimeRelocation(*definedAtom, *reloc))
-        getRelocationTable()->addRelocation(*definedAtom, *reloc);
+      if (_targetInfo.isDynamicRelocation(*definedAtom, *reloc))
+        getDynamicRelocationTable()->addRelocation(*definedAtom, *reloc);
+      else if (_targetInfo.isPLTRelocation(*definedAtom, *reloc))
+        getPLTRelocationTable()->addRelocation(*definedAtom, *reloc);
     return section->appendAtom(atom);
   } else if (const AbsoluteAtom *absoluteAtom = dyn_cast<AbsoluteAtom>(atom)) {
     // Absolute atoms are not part of any section, they are global for the whole
@@ -479,7 +521,7 @@ ErrorOr<const AtomLayout &> DefaultLayout<ELFT>::addAtom(const Atom *atom) {
 
 /// Merge sections with the same name into a MergedSections
 template<class ELFT>
-void 
+void
 DefaultLayout<ELFT>::mergeSimiliarSections() {
   MergedSections<ELFT> *mergedSection;
 
@@ -503,7 +545,7 @@ DefaultLayout<ELFT>::mergeSimiliarSections() {
 
 template <class ELFT> void DefaultLayout<ELFT>::assignSectionsToSegments() {
   // TODO: Do we want to give a chance for the targetHandlers
-  // to sort segments in an arbitrary order ? 
+  // to sort segments in an arbitrary order ?
   // sort the sections by their order as defined by the layout
   std::stable_sort(_sections.begin(), _sections.end(),
                    [](Chunk<ELFT> *A, Chunk<ELFT> *B) {
@@ -522,24 +564,53 @@ template <class ELFT> void DefaultLayout<ELFT>::assignSectionsToSegments() {
   }
   for (auto msi : _mergedSections) {
     for (auto ai : msi->sections()) {
-      if (auto section = dyn_cast<Section<ELFT>>(ai)) {
+      if (auto section = dyn_cast<Section<ELFT> >(ai)) {
         if (!hasOutputSegment(section))
           continue;
+
+        // Get the segment type for the section
+        int64_t segmentType = getSegmentType(section);
+
         msi->setHasSegment();
-        section->setSegment(getSegmentType(section));
+        section->setSegmentType(segmentType);
         StringRef segmentName = section->segmentKindToStr();
+
+        int64_t lookupSectionFlag = msi->flags();
+        if (!(lookupSectionFlag & llvm::ELF::SHF_WRITE))
+          lookupSectionFlag &= ~llvm::ELF::SHF_EXECINSTR;
+        lookupSectionFlag &= ~(llvm::ELF::SHF_STRINGS | llvm::ELF::SHF_MERGE);
+
+        Segment<ELFT> *segment;
+        // We need a seperate segment for sections that dont have
+        // the segment type to be PT_LOAD
+        if (segmentType != llvm::ELF::PT_LOAD) {
+          const std::pair<AdditionalSegmentKey, Segment<ELFT> *>
+          additionalSegment(segmentType, nullptr);
+          std::pair<typename AdditionalSegmentMapT::iterator, bool>
+          additionalSegmentInsert(
+              _additionalSegmentMap.insert(additionalSegment));
+          if (!additionalSegmentInsert.second) {
+            segment = additionalSegmentInsert.first->second;
+          } else {
+            segment = new (_allocator)
+                Segment<ELFT>(_targetInfo, segmentName, segmentType);
+            additionalSegmentInsert.first->second = segment;
+            _segments.push_back(segment);
+          }
+          segment->append(section);
+        }
+
         // Use the flags of the merged Section for the segment
-        const SegmentKey key(segmentName, msi->flags());
+        const SegmentKey key("PT_LOAD", lookupSectionFlag);
         const std::pair<SegmentKey, Segment<ELFT> *> currentSegment(key,
                                                                     nullptr);
-        std::pair<typename SegmentMapT::iterator, bool>
-                            segmentInsert(_segmentMap.insert(currentSegment));
-        Segment<ELFT> *segment;
+        std::pair<typename SegmentMapT::iterator, bool> segmentInsert(
+            _segmentMap.insert(currentSegment));
         if (!segmentInsert.second) {
           segment = segmentInsert.first->second;
         } else {
           segment = new (_allocator)
-              Segment<ELFT>(_targetInfo, segmentName, getSegmentType(section));
+              Segment<ELFT>(_targetInfo, "PT_LOAD", llvm::ELF::PT_LOAD);
           segmentInsert.first->second = segment;
           _segments.push_back(segment);
         }
@@ -547,11 +618,18 @@ template <class ELFT> void DefaultLayout<ELFT>::assignSectionsToSegments() {
       }
     }
   }
+  if (_targetInfo.isDynamic()) {
+    Segment<ELFT> *segment =
+        new (_allocator) ProgramHeaderSegment<ELFT>(_targetInfo);
+    _segments.push_back(segment);
+    segment->append(_header);
+    segment->append(_programHeader);
+  }
 }
 
 template <class ELFT> void DefaultLayout<ELFT>::assignFileOffsets() {
   // TODO: Do we want to give a chance for the targetHandlers
-  // to sort segments in an arbitrary order ? 
+  // to sort segments in an arbitrary order ?
   std::sort(_segments.begin(), _segments.end(), Segment<ELFT>::compareSegments);
   int ordinal = 0;
   // Compute the number of segments that might be needed, so that the
@@ -559,31 +637,41 @@ template <class ELFT> void DefaultLayout<ELFT>::assignFileOffsets() {
   uint64_t offset = 0;
   for (auto si : _segments) {
     si->setOrdinal(++ordinal);
+    // Dont assign offsets for segments that are not loadable
+    if (si->segmentType() != llvm::ELF::PT_LOAD)
+      continue;
     si->assignOffsets(offset);
     offset += si->fileSize();
   }
 }
-
 
 template<class ELFT>
 void
 DefaultLayout<ELFT>::assignVirtualAddress() {
   if (_segments.empty())
     return;
-  
+
   uint64_t virtualAddress = _targetInfo.getBaseAddress();
-  
+
   // HACK: This is a super dirty hack. The elf header and program header are
   // not part of a section, but we need them to be loaded at the base address
   // so that AT_PHDR is set correctly by the loader and so they are accessible
-  // at runtime. To do this we simply prepend them to the first Segment and
-  // let the layout logic take care of it.
-  _segments[0]->prepend(_programHeader);
-  _segments[0]->prepend(_header);
-  
+  // at runtime. To do this we simply prepend them to the first loadable Segment
+  // and let the layout logic take care of it.
+  Segment<ELFT> *firstLoadSegment = nullptr;
+  for (auto si : _segments) {
+    if (si->segmentType() == llvm::ELF::PT_LOAD) {
+      firstLoadSegment = si;
+      break;
+    }
+  }
+  firstLoadSegment->prepend(_programHeader);
+  firstLoadSegment->prepend(_header);
+
   bool newSegmentHeaderAdded = true;
   while (true) {
     for (auto si : _segments) {
+      si->finalize();
       newSegmentHeaderAdded = _programHeader->addSegment(si);
     }
     if (!newSegmentHeaderAdded)
@@ -592,14 +680,20 @@ DefaultLayout<ELFT>::assignVirtualAddress() {
     uint64_t address = virtualAddress;
     // Fix the offsets after adding the program header
     for (auto &si : _segments) {
+      // Dont assign offsets for non loadable segments
+      if (si->segmentType() != llvm::ELF::PT_LOAD)
+        continue;
       // Align the segment to a page boundary
-      fileoffset = llvm::RoundUpToAlignment(fileoffset,
-                                            _targetInfo.getPageSize());
+      fileoffset =
+          llvm::RoundUpToAlignment(fileoffset, _targetInfo.getPageSize());
       si->assignOffsets(fileoffset);
       fileoffset = si->fileOffset() + si->fileSize();
     }
     // start assigning virtual addresses
     for (auto si = _segments.begin(); si != _segments.end(); ++si) {
+      // Dont assign addresses for non loadable segments
+      if ((*si)->segmentType() != llvm::ELF::PT_LOAD)
+        continue;
       (*si)->setVAddr(virtualAddress);
       // The first segment has the virtualAddress set to the base address as
       // we have added the file header and the program header dont align the
@@ -662,6 +756,9 @@ DefaultLayout<ELFT>::assignOffsetsForMiscSections() {
   uint64_t fileoffset = 0;
   uint64_t size = 0;
   for (auto si : _segments) {
+    // Dont calculate offsets from non loadable segments
+    if (si->segmentType() != llvm::ELF::PT_LOAD)
+      continue;
     fileoffset = si->fileOffset();
     size = si->fileSize();
   }

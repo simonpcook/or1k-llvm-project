@@ -17,13 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "polly/ScopInfo.h"
-
-#include "polly/TempScopInfo.h"
+#include "polly/CodeGen/BlockGenerators.h"
 #include "polly/LinkAllPasses.h"
+#include "polly/ScopInfo.h"
 #include "polly/Support/GICHelper.h"
 #include "polly/Support/ScopHelper.h"
 #include "polly/Support/SCEVValidator.h"
+#include "polly/TempScopInfo.h"
 
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
@@ -95,8 +95,7 @@ public:
 
   SCEVAffinator(const ScopStmt *Stmt)
       : Ctx(Stmt->getIslCtx()), NbLoopSpaces(Stmt->getNumIterators()),
-        S(Stmt->getParent()) {
-  }
+        S(Stmt->getParent()) {}
 
   __isl_give isl_pw_aff *visitConstant(const SCEVConstant *Constant) {
     ConstantInt *Value = Constant->getValue();
@@ -586,14 +585,17 @@ ScopStmt::buildDomain(TempScop &tempScop, const Region &CurRegion) {
 }
 
 ScopStmt::ScopStmt(Scop &parent, TempScop &tempScop, const Region &CurRegion,
-                   BasicBlock &bb, SmallVectorImpl<Loop *> &NestLoops,
+                   BasicBlock &bb, SmallVectorImpl<Loop *> &Nest,
                    SmallVectorImpl<unsigned> &Scatter)
-    : Parent(parent), BB(&bb), IVS(NestLoops.size()) {
+    : Parent(parent), BB(&bb), IVS(Nest.size()), NestLoops(Nest.size()) {
   // Setup the induction variables.
-  for (unsigned i = 0, e = NestLoops.size(); i < e; ++i) {
-    PHINode *PN = NestLoops[i]->getCanonicalInductionVariable();
-    assert(PN && "Non canonical IV in Scop!");
-    IVS[i] = std::make_pair(PN, NestLoops[i]);
+  for (unsigned i = 0, e = Nest.size(); i < e; ++i) {
+    if (!SCEVCodegen) {
+      PHINode *PN = Nest[i]->getCanonicalInductionVariable();
+      assert(PN && "Non canonical IV in Scop!");
+      IVS[i] = PN;
+    }
+    NestLoops[i] = Nest[i];
   }
 
   raw_string_ostream OS(BaseName);
@@ -621,7 +623,7 @@ unsigned ScopStmt::getNumIterators() const {
   if (!BB)
     return 1;
 
-  return IVS.size();
+  return NestLoops.size();
 }
 
 unsigned ScopStmt::getNumScattering() const {
@@ -632,11 +634,11 @@ const char *ScopStmt::getBaseName() const { return BaseName.c_str(); }
 
 const PHINode *
 ScopStmt::getInductionVariableForDimension(unsigned Dimension) const {
-  return IVS[Dimension].first;
+  return IVS[Dimension];
 }
 
 const Loop *ScopStmt::getLoopForDimension(unsigned Dimension) const {
-  return IVS[Dimension].second;
+  return NestLoops[Dimension];
 }
 
 isl_ctx *ScopStmt::getIslCtx() const { return Parent.getIslCtx(); }
@@ -977,17 +979,15 @@ bool ScopInfo::runOnRegion(Region *R, RGPassManager &RGM) {
 
 char ScopInfo::ID = 0;
 
+Pass *polly::createScopInfoPass() { return new ScopInfo(); }
+
 INITIALIZE_PASS_BEGIN(ScopInfo, "polly-scops",
                       "Polly - Create polyhedral description of Scops", false,
-                      false)
-INITIALIZE_PASS_DEPENDENCY(LoopInfo)
-INITIALIZE_PASS_DEPENDENCY(RegionInfo)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
-INITIALIZE_PASS_DEPENDENCY(TempScopInfo)
+                      false);
+INITIALIZE_PASS_DEPENDENCY(LoopInfo);
+INITIALIZE_PASS_DEPENDENCY(RegionInfo);
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);
+INITIALIZE_PASS_DEPENDENCY(TempScopInfo);
 INITIALIZE_PASS_END(ScopInfo, "polly-scops",
                     "Polly - Create polyhedral description of Scops", false,
                     false)
-
-Pass *polly::createScopInfoPass() {
-  return new ScopInfo();
-}

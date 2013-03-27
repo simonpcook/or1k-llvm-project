@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 // C Includes
 
 // C++ Includes
@@ -25,6 +27,8 @@
 #include "lldb/Symbol/ClangASTType.h"
 #include "lldb/Target/StackFrame.h"
 #include "lldb/Target/Target.h"
+
+#include "lldb/Host/Host.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -197,6 +201,13 @@ ScriptSummaryFormat::FormatObject (ValueObject *valobj,
 {
     Timer scoped_timer (__PRETTY_FUNCTION__, __PRETTY_FUNCTION__);
     
+    if (!valobj)
+        return false;
+    
+    Host::SetCrashDescriptionWithFormat("[Python summary] Name: %s - Function: %s",
+                                        valobj->GetName().AsCString("unknown"),
+                                        m_function_name.c_str());
+
     TargetSP target_sp(valobj->GetTargetSP());
     
     if (!target_sp)

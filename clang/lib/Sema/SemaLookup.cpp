@@ -371,6 +371,12 @@ void LookupResult::resolveKind() {
     NamedDecl *D = Decls[I]->getUnderlyingDecl();
     D = cast<NamedDecl>(D->getCanonicalDecl());
 
+    // Ignore an invalid declaration unless it's the only one left.
+    if (D->isInvalidDecl() && I < N-1) {
+      Decls[I] = Decls[--N];
+      continue;
+    }
+
     // Redeclarations of types via typedef can occur both within a scope
     // and, through using declarations and directives, across scopes. There is
     // no ambiguity if they all refer to the same type, so unique based on the
@@ -716,7 +722,7 @@ static bool LookupDirect(Sema &S, LookupResult &R, const DeclContext *DC) {
     EPI.NumExceptions = 0;
     QualType ExpectedType
       = R.getSema().Context.getFunctionType(R.getLookupName().getCXXNameType(),
-                                            0, 0, EPI);
+                                            ArrayRef<QualType>(), EPI);
 
     // Perform template argument deduction against the type that we would
     // expect the function to have.
@@ -939,6 +945,21 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
           continue;
         }
 
+        // If this is a file context, we need to perform unqualified name
+        // lookup considering using directives.
+        if (Ctx->isFileContext()) {
+          UnqualUsingDirectiveSet UDirs;
+          UDirs.visit(Ctx, Ctx);
+          UDirs.done();
+
+          if (CppNamespaceLookup(*this, R, Context, Ctx, UDirs)) {
+            R.resolveKind();
+            return true;
+          }
+
+          continue;
+        }
+
         // Perform qualified name lookup into this context.
         // FIXME: In some cases, we know that every name that could be found by
         // this qualified name lookup will also be on the identifier chain. For
@@ -973,7 +994,6 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   // Unqualified name lookup in C++ requires looking into scopes
   // that aren't strictly lexical, and therefore we walk through the
   // context as well as walking through the scopes.
-
   for (; S; S = S->getParent()) {
     // Check whether the IdResolver has anything in this scope.
     bool Found = false;
@@ -3727,6 +3747,17 @@ TypoCorrection Sema::CorrectTypo(const DeclarationNameInfo &TypoName,
   // instantiation.
   if (!ActiveTemplateInstantiations.empty())
     return TypoCorrection();
+
+  // Don't try to correct 'super'.
+  if (S && S->isInObjcMethodScope() && Typo == getSuperIdentifier())
+    return TypoCorrection();
+
+  // This is for testing.
+  if (Diags.getWarnOnSpellCheck()) {
+    unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Warning,
+                                            "spell-checking initiated for %0");
+    Diag(TypoName.getLoc(), DiagID) << TypoName.getName();
+  }
 
   NamespaceSpecifierSet Namespaces(Context, CurContext, SS);
 

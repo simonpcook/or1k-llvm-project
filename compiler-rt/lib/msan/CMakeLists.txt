@@ -7,11 +7,11 @@ set(MSAN_RTL_SOURCES
   msan_interceptors.cc
   msan_linux.cc
   msan_new_delete.cc
-  msan_platform_limits_posix.cc
   msan_report.cc
   )
 set(MSAN_RTL_CFLAGS
   ${SANITIZER_COMMON_CFLAGS}
+  -fno-rtti
   -fPIE
   # Prevent clang from generating libc calls.
   -ffreestanding)
@@ -24,7 +24,8 @@ if(CAN_TARGET_${arch})
     SOURCES ${MSAN_RTL_SOURCES}
             $<TARGET_OBJECTS:RTInterception.${arch}>
             $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
-    CFLAGS ${MSAN_RTL_CFLAGS})
+    CFLAGS ${MSAN_RTL_CFLAGS}
+    SYMS msan.syms)
   list(APPEND MSAN_RUNTIME_LIBRARIES clang_rt.msan-${arch})
 endif()
 

@@ -48,16 +48,18 @@ class CompilationDatabase;
 } // namespace tooling
 } // namespace clang
 
-/// \brief First item in the pair is the path of a file and the second is a
+/// \brief The key is the path of a file, which is mapped to a
 /// buffer with the possibly modified contents of that file.
-typedef std::vector<std::pair<std::string, std::string> > FileContentsByPath;
+typedef std::map<std::string, std::string> FileContentsByPath;
 
 /// \brief In \p Results place copies of the buffers resulting from applying
 /// all rewrites represented by \p Rewrite.
 ///
 /// \p Results is made up of pairs {filename, buffer contents}. Pairs are
 /// simply appended to \p Results.
-void collectResults(clang::Rewriter &Rewrite, FileContentsByPath &Results);
+void collectResults(clang::Rewriter &Rewrite,
+                    const FileContentsByPath &InputStates,
+                    FileContentsByPath &Results);
 
 /// \brief Class for containing a Rewriter instance and all of
 /// its lifetime dependencies.
@@ -104,7 +106,7 @@ private:
 /// \brief Abstract base class for all C++11 migration transforms.
 class Transform {
 public:
-  Transform() {
+  Transform(llvm::StringRef Name) : Name(Name) {
     Reset();
   }
 
@@ -124,29 +126,52 @@ public:
                     FileContentsByPath &ResultStates) = 0;
 
   /// \brief Query if changes were made during the last call to apply().
-  bool getChangesMade() const { return ChangesMade; }
+  bool getChangesMade() const { return AcceptedChanges > 0; }
 
   /// \brief Query if changes were not made due to conflicts with other changes
   /// made during the last call to apply() or if changes were too risky for the
   /// requested risk level.
-  bool getChangesNotMade() const { return ChangesNotMade; }
+  bool getChangesNotMade() const {
+    return RejectedChanges > 0 || DeferredChanges > 0;
+  }
+
+  /// \brief Query the number of accepted changes.
+  unsigned getAcceptedChanges() const { return AcceptedChanges; }
+  /// \brief Query the number of changes considered too risky.
+  unsigned getRejectedChanges() const { return RejectedChanges; }
+  /// \brief Query the number of changes not made because they conflicted with
+  /// early changes.
+  unsigned getDeferredChanges() const { return DeferredChanges; }
+
+  /// \brief Query transform name.
+  llvm::StringRef getName() const { return Name; }
 
   /// \brief Reset internal state of the transform.
   ///
   /// Useful if calling apply() several times with one instantiation of a
   /// transform.
   void Reset() {
-    ChangesMade = false;
-    ChangesNotMade = false;
+    AcceptedChanges = 0;
+    RejectedChanges = 0;
+    DeferredChanges = 0;
   }
 
 protected:
-  void setChangesMade() { ChangesMade = true; }
-  void setChangesNotMade() { ChangesNotMade = true; }
+  void setAcceptedChanges(unsigned Changes) {
+    AcceptedChanges = Changes;
+  }
+  void setRejectedChanges(unsigned Changes) {
+    RejectedChanges = Changes;
+  }
+  void setDeferredChanges(unsigned Changes) {
+    DeferredChanges = Changes;
+  }
 
 private:
-  bool ChangesMade;
-  bool ChangesNotMade;
+  const std::string Name;
+  unsigned AcceptedChanges;
+  unsigned RejectedChanges;
+  unsigned DeferredChanges;
 };
 
 #endif // LLVM_TOOLS_CLANG_TOOLS_EXTRA_CPP11_MIGRATE_TRANSFORM_H

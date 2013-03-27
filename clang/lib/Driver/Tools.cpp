@@ -456,11 +456,12 @@ static const char *getLLVMArchSuffixForARM(StringRef CPU) {
     .Cases("arm1136j-s",  "arm1136jf-s",  "arm1176jz-s", "v6")
     .Cases("arm1176jzf-s",  "mpcorenovfp",  "mpcore", "v6")
     .Cases("arm1156t2-s",  "arm1156t2f-s", "v6t2")
-    .Cases("cortex-a5", "cortex-a8", "cortex-a9", "cortex-a15", "v7")
+    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "v7")
+    .Cases("cortex-a9", "cortex-a15", "v7")
     .Case("cortex-r5", "v7r")
-    .Case("cortex-m3", "v7m")
-    .Case("cortex-m4", "v7m")
     .Case("cortex-m0", "v6m")
+    .Case("cortex-m3", "v7m")
+    .Case("cortex-m4", "v7em")
     .Case("cortex-a9-mp", "v7f")
     .Case("swift", "v7s")
     .Default("");
@@ -516,7 +517,9 @@ static std::string getARMTargetCPU(const ArgList &Args,
     .Case("armv6j", "arm1136j-s")
     .Cases("armv6z", "armv6zk", "arm1176jzf-s")
     .Case("armv6t2", "arm1156t2-s")
+    .Cases("armv6m", "armv6-m", "cortex-m0")
     .Cases("armv7", "armv7a", "armv7-a", "cortex-a8")
+    .Cases("armv7em", "armv7e-m", "cortex-m4")
     .Cases("armv7f", "armv7-f", "cortex-a9-mp")
     .Cases("armv7s", "armv7-s", "swift")
     .Cases("armv7r", "armv7-r", "cortex-r4")
@@ -524,7 +527,6 @@ static std::string getARMTargetCPU(const ArgList &Args,
     .Case("ep9312", "ep9312")
     .Case("iwmmxt", "iwmmxt")
     .Case("xscale", "xscale")
-    .Cases("armv6m", "armv6-m", "cortex-m0")
     // If all else failed, return the most base CPU LLVM supports.
     .Default("arm7tdmi");
 }
@@ -596,8 +598,9 @@ static void addFPMathArgs(const Driver &D, const Arg *A, const ArgList &Args,
     CmdArgs.push_back("-target-feature");
     CmdArgs.push_back("+neonfp");
     
-    if (CPU != "cortex-a8" && CPU != "cortex-a9" && CPU != "cortex-a9-mp" &&
-        CPU != "cortex-a15" && CPU != "cortex-a5")
+    if (CPU != "cortex-a5" && CPU != "cortex-a7" &&
+        CPU != "cortex-a8" && CPU != "cortex-a9" &&
+        CPU != "cortex-a9-mp" && CPU != "cortex-a15")
       D.Diag(diag::err_drv_invalid_feature) << "-mfpmath=neon" << CPU;
     
   } else if (FPMath == "vfp" || FPMath == "vfp2" || FPMath == "vfp3" ||
@@ -870,8 +873,8 @@ static void getMipsCPUAndABI(const ArgList &Args,
   if (!ABIName.empty()) {
     // Deduce CPU name from ABI name.
     CPUName = llvm::StringSwitch<const char *>(ABIName)
-      .Cases("o32", "eabi", DefMips32CPU)
-      .Cases("n32", "n64", DefMips64CPU)
+      .Cases("32", "o32", "eabi", DefMips32CPU)
+      .Cases("n32", "n64", "64", DefMips64CPU)
       .Default("");
   }
   else if (!CPUName.empty()) {
@@ -883,6 +886,14 @@ static void getMipsCPUAndABI(const ArgList &Args,
   }
 
   // FIXME: Warn on inconsistent cpu and abi usage.
+}
+
+// Convert ABI name to the GNU tools acceptable variant.
+static StringRef getGnuCompatibleMipsABIName(StringRef ABI) {
+  return llvm::StringSwitch<llvm::StringRef>(ABI)
+    .Case("o32", "32")
+    .Case("n64", "64")
+    .Default(ABI);
 }
 
 // Select the MIPS float ABI as determined by -msoft-float, -mhard-float,
@@ -1497,9 +1508,7 @@ static bool ShouldDisableCFI(const ArgList &Args,
   if (TC.getTriple().isOSDarwin()) {
     // The native darwin assembler doesn't support cfi directives, so
     // we disable them if we think the .s file will be passed to it.
-    Default = Args.hasFlag(options::OPT_integrated_as,
-                           options::OPT_no_integrated_as,
-                           TC.IsIntegratedAssemblerDefault());
+    Default = TC.useIntegratedAs();
   }
   return !Args.hasFlag(options::OPT_fdwarf2_cfi_asm,
                        options::OPT_fno_dwarf2_cfi_asm,
@@ -1508,13 +1517,9 @@ static bool ShouldDisableCFI(const ArgList &Args,
 
 static bool ShouldDisableDwarfDirectory(const ArgList &Args,
                                         const ToolChain &TC) {
-  bool IsIADefault = TC.IsIntegratedAssemblerDefault();
-  bool UseIntegratedAs = Args.hasFlag(options::OPT_integrated_as,
-                                      options::OPT_no_integrated_as,
-                                      IsIADefault);
   bool UseDwarfDirectory = Args.hasFlag(options::OPT_fdwarf_directory_asm,
                                         options::OPT_fno_dwarf_directory_asm,
-                                        UseIntegratedAs);
+                                        TC.useIntegratedAs());
   return !UseDwarfDirectory;
 }
 
@@ -1631,6 +1636,14 @@ SanitizerArgs::SanitizerArgs(const Driver &D, const ArgList &Args)
       else
         D.Diag(diag::err_drv_no_such_file) << BLPath;
     }
+  } else {
+    // If no -fsanitize-blacklist option is specified, try to look up for
+    // blacklist in the resource directory.
+    std::string BLPath;
+    bool BLExists = false;
+    if (getDefaultBlacklistForKind(D, Kind, BLPath) &&
+        !llvm::sys::fs::exists(BLPath, BLExists) && BLExists)
+      BlacklistFile = BLPath;
   }
 
   // Parse -f(no-)sanitize-memory-track-origins options.
@@ -1646,6 +1659,46 @@ SanitizerArgs::SanitizerArgs(const Driver &D, const ArgList &Args)
       Args.hasFlag(options::OPT_fsanitize_address_zero_base_shadow,
                    options::OPT_fno_sanitize_address_zero_base_shadow,
                    /* Default */false);
+}
+
+static void addSanitizerRTLinkFlagsLinux(
+    const ToolChain &TC, const ArgList &Args, ArgStringList &CmdArgs,
+    const StringRef Sanitizer, bool BeforeLibStdCXX,
+    bool ExportSymbols = true) {
+  // Sanitizer runtime is located in the Linux library directory and
+  // has name "libclang_rt.<Sanitizer>-<ArchName>.a".
+  SmallString<128> LibSanitizer(TC.getDriver().ResourceDir);
+  llvm::sys::path::append(
+      LibSanitizer, "lib", "linux",
+      (Twine("libclang_rt.") + Sanitizer + "-" + TC.getArchName() + ".a"));
+
+  // Sanitizer runtime may need to come before -lstdc++ (or -lc++, libstdc++.a,
+  // etc.) so that the linker picks custom versions of the global 'operator
+  // new' and 'operator delete' symbols. We take the extreme (but simple)
+  // strategy of inserting it at the front of the link command. It also
+  // needs to be forced to end up in the executable, so wrap it in
+  // whole-archive.
+  SmallVector<const char *, 3> LibSanitizerArgs;
+  LibSanitizerArgs.push_back("-whole-archive");
+  LibSanitizerArgs.push_back(Args.MakeArgString(LibSanitizer));
+  LibSanitizerArgs.push_back("-no-whole-archive");
+
+  CmdArgs.insert(BeforeLibStdCXX ? CmdArgs.begin() : CmdArgs.end(),
+                 LibSanitizerArgs.begin(), LibSanitizerArgs.end());
+
+  CmdArgs.push_back("-lpthread");
+  CmdArgs.push_back("-ldl");
+
+  // If possible, use a dynamic symbols file to export the symbols from the
+  // runtime library. If we can't do so, use -export-dynamic instead to export
+  // all symbols from the binary.
+  if (ExportSymbols) {
+    if (llvm::sys::fs::exists(LibSanitizer + ".syms"))
+      CmdArgs.push_back(
+          Args.MakeArgString("--dynamic-list=" + LibSanitizer + ".syms"));
+    else
+      CmdArgs.push_back("-export-dynamic");
+  }
 }
 
 /// If AddressSanitizer is enabled, add appropriate linker flags (Linux).
@@ -1672,26 +1725,7 @@ static void addAsanRTLinux(const ToolChain &TC, const ArgList &Args,
         TC.getDriver().Diag(diag::err_drv_argument_only_allowed_with) <<
             "-fsanitize-address-zero-base-shadow" << "-pie";
       }
-      // LibAsan is "libclang_rt.asan-<ArchName>.a" in the Linux library
-      // resource directory.
-      SmallString<128> LibAsan(TC.getDriver().ResourceDir);
-      llvm::sys::path::append(LibAsan, "lib", "linux",
-                              (Twine("libclang_rt.asan-") +
-                               TC.getArchName() + ".a"));
-      // The ASan runtime needs to come before -lstdc++ (or -lc++, libstdc++.a,
-      // etc.) so that the linker picks ASan's versions of the global 'operator
-      // new' and 'operator delete' symbols. We take the extreme (but simple)
-      // strategy of inserting it at the front of the link command. It also
-      // needs to be forced to end up in the executable, so wrap it in
-      // whole-archive.
-      SmallVector<const char*, 3> PrefixArgs;
-      PrefixArgs.push_back("-whole-archive");
-      PrefixArgs.push_back(Args.MakeArgString(LibAsan));
-      PrefixArgs.push_back("-no-whole-archive");
-      CmdArgs.insert(CmdArgs.begin(), PrefixArgs.begin(), PrefixArgs.end());
-      CmdArgs.push_back("-lpthread");
-      CmdArgs.push_back("-ldl");
-      CmdArgs.push_back("-export-dynamic");
+      addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "asan", true);
     }
   }
 }
@@ -1704,16 +1738,7 @@ static void addTsanRTLinux(const ToolChain &TC, const ArgList &Args,
     if (!Args.hasArg(options::OPT_pie))
       TC.getDriver().Diag(diag::err_drv_argument_only_allowed_with) <<
         "-fsanitize=thread" << "-pie";
-    // LibTsan is "libclang_rt.tsan-<ArchName>.a" in the Linux library
-    // resource directory.
-    SmallString<128> LibTsan(TC.getDriver().ResourceDir);
-    llvm::sys::path::append(LibTsan, "lib", "linux",
-                            (Twine("libclang_rt.tsan-") +
-                             TC.getArchName() + ".a"));
-    CmdArgs.push_back(Args.MakeArgString(LibTsan));
-    CmdArgs.push_back("-lpthread");
-    CmdArgs.push_back("-ldl");
-    CmdArgs.push_back("-export-dynamic");
+    addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "tsan", true);
   }
 }
 
@@ -1725,32 +1750,29 @@ static void addMsanRTLinux(const ToolChain &TC, const ArgList &Args,
     if (!Args.hasArg(options::OPT_pie))
       TC.getDriver().Diag(diag::err_drv_argument_only_allowed_with) <<
         "-fsanitize=memory" << "-pie";
-    // LibMsan is "libclang_rt.msan-<ArchName>.a" in the Linux library
-    // resource directory.
-    SmallString<128> LibMsan(TC.getDriver().ResourceDir);
-    llvm::sys::path::append(LibMsan, "lib", "linux",
-                            (Twine("libclang_rt.msan-") +
-                             TC.getArchName() + ".a"));
-    CmdArgs.push_back(Args.MakeArgString(LibMsan));
-    CmdArgs.push_back("-lpthread");
-    CmdArgs.push_back("-ldl");
-    CmdArgs.push_back("-export-dynamic");
+    addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "msan", true);
   }
 }
 
 /// If UndefinedBehaviorSanitizer is enabled, add appropriate linker flags
 /// (Linux).
 static void addUbsanRTLinux(const ToolChain &TC, const ArgList &Args,
-                            ArgStringList &CmdArgs) {
-  // LibUbsan is "libclang_rt.ubsan-<ArchName>.a" in the Linux library
-  // resource directory.
-  SmallString<128> LibUbsan(TC.getDriver().ResourceDir);
-  llvm::sys::path::append(LibUbsan, "lib", "linux",
-                          (Twine("libclang_rt.ubsan-") +
-                           TC.getArchName() + ".a"));
-  CmdArgs.push_back(Args.MakeArgString(LibUbsan));
-  CmdArgs.push_back("-lpthread");
-  CmdArgs.push_back("-export-dynamic");
+                            ArgStringList &CmdArgs, bool IsCXX,
+                            bool HasOtherSanitizerRt) {
+  if (Args.hasArg(options::OPT_shared))
+    return;
+
+  // Need a copy of sanitizer_common. This could come from another sanitizer
+  // runtime; if we're not including one, include our own copy.
+  if (!HasOtherSanitizerRt)
+    addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "san", true, false);
+
+  addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "ubsan", false);
+
+  // Only include the bits of the runtime which need a C++ ABI library if
+  // we're linking in C++ mode.
+  if (IsCXX)
+    addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "ubsan_cxx", false);
 }
 
 static bool shouldUseFramePointer(const ArgList &Args,
@@ -1783,6 +1805,48 @@ static void addDebugCompDirArg(const ArgList &Args, ArgStringList &CmdArgs) {
       CmdArgs.push_back(Args.MakeArgString(CompDir));
     }
   }
+}
+
+static const char *SplitDebugName(const ArgList &Args,
+                                  const InputInfoList &Inputs) {
+  Arg *FinalOutput = Args.getLastArg(options::OPT_o);
+  if (FinalOutput && Args.hasArg(options::OPT_c)) {
+    SmallString<128> T(FinalOutput->getValue());
+    llvm::sys::path::replace_extension(T, "dwo");
+    return Args.MakeArgString(T);
+  } else {
+    // Use the compilation dir.
+    SmallString<128> T(Args.getLastArgValue(options::OPT_fdebug_compilation_dir));
+    SmallString<128> F(llvm::sys::path::stem(Inputs[0].getBaseInput()));
+    llvm::sys::path::replace_extension(F, "dwo");
+    T += F;
+    return Args.MakeArgString(F);
+  }
+}
+
+static void SplitDebugInfo(const ToolChain &TC, Compilation &C,
+                           const Tool &T, const JobAction &JA,
+                           const ArgList &Args, const InputInfo &Output,
+                           const char *OutFile) {
+  ArgStringList ExtractArgs;
+  ExtractArgs.push_back("--extract-dwo");
+
+  ArgStringList StripArgs;
+  StripArgs.push_back("--strip-dwo");
+
+  // Grabbing the output of the earlier compile step.
+  StripArgs.push_back(Output.getFilename());
+  ExtractArgs.push_back(Output.getFilename());
+  ExtractArgs.push_back(OutFile);
+
+  const char *Exec =
+    Args.MakeArgString(TC.GetProgramPath("objcopy"));
+
+  // First extract the dwo sections.
+  C.addCommand(new Command(JA, T, Exec, ExtractArgs));
+
+  // Then remove them from the original .o file.
+  C.addCommand(new Command(JA, T, Exec, StripArgs));
 }
 
 void Clang::ConstructJob(Compilation &C, const JobAction &JA,
@@ -1818,8 +1882,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   } else if (isa<PreprocessJobAction>(JA)) {
     if (Output.getType() == types::TY_Dependencies)
       CmdArgs.push_back("-Eonly");
-    else
+    else {
       CmdArgs.push_back("-E");
+      if (Args.hasArg(options::OPT_rewrite_objc) &&
+          !Args.hasArg(options::OPT_g_Group))
+        CmdArgs.push_back("-P");
+    }
   } else if (isa<AssembleJobAction>(JA)) {
     CmdArgs.push_back("-emit-obj");
 
@@ -1880,6 +1948,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-S");
     } else if (JA.getType() == types::TY_AST) {
       CmdArgs.push_back("-emit-pch");
+    } else if (JA.getType() == types::TY_ModuleFile) {
+      CmdArgs.push_back("-module-file-info");
     } else if (JA.getType() == types::TY_RewrittenObjC) {
       CmdArgs.push_back("-rewrite-objc");
       rewriteKind = RK_NonFragile;
@@ -1931,6 +2001,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       
       CmdArgs.push_back("-analyzer-checker=deadcode");
       
+      if (types::isCXX(Inputs[0].getType()))
+        CmdArgs.push_back("-analyzer-checker=cplusplus");
+
       // Enable the following experimental checkers for testing. 
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.UncheckedReturn");
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.getpw");
@@ -2002,8 +2075,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Note that these flags are trump-cards. Regardless of the order w.r.t. the
   // PIC or PIE options above, if these show up, PIC is disabled.
   llvm::Triple Triple(TripleStr);
-  if ((Args.hasArg(options::OPT_mkernel) ||
-       Args.hasArg(options::OPT_fapple_kext)) &&
+  if (KernelOrKext &&
       (Triple.getOS() != llvm::Triple::IOS ||
        Triple.isOSVersionLT(6)))
     PIC = PIE = false;
@@ -2355,7 +2427,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // -gsplit-dwarf should turn on -g and enable the backend dwarf
   // splitting and extraction.
-  if (Args.hasArg(options::OPT_gsplit_dwarf)) {
+  // FIXME: Currently only works on Linux.
+  if (getToolChain().getTriple().getOS() == llvm::Triple::Linux &&
+      Args.hasArg(options::OPT_gsplit_dwarf)) {
     CmdArgs.push_back("-g");
     CmdArgs.push_back("-backend-option");
     CmdArgs.push_back("-split-dwarf=Enable");
@@ -2377,9 +2451,17 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       C.getArgs().hasArg(options::OPT_S)) {
     if (Output.isFilename()) {
       CmdArgs.push_back("-coverage-file");
-      SmallString<128> absFilename(Output.getFilename());
-      llvm::sys::fs::make_absolute(absFilename);
-      CmdArgs.push_back(Args.MakeArgString(absFilename));
+      SmallString<128> CoverageFilename(Output.getFilename());
+      if (llvm::sys::path::is_relative(CoverageFilename.str())) {
+        if (const char *pwd = ::getenv("PWD")) {
+          if (llvm::sys::path::is_absolute(pwd)) {
+            SmallString<128> Pwd(pwd);
+            llvm::sys::path::append(Pwd, CoverageFilename.str());
+            CoverageFilename.swap(Pwd);
+          }
+        }
+      }
+      CmdArgs.push_back(Args.MakeArgString(CoverageFilename));
     }
   }
 
@@ -2561,6 +2643,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(A->getValue());
   }
 
+  if (Arg *A = Args.getLastArg(options::OPT_fbracket_depth_EQ)) {
+    CmdArgs.push_back("-fbracket-depth");
+    CmdArgs.push_back(A->getValue());
+  }
+
   if (Arg *A = Args.getLastArg(options::OPT_Wlarge_by_value_copy_EQ,
                                options::OPT_Wlarge_by_value_copy_def)) {
     if (A->getNumValues()) {
@@ -2616,9 +2703,19 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(Twine(N)));
   }
 
-  if (const Arg *A = Args.getLastArg(options::OPT_fvisibility_EQ)) {
-    CmdArgs.push_back("-fvisibility");
-    CmdArgs.push_back(A->getValue());
+  // -fvisibility= and -fvisibility-ms-compat are of a piece.
+  if (const Arg *A = Args.getLastArg(options::OPT_fvisibility_EQ,
+                                     options::OPT_fvisibility_ms_compat)) {
+    if (A->getOption().matches(options::OPT_fvisibility_EQ)) {
+      CmdArgs.push_back("-fvisibility");
+      CmdArgs.push_back(A->getValue());
+    } else {
+      assert(A->getOption().matches(options::OPT_fvisibility_ms_compat));
+      CmdArgs.push_back("-fvisibility");
+      CmdArgs.push_back("hidden");
+      CmdArgs.push_back("-ftype-visibility");
+      CmdArgs.push_back("default");
+    }
   }
 
   Args.AddLastArg(CmdArgs, options::OPT_fvisibility_inlines_hidden);
@@ -2653,7 +2750,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_fno_sanitize_undefined_trap_on_error, false))
     CmdArgs.push_back("-fsanitize-undefined-trap-on-error");
 
-  // Report and error for -faltivec on anything other then PowerPC.
+  // Report an error for -faltivec on anything other than PowerPC.
   if (const Arg *A = Args.getLastArg(options::OPT_faltivec))
     if (!(getToolChain().getTriple().getArch() == llvm::Triple::ppc ||
           getToolChain().getTriple().getArch() == llvm::Triple::ppc64))
@@ -2814,7 +2911,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     SmallString<128> DefaultModuleCache;
     llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/false,
                                            DefaultModuleCache);
-    llvm::sys::path::append(DefaultModuleCache, "clang-module-cache");
+    llvm::sys::path::append(DefaultModuleCache, "org.llvm.clang");
+    llvm::sys::path::append(DefaultModuleCache, "ModuleCache");
     const char Arg[] = "-fmodules-cache-path=";
     DefaultModuleCache.insert(DefaultModuleCache.begin(),
                               Arg, Arg + strlen(Arg));
@@ -2823,10 +2921,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Pass through all -fmodules-ignore-macro arguments.
   Args.AddAllArgs(CmdArgs, options::OPT_fmodules_ignore_macro);
+  Args.AddLastArg(CmdArgs, options::OPT_fmodules_prune_interval);
+  Args.AddLastArg(CmdArgs, options::OPT_fmodules_prune_after);
 
   // -fmodules-autolink (on by default when modules is enabled) automatically
-  // links against libraries for imported modules.
-  if (HaveModules &&
+  // links against libraries for imported modules.  This requires the
+  // integrated assembler.
+  if (HaveModules && getToolChain().useIntegratedAs() &&
       Args.hasFlag(options::OPT_fmodules_autolink,
                    options::OPT_fno_modules_autolink,
                    true)) {
@@ -2913,7 +3014,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
 
-  // -fborland-extensions=0 is default.
+  // -fno-borland-extensions is default.
   if (Args.hasFlag(options::OPT_fborland_extensions,
                    options::OPT_fno_borland_extensions, false))
     CmdArgs.push_back("-fborland-extensions");
@@ -3067,8 +3168,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fpack-struct=1");
   }
 
-  if (Args.hasArg(options::OPT_mkernel) ||
-      Args.hasArg(options::OPT_fapple_kext)) {
+  if (KernelOrKext) {
     if (!Args.hasArg(options::OPT_fcommon))
       CmdArgs.push_back("-fno-common");
     Args.ClaimAllArgs(options::OPT_fno_common);
@@ -3228,6 +3328,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_fretain_comments_from_system_headers))
     CmdArgs.push_back("-fretain-comments-from-system-headers");
 
+  // Forward -fcomment-block-commands to -cc1.
+  Args.AddAllArgs(CmdArgs, options::OPT_fcomment_block_commands);
+
   // Forward -Xclang arguments to -cc1, and -mllvm arguments to the LLVM option
   // parser.
   Args.AddAllArgValues(CmdArgs, options::OPT_Xclang);
@@ -3288,7 +3391,26 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(Flags.str()));
   }
 
+  // Add the split debug info name to the command lines here so we
+  // can propagate it to the backend.
+  bool SplitDwarf = Args.hasArg(options::OPT_gsplit_dwarf) &&
+    (getToolChain().getTriple().getOS() == llvm::Triple::Linux) &&
+    (isa<AssembleJobAction>(JA) || isa<CompileJobAction>(JA));
+  const char *SplitDwarfOut;
+  if (SplitDwarf) {
+    CmdArgs.push_back("-split-dwarf-file");
+    SplitDwarfOut = SplitDebugName(Args, Inputs);
+    CmdArgs.push_back(SplitDwarfOut);
+  }
+
+  // Finally add the compile command to the compilation.
   C.addCommand(new Command(JA, *this, Exec, CmdArgs));
+
+  // Handle the debug info splitting at object creation time if we're
+  // creating an object.
+  // TODO: Currently only works on linux with newer objcopy.
+  if (SplitDwarf && !isa<CompileJobAction>(JA))
+    SplitDebugInfo(getToolChain(), C, *this, JA, Args, Output, SplitDwarfOut);
 
   if (Arg *A = Args.getLastArg(options::OPT_pg))
     if (Args.hasArg(options::OPT_fomit_frame_pointer))
@@ -3328,6 +3450,15 @@ void ClangAs::AddARMTargetArgs(const ArgList &Args,
   // Honor -mfpmath=.
   if (const Arg *A = Args.getLastArg(options::OPT_mfpmath_EQ))
     addFPMathArgs(D, A, Args, CmdArgs, getARMTargetCPU(Args, Triple));
+}
+
+void ClangAs::AddX86TargetArgs(const ArgList &Args,
+                               ArgStringList &CmdArgs) const {
+  // Set the CPU based on -march=.
+  if (const char *CPUName = getX86TargetCPU(Args, getToolChain().getTriple())) {
+    CmdArgs.push_back("-target-cpu");
+    CmdArgs.push_back(CPUName);
+  }
 }
 
 /// Add options related to the Objective-C runtime/ABI.
@@ -3505,6 +3636,11 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::thumb:
     AddARMTargetArgs(Args, CmdArgs);
     break;
+
+  case llvm::Triple::x86:
+  case llvm::Triple::x86_64:
+    AddX86TargetArgs(Args, CmdArgs);
+    break;
   }
 
   // Ignore explicit -force_cpusubtype_ALL option.
@@ -3620,7 +3756,7 @@ void gcc::Common::ConstructJob(Compilation &C, const JobAction &JA,
   // here.
   if (Arch == llvm::Triple::x86 || Arch == llvm::Triple::ppc)
     CmdArgs.push_back("-m32");
-  else if (Arch == llvm::Triple::x86_64 || Arch == llvm::Triple::x86_64)
+  else if (Arch == llvm::Triple::x86_64 || Arch == llvm::Triple::ppc64)
     CmdArgs.push_back("-m64");
 
   if (Output.isFilename()) {
@@ -3653,6 +3789,9 @@ void gcc::Common::ConstructJob(Compilation &C, const JobAction &JA,
         << getToolChain().getTripleString();
     else if (II.getType() == types::TY_AST)
       D.Diag(diag::err_drv_no_ast_support)
+        << getToolChain().getTripleString();
+    else if (II.getType() == types::TY_ModuleFile)
+      D.Diag(diag::err_drv_no_module_support)
         << getToolChain().getTripleString();
 
     if (types::canTypeBeUserSpecified(II.getType())) {
@@ -3784,6 +3923,9 @@ void hexagon::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     else if (II.getType() == types::TY_AST)
       D.Diag(clang::diag::err_drv_no_ast_support)
         << getToolChain().getTripleString();
+    else if (II.getType() == types::TY_ModuleFile)
+      D.Diag(diag::err_drv_no_module_support)
+      << getToolChain().getTripleString();
 
     if (II.isFilename())
       CmdArgs.push_back(II.getFilename());
@@ -3996,8 +4138,9 @@ llvm::Triple::ArchType darwin::getArchTypeForDarwinArchName(StringRef Str) {
            llvm::Triple::x86)
     .Case("x86_64", llvm::Triple::x86_64)
     // This is derived from the driver driver.
-    .Cases("arm", "armv4t", "armv5", "armv6", llvm::Triple::arm)
-    .Cases("armv7", "armv7f", "armv7k", "armv7s", "xscale", llvm::Triple::arm)
+    .Cases("arm", "armv4t", "armv5", "armv6", "armv6m", llvm::Triple::arm)
+    .Cases("armv7", "armv7em", "armv7f", "armv7k", "armv7m", llvm::Triple::arm)
+    .Cases("armv7s", "xscale", llvm::Triple::arm)
     .Case("r600", llvm::Triple::r600)
     .Case("nvptx", llvm::Triple::nvptx)
     .Case("nvptx64", llvm::Triple::nvptx64)
@@ -5166,14 +5309,8 @@ void freebsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-march");
     CmdArgs.push_back(CPUName.data());
 
-    // Convert ABI name to the GNU tools acceptable variant.
-    if (ABIName == "o32")
-      ABIName = "32";
-    else if (ABIName == "n64")
-      ABIName = "64";
-
     CmdArgs.push_back("-mabi");
-    CmdArgs.push_back(ABIName.data());
+    CmdArgs.push_back(getGnuCompatibleMipsABIName(ABIName).data());
 
     if (getToolChain().getArch() == llvm::Triple::mips ||
         getToolChain().getArch() == llvm::Triple::mips64)
@@ -5198,6 +5335,7 @@ void freebsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     switch(getToolChain().getTriple().getEnvironment()) {
     case llvm::Triple::GNUEABI:
     case llvm::Triple::EABI:
+      CmdArgs.push_back("-meabi=5");
       break;
 
     default:
@@ -5591,14 +5729,8 @@ void linuxtools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-march");
     CmdArgs.push_back(CPUName.data());
 
-    // Convert ABI name to the GNU tools acceptable variant.
-    if (ABIName == "o32")
-      ABIName = "32";
-    else if (ABIName == "n64")
-      ABIName = "64";
-
     CmdArgs.push_back("-mabi");
-    CmdArgs.push_back(ABIName.data());
+    CmdArgs.push_back(getGnuCompatibleMipsABIName(ABIName).data());
 
     if (getToolChain().getArch() == llvm::Triple::mips ||
         getToolChain().getArch() == llvm::Triple::mips64)
@@ -5639,8 +5771,8 @@ void linuxtools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
 static void AddLibgcc(llvm::Triple Triple, const Driver &D,
                       ArgStringList &CmdArgs, const ArgList &Args) {
   bool isAndroid = Triple.getEnvironment() == llvm::Triple::Android;
-  bool StaticLibgcc = Args.hasArg(options::OPT_static) ||
-                      Args.hasArg(options::OPT_static_libgcc);
+  bool StaticLibgcc = Args.hasArg(options::OPT_static_libgcc) ||
+                      Args.hasArg(options::OPT_static);
   if (!D.CCCIsCXX)
     CmdArgs.push_back("-lgcc");
 
@@ -5884,7 +6016,9 @@ void linuxtools::Link::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Call these before we add the C++ ABI library.
   if (Sanitize.needsUbsanRt())
-    addUbsanRTLinux(getToolChain(), Args, CmdArgs);
+    addUbsanRTLinux(getToolChain(), Args, CmdArgs, D.CCCIsCXX,
+                    Sanitize.needsAsanRt() || Sanitize.needsTsanRt() ||
+                    Sanitize.needsMsanRt());
   if (Sanitize.needsAsanRt())
     addAsanRTLinux(getToolChain(), Args, CmdArgs);
   if (Sanitize.needsTsanRt())
@@ -5951,42 +6085,6 @@ void linuxtools::Link::ConstructJob(Compilation &C, const JobAction &JA,
   addProfileRT(getToolChain(), Args, CmdArgs, getToolChain().getTriple());
 
   C.addCommand(new Command(JA, *this, ToolChain.Linker.c_str(), CmdArgs));
-}
-
-void linuxtools::SplitDebug::ConstructJob(Compilation &C, const JobAction &JA,
-                                          const InputInfo &Output,
-                                          const InputInfoList &Inputs,
-                                          const ArgList &Args,
-                                          const char *LinkingOutput) const {
-  // Assert some invariants.
-  assert(Inputs.size() == 1 && "Unable to handle multiple inputs.");
-  const InputInfo &Input = Inputs[0];
-  assert(Input.isFilename() && "Unexpected verify input");
-
-  ArgStringList ExtractArgs;
-  ExtractArgs.push_back("--extract-dwo");
-
-  ArgStringList StripArgs;
-  StripArgs.push_back("--strip-dwo");
-
-  // Grabbing the output of the earlier compile step.
-  StripArgs.push_back(Input.getFilename());
-  ExtractArgs.push_back(Input.getFilename());
-
-  // Add an output for the extract.
-  SmallString<128> T(Inputs[0].getBaseInput());
-  llvm::sys::path::replace_extension(T, "dwo");
-  const char *OutFile = Args.MakeArgString(T);
-  ExtractArgs.push_back(OutFile);
-
-  const char *Exec =
-    Args.MakeArgString(getToolChain().GetProgramPath("objcopy"));
-
-  // First extract the dwo sections.
-  C.addCommand(new Command(JA, *this, Exec, ExtractArgs));
-
-  // Then remove them from the original .o file.
-  C.addCommand(new Command(JA, *this, Exec, StripArgs));
 }
 
 void minix::Assemble::ConstructJob(Compilation &C, const JobAction &JA,

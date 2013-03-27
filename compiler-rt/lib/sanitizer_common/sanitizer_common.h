@@ -17,6 +17,7 @@
 #define SANITIZER_COMMON_H
 
 #include "sanitizer_internal_defs.h"
+#include "sanitizer_libc.h"
 
 namespace __sanitizer {
 struct StackTrace;
@@ -32,6 +33,7 @@ const uptr kCacheLineSize = 64;
 #endif
 
 extern const char *SanitizerToolName;  // Can be changed by the tool.
+extern uptr SanitizerVerbosity;
 
 uptr GetPageSize();
 uptr GetPageSizeCached();
@@ -125,21 +127,26 @@ void DisableCoreDumper();
 void DumpProcessMap();
 bool FileExists(const char *filename);
 const char *GetEnv(const char *name);
+bool SetEnv(const char *name, const char *value);
 const char *GetPwd();
+u32 GetUid();
 void ReExec();
 bool StackSizeIsUnlimited();
 void SetStackSizeLimitInBytes(uptr limit);
 void PrepareForSandboxing();
 
+void InitTlsSize();
+uptr GetTlsSize();
+
 // Other
 void SleepForSeconds(int seconds);
 void SleepForMillis(int millis);
+u64 NanoTime();
 int Atexit(void (*function)(void));
 void SortArray(uptr *array, uptr size);
 
 // Exit
 void NORETURN Abort();
-void NORETURN Exit(int exitcode);
 void NORETURN Die();
 void NORETURN SANITIZER_INTERFACE_ATTRIBUTE
 CheckFailed(const char *file, int line, const char *cond, u64 v1, u64 v2);
@@ -165,7 +172,7 @@ void ReportErrorSummary(const char *error_type, const char *file,
                         int line, const char *function);
 
 // Math
-#if defined(_WIN32) && !defined(__clang__)
+#if SANITIZER_WINDOWS && !defined(__clang__)
 extern "C" {
 unsigned char _BitScanForward(unsigned long *index, unsigned long mask);  // NOLINT
 unsigned char _BitScanReverse(unsigned long *index, unsigned long mask);  // NOLINT
@@ -177,9 +184,9 @@ unsigned char _BitScanReverse64(unsigned long *index, unsigned __int64 mask);  /
 #endif
 
 INLINE uptr MostSignificantSetBitIndex(uptr x) {
-  CHECK(x != 0);
+  CHECK_NE(x, 0U);
   unsigned long up;  // NOLINT
-#if !defined(_WIN32) || defined(__clang__)
+#if !SANITIZER_WINDOWS || defined(__clang__)
   up = SANITIZER_WORDSIZE - 1 - __builtin_clzl(x);
 #elif defined(_WIN64)
   _BitScanReverse64(&up, x);
@@ -218,7 +225,7 @@ INLINE bool IsAligned(uptr a, uptr alignment) {
 
 INLINE uptr Log2(uptr x) {
   CHECK(IsPowerOfTwo(x));
-#if !defined(_WIN32) || defined(__clang__)
+#if !SANITIZER_WINDOWS || defined(__clang__)
   return __builtin_ctzl(x);
 #elif defined(_WIN64)
   unsigned long ret;  // NOLINT
@@ -259,6 +266,65 @@ INLINE int ToLower(int c) {
 # define FIRST_32_SECOND_64(a, b) (a)
 #endif
 
+// A low-level vector based on mmap. May incur a significant memory overhead for
+// small vectors.
+// WARNING: The current implementation supports only POD types.
+template<typename T>
+class InternalVector {
+ public:
+  explicit InternalVector(uptr initial_capacity) {
+    CHECK_GT(initial_capacity, 0);
+    capacity_ = initial_capacity;
+    size_ = 0;
+    data_ = (T *)MmapOrDie(capacity_ * sizeof(T), "InternalVector");
+  }
+  ~InternalVector() {
+    UnmapOrDie(data_, capacity_ * sizeof(T));
+  }
+  T &operator[](uptr i) {
+    CHECK_LT(i, size_);
+    return data_[i];
+  }
+  void push_back(const T &element) {
+    CHECK_LE(size_, capacity_);
+    if (size_ == capacity_) {
+      uptr new_capacity = RoundUpToPowerOfTwo(size_ + 1);
+      Resize(new_capacity);
+    }
+    data_[size_++] = element;
+  }
+  T &back() {
+    CHECK_GT(size_, 0);
+    return data_[size_ - 1];
+  }
+  void pop_back() {
+    CHECK_GT(size_, 0);
+    size_--;
+  }
+  uptr size() {
+    return size_;
+  }
+
+ private:
+  void Resize(uptr new_capacity) {
+    CHECK_GT(new_capacity, 0);
+    CHECK_LE(size_, new_capacity);
+    T *new_data = (T *)MmapOrDie(new_capacity * sizeof(T),
+                                 "InternalVector");
+    internal_memcpy(new_data, data_, size_ * sizeof(T));
+    T *old_data = data_;
+    data_ = new_data;
+    UnmapOrDie(old_data, capacity_ * sizeof(T));
+    capacity_ = new_capacity;
+  }
+  // Disallow evil constructors.
+  InternalVector(const InternalVector&);
+  void operator=(const InternalVector&);
+
+  T *data_;
+  uptr capacity_;
+  uptr size_;
+};
 }  // namespace __sanitizer
 
 #endif  // SANITIZER_COMMON_H

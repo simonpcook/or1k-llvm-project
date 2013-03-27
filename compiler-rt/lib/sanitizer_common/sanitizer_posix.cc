@@ -11,7 +11,9 @@
 // run-time libraries and implements POSIX-specific functions from
 // sanitizer_libc.h.
 //===----------------------------------------------------------------------===//
-#if defined(__linux__) || defined(__APPLE__)
+
+#include "sanitizer_platform.h"
+#if SANITIZER_LINUX || SANITIZER_MAC
 
 #include "sanitizer_common.h"
 #include "sanitizer_libc.h"
@@ -44,6 +46,10 @@ int GetPid() {
   return getpid();
 }
 
+u32 GetUid() {
+  return getuid();
+}
+
 uptr GetThreadSelf() {
   return (uptr)pthread_self();
 }
@@ -62,8 +68,8 @@ void *MmapOrDie(uptr size, const char *mem_type) {
       Die();
     }
     recursion_count++;
-    Report("ERROR: %s failed to allocate 0x%zx (%zd) bytes of %s: %s\n",
-           SanitizerToolName, size, size, mem_type, strerror(errno));
+    Report("ERROR: %s failed to allocate 0x%zx (%zd) bytes of %s: %d\n",
+           SanitizerToolName, size, size, mem_type, errno);
     DumpProcessMap();
     CHECK("unable to mmap" && 0);
   }
@@ -145,10 +151,11 @@ static inline bool IntervalsAreSeparate(uptr start1, uptr end1,
 // several worker threads on Mac, which aren't expected to map big chunks of
 // memory).
 bool MemoryRangeIsAvailable(uptr range_start, uptr range_end) {
-  MemoryMappingLayout procmaps;
+  MemoryMappingLayout proc_maps(/*cache_enabled*/true);
   uptr start, end;
-  while (procmaps.Next(&start, &end,
-                       /*offset*/0, /*filename*/0, /*filename_size*/0)) {
+  while (proc_maps.Next(&start, &end,
+                        /*offset*/0, /*filename*/0, /*filename_size*/0,
+                        /*protection*/0)) {
     if (!IntervalsAreSeparate(start, end, range_start, range_end))
       return false;
   }
@@ -156,13 +163,13 @@ bool MemoryRangeIsAvailable(uptr range_start, uptr range_end) {
 }
 
 void DumpProcessMap() {
-  MemoryMappingLayout proc_maps;
+  MemoryMappingLayout proc_maps(/*cache_enabled*/true);
   uptr start, end;
   const sptr kBufSize = 4095;
   char *filename = (char*)MmapOrDie(kBufSize, __FUNCTION__);
   Report("Process memory map follows:\n");
   while (proc_maps.Next(&start, &end, /* file_offset */0,
-                        filename, kBufSize)) {
+                        filename, kBufSize, /* protection */0)) {
     Printf("\t%p-%p\t%s\n", (void*)start, (void*)end, filename);
   }
   Report("End of process memory map.\n");
@@ -203,10 +210,6 @@ void SleepForSeconds(int seconds) {
 
 void SleepForMillis(int millis) {
   usleep(millis * 1000);
-}
-
-void Exit(int exitcode) {
-  _exit(exitcode);
 }
 
 void Abort() {

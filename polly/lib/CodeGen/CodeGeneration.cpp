@@ -193,7 +193,7 @@ Value *ClastExpCodeGen::codegen(const clast_reduction *r, Type *Ty) {
 }
 
 ClastExpCodeGen::ClastExpCodeGen(IRBuilder<> &B, CharMapT &IVMap)
-  : Builder(B), IVS(IVMap) {}
+    : Builder(B), IVS(IVMap) {}
 
 Value *ClastExpCodeGen::codegen(const clast_expr *e, Type *Ty) {
   switch (e->type) {
@@ -225,6 +225,19 @@ private:
   // Map the Values from the old code to their counterparts in the new code.
   ValueMapT ValueMap;
 
+  // Map the loops from the old code to expressions function of the induction
+  // variables in the new code.  For example, when the code generator produces
+  // this AST:
+  //
+  //   for (int c1 = 0; c1 <= 1023; c1 += 1)
+  //     for (int c2 = 0; c2 <= 1023; c2 += 1)
+  //       Stmt(c2 + 3, c1);
+  //
+  // LoopToScev is a map associating:
+  //   "outer loop in the old loop nest" -> SCEV("c2 + 3"),
+  //   "inner loop in the old loop nest" -> SCEV("c1").
+  LoopToScevMapT LoopToScev;
+
   // clastVars maps from the textual representation of a clast variable to its
   // current *Value. clast variables are scheduling variables, original
   // induction variables or parameters. They are used either in loop bounds or
@@ -249,11 +262,13 @@ private:
 
   void codegen(const clast_assignment *a, ScopStmt *Statement,
                unsigned Dimension, int vectorDim,
-               std::vector<ValueMapT> *VectorVMap = 0);
+               std::vector<ValueMapT> *VectorVMap = 0,
+               std::vector<LoopToScevMapT> *VLTS = 0);
 
   void codegenSubstitutions(const clast_stmt *Assignment, ScopStmt *Statement,
                             int vectorDim = 0,
-                            std::vector<ValueMapT> *VectorVMap = 0);
+                            std::vector<ValueMapT> *VectorVMap = 0,
+                            std::vector<LoopToScevMapT> *VLTS = 0);
 
   void codegen(const clast_user_stmt *u, std::vector<Value *> *IVS = NULL,
                const char *iterator = NULL, isl_set *scatteringDomain = 0);
@@ -351,34 +366,41 @@ void ClastStmtCodeGen::codegen(const clast_assignment *a) {
   ClastVars[a->LHS] = V;
 }
 
-void ClastStmtCodeGen::codegen(const clast_assignment *A, ScopStmt *Stmt,
-                               unsigned Dim, int VectorDim,
-                               std::vector<ValueMapT> *VectorVMap) {
-  const PHINode *PN;
+void ClastStmtCodeGen::codegen(
+    const clast_assignment *A, ScopStmt *Stmt, unsigned Dim, int VectorDim,
+    std::vector<ValueMapT> *VectorVMap, std::vector<LoopToScevMapT> *VLTS) {
   Value *RHS;
 
   assert(!A->LHS && "Statement assignments do not have left hand side");
 
-  PN = Stmt->getInductionVariableForDimension(Dim);
   RHS = ExpGen.codegen(A->RHS, Builder.getInt64Ty());
-  RHS = Builder.CreateTruncOrBitCast(RHS, PN->getType());
 
-  if (VectorVMap)
-    (*VectorVMap)[VectorDim][PN] = RHS;
+  const llvm::SCEV *URHS = S->getSE()->getUnknown(RHS);
+  if (VLTS)
+    (*VLTS)[VectorDim][Stmt->getLoopForDimension(Dim)] = URHS;
+  LoopToScev[Stmt->getLoopForDimension(Dim)] = URHS;
 
-  ValueMap[PN] = RHS;
+  const PHINode *PN = Stmt->getInductionVariableForDimension(Dim);
+  if (PN) {
+    RHS = Builder.CreateTruncOrBitCast(RHS, PN->getType());
+
+    if (VectorVMap)
+      (*VectorVMap)[VectorDim][PN] = RHS;
+
+    ValueMap[PN] = RHS;
+  }
 }
 
 void ClastStmtCodeGen::codegenSubstitutions(
     const clast_stmt *Assignment, ScopStmt *Statement, int vectorDim,
-    std::vector<ValueMapT> *VectorVMap) {
+    std::vector<ValueMapT> *VectorVMap, std::vector<LoopToScevMapT> *VLTS) {
   int Dimension = 0;
 
   while (Assignment) {
     assert(CLAST_STMT_IS_A(Assignment, stmt_ass) &&
            "Substitions are expected to be assignments");
     codegen((const clast_assignment *)Assignment, Statement, Dimension,
-            vectorDim, VectorVMap);
+            vectorDim, VectorVMap, VLTS);
     Assignment = Assignment->next;
     Dimension++;
   }
@@ -409,11 +431,12 @@ void ClastStmtCodeGen::codegen(const clast_user_stmt *u,
   int VectorDimensions = IVS ? IVS->size() : 1;
 
   if (VectorDimensions == 1) {
-    BlockGenerator::generate(Builder, *Statement, ValueMap, P);
+    BlockGenerator::generate(Builder, *Statement, ValueMap, LoopToScev, P);
     return;
   }
 
   VectorValueMapT VectorMap(VectorDimensions);
+  std::vector<LoopToScevMapT> VLTS(VectorDimensions);
 
   if (IVS) {
     assert(u->substitutions && "Substitutions expected!");
@@ -421,13 +444,14 @@ void ClastStmtCodeGen::codegen(const clast_user_stmt *u,
     for (std::vector<Value *>::iterator II = IVS->begin(), IE = IVS->end();
          II != IE; ++II) {
       ClastVars[iterator] = *II;
-      codegenSubstitutions(u->substitutions, Statement, i, &VectorMap);
+      codegenSubstitutions(u->substitutions, Statement, i, &VectorMap, &VLTS);
       i++;
     }
   }
 
   isl_map *Schedule = extractPartialSchedule(Statement, Domain);
-  VectorBlockGenerator::generate(Builder, *Statement, VectorMap, Schedule, P);
+  VectorBlockGenerator::generate(Builder, *Statement, VectorMap, VLTS, Schedule,
+                                 P);
   isl_map_free(Schedule);
 }
 
@@ -945,8 +969,7 @@ void ClastStmtCodeGen::codegen(const clast_root *r) {
 }
 
 ClastStmtCodeGen::ClastStmtCodeGen(Scop *scop, IRBuilder<> &B, Pass *P)
-    : S(scop), P(P), Builder(B), ExpGen(Builder, ClastVars) {
-}
+    : S(scop), P(P), Builder(B), ExpGen(Builder, ClastVars) {}
 
 namespace {
 class CodeGeneration : public ScopPass {
@@ -992,6 +1015,7 @@ public:
     AU.addRequired<ScopDetection>();
     AU.addRequired<ScopInfo>();
     AU.addRequired<DataLayout>();
+    AU.addRequired<LoopInfo>();
 
     AU.addPreserved<CloogInfo>();
     AU.addPreserved<Dependences>();
@@ -1014,20 +1038,18 @@ public:
 
 char CodeGeneration::ID = 1;
 
-INITIALIZE_PASS_BEGIN(CodeGeneration, "polly-codegen",
-                      "Polly - Create LLVM-IR from SCoPs", false, false)
-INITIALIZE_PASS_DEPENDENCY(CloogInfo)
-INITIALIZE_PASS_DEPENDENCY(Dependences)
-INITIALIZE_PASS_DEPENDENCY(DominatorTree)
-INITIALIZE_PASS_DEPENDENCY(RegionInfo)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
-INITIALIZE_PASS_DEPENDENCY(ScopDetection)
-INITIALIZE_PASS_DEPENDENCY(DataLayout)
-INITIALIZE_PASS_END(CodeGeneration, "polly-codegen",
-                      "Polly - Create LLVM-IR from SCoPs", false, false)
+Pass *polly::createCodeGenerationPass() { return new CodeGeneration(); }
 
-Pass *polly::createCodeGenerationPass() {
-  return new CodeGeneration();
-}
+INITIALIZE_PASS_BEGIN(CodeGeneration, "polly-codegen",
+                      "Polly - Create LLVM-IR from SCoPs", false, false);
+INITIALIZE_PASS_DEPENDENCY(CloogInfo);
+INITIALIZE_PASS_DEPENDENCY(Dependences);
+INITIALIZE_PASS_DEPENDENCY(DominatorTree);
+INITIALIZE_PASS_DEPENDENCY(RegionInfo);
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);
+INITIALIZE_PASS_DEPENDENCY(ScopDetection);
+INITIALIZE_PASS_DEPENDENCY(DataLayout);
+INITIALIZE_PASS_END(CodeGeneration, "polly-codegen",
+                    "Polly - Create LLVM-IR from SCoPs", false, false)
 
 #endif // CLOOG_FOUND

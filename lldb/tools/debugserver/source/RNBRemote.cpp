@@ -878,65 +878,88 @@ g_gdb_register_map_arm[] =
     { 13,  4,  "sp",    {0}, NULL, 1},
     { 14,  4,  "lr",    {0}, NULL, 1},
     { 15,  4,  "pc",    {0}, NULL, 1},
-    { 16, 12,  "f0",    {0}, k_zero_bytes, 0},
-    { 17, 12,  "f1",    {0}, k_zero_bytes, 0},
-    { 18, 12,  "f2",    {0}, k_zero_bytes, 0},
-    { 19, 12,  "f3",    {0}, k_zero_bytes, 0},
-    { 20, 12,  "f4",    {0}, k_zero_bytes, 0},
-    { 21, 12,  "f5",    {0}, k_zero_bytes, 0},
-    { 22, 12,  "f6",    {0}, k_zero_bytes, 0},
-    { 23, 12,  "f7",    {0}, k_zero_bytes, 0},
-    { 24,  4, "fps",    {0}, k_zero_bytes, 0},
-    { 25,  4,"cpsr",    {0}, NULL, 1},
-    { 26,  4,  "s0",    {0}, NULL, 0},
-    { 27,  4,  "s1",    {0}, NULL, 0},
-    { 28,  4,  "s2",    {0}, NULL, 0},
-    { 29,  4,  "s3",    {0}, NULL, 0},
-    { 30,  4,  "s4",    {0}, NULL, 0},
-    { 31,  4,  "s5",    {0}, NULL, 0},
-    { 32,  4,  "s6",    {0}, NULL, 0},
-    { 33,  4,  "s7",    {0}, NULL, 0},
-    { 34,  4,  "s8",    {0}, NULL, 0},
-    { 35,  4,  "s9",    {0}, NULL, 0},
-    { 36,  4, "s10",    {0}, NULL, 0},
-    { 37,  4, "s11",    {0}, NULL, 0},
-    { 38,  4, "s12",    {0}, NULL, 0},
-    { 39,  4, "s13",    {0}, NULL, 0},
-    { 40,  4, "s14",    {0}, NULL, 0},
-    { 41,  4, "s15",    {0}, NULL, 0},
-    { 42,  4, "s16",    {0}, NULL, 0},
-    { 43,  4, "s17",    {0}, NULL, 0},
-    { 44,  4, "s18",    {0}, NULL, 0},
-    { 45,  4, "s19",    {0}, NULL, 0},
-    { 46,  4, "s20",    {0}, NULL, 0},
-    { 47,  4, "s21",    {0}, NULL, 0},
-    { 48,  4, "s22",    {0}, NULL, 0},
-    { 49,  4, "s23",    {0}, NULL, 0},
-    { 50,  4, "s24",    {0}, NULL, 0},
-    { 51,  4, "s25",    {0}, NULL, 0},
-    { 52,  4, "s26",    {0}, NULL, 0},
-    { 53,  4, "s27",    {0}, NULL, 0},
-    { 54,  4, "s28",    {0}, NULL, 0},
-    { 55,  4, "s29",    {0}, NULL, 0},
-    { 56,  4, "s30",    {0}, NULL, 0},
-    { 57,  4, "s31",    {0}, NULL, 0},
-    { 58,  4, "fpscr",  {0}, NULL, 0},
-    { 59,  8, "d16",    {0}, NULL, 0},
-    { 60,  8, "d17",    {0}, NULL, 0},
-    { 61,  8, "d18",    {0}, NULL, 0},
-    { 62,  8, "d19",    {0}, NULL, 0},
-    { 63,  8, "d20",    {0}, NULL, 0},
-    { 64,  8, "d21",    {0}, NULL, 0},
-    { 65,  8, "d22",    {0}, NULL, 0},
-    { 66,  8, "d23",    {0}, NULL, 0},
-    { 67,  8, "d24",    {0}, NULL, 0},
-    { 68,  8, "d25",    {0}, NULL, 0},
-    { 69,  8, "d26",    {0}, NULL, 0},
-    { 70,  8, "d27",    {0}, NULL, 0},
-    { 71,  8, "d28",    {0}, NULL, 0},
-    { 72,  8, "d29",    {0}, NULL, 0},
-    { 73,  8, "d30",    {0}, NULL, 0},
-    { 74,  8, "d31",    {0}, NULL, 0}
+    { 16,  4,"cpsr",    {0}, NULL, 1},               // current program status register
+    { 17,  4,  "s0",    {0}, NULL, 0},
+    { 18,  4,  "s1",    {0}, NULL, 0},
+    { 19,  4,  "s2",    {0}, NULL, 0},
+    { 20,  4,  "s3",    {0}, NULL, 0},
+    { 21,  4,  "s4",    {0}, NULL, 0},
+    { 22,  4,  "s5",    {0}, NULL, 0},
+    { 23,  4,  "s6",    {0}, NULL, 0},
+    { 24,  4,  "s7",    {0}, NULL, 0},
+    { 25,  4,  "s8",    {0}, NULL, 0},
+    { 26,  4,  "s9",    {0}, NULL, 0},
+    { 27,  4, "s10",    {0}, NULL, 0},
+    { 28,  4, "s11",    {0}, NULL, 0},
+    { 29,  4, "s12",    {0}, NULL, 0},
+    { 30,  4, "s13",    {0}, NULL, 0},
+    { 31,  4, "s14",    {0}, NULL, 0},
+    { 32,  4, "s15",    {0}, NULL, 0},
+    { 33,  4, "s16",    {0}, NULL, 0},
+    { 34,  4, "s17",    {0}, NULL, 0},
+    { 35,  4, "s18",    {0}, NULL, 0},
+    { 36,  4, "s19",    {0}, NULL, 0},
+    { 37,  4, "s20",    {0}, NULL, 0},
+    { 38,  4, "s21",    {0}, NULL, 0},
+    { 39,  4, "s22",    {0}, NULL, 0},
+    { 40,  4, "s23",    {0}, NULL, 0},
+    { 41,  4, "s24",    {0}, NULL, 0},
+    { 42,  4, "s25",    {0}, NULL, 0},
+    { 43,  4, "s26",    {0}, NULL, 0},
+    { 44,  4, "s27",    {0}, NULL, 0},
+    { 45,  4, "s28",    {0}, NULL, 0},
+    { 46,  4, "s29",    {0}, NULL, 0},
+    { 47,  4, "s30",    {0}, NULL, 0},
+    { 48,  4, "s31",    {0}, NULL, 0},
+    { 49,  8, "d0",     {0}, NULL, 0},
+    { 50,  8, "d1",     {0}, NULL, 0},
+    { 51,  8, "d2",     {0}, NULL, 0},
+    { 52,  8, "d3",     {0}, NULL, 0},
+    { 53,  8, "d4",     {0}, NULL, 0},
+    { 54,  8, "d5",     {0}, NULL, 0},
+    { 55,  8, "d6",     {0}, NULL, 0},
+    { 56,  8, "d7",     {0}, NULL, 0},
+    { 57,  8, "d8",     {0}, NULL, 0},
+    { 58,  8, "d9",     {0}, NULL, 0},
+    { 59,  8, "d10",    {0}, NULL, 0},
+    { 60,  8, "d11",    {0}, NULL, 0},
+    { 61,  8, "d12",    {0}, NULL, 0},
+    { 62,  8, "d13",    {0}, NULL, 0},
+    { 63,  8, "d14",    {0}, NULL, 0},
+    { 64,  8, "d15",    {0}, NULL, 0},
+    { 65,  8, "d16",    {0}, NULL, 0},
+    { 66,  8, "d17",    {0}, NULL, 0},
+    { 67,  8, "d18",    {0}, NULL, 0},
+    { 68,  8, "d19",    {0}, NULL, 0},
+    { 69,  8, "d20",    {0}, NULL, 0},
+    { 70,  8, "d21",    {0}, NULL, 0},
+    { 71,  8, "d22",    {0}, NULL, 0},
+    { 72,  8, "d23",    {0}, NULL, 0},
+    { 73,  8, "d24",    {0}, NULL, 0},
+    { 74,  8, "d25",    {0}, NULL, 0},
+    { 75,  8, "d26",    {0}, NULL, 0},
+    { 76,  8, "d27",    {0}, NULL, 0},
+    { 77,  8, "d28",    {0}, NULL, 0},
+    { 78,  8, "d29",    {0}, NULL, 0},
+    { 79,  8, "d30",    {0}, NULL, 0},
+    { 80,  8, "d31",    {0}, NULL, 0},
+    { 81, 16, "q0",     {0}, NULL, 0},
+    { 82, 16, "q1",     {0}, NULL, 0},
+    { 83, 16, "q2",     {0}, NULL, 0},
+    { 84, 16, "q3",     {0}, NULL, 0},
+    { 85, 16, "q4",     {0}, NULL, 0},
+    { 86, 16, "q5",     {0}, NULL, 0},
+    { 87, 16, "q6",     {0}, NULL, 0},
+    { 88, 16, "q7",     {0}, NULL, 0},
+    { 89, 16, "q8",     {0}, NULL, 0},
+    { 90, 16, "q9",     {0}, NULL, 0},
+    { 91, 16, "q10",    {0}, NULL, 0},
+    { 92, 16, "q11",    {0}, NULL, 0},
+    { 93, 16, "q12",    {0}, NULL, 0},
+    { 94, 16, "q13",    {0}, NULL, 0},
+    { 95, 16, "q14",    {0}, NULL, 0},
+    { 96, 16, "q15",    {0}, NULL, 0},
+    { 97,  4, "fpscr",  {0}, NULL, 0}
 };
 
 register_map_entry_t
@@ -3645,14 +3668,32 @@ RNBRemote::HandlePacket_MemoryRegionInfo (const char *p)
     return SendPacket (ostrm.str());
 }
 
+// qGetProfileData;scan_type:0xYYYYYYY
 rnb_err_t
 RNBRemote::HandlePacket_GetProfileData (const char *p)
 {
     nub_process_t pid = m_ctx.ProcessID();
     if (pid == INVALID_NUB_PROCESS)
         return SendPacket ("OK");
-
-    std::string data = DNBProcessGetProfileData(pid);
+    
+    StringExtractor packet(p += sizeof ("qGetProfileData"));
+    DNBProfileDataScanType scan_type = eProfileAll;
+    std::string name;
+    std::string value;
+    while (packet.GetNameColonValue(name, value))
+    {
+        if (name.compare ("scan_type") == 0)
+        {
+            std::istringstream iss(value);
+            uint32_t int_value = 0;
+            if (iss >> std::hex >> int_value)
+            {
+                scan_type = (DNBProfileDataScanType)int_value;
+            }
+        }
+    }
+    
+    std::string data = DNBProcessGetProfileData(pid, scan_type);
     if (!data.empty())
     {
         return SendPacket (data.c_str());
@@ -3663,18 +3704,18 @@ RNBRemote::HandlePacket_GetProfileData (const char *p)
     }
 }
 
-
-// QSetEnableAsyncProfiling;enable:[0|1]:interval_usec:XXXXXX;
+// QSetEnableAsyncProfiling;enable:[0|1]:interval_usec:XXXXXX;scan_type:0xYYYYYYY
 rnb_err_t
 RNBRemote::HandlePacket_SetEnableAsyncProfiling (const char *p)
 {
     nub_process_t pid = m_ctx.ProcessID();
     if (pid == INVALID_NUB_PROCESS)
-        return SendPacket ("");
+        return SendPacket ("OK");
 
-    StringExtractor packet(p += sizeof ("QSetEnableAsyncProfiling:") - 1);
+    StringExtractor packet(p += sizeof ("QSetEnableAsyncProfiling"));
     bool enable = false;
     uint64_t interval_usec = 0;
+    DNBProfileDataScanType scan_type = eProfileAll;
     std::string name;
     std::string value;
     while (packet.GetNameColonValue(name, value))
@@ -3687,13 +3728,23 @@ RNBRemote::HandlePacket_SetEnableAsyncProfiling (const char *p)
         {
             interval_usec  = strtoul(value.c_str(), NULL, 10);
         }
+        else if (name.compare ("scan_type") == 0)
+        {
+            std::istringstream iss(value);
+            uint32_t int_value = 0;
+            if (iss >> std::hex >> int_value)
+            {
+                scan_type = (DNBProfileDataScanType)int_value;
+            }
+        }
     }
     
     if (interval_usec == 0)
     {
         enable = 0;
     }
-    DNBProcessSetEnableAsyncProfiling(pid, enable, interval_usec);
+    
+    DNBProcessSetEnableAsyncProfiling(pid, enable, interval_usec, scan_type);
     return SendPacket ("OK");
 }
 
@@ -3785,6 +3836,7 @@ RNBRemote::HandlePacket_D (const char *p)
 rnb_err_t
 RNBRemote::HandlePacket_k (const char *p)
 {
+    DNBLog ("Got a 'k' packet, killing the inferior process.");
     // No response to should be sent to the kill packet
     if (m_ctx.HasValidProcessID())
         DNBProcessKill (m_ctx.ProcessID());

@@ -442,8 +442,8 @@ Module::ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve
     Mutex::Locker locker (m_mutex);
     uint32_t resolved_flags = 0;
 
-    // Clear the result symbol context in case we don't find anything
-    sc.Clear();
+    // Clear the result symbol context in case we don't find anything, but don't clear the target
+    sc.Clear(false);
 
     // Get the section from the section/offset address.
     SectionSP section_sp (so_addr.GetSection());
@@ -606,7 +606,7 @@ Module::FindFunctions (const ConstString &name,
             if (symtab)
             {
                 std::vector<uint32_t> symbol_indexes;
-                symtab->FindAllSymbolsWithNameAndType (name, eSymbolTypeCode, Symtab::eDebugAny, Symtab::eVisibilityAny, symbol_indexes);
+                symtab->FindAllSymbolsWithNameAndType (name, eSymbolTypeAny, Symtab::eDebugAny, Symtab::eVisibilityAny, symbol_indexes);
                 const size_t num_matches = symbol_indexes.size();
                 if (num_matches)
                 {
@@ -615,7 +615,10 @@ Module::FindFunctions (const ConstString &name,
                     for (size_t i=0; i<num_matches; i++)
                     {
                         sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
-                        sc_list.AppendIfUnique (sc, merge_symbol_into_function);
+                        SymbolType sym_type = sc.symbol->GetType();
+                        if (sc.symbol && (sym_type == eSymbolTypeCode ||
+                                          sym_type == eSymbolTypeResolver))
+                            sc_list.AppendIfUnique (sc, merge_symbol_into_function);
                     }
                 }
             }
@@ -649,7 +652,7 @@ Module::FindFunctions (const RegularExpression& regex,
             if (symtab)
             {
                 std::vector<uint32_t> symbol_indexes;
-                symtab->AppendSymbolIndexesMatchingRegExAndType (regex, eSymbolTypeCode, Symtab::eDebugAny, Symtab::eVisibilityAny, symbol_indexes);
+                symtab->AppendSymbolIndexesMatchingRegExAndType (regex, eSymbolTypeAny, Symtab::eDebugAny, Symtab::eVisibilityAny, symbol_indexes);
                 const size_t num_matches = symbol_indexes.size();
                 if (num_matches)
                 {
@@ -658,7 +661,10 @@ Module::FindFunctions (const RegularExpression& regex,
                     for (size_t i=0; i<num_matches; i++)
                     {
                         sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
-                        sc_list.AppendIfUnique (sc, merge_symbol_into_function);
+                        SymbolType sym_type = sc.symbol->GetType();
+                        if (sc.symbol && (sym_type == eSymbolTypeCode ||
+                                          sym_type == eSymbolTypeResolver))
+                            sc_list.AppendIfUnique (sc, merge_symbol_into_function);
                     }
                 }
             }
@@ -1190,15 +1196,15 @@ Module::LoadScriptingResourceInTarget (Target *target, Error& error)
             return false;
         }
 
-        ScriptInterpreter *script_interpreter = debugger.GetCommandInterpreter().GetScriptInterpreter();
-        if (script_interpreter)
+        FileSpecList file_specs = platform_sp->LocateExecutableScriptingResources (target,
+                                                                                   *this);
+        
+        
+        const uint32_t num_specs = file_specs.GetSize();
+        if (num_specs)
         {
-            FileSpecList file_specs = platform_sp->LocateExecutableScriptingResources (target,
-                                                                                       *this);
-            
-            
-            const uint32_t num_specs = file_specs.GetSize();
-            if (num_specs)
+            ScriptInterpreter *script_interpreter = debugger.GetCommandInterpreter().GetScriptInterpreter();
+            if (script_interpreter)
             {
                 for (uint32_t i=0; i<num_specs; ++i)
                 {
@@ -1216,11 +1222,11 @@ Module::LoadScriptingResourceInTarget (Target *target, Error& error)
                     }
                 }
             }
-        }
-        else
-        {
-            error.SetErrorString("invalid ScriptInterpreter");
-            return false;
+            else
+            {
+                error.SetErrorString("invalid ScriptInterpreter");
+                return false;
+            }
         }
     }
     return true;

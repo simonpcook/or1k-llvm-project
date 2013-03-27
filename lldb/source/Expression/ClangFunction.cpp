@@ -264,18 +264,17 @@ ClangFunction::WriteFunctionWrapper (ExecutionContext &exe_ctx, Stream &errors)
     
     bool evaluated_statically = false; // should stay that way
     
-    Error jit_error (m_parser->PrepareForExecution (m_jit_alloc,
-                                                    m_jit_start_addr,
+    Error jit_error (m_parser->PrepareForExecution (m_jit_start_addr,
                                                     m_jit_end_addr,
                                                     exe_ctx, 
-                                                    NULL,
                                                     evaluated_statically,
                                                     const_result,
                                                     eExecutionPolicyAlways));
     
     if (!jit_error.Success())
         return false;
-    if (process && m_jit_alloc != LLDB_INVALID_ADDRESS)
+    
+    if (process && m_jit_start_addr)
         m_jit_process_wp = lldb::ProcessWP(process->shared_from_this());
     
     m_JITted = true;
@@ -407,6 +406,11 @@ ClangFunction::GetThreadPlanToCallFunction (ExecutionContext &exe_ctx,
                                             lldb::addr_t *this_arg,
                                             lldb::addr_t *cmd_arg)
 {
+    lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
+    
+    if (log)
+        log->Printf("-- [ClangFunction::GetThreadPlanToCallFunction] Creating thread plan to call function --");
+    
     // FIXME: Use the errors Stream for better error reporting.
     Thread *thread = exe_ctx.GetThreadPtr();
     if (thread == NULL)
@@ -439,6 +443,12 @@ ClangFunction::FetchFunctionResults (ExecutionContext &exe_ctx, lldb::addr_t arg
     // FIXME: How does clang tell us there's no return value?  We need to handle that case.
     // FIXME: Create our ThreadPlanCallFunction with the return ClangASTType, and then use GetReturnValueObject
     // to fetch the value.  That way we can fetch any values we need.
+    
+    lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
+    
+    if (log)
+        log->Printf("-- [ClangFunction::FetchFunctionResults] Fetching function results --");
+    
     Process *process = exe_ctx.GetProcessPtr();
     
     if (process == NULL)
@@ -516,7 +526,12 @@ ClangFunction::ExecuteFunction (
         Stream &errors,
         lldb::addr_t *this_arg)
 {
-    lldb::ThreadPlanSP call_plan_sp (ClangFunction::GetThreadPlanToCallFunction (exe_ctx, 
+    lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
+
+    if (log)
+        log->Printf("== [ClangFunction::ExecuteFunction] Executing function ==");
+    
+    lldb::ThreadPlanSP call_plan_sp (ClangFunction::GetThreadPlanToCallFunction (exe_ctx,
                                                                                  function_address, 
                                                                                  void_arg, 
                                                                                  errors, 
@@ -539,6 +554,18 @@ ClangFunction::ExecuteFunction (
                                                                       ignore_breakpoints,
                                                                       timeout_usec,
                                                                       errors);
+    
+    if (log)
+    {
+        if (results != eExecutionCompleted)
+        {
+            log->Printf("== [ClangFunction::ExecuteFunction] Execution completed abnormally ==");
+        }
+        else
+        {
+            log->Printf("== [ClangFunction::ExecuteFunction] Execution completed normally ==");
+        }
+    }
     
     if (exe_ctx.GetProcessPtr())
         exe_ctx.GetProcessPtr()->SetRunningUserExpression(false);

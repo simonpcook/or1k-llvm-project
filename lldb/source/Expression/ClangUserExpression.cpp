@@ -228,7 +228,7 @@ ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Error &err)
         // that this is a method of a class in whatever runtime the debug info says the object pointer
         // belongs to.  Do that here.
         
-        ClangASTMetadata *metadata = ClangASTContext::GetMetadata (&decl_context->getParentASTContext(), (uintptr_t) function_decl);
+        ClangASTMetadata *metadata = ClangASTContext::GetMetadata (&decl_context->getParentASTContext(), function_decl);
         if (metadata && metadata->HasObjectPtr())
         {
             lldb::LanguageType language = metadata->GetObjectPtrLanguage();
@@ -460,30 +460,17 @@ ClangUserExpression::Parse (Stream &error_stream,
     //////////////////////////////////////////////////////////////////////////////////////////
     // Prepare the output of the parser for execution, evaluating it statically if possible
     //
-        
-    if (execution_policy != eExecutionPolicyNever && process)
-        m_data_allocator.reset(new ProcessDataAllocator(*process));
-    
-    Error jit_error = parser.PrepareForExecution (m_jit_alloc,
-                                                  m_jit_start_addr,
+            
+    Error jit_error = parser.PrepareForExecution (m_jit_start_addr,
                                                   m_jit_end_addr,
                                                   exe_ctx,
-                                                  m_data_allocator.get(),
                                                   m_evaluated_statically,
                                                   m_const_result,
                                                   execution_policy);
-    
-    if (log && m_data_allocator.get())
-    {
-        StreamString dump_string;
-        m_data_allocator->Dump(dump_string);
-        
-        log->Printf("Data buffer contents:\n%s", dump_string.GetString().c_str());
-    }
         
     if (jit_error.Success())
     {
-        if (process && m_jit_alloc != LLDB_INVALID_ADDRESS)
+        if (process && m_jit_start_addr != LLDB_INVALID_ADDRESS)
             m_jit_process_wp = lldb::ProcessWP(process->shared_from_this());
         return true;
     }

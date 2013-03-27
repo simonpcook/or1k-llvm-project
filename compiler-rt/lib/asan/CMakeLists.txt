@@ -14,23 +14,24 @@ set(ASAN_SOURCES
   asan_new_delete.cc
   asan_poisoning.cc
   asan_posix.cc
+  asan_preinit.cc
   asan_report.cc
   asan_rtl.cc
   asan_stack.cc
   asan_stats.cc
   asan_thread.cc
-  asan_thread_registry.cc
   asan_win.cc
   )
 
 set(ASAN_DYLIB_SOURCES
   ${ASAN_SOURCES}
-  dynamic/asan_interceptors_dynamic.cc
   )
 
 include_directories(..)
 
-set(ASAN_CFLAGS ${SANITIZER_COMMON_CFLAGS})
+set(ASAN_CFLAGS
+  ${SANITIZER_COMMON_CFLAGS}
+  -fno-rtti)
 
 set(ASAN_COMMON_DEFINITIONS
   ASAN_HAS_EXCEPTIONS=1)
@@ -85,7 +86,8 @@ else()
               $<TARGET_OBJECTS:RTInterception.${arch}>
               $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
       CFLAGS ${ASAN_CFLAGS}
-      DEFS ${ASAN_COMMON_DEFINITIONS})
+      DEFS ${ASAN_COMMON_DEFINITIONS}
+      SYMS asan.syms)
     list(APPEND ASAN_RUNTIME_LIBRARIES clang_rt.asan-${arch})
   endforeach()
 endif()

@@ -26,10 +26,6 @@ public:
       const ELFTargetInfo &ti, std::unique_ptr<llvm::MemoryBuffer> mb) {
     std::unique_ptr<DynamicFile> file(
         new DynamicFile(ti, mb->getBufferIdentifier()));
-
-    static uint32_t lastOrdinal = 0;
-    file->_ordinal = lastOrdinal++;
-
     llvm::OwningPtr<llvm::object::Binary> binaryFile;
     if (error_code ec = createBinary(mb.release(), binaryFile))
       return ec;
@@ -109,6 +105,7 @@ private:
   DynamicFile(const ELFTargetInfo &ti, StringRef name)
       : SharedLibraryFile(name), _targetInfo(ti) {}
 
+  mutable llvm::BumpPtrAllocator _alloc;
   const ELFTargetInfo &_targetInfo;
   std::unique_ptr<llvm::object::ELFObjectFile<ELFT>> _objFile;
   atom_collection_vector<DefinedAtom> _definedAtoms;
@@ -119,13 +116,12 @@ private:
   StringRef _soname;
 
   struct SymAtomPair {
-    const typename llvm::object::ELFObjectFile<ELFT>::Elf_Sym *_symbol =
-        nullptr;
-    const SharedLibraryAtom *_atom = nullptr;
+    SymAtomPair() : _symbol(nullptr), _atom(nullptr) {}
+    const typename llvm::object::ELFObjectFile<ELFT>::Elf_Sym *_symbol;
+    const SharedLibraryAtom *_atom;
   };
 
   mutable std::unordered_map<StringRef, SymAtomPair> _nameToSym;
-  mutable llvm::BumpPtrAllocator _alloc;
 };
 } // end namespace elf
 } // end namespace lld

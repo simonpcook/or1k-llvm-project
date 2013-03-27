@@ -44,11 +44,12 @@ public:
     kindObject,            ///< object file (.o)
     kindSharedLibrary,     ///< shared library (.so)
     kindArchiveLibrary,    ///< archive (.a)
+    kindLinkerScript,      ///< linker script
   };
 
   /// \brief Returns file kind.  Need for dyn_cast<> on File objects.
-  virtual Kind kind() const {
-    return kindObject;
+  Kind kind() const {
+    return _kind;
   }
 
   /// \brief For error messages and debugging, this returns the path to the file
@@ -64,11 +65,11 @@ public:
   virtual StringRef translationUnitSource() const;
 
   /// Returns the command line order of the file.
-  uint64_t ordinal() const { 
+  uint64_t ordinal() const {
     assert(_ordinal != UINT64_MAX);
-    return _ordinal; 
+    return _ordinal;
   }
-  
+
   /// Sets the command line order of the file.  The parameter must
   /// also be incremented to the next available ordinal number.
   virtual void setOrdinalAndIncrement(uint64_t &ordinal) const {
@@ -156,8 +157,8 @@ public:
   virtual const TargetInfo &getTargetInfo() const = 0;
 
 protected:
-  /// \brief only subclasses of File can be instantiated 
-  File(StringRef p) : _path(p), _ordinal(UINT64_MAX) {}
+  /// \brief only subclasses of File can be instantiated
+  File(StringRef p, Kind kind) : _path(p), _kind(kind), _ordinal(UINT64_MAX) {}
 
   /// \brief This is a convenience class for File subclasses which manage their
   /// atoms as a simple std::vector<>.
@@ -192,10 +193,10 @@ protected:
   template <typename T>
   class atom_collection_empty : public atom_collection<T> {
   public:
-    virtual atom_iterator<T> begin() const { 
+    virtual atom_iterator<T> begin() const {
       return atom_iterator<T>(*this, nullptr);
     }
-    virtual atom_iterator<T> end() const{ 
+    virtual atom_iterator<T> end() const{
       return atom_iterator<T>(*this, nullptr);
     }
     virtual const T *deref(const void *it) const {
@@ -214,6 +215,7 @@ protected:
   static atom_collection_empty<AbsoluteAtom>      _noAbsoluteAtoms;
 
   StringRef         _path;
+  Kind              _kind;
   mutable uint64_t  _ordinal;
 };
 
@@ -230,8 +232,9 @@ public:
   virtual const TargetInfo &getTargetInfo() const { return _targetInfo; }
 
 protected:
-  /// \brief only subclasses of MutableFile can be instantiated 
-  MutableFile(const TargetInfo &ti, StringRef p) : File(p), _targetInfo(ti) {}
+  /// \brief only subclasses of MutableFile can be instantiated
+  MutableFile(const TargetInfo &ti, StringRef p)
+      : File(p, kindObject), _targetInfo(ti) {}
 
 private:
   const TargetInfo &_targetInfo;

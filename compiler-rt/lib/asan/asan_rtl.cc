@@ -19,13 +19,14 @@
 #include "asan_stack.h"
 #include "asan_stats.h"
 #include "asan_thread.h"
-#include "asan_thread_registry.h"
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
 
 namespace __asan {
+
+uptr AsanMappingProfile[kAsanMappingProfileSize];
 
 static void AsanDie() {
   static atomic_uint32_t num_calls;
@@ -37,13 +38,19 @@ static void AsanDie() {
     Report("Sleeping for %d second(s)\n", flags()->sleep_before_dying);
     SleepForSeconds(flags()->sleep_before_dying);
   }
-  if (flags()->unmap_shadow_on_exit)
-    UnmapOrDie((void*)kLowShadowBeg, kHighShadowEnd - kLowShadowBeg);
+  if (flags()->unmap_shadow_on_exit) {
+    if (kMidMemBeg) {
+      UnmapOrDie((void*)kLowShadowBeg, kMidMemBeg - kLowShadowBeg);
+      UnmapOrDie((void*)kMidMemEnd, kHighShadowEnd - kMidMemEnd);
+    } else {
+      UnmapOrDie((void*)kLowShadowBeg, kHighShadowEnd - kLowShadowBeg);
+    }
+  }
   if (death_callback)
     death_callback();
   if (flags()->abort_on_error)
     Abort();
-  Exit(flags()->exitcode);
+  internal__exit(flags()->exitcode);
 }
 
 static void AsanCheckFailed(const char *file, int line, const char *cond,
@@ -66,6 +73,17 @@ Flags *flags() {
 
 static const char *MaybeCallAsanDefaultOptions() {
   return (&__asan_default_options) ? __asan_default_options() : "";
+}
+
+static const char *MaybeUseAsanDefaultOptionsCompileDefiniton() {
+#ifdef ASAN_DEFAULT_OPTIONS
+// Stringize the macro value.
+# define ASAN_STRINGIZE(x) #x
+# define ASAN_STRINGIZE_OPTIONS(options) ASAN_STRINGIZE(options)
+  return ASAN_STRINGIZE_OPTIONS(ASAN_DEFAULT_OPTIONS);
+#else
+  return "";
+#endif
 }
 
 static void ParseFlagsFromString(Flags *f, const char *str) {
@@ -108,18 +126,21 @@ static void ParseFlagsFromString(Flags *f, const char *str) {
   ParseFlag(str, &f->poison_heap, "poison_heap");
   ParseFlag(str, &f->alloc_dealloc_mismatch, "alloc_dealloc_mismatch");
   ParseFlag(str, &f->use_stack_depot, "use_stack_depot");
+  ParseFlag(str, &f->strict_memcmp, "strict_memcmp");
 }
+
+static const char *asan_external_symbolizer;
 
 void InitializeFlags(Flags *f, const char *env) {
   internal_memset(f, 0, sizeof(*f));
 
   f->quarantine_size = (ASAN_LOW_MEMORY) ? 1UL << 26 : 1UL << 28;
-  f->symbolize = false;
+  f->symbolize = (asan_external_symbolizer != 0);
   f->verbosity = 0;
   f->redzone = ASAN_ALLOCATOR_VERSION == 2 ? 16 : (ASAN_LOW_MEMORY) ? 64 : 128;
   f->debug = false;
   f->report_globals = 1;
-  f->check_initialization_order = true;
+  f->check_initialization_order = false;
   f->malloc_context_size = kDeafultMallocContextSize;
   f->replace_str = true;
   f->replace_intrin = true;
@@ -145,8 +166,14 @@ void InitializeFlags(Flags *f, const char *env) {
   f->fast_unwind_on_fatal = false;
   f->fast_unwind_on_malloc = true;
   f->poison_heap = true;
-  f->alloc_dealloc_mismatch = true;
+  // Turn off alloc/dealloc mismatch checker on Mac for now.
+  // TODO(glider): Fix known issues and enable this back.
+  f->alloc_dealloc_mismatch = (SANITIZER_MAC == 0);;
   f->use_stack_depot = true;  // Only affects allocator2.
+  f->strict_memcmp = true;
+
+  // Override from compile definition.
+  ParseFlagsFromString(f, MaybeUseAsanDefaultOptionsCompileDefiniton());
 
   // Override from user-specified string.
   ParseFlagsFromString(f, MaybeCallAsanDefaultOptions());
@@ -163,7 +190,10 @@ void InitializeFlags(Flags *f, const char *env) {
 int asan_inited;
 bool asan_init_is_running;
 void (*death_callback)(void);
-uptr kHighMemEnd;
+
+#if !ASAN_FIXED_MAPPING
+uptr kHighMemEnd, kMidMemBeg, kMidMemEnd;
+#endif
 
 // -------------------------- Misc ---------------- {{{1
 void ShowStatsAndAbort() {
@@ -211,6 +241,17 @@ ASAN_REPORT_ERROR(store, true, 4)
 ASAN_REPORT_ERROR(store, true, 8)
 ASAN_REPORT_ERROR(store, true, 16)
 
+#define ASAN_REPORT_ERROR_N(type, is_write)                    \
+extern "C" NOINLINE INTERFACE_ATTRIBUTE                        \
+void __asan_report_ ## type ## _n(uptr addr, uptr size);       \
+void __asan_report_ ## type ## _n(uptr addr, uptr size) {      \
+  GET_CALLER_PC_BP_SP;                                         \
+  __asan_report_error(pc, bp, sp, addr, is_write, size);       \
+}
+
+ASAN_REPORT_ERROR_N(load, false)
+ASAN_REPORT_ERROR_N(store, true)
+
 // Force the linker to keep the symbols for various ASan interface functions.
 // We want to keep those in the executable in order to let the instrumented
 // dynamic libraries access the symbol even if it is not used by the executable
@@ -249,7 +290,7 @@ static NOINLINE void force_interface_symbols() {
     case 27: __asan_set_error_exit_code(0); break;
     case 28: __asan_stack_free(0, 0, 0); break;
     case 29: __asan_stack_malloc(0, 0); break;
-    case 30: __asan_before_dynamic_init(0, 0); break;
+    case 30: __asan_before_dynamic_init(0); break;
     case 31: __asan_after_dynamic_init(); break;
     case 32: __asan_poison_stack_memory(0, 0); break;
     case 33: __asan_unpoison_stack_memory(0, 0); break;
@@ -261,9 +302,15 @@ static NOINLINE void force_interface_symbols() {
 static void asan_atexit() {
   Printf("AddressSanitizer exit stats:\n");
   __asan_print_accumulated_stats();
+  // Print AsanMappingProfile.
+  for (uptr i = 0; i < kAsanMappingProfileSize; i++) {
+    if (AsanMappingProfile[i] == 0) continue;
+    Printf("asan_mapping.h:%zd -- %zd\n", i, AsanMappingProfile[i]);
+  }
 }
 
 static void InitializeHighMemEnd() {
+#if !ASAN_FIXED_MAPPING
 #if SANITIZER_WORDSIZE == 64
 # if defined(__powerpc64__)
   // FIXME:
@@ -279,6 +326,58 @@ static void InitializeHighMemEnd() {
 #else  // SANITIZER_WORDSIZE == 32
   kHighMemEnd = (1ULL << 32) - 1;  // 0xffffffff;
 #endif  // SANITIZER_WORDSIZE
+#endif  // !ASAN_FIXED_MAPPING
+}
+
+static void ProtectGap(uptr a, uptr size) {
+  CHECK_EQ(a, (uptr)Mprotect(a, size));
+}
+
+static void PrintAddressSpaceLayout() {
+  Printf("|| `[%p, %p]` || HighMem    ||\n",
+         (void*)kHighMemBeg, (void*)kHighMemEnd);
+  Printf("|| `[%p, %p]` || HighShadow ||\n",
+         (void*)kHighShadowBeg, (void*)kHighShadowEnd);
+  if (kMidMemBeg) {
+    Printf("|| `[%p, %p]` || ShadowGap3 ||\n",
+           (void*)kShadowGap3Beg, (void*)kShadowGap3End);
+    Printf("|| `[%p, %p]` || MidMem     ||\n",
+           (void*)kMidMemBeg, (void*)kMidMemEnd);
+    Printf("|| `[%p, %p]` || ShadowGap2 ||\n",
+           (void*)kShadowGap2Beg, (void*)kShadowGap2End);
+    Printf("|| `[%p, %p]` || MidShadow  ||\n",
+           (void*)kMidShadowBeg, (void*)kMidShadowEnd);
+  }
+  Printf("|| `[%p, %p]` || ShadowGap  ||\n",
+         (void*)kShadowGapBeg, (void*)kShadowGapEnd);
+  if (kLowShadowBeg) {
+    Printf("|| `[%p, %p]` || LowShadow  ||\n",
+           (void*)kLowShadowBeg, (void*)kLowShadowEnd);
+    Printf("|| `[%p, %p]` || LowMem     ||\n",
+           (void*)kLowMemBeg, (void*)kLowMemEnd);
+  }
+  Printf("MemToShadow(shadow): %p %p %p %p",
+         (void*)MEM_TO_SHADOW(kLowShadowBeg),
+         (void*)MEM_TO_SHADOW(kLowShadowEnd),
+         (void*)MEM_TO_SHADOW(kHighShadowBeg),
+         (void*)MEM_TO_SHADOW(kHighShadowEnd));
+  if (kMidMemBeg) {
+    Printf(" %p %p",
+           (void*)MEM_TO_SHADOW(kMidShadowBeg),
+           (void*)MEM_TO_SHADOW(kMidShadowEnd));
+  }
+  Printf("\n");
+  Printf("red_zone=%zu\n", (uptr)flags()->redzone);
+  Printf("malloc_context_size=%zu\n", (uptr)flags()->malloc_context_size);
+
+  Printf("SHADOW_SCALE: %zx\n", (uptr)SHADOW_SCALE);
+  Printf("SHADOW_GRANULARITY: %zx\n", (uptr)SHADOW_GRANULARITY);
+  Printf("SHADOW_OFFSET: %zx\n", (uptr)SHADOW_OFFSET);
+  CHECK(SHADOW_SCALE >= 3 && SHADOW_SCALE <= 7);
+  if (kMidMemBeg)
+    CHECK(kMidShadowBeg > kLowShadowEnd &&
+          kMidMemBeg > kMidShadowEnd &&
+          kHighShadowBeg > kMidMemEnd);
 }
 
 }  // namespace __asan
@@ -301,7 +400,7 @@ int NOINLINE __asan_set_error_exit_code(int exit_code) {
 
 void NOINLINE __asan_handle_no_return() {
   int local_stack;
-  AsanThread *curr_thread = asanThreadRegistry().GetCurrent();
+  AsanThread *curr_thread = GetCurrentThread();
   CHECK(curr_thread);
   uptr PageSize = GetPageSizeCached();
   uptr top = curr_thread->stack_top();
@@ -328,6 +427,8 @@ void __asan_init() {
   SetCheckFailedCallback(AsanCheckFailed);
   SetPrintfAndReportCallback(AppendToErrorMessageBuffer);
 
+  // Check if external symbolizer is defined before parsing the flags.
+  asan_external_symbolizer = GetEnv("ASAN_SYMBOLIZER_PATH");
   // Initialize flags. This must be done early, because most of the
   // initialization steps look at flags().
   const char *options = GetEnv("ASAN_OPTIONS");
@@ -354,49 +455,48 @@ void __asan_init() {
   ReplaceSystemMalloc();
   ReplaceOperatorsNewAndDelete();
 
-  if (flags()->verbosity) {
-    Printf("|| `[%p, %p]` || HighMem    ||\n",
-           (void*)kHighMemBeg, (void*)kHighMemEnd);
-    Printf("|| `[%p, %p]` || HighShadow ||\n",
-           (void*)kHighShadowBeg, (void*)kHighShadowEnd);
-    Printf("|| `[%p, %p]` || ShadowGap  ||\n",
-           (void*)kShadowGapBeg, (void*)kShadowGapEnd);
-    Printf("|| `[%p, %p]` || LowShadow  ||\n",
-           (void*)kLowShadowBeg, (void*)kLowShadowEnd);
-    Printf("|| `[%p, %p]` || LowMem     ||\n",
-           (void*)kLowMemBeg, (void*)kLowMemEnd);
-    Printf("MemToShadow(shadow): %p %p %p %p\n",
-           (void*)MEM_TO_SHADOW(kLowShadowBeg),
-           (void*)MEM_TO_SHADOW(kLowShadowEnd),
-           (void*)MEM_TO_SHADOW(kHighShadowBeg),
-           (void*)MEM_TO_SHADOW(kHighShadowEnd));
-    Printf("red_zone=%zu\n", (uptr)flags()->redzone);
-    Printf("malloc_context_size=%zu\n", (uptr)flags()->malloc_context_size);
+  uptr shadow_start = kLowShadowBeg;
+  if (kLowShadowBeg) shadow_start -= GetMmapGranularity();
+  uptr shadow_end = kHighShadowEnd;
+  bool full_shadow_is_available =
+      MemoryRangeIsAvailable(shadow_start, shadow_end);
 
-    Printf("SHADOW_SCALE: %zx\n", (uptr)SHADOW_SCALE);
-    Printf("SHADOW_GRANULARITY: %zx\n", (uptr)SHADOW_GRANULARITY);
-    Printf("SHADOW_OFFSET: %zx\n", (uptr)SHADOW_OFFSET);
-    CHECK(SHADOW_SCALE >= 3 && SHADOW_SCALE <= 7);
+#if SANITIZER_LINUX && defined(__x86_64__) && !ASAN_FIXED_MAPPING
+  if (!full_shadow_is_available) {
+    kMidMemBeg = kLowMemEnd < 0x3000000000ULL ? 0x3000000000ULL : 0;
+    kMidMemEnd = kLowMemEnd < 0x3000000000ULL ? 0x4fffffffffULL : 0;
   }
+#endif
+
+  if (flags()->verbosity)
+    PrintAddressSpaceLayout();
 
   if (flags()->disable_core) {
     DisableCoreDumper();
   }
 
-  uptr shadow_start = kLowShadowBeg;
-  if (kLowShadowBeg > 0) shadow_start -= GetMmapGranularity();
-  uptr shadow_end = kHighShadowEnd;
-  if (MemoryRangeIsAvailable(shadow_start, shadow_end)) {
-    if (kLowShadowBeg != kLowShadowEnd) {
-      // mmap the low shadow plus at least one page.
-      ReserveShadowMemoryRange(kLowShadowBeg - GetMmapGranularity(),
-                               kLowShadowEnd);
-    }
+  if (full_shadow_is_available) {
+    // mmap the low shadow plus at least one page at the left.
+    if (kLowShadowBeg)
+      ReserveShadowMemoryRange(shadow_start, kLowShadowEnd);
     // mmap the high shadow.
     ReserveShadowMemoryRange(kHighShadowBeg, kHighShadowEnd);
-    // protect the gap
-    void *prot = Mprotect(kShadowGapBeg, kShadowGapEnd - kShadowGapBeg + 1);
-    CHECK(prot == (void*)kShadowGapBeg);
+    // protect the gap.
+    ProtectGap(kShadowGapBeg, kShadowGapEnd - kShadowGapBeg + 1);
+  } else if (kMidMemBeg &&
+      MemoryRangeIsAvailable(shadow_start, kMidMemBeg - 1) &&
+      MemoryRangeIsAvailable(kMidMemEnd + 1, shadow_end)) {
+    CHECK(kLowShadowBeg != kLowShadowEnd);
+    // mmap the low shadow plus at least one page at the left.
+    ReserveShadowMemoryRange(shadow_start, kLowShadowEnd);
+    // mmap the mid shadow.
+    ReserveShadowMemoryRange(kMidShadowBeg, kMidShadowEnd);
+    // mmap the high shadow.
+    ReserveShadowMemoryRange(kHighShadowBeg, kHighShadowEnd);
+    // protect the gaps.
+    ProtectGap(kShadowGapBeg, kShadowGapEnd - kShadowGapBeg + 1);
+    ProtectGap(kShadowGap2Beg, kShadowGap2End - kShadowGap2Beg + 1);
+    ProtectGap(kShadowGap3Beg, kShadowGap3End - kShadowGap3Beg + 1);
   } else {
     Report("Shadow memory range interleaves with an existing memory mapping. "
            "ASan cannot proceed correctly. ABORTING.\n");
@@ -406,11 +506,9 @@ void __asan_init() {
 
   InstallSignalHandlers();
   // Start symbolizer process if necessary.
-  if (flags()->symbolize) {
-    const char *external_symbolizer = GetEnv("ASAN_SYMBOLIZER_PATH");
-    if (external_symbolizer) {
-      InitializeExternalSymbolizer(external_symbolizer);
-    }
+  if (flags()->symbolize && asan_external_symbolizer &&
+      asan_external_symbolizer[0]) {
+    InitializeExternalSymbolizer(asan_external_symbolizer);
   }
 
   // On Linux AsanThread::ThreadStart() calls malloc() that's why asan_inited
@@ -418,8 +516,15 @@ void __asan_init() {
   asan_inited = 1;
   asan_init_is_running = false;
 
-  asanThreadRegistry().Init();
-  asanThreadRegistry().GetMain()->ThreadStart();
+  // Create main thread.
+  AsanTSDInit(AsanThread::TSDDtor);
+  AsanThread *main_thread = AsanThread::Create(0, 0);
+  CreateThreadContextArgs create_main_args = { main_thread, 0 };
+  u32 main_tid = asanThreadRegistry().CreateThread(
+      0, true, 0, &create_main_args);
+  CHECK_EQ(0, main_tid);
+  SetCurrentThread(main_thread);
+  main_thread->ThreadStart(GetPid());
   force_interface_symbols();  // no-op.
 
   InitializeAllocator();
@@ -428,17 +533,3 @@ void __asan_init() {
     Report("AddressSanitizer Init done\n");
   }
 }
-
-#if defined(ASAN_USE_PREINIT_ARRAY)
-  // On Linux, we force __asan_init to be called before anyone else
-  // by placing it into .preinit_array section.
-  // FIXME: do we have anything like this on Mac?
-  __attribute__((section(".preinit_array")))
-    typeof(__asan_init) *__asan_preinit =__asan_init;
-#elif defined(_WIN32) && defined(_DLL)
-  // On Windows, when using dynamic CRT (/MD), we can put a pointer
-  // to __asan_init into the global list of C initializers.
-  // See crt0dat.c in the CRT sources for the details.
-  #pragma section(".CRT$XIB", long, read)  // NOLINT
-  __declspec(allocate(".CRT$XIB")) void (*__asan_preinit)() = __asan_init;
-#endif

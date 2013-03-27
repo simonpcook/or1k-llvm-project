@@ -123,7 +123,9 @@ public:
     typeLiteral8,           // an eight-btye read-only constant
     typeLiteral16,          // a sixteen-btye read-only constant
     typeData,               // read-write data
+    typeDataFast,           // allow data to be quickly accessed
     typeZeroFill,           // zero-fill data
+    typeZeroFillFast,       // allow zero-fill data to be quicky accessed
     typeConstData,          // read-only data after dynamic linker is done
     typeObjC1Class,         // ObjC1 class [Darwin]
     typeLazyPointer,        // pointer through which a stub jumps
@@ -181,8 +183,8 @@ public:
 
     uint16_t powerOf2;
     uint16_t modulus;
-    
-    bool operator==(const Alignment &rhs) const {  
+
+    bool operator==(const Alignment &rhs) const {
       return (powerOf2 == rhs.powerOf2) && (modulus == rhs.modulus);
     }
   };
@@ -231,8 +233,8 @@ public:
   virtual StringRef customSectionName() const = 0;
 
   /// \brief constraints on whether the linker may dead strip away this atom.
-  virtual SectionPosition sectionPosition() const = 0; 
-   
+  virtual SectionPosition sectionPosition() const = 0;
+
   /// \brief constraints on whether the linker may dead strip away this atom.
   virtual DeadStripKind deadStrip() const = 0;
 

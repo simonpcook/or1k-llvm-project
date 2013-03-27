@@ -25,16 +25,15 @@ class BitfieldsTestCase(TestBase):
         self.buildDsym()
         self.bitfields_variable_python()
 
-    @expectedFailureLinux # PR-15260: lldb on Linux does not display the correct value of 1-bit fields in a struct
     @dwarf_test
     def test_with_dwarf_and_run_command(self):
         """Test 'frame variable ...' on a variable with bitfields."""
         self.buildDwarf()
         self.bitfields_variable()
 
-    @expectedFailureLinux # PR-15260: lldb on Linux does not display the correct value of 1-bit fields in a struct
     @python_api_test
     @dwarf_test
+    @expectedFailureGcc # GCC (4.6/4.7) generates incorrect code with unnamed bitfields.
     def test_with_dwarf_and_python_api(self):
         """Use Python APIs to inspect a bitfields variable."""
         self.buildDwarf()
@@ -107,7 +106,6 @@ class BitfieldsTestCase(TestBase):
 
         self.expect("frame variable --show-types more_bits", VARIABLES_DISPLAYED_CORRECTLY,
             substrs = ['(uint32_t:3) a = 3',
-                       '(int:1)  = 0',
                        '(uint8_t:1) b = \'\\0\'',
                        '(uint8_t:1) c = \'\\x01\'',
                        '(uint8_t:1) d = \'\\0\''])

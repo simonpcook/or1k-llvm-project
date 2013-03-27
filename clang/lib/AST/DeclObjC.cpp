@@ -92,6 +92,72 @@ ObjCContainerDecl::getMethod(Selector Sel, bool isInstance) const {
   return 0;
 }
 
+/// HasUserDeclaredSetterMethod - This routine returns 'true' if a user declared setter
+/// method was found in the class, its protocols, its super classes or categories.
+/// It also returns 'true' if one of its categories has declared a 'readwrite' property.
+/// This is because, user must provide a setter method for the category's 'readwrite'
+/// property.
+bool
+ObjCContainerDecl::HasUserDeclaredSetterMethod(const ObjCPropertyDecl *Property) const {
+  Selector Sel = Property->getSetterName();
+  lookup_const_result R = lookup(Sel);
+  for (lookup_const_iterator Meth = R.begin(), MethEnd = R.end();
+       Meth != MethEnd; ++Meth) {
+    ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(*Meth);
+    if (MD && MD->isInstanceMethod() && !MD->isImplicit())
+      return true;
+  }
+
+  if (const ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(this)) {
+    // Also look into categories, including class extensions, looking
+    // for a user declared instance method.
+    for (ObjCInterfaceDecl::visible_categories_iterator
+         Cat = ID->visible_categories_begin(),
+         CatEnd = ID->visible_categories_end();
+         Cat != CatEnd;
+         ++Cat) {
+      if (ObjCMethodDecl *MD = Cat->getInstanceMethod(Sel))
+        if (!MD->isImplicit())
+          return true;
+      if (Cat->IsClassExtension())
+        continue;
+      // Also search through the categories looking for a 'readwrite' declaration
+      // of this property. If one found, presumably a setter will be provided
+      // (properties declared in categories will not get auto-synthesized).
+      for (ObjCContainerDecl::prop_iterator P = Cat->prop_begin(),
+           E = Cat->prop_end(); P != E; ++P)
+        if (P->getIdentifier() == Property->getIdentifier()) {
+          if (P->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_readwrite)
+            return true;
+          break;
+        }
+    }
+    
+    // Also look into protocols, for a user declared instance method.
+    for (ObjCInterfaceDecl::all_protocol_iterator P =
+         ID->all_referenced_protocol_begin(),
+         PE = ID->all_referenced_protocol_end(); P != PE; ++P) {
+      ObjCProtocolDecl *Proto = (*P);
+      if (Proto->HasUserDeclaredSetterMethod(Property))
+        return true;
+    }
+    // And in its super class.
+    ObjCInterfaceDecl *OSC = ID->getSuperClass();
+    while (OSC) {
+      if (OSC->HasUserDeclaredSetterMethod(Property))
+        return true;
+      OSC = OSC->getSuperClass();
+    }
+  }
+  if (const ObjCProtocolDecl *PD = dyn_cast<ObjCProtocolDecl>(this))
+    for (ObjCProtocolDecl::protocol_iterator PI = PD->protocol_begin(),
+         E = PD->protocol_end(); PI != E; ++PI) {
+      if ((*PI)->HasUserDeclaredSetterMethod(Property))
+        return true;
+    }
+  return false;
+}
+
 ObjCPropertyDecl *
 ObjCPropertyDecl::findPropertyDecl(const DeclContext *DC,
                                    IdentifierInfo *propertyID) {
@@ -1093,38 +1159,51 @@ namespace {
 /// all_declared_ivar_begin - return first ivar declared in this class,
 /// its extensions and its implementation. Lazily build the list on first
 /// access.
+///
+/// Caveat: The list returned by this method reflects the current
+/// state of the parser. The cache will be updated for every ivar
+/// added by an extension or the implementation when they are
+/// encountered.
+/// See also ObjCIvarDecl::Create().
 ObjCIvarDecl *ObjCInterfaceDecl::all_declared_ivar_begin() {
   // FIXME: Should make sure no callers ever do this.
   if (!hasDefinition())
     return 0;
   
-  if (data().IvarList)
-    return data().IvarList;
-  
   ObjCIvarDecl *curIvar = 0;
-  if (!ivar_empty()) {
-    ObjCInterfaceDecl::ivar_iterator I = ivar_begin(), E = ivar_end();
-    data().IvarList = *I; ++I;
-    for (curIvar = data().IvarList; I != E; curIvar = *I, ++I)
-      curIvar->setNextIvar(*I);
-  }
-
-  for (ObjCInterfaceDecl::known_extensions_iterator
-         Ext = known_extensions_begin(),
-         ExtEnd = known_extensions_end();
-       Ext != ExtEnd; ++Ext) {
-    if (!Ext->ivar_empty()) {
-      ObjCCategoryDecl::ivar_iterator I = Ext->ivar_begin(),E = Ext->ivar_end();
-      if (!data().IvarList) {
-        data().IvarList = *I; ++I;
-        curIvar = data().IvarList;
-      }
-      for ( ;I != E; curIvar = *I, ++I)
+  if (!data().IvarList) {
+    if (!ivar_empty()) {
+      ObjCInterfaceDecl::ivar_iterator I = ivar_begin(), E = ivar_end();
+      data().IvarList = *I; ++I;
+      for (curIvar = data().IvarList; I != E; curIvar = *I, ++I)
         curIvar->setNextIvar(*I);
     }
+
+    for (ObjCInterfaceDecl::known_extensions_iterator
+           Ext = known_extensions_begin(),
+           ExtEnd = known_extensions_end();
+         Ext != ExtEnd; ++Ext) {
+      if (!Ext->ivar_empty()) {
+        ObjCCategoryDecl::ivar_iterator
+          I = Ext->ivar_begin(),
+          E = Ext->ivar_end();
+        if (!data().IvarList) {
+          data().IvarList = *I; ++I;
+          curIvar = data().IvarList;
+        }
+        for ( ;I != E; curIvar = *I, ++I)
+          curIvar->setNextIvar(*I);
+      }
+    }
+    data().IvarListMissingImplementation = true;
   }
+
+  // cached and complete!
+  if (!data().IvarListMissingImplementation)
+      return data().IvarList;
   
   if (ObjCImplementationDecl *ImplDecl = getImplementation()) {
+    data().IvarListMissingImplementation = false;
     if (!ImplDecl->ivar_empty()) {
       SmallVector<SynthesizeIvarChunk, 16> layout;
       for (ObjCImplementationDecl::ivar_iterator I = ImplDecl->ivar_begin(),
@@ -1562,7 +1641,7 @@ void ObjCImplDecl::setClassInterface(ObjCInterfaceDecl *IFace) {
 }
 
 /// FindPropertyImplIvarDecl - This method lookup the ivar in the list of
-/// properties implemented in this category \@implementation block and returns
+/// properties implemented in this \@implementation block and returns
 /// the implemented property that uses it.
 ///
 ObjCPropertyImplDecl *ObjCImplDecl::

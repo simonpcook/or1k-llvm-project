@@ -17,6 +17,7 @@
 namespace __sanitizer {
 
 const char *SanitizerToolName = "SanitizerTool";
+uptr SanitizerVerbosity = 0;
 
 uptr GetPageSizeCached() {
   static uptr PageSize;
@@ -45,7 +46,7 @@ void NORETURN Die() {
   if (DieCallback) {
     DieCallback();
   }
-  Exit(1);
+  internal__exit(1);
 }
 
 static CheckFailedCallbackType CheckFailedCallback;

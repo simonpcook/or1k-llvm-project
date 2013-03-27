@@ -144,10 +144,10 @@ public:
     GetCompleteDecl (clang::ASTContext *ast,
                      clang::Decl *decl);
 
-    void SetMetadataAsUserID (uintptr_t object,
+    void SetMetadataAsUserID (const void *object,
                               lldb::user_id_t user_id);
 
-    void SetMetadata (uintptr_t object,
+    void SetMetadata (const void *object,
                       ClangASTMetadata &meta_data)
     {
         SetMetadata(getASTContext(), object, meta_data);
@@ -155,18 +155,18 @@ public:
     
     static void
     SetMetadata (clang::ASTContext *ast,
-                 uintptr_t object,
+                 const void *object,
                  ClangASTMetadata &meta_data);
     
     ClangASTMetadata *
-    GetMetadata (uintptr_t object)
+    GetMetadata (const void *object)
     {
         return GetMetadata(getASTContext(), object);
     }
     
     static ClangASTMetadata *
     GetMetadata (clang::ASTContext *ast,
-                 uintptr_t object);
+                 const void *object);
     
     //------------------------------------------------------------------
     // Basic Types
@@ -201,6 +201,9 @@ public:
 
     lldb::clang_type_t
     GetBuiltInType_objc_id();
+    
+    static lldb::clang_type_t
+    GetBuiltInType_objc_id(clang::ASTContext *ast);
 
     lldb::clang_type_t
     GetBuiltInType_objc_Class();
@@ -546,19 +549,21 @@ public:
                                lldb::clang_type_t class_opaque_type, 
                                const char *name,  // the full symbol name as seen in the symbol table ("-[NString stringWithCString:]")
                                lldb::clang_type_t method_opaque_type,
-                               lldb::AccessType access);
+                               lldb::AccessType access,
+                               bool is_artificial);
 
     clang::ObjCMethodDecl *
     AddMethodToObjCObjectType (lldb::clang_type_t class_opaque_type, 
                                const char *name,  // the full symbol name as seen in the symbol table ("-[NString stringWithCString:]")
                                lldb::clang_type_t method_opaque_type,
-                               lldb::AccessType access)
+                               lldb::AccessType access,
+                               bool is_artificial)
     {
         return AddMethodToObjCObjectType (getASTContext(),
                                           class_opaque_type,
                                           name,
                                           method_opaque_type,
-                                          access);
+                                          access, is_artificial);
     }
 
     static bool
@@ -613,6 +618,15 @@ public:
                      uint64_t *bit_offset_ptr,
                      uint32_t *bitfield_bit_size_ptr,
                      bool *is_bitfield_ptr);
+    
+    static size_t
+    GetIndexOfFieldWithName (clang::ASTContext *ast,
+                             lldb::clang_type_t clang_type,
+                             const char* name,
+                             lldb::clang_type_t* field_clang_type = NULL,
+                             uint64_t *bit_offset_ptr = NULL,
+                             uint32_t *bitfield_bit_size_ptr = NULL,
+                             bool *is_bitfield_ptr = NULL);
 
     static uint32_t
     GetNumPointeeChildren (lldb::clang_type_t clang_type);
@@ -851,7 +865,7 @@ public:
     CreateMemberPointerType (lldb::clang_type_t  clang_pointee_type,
                              lldb::clang_type_t  clang_class_type);
 
-    uint32_t
+    uint64_t
     GetPointerBitSize ();
 
     static bool

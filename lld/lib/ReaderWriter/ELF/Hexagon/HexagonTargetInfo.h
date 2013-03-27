@@ -20,6 +20,7 @@
 
 namespace lld {
 namespace elf {
+
 class HexagonTargetInfo LLVM_FINAL : public ELFTargetInfo {
 public:
   HexagonTargetInfo(const LinkerOptions &lo) : ELFTargetInfo(lo) {
@@ -31,6 +32,29 @@ public:
 
   virtual ErrorOr<int32_t> relocKindFromString(StringRef str) const;
   virtual ErrorOr<std::string> stringFromRelocKind(int32_t kind) const;
+
+  virtual void addPasses(PassManager &) const;
+
+  virtual bool isDynamicRelocation(const DefinedAtom &,
+                                   const Reference &r) const {
+    switch (r.kind()){
+    case llvm::ELF::R_HEX_RELATIVE:
+    case llvm::ELF::R_HEX_GLOB_DAT:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  virtual bool isPLTRelocation(const DefinedAtom &,
+                               const Reference &r) const {
+    switch (r.kind()){
+    case llvm::ELF::R_HEX_JMP_SLOT:
+      return true;
+    default:
+      return false;
+    }
+  }
 };
 
 } // elf

@@ -654,7 +654,7 @@ ASTContext::ASTContext(LangOptions& LOpts, SourceManager &SM,
     DeclarationNames(*this),
     ExternalSource(0), Listener(0),
     Comments(SM), CommentsLoaded(false),
-    CommentCommandTraits(BumpAlloc),
+    CommentCommandTraits(BumpAlloc, LOpts.CommentOpts),
     LastSDM(0, 0),
     UniqueBlockByRefTypeID(0)
 {
@@ -1602,18 +1602,21 @@ ASTContext::getTypeInfoImpl(const Type *T) const {
   }
 
   case Type::Atomic: {
+    // Start with the base type information.
     std::pair<uint64_t, unsigned> Info
       = getTypeInfo(cast<AtomicType>(T)->getValueType());
     Width = Info.first;
     Align = Info.second;
-    if (Width != 0 && Width <= Target->getMaxAtomicPromoteWidth() &&
-        llvm::isPowerOf2_64(Width)) {
-      // We can potentially perform lock-free atomic operations for this
-      // type; promote the alignment appropriately.
-      // FIXME: We could potentially promote the width here as well...
-      // is that worthwhile?  (Non-struct atomic types generally have
-      // power-of-two size anyway, but structs might not.  Requires a bit
-      // of implementation work to make sure we zero out the extra bits.)
+
+    // If the size of the type doesn't exceed the platform's max
+    // atomic promotion width, make the size and alignment more
+    // favorable to atomic operations:
+    if (Width != 0 && Width <= Target->getMaxAtomicPromoteWidth()) {
+      // Round the size up to a power of 2.
+      if (!llvm::isPowerOf2_64(Width))
+        Width = llvm::NextPowerOf2(Width);
+
+      // Set the alignment equal to the size.
       Align = static_cast<unsigned>(Width);
     }
   }
@@ -1971,8 +1974,10 @@ const FunctionType *ASTContext::adjustFunctionType(const FunctionType *T,
     const FunctionProtoType *FPT = cast<FunctionProtoType>(T);
     FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
     EPI.ExtInfo = Info;
-    Result = getFunctionType(FPT->getResultType(), FPT->arg_type_begin(),
-                             FPT->getNumArgs(), EPI);
+    Result = getFunctionType(FPT->getResultType(),
+                             ArrayRef<QualType>(FPT->arg_type_begin(),
+                                                FPT->getNumArgs()),
+                             EPI);
   }
 
   return cast<FunctionType>(Result.getTypePtr());
@@ -2637,13 +2642,15 @@ static bool isCanonicalResultType(QualType T) {
 /// getFunctionType - Return a normal function type with a typed argument
 /// list.  isVariadic indicates whether the argument list includes '...'.
 QualType
-ASTContext::getFunctionType(QualType ResultTy,
-                            const QualType *ArgArray, unsigned NumArgs,
+ASTContext::getFunctionType(QualType ResultTy, ArrayRef<QualType> ArgArray,
                             const FunctionProtoType::ExtProtoInfo &EPI) const {
+  size_t NumArgs = ArgArray.size();
+
   // Unique functions, to guarantee there is only one function of a particular
   // structure.
   llvm::FoldingSetNodeID ID;
-  FunctionProtoType::Profile(ID, ResultTy, ArgArray, NumArgs, EPI, *this);
+  FunctionProtoType::Profile(ID, ResultTy, ArgArray.begin(), NumArgs, EPI,
+                             *this);
 
   void *InsertPos = 0;
   if (FunctionProtoType *FTP =
@@ -2686,9 +2693,7 @@ ASTContext::getFunctionType(QualType ResultTy,
       CanResultTy = getQualifiedType(CanResultTy.getUnqualifiedType(), Qs);
     }
 
-    Canonical = getFunctionType(CanResultTy,
-                                CanonicalArgs.data(), NumArgs,
-                                CanonicalEPI);
+    Canonical = getFunctionType(CanResultTy, CanonicalArgs, CanonicalEPI);
 
     // Get the new insert position for the node we care about.
     FunctionProtoType *NewIP =
@@ -2721,7 +2726,7 @@ ASTContext::getFunctionType(QualType ResultTy,
   FunctionProtoType *FTP = (FunctionProtoType*) Allocate(Size, TypeAlignment);
   FunctionProtoType::ExtProtoInfo newEPI = EPI;
   newEPI.ExtInfo = EPI.ExtInfo.withCallingConv(CallConv);
-  new (FTP) FunctionProtoType(ResultTy, ArgArray, NumArgs, Canonical, newEPI);
+  new (FTP) FunctionProtoType(ResultTy, ArgArray, Canonical, newEPI);
   Types.push_back(FTP);
   FunctionProtoTypes.InsertNode(FTP, InsertPos);
   return QualType(FTP, 0);
@@ -2957,8 +2962,8 @@ ASTContext::getTemplateSpecializationTypeInfo(TemplateName Name,
   QualType TST = getTemplateSpecializationType(Name, Args, Underlying);
 
   TypeSourceInfo *DI = CreateTypeSourceInfo(TST);
-  TemplateSpecializationTypeLoc TL
-    = cast<TemplateSpecializationTypeLoc>(DI->getTypeLoc());
+  TemplateSpecializationTypeLoc TL =
+      DI->getTypeLoc().castAs<TemplateSpecializationTypeLoc>();
   TL.setTemplateKeywordLoc(SourceLocation());
   TL.setTemplateNameLoc(NameLoc);
   TL.setLAngleLoc(Args.getLAngleLoc());
@@ -3234,7 +3239,7 @@ ASTContext::getDependentTemplateSpecializationType(
 }
 
 QualType ASTContext::getPackExpansionType(QualType Pattern,
-                                      llvm::Optional<unsigned> NumExpansions) {
+                                          Optional<unsigned> NumExpansions) {
   llvm::FoldingSetNodeID ID;
   PackExpansionType::Profile(ID, Pattern, NumExpansions);
 
@@ -4994,7 +4999,8 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
                                             bool EncodingProperty,
                                             bool StructField,
                                             bool EncodeBlockParameters,
-                                            bool EncodeClassNames) const {
+                                            bool EncodeClassNames,
+                                            bool EncodePointerToObjCTypedef) const {
   CanQualType CT = getCanonicalType(T);
   switch (CT->getTypeClass()) {
   case Type::Builtin:
@@ -5141,13 +5147,11 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       if (ClassTemplateSpecializationDecl *Spec
           = dyn_cast<ClassTemplateSpecializationDecl>(RDecl)) {
         const TemplateArgumentList &TemplateArgs = Spec->getTemplateArgs();
-        std::string TemplateArgsStr
-          = TemplateSpecializationType::PrintTemplateArgumentList(
+        llvm::raw_string_ostream OS(S);
+        TemplateSpecializationType::PrintTemplateArgumentList(OS,
                                             TemplateArgs.data(),
                                             TemplateArgs.size(),
                                             (*this).getPrintingPolicy());
-
-        S += TemplateArgsStr;
       }
     } else {
       S += '?';
@@ -5244,7 +5248,9 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
       if (Field->isBitField())
         getObjCEncodingForTypeImpl(Field->getType(), S, false, true, Field);
       else
-        getObjCEncodingForTypeImpl(Field->getType(), S, false, true, FD);
+        getObjCEncodingForTypeImpl(Field->getType(), S, false, true, FD,
+                                   false, false, false, false, false,
+                                   EncodePointerToObjCTypedef);
     }
     S += '}';
     return;
@@ -5286,14 +5292,17 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
 
     QualType PointeeTy = OPT->getPointeeType();
     if (!EncodingProperty &&
-        isa<TypedefType>(PointeeTy.getTypePtr())) {
+        isa<TypedefType>(PointeeTy.getTypePtr()) &&
+        !EncodePointerToObjCTypedef) {
       // Another historical/compatibility reason.
       // We encode the underlying type which comes out as
       // {...};
       S += '^';
       getObjCEncodingForTypeImpl(PointeeTy, S,
                                  false, ExpandPointedToStructures,
-                                 NULL);
+                                 NULL,
+                                 false, false, false, false, false,
+                                 /*EncodePointerToObjCTypedef*/true);
       return;
     }
 
@@ -6787,7 +6796,7 @@ QualType ASTContext::mergeFunctionTypes(QualType lhs, QualType rhs,
 
     FunctionProtoType::ExtProtoInfo EPI = lproto->getExtProtoInfo();
     EPI.ExtInfo = einfo;
-    return getFunctionType(retType, types.begin(), types.size(), EPI);
+    return getFunctionType(retType, types, EPI);
   }
 
   if (lproto) allRTypes = false;
@@ -6824,13 +6833,36 @@ QualType ASTContext::mergeFunctionTypes(QualType lhs, QualType rhs,
 
     FunctionProtoType::ExtProtoInfo EPI = proto->getExtProtoInfo();
     EPI.ExtInfo = einfo;
-    return getFunctionType(retType, proto->arg_type_begin(),
-                           proto->getNumArgs(), EPI);
+    return getFunctionType(retType,
+                           ArrayRef<QualType>(proto->arg_type_begin(),
+                                              proto->getNumArgs()),
+                           EPI);
   }
 
   if (allLTypes) return lhs;
   if (allRTypes) return rhs;
   return getFunctionNoProtoType(retType, einfo);
+}
+
+/// Given that we have an enum type and a non-enum type, try to merge them.
+static QualType mergeEnumWithInteger(ASTContext &Context, const EnumType *ET,
+                                     QualType other, bool isBlockReturnType) {
+  // C99 6.7.2.2p4: Each enumerated type shall be compatible with char,
+  // a signed integer type, or an unsigned integer type.
+  // Compatibility is based on the underlying type, not the promotion
+  // type.
+  QualType underlyingType = ET->getDecl()->getIntegerType();
+  if (underlyingType.isNull()) return QualType();
+  if (Context.hasSameType(underlyingType, other))
+    return other;
+
+  // In block return types, we're more permissive and accept any
+  // integral type of the same size.
+  if (isBlockReturnType && other->isIntegerType() &&
+      Context.getTypeSize(underlyingType) == Context.getTypeSize(other))
+    return other;
+
+  return QualType();
 }
 
 QualType ASTContext::mergeTypes(QualType LHS, QualType RHS, 
@@ -6914,19 +6946,13 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS,
 
   // If the canonical type classes don't match.
   if (LHSClass != RHSClass) {
-    // C99 6.7.2.2p4: Each enumerated type shall be compatible with char,
-    // a signed integer type, or an unsigned integer type.
-    // Compatibility is based on the underlying type, not the promotion
-    // type.
+    // Note that we only have special rules for turning block enum
+    // returns into block int returns, not vice-versa.
     if (const EnumType* ETy = LHS->getAs<EnumType>()) {
-      QualType TINT = ETy->getDecl()->getIntegerType();
-      if (!TINT.isNull() && hasSameType(TINT, RHSCan.getUnqualifiedType()))
-        return RHS;
+      return mergeEnumWithInteger(*this, ETy, RHS, false);
     }
     if (const EnumType* ETy = RHS->getAs<EnumType>()) {
-      QualType TINT = ETy->getDecl()->getIntegerType();
-      if (!TINT.isNull() && hasSameType(TINT, LHSCan.getUnqualifiedType()))
-        return LHS;
+      return mergeEnumWithInteger(*this, ETy, LHS, BlockReturnType);
     }
     // allow block pointer type to match an 'id' type.
     if (OfBlockPointer && !BlockReturnType) {
@@ -7158,8 +7184,10 @@ QualType ASTContext::mergeObjCGCQualifiers(QualType LHS, QualType RHS) {
         FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
         EPI.ExtInfo = getFunctionExtInfo(LHS);
         QualType ResultType
-          = getFunctionType(OldReturnType, FPT->arg_type_begin(),
-                            FPT->getNumArgs(), EPI);
+          = getFunctionType(OldReturnType,
+                            ArrayRef<QualType>(FPT->arg_type_begin(),
+                                               FPT->getNumArgs()),
+                            EPI);
         return ResultType;
       }
     }
@@ -7551,7 +7579,7 @@ QualType ASTContext::GetBuiltinType(unsigned Id,
   EPI.ExtInfo = EI;
   EPI.Variadic = Variadic;
 
-  return getFunctionType(ResType, ArgTypes.data(), ArgTypes.size(), EPI);
+  return getFunctionType(ResType, ArgTypes, EPI);
 }
 
 GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) {
@@ -7616,8 +7644,6 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
     TSK = VD->getTemplateSpecializationKind();
 
   Linkage L = VD->getLinkage();
-  assert (!(L == ExternalLinkage && getLangOpts().CPlusPlus &&
-            VD->getType()->getLinkage() == UniqueExternalLinkage));
 
   switch (L) {
   case NoLinkage:

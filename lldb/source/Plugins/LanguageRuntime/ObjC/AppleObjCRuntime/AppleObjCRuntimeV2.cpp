@@ -549,10 +549,10 @@ public:
     void
     Dump ()
     {
-        printf ("RemoteNXMapTable.m_load_addr = 0x%llx\n", m_load_addr);
+        printf ("RemoteNXMapTable.m_load_addr = 0x%" PRIx64 "\n", m_load_addr);
         printf ("RemoteNXMapTable.m_count = %u\n", m_count);
         printf ("RemoteNXMapTable.m_num_buckets_minus_one = %u\n", m_num_buckets_minus_one);
-        printf ("RemoteNXMapTable.m_buckets_ptr = 0x%llx\n", m_buckets_ptr);
+        printf ("RemoteNXMapTable.m_buckets_ptr = 0x%" PRIX64 "\n", m_buckets_ptr);
     }
     
     bool
@@ -1433,16 +1433,16 @@ public:
         m_class_bits = (value & 0xE) >> 1;
         lldb::TargetSP target_sp = isa_pointer.GetTargetSP();
         
-        LazyBool is_lion = IsLion(target_sp);
+        uint32_t foundation_version = GetFoundationVersion(target_sp);
         
         // TODO: check for OSX version - for now assume Mtn Lion
-        if (is_lion == eLazyBoolCalculate)
+        if (foundation_version == UINT32_MAX)
         {
             // if we can't determine the matching table (e.g. we have no Foundation),
             // assume this is not a valid tagged pointer
             m_valid = false;
         }
-        else if (is_lion == eLazyBoolNo)
+        else if (foundation_version >= 900)
         {
             switch (m_class_bits)
             {
@@ -1508,7 +1508,7 @@ public:
         // tagged pointers can represent a class that has a superclass, but since that information is not
         // stored in the object itself, we would have to query the runtime to discover the hierarchy
         // for the time being, we skip this step in the interest of static discovery
-        return ObjCLanguageRuntime::ClassDescriptorSP(new ObjCLanguageRuntime::ClassDescriptor_Invalid());
+        return ObjCLanguageRuntime::ClassDescriptorSP();
     }
     
     virtual bool
@@ -1571,13 +1571,14 @@ public:
     {}
     
 protected:
-    // TODO make this into a smarter OS version detector
-    LazyBool
-    IsLion (lldb::TargetSP &target_sp)
+    // we use the version of Foundation to make assumptions about the ObjC runtime on a target
+    uint32_t
+    GetFoundationVersion (lldb::TargetSP &target_sp)
     {
         if (!target_sp)
             return eLazyBoolCalculate;
         const ModuleList& modules = target_sp->GetImages();
+        uint32_t major = UINT32_MAX;
         for (uint32_t idx = 0; idx < modules.GetSize(); idx++)
         {
             lldb::ModuleSP module_sp = modules.GetModuleAtIndex(idx);
@@ -1585,15 +1586,11 @@ protected:
                 continue;
             if (strcmp(module_sp->GetFileSpec().GetFilename().AsCString(""),"Foundation") == 0)
             {
-                uint32_t major = UINT32_MAX;
                 module_sp->GetVersion(&major,1);
-                if (major == UINT32_MAX)
-                    return eLazyBoolCalculate;
-                
-                return (major > 900 ? eLazyBoolNo : eLazyBoolYes);
+                break;
             }
         }
-        return eLazyBoolCalculate;
+        return major;
     }
     
 private:
@@ -1849,6 +1846,8 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapDynamic(RemoteNXMapTable &hash_table
         {
             // The result is the number of ClassInfo structures that were filled in
             uint32_t num_class_infos = return_value.GetScalar().ULong();
+            if (log)
+                log->Printf("Discovered %u ObjC classes\n",num_class_infos);
             if (num_class_infos > 0)
             {
                 // Read the ClassInfo structures
@@ -2099,6 +2098,8 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapSharedCache()
         {
             // The result is the number of ClassInfo structures that were filled in
             uint32_t num_class_infos = return_value.GetScalar().ULong();
+            if (log)
+                log->Printf("Discovered %u ObjC classes in shared cache\n",num_class_infos);
             if (num_class_infos > 0)
             {
                 // Read the ClassInfo structures

@@ -23,6 +23,10 @@ typedef struct {
 
 #include "HexagonV4Encodings.h"
 
+#define FINDV4BITMASK(INSN)                                                    \
+  findBitMask((uint32_t) * ((llvm::support::ulittle32_t *) INSN),              \
+              insn_encodings_v4,                                               \
+              sizeof(insn_encodings_v4) / sizeof(Instruction))
 
 /// \brief finds the scatter Bits that need to be used to apply relocations
 uint32_t findBitMask(uint32_t insn, Instruction *encodings, int32_t numInsns) {
@@ -33,13 +37,13 @@ uint32_t findBitMask(uint32_t insn, Instruction *encodings, int32_t numInsns) {
     if (((insn & 0xc000) != 0) && (encodings[i].isDuplex))
       continue;
 
-    if (((encodings[i].insnMask) & insn) == encodings[i].insnCmpMask) 
+    if (((encodings[i].insnMask) & insn) == encodings[i].insnCmpMask)
       return encodings[i].insnBitMask;
   }
-  assert(0 && "found unknown instruction");
+  llvm_unreachable("found unknown instruction");
 }
 
-} // elf 
+} // elf
 } // lld
 
 #endif // LLD_READER_WRITER_ELF_HEXAGON_RELOCATION_FUNCTIONS_H

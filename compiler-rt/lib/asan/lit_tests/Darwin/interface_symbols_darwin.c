@@ -5,7 +5,7 @@
 // RUN: %clang -fsanitize=address -dead_strip -O2 %s -o %t.exe
 // RUN: rm -f %t.symbols %t.interface
 
-// RUN: nm `otool -L %t.exe | grep "asan_osx_dynamic.dylib" | \
+// RUN: nm -D `otool -L %t.exe | grep "asan_osx_dynamic.dylib" | \
 // RUN:                       tr -d '\011' | \
 // RUN:                       sed "s/.dylib.*/.dylib/"` \
 // RUN:   | grep " T " | sed "s/.* T //" \
@@ -31,6 +31,8 @@
 // RUN: echo __asan_report_store4 >> %t.interface
 // RUN: echo __asan_report_store8 >> %t.interface
 // RUN: echo __asan_report_store16 >> %t.interface
+// RUN: echo __asan_report_load_n >> %t.interface
+// RUN: echo __asan_report_store_n >> %t.interface
 
 // RUN: cat %t.interface | sort -u | diff %t.symbols -
 

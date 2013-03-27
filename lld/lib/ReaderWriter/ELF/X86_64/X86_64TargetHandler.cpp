@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Atoms.h"
 #include "X86_64TargetHandler.h"
-
 #include "X86_64TargetInfo.h"
 
 using namespace lld;
@@ -52,6 +52,16 @@ void reloc32S(uint8_t *location, uint64_t P, uint64_t S, int64_t A) {
 }
 } // end anon namespace
 
+int64_t X86_64TargetRelocationHandler::relocAddend(const Reference &ref) const {
+  switch (ref.kind()) {
+  case R_X86_64_PC32:
+    return 4;
+  default:
+    return 0;
+  }
+  return 0;
+}
+
 ErrorOr<void> X86_64TargetRelocationHandler::applyRelocation(
     ELFWriter &writer, llvm::FileOutputBuffer &buf, const AtomLayout &atom,
     const Reference &ref) const {
@@ -88,7 +98,8 @@ ErrorOr<void> X86_64TargetRelocationHandler::applyRelocation(
       *reinterpret_cast<llvm::support::little64_t *>(location) = result;
     }
     break;
-  case R_X86_64_TLSLD:
+  }
+  case R_X86_64_TLSLD: {
     // Rewrite to move %fs:0 into %rax. Technically we should verify that the
     // next relocation is a PC32 to __tls_get_addr...
     static uint8_t instr[] = { 0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25,
@@ -96,8 +107,25 @@ ErrorOr<void> X86_64TargetRelocationHandler::applyRelocation(
     std::memcpy(location - 3, instr, sizeof(instr));
     break;
   }
+  case LLD_R_X86_64_GOTRELINDEX: {
+    const DefinedAtom *target = cast<const DefinedAtom>(ref.target());
+    for (const Reference *r : *target) {
+      if (r->kind() == R_X86_64_JUMP_SLOT) {
+        uint32_t index;
+        if (!_targetInfo.getTargetHandler<X86_64ELFType>().targetLayout()
+                .getPLTRelocationTable()->getRelocationIndex(*r, index))
+          llvm_unreachable("Relocation doesn't exist");
+        reloc32(location, 0, index, 0);
+        break;
+      }
+    }
+    break;
+  }
   // Runtime only relocations. Ignore here.
+  case R_X86_64_RELATIVE:
   case R_X86_64_IRELATIVE:
+  case R_X86_64_JUMP_SLOT:
+  case R_X86_64_GLOB_DAT:
     break;
 
   case lld::Reference::kindLayoutAfter:
@@ -119,61 +147,6 @@ ErrorOr<void> X86_64TargetRelocationHandler::applyRelocation(
 
   return error_code::success();
 }
-
-namespace {
-class GLOBAL_OFFSET_TABLEAtom : public SimpleDefinedAtom {
-public:
-  GLOBAL_OFFSET_TABLEAtom(const File &f) : SimpleDefinedAtom(f) {}
-
-  virtual StringRef name() const { return "_GLOBAL_OFFSET_TABLE_"; }
-
-  virtual Scope scope() const { return scopeGlobal; }
-
-  virtual SectionChoice sectionChoice() const { return sectionCustomRequired; }
-
-  virtual StringRef customSectionName() const { return ".got"; }
-
-  virtual ContentType contentType() const { return typeGOT; }
-
-  virtual uint64_t size() const { return 0; }
-
-  virtual ContentPermissions permissions() const { return permRW_; }
-
-  virtual Alignment alignment() const {
-    // Needs 8 byte alignment
-    return Alignment(3);
-  }
-
-  virtual ArrayRef<uint8_t> rawContent() const {
-    return ArrayRef<uint8_t>();
-  }
-};
-
-class TLSGETADDRAtom : public SimpleDefinedAtom {
-public:
-  TLSGETADDRAtom(const File &f) : SimpleDefinedAtom(f) {}
-
-  virtual StringRef name() const { return "__tls_get_addr"; }
-
-  virtual Scope scope() const { return scopeGlobal; }
-
-  virtual Merge merge() const { return mergeAsWeak; }
-
-  virtual SectionChoice sectionChoice() const { return sectionCustomRequired; }
-
-  virtual StringRef customSectionName() const { return ".text"; }
-
-  virtual ContentType contentType() const { return typeCode; }
-
-  virtual uint64_t size() const { return 0; }
-
-  virtual ContentPermissions permissions() const { return permR_X; }
-
-  virtual Alignment alignment() const { return Alignment(0); }
-
-  virtual ArrayRef<uint8_t> rawContent() const { return ArrayRef<uint8_t>(); }
-};
-} // end anon namespace
 
 void X86_64TargetHandler::addFiles(InputFiles &f) {
   _gotFile.addAtom(*new (_gotFile._alloc) GLOBAL_OFFSET_TABLEAtom(_gotFile));

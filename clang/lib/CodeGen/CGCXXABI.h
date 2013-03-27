@@ -54,6 +54,12 @@ protected:
     return CGF.CXXABIThisValue;
   }
 
+  /// Issue a diagnostic about unsupported features in the ABI.
+  void ErrorUnsupportedABI(CodeGenFunction &CGF, StringRef S);
+
+  /// Get a null value for unsupported member pointers.
+  llvm::Constant *GetBogusMemberPointer(QualType T);
+
   // FIXME: Every place that calls getVTT{Decl,Value} is something
   // that needs to be abstracted properly.
   ImplicitParamDecl *&getVTTDecl(CodeGenFunction &CGF) {
@@ -90,6 +96,10 @@ public:
   MangleContext &getMangleContext() {
     return *MangleCtx;
   }
+
+  /// Returns true if the given instance method is one of the
+  /// kinds that the ABI says returns 'this'.
+  virtual bool HasThisReturn(GlobalDecl GD) const { return false; }
 
   /// Find the LLVM type used to represent the given member pointer
   /// type.
@@ -185,6 +195,8 @@ public:
                                          CanQualType &ResTy,
                                SmallVectorImpl<CanQualType> &ArgTys) = 0;
 
+  virtual llvm::BasicBlock *EmitCtorCompleteObjectHandler(CodeGenFunction &CGF);
+
   /// Build the signature of the given destructor variant by adding
   /// any required parameters.  For convenience, ResTy has been
   /// initialized to 'void' and ArgTys has been initialized with the
@@ -206,6 +218,23 @@ public:
 
   /// Emit the ABI-specific prolog for the function.
   virtual void EmitInstanceFunctionProlog(CodeGenFunction &CGF) = 0;
+
+  /// Emit the constructor call. Return the function that is called.
+  virtual llvm::Value *EmitConstructorCall(CodeGenFunction &CGF,
+                                   const CXXConstructorDecl *D,
+                                   CXXCtorType Type, bool ForVirtualBase,
+                                   bool Delegating,
+                                   llvm::Value *This,
+                                   CallExpr::const_arg_iterator ArgBeg,
+                                   CallExpr::const_arg_iterator ArgEnd) = 0;
+
+  /// Emit the ABI-specific virtual destructor call.
+  virtual RValue EmitVirtualDestructorCall(CodeGenFunction &CGF,
+                                           const CXXDestructorDecl *Dtor,
+                                           CXXDtorType DtorType,
+                                           SourceLocation CallLoc,
+                                           ReturnValueSlot ReturnValue,
+                                           llvm::Value *This) = 0;
 
   virtual void EmitReturnFromThunk(CodeGenFunction &CGF,
                                    RValue RV, QualType ResultType);

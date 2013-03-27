@@ -12,7 +12,8 @@
 // Mac-specific code.
 //===----------------------------------------------------------------------===//
 
-#ifdef __APPLE__
+#include "sanitizer_common/sanitizer_platform.h"
+#if SANITIZER_MAC
 
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_libc.h"
@@ -82,15 +83,11 @@ const char *InitializePlatform() {
     setrlimit(RLIMIT_CORE, (rlimit*)&lim);
   }
 
-  return getenv(kTsanOptionsEnv);
+  return GetEnv(kTsanOptionsEnv);
 }
 
 void FinalizePlatform() {
   fflush(0);
-}
-
-uptr GetTlsSize() {
-  return 0;
 }
 
 void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
@@ -103,4 +100,4 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
 
 }  // namespace __tsan
 
-#endif  // #ifdef __APPLE__
+#endif  // SANITIZER_MAC

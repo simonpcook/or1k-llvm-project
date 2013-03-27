@@ -21,40 +21,9 @@
 #include "sanitizer_common/sanitizer_stacktrace.h"
 #include "sanitizer_common/sanitizer_libc.h"
 
-#if !defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)
-# error "This operating system is not supported by AddressSanitizer"
-#endif
-
 #define ASAN_DEFAULT_FAILURE_EXITCODE 1
 
-#if defined(__linux__)
-# define ASAN_LINUX   1
-#else
-# define ASAN_LINUX   0
-#endif
-
-#if defined(__APPLE__)
-# define ASAN_MAC     1
-#else
-# define ASAN_MAC     0
-#endif
-
-#if defined(_WIN32)
-# define ASAN_WINDOWS 1
-#else
-# define ASAN_WINDOWS 0
-#endif
-
-#if defined(__ANDROID__) || defined(ANDROID)
-# define ASAN_ANDROID 1
-#else
-# define ASAN_ANDROID 0
-#endif
-
-
-#define ASAN_POSIX (ASAN_LINUX || ASAN_MAC)
-
-#if __has_feature(address_sanitizer)
+#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
 # error "The AddressSanitizer run-time should not be"
         " instrumented by AddressSanitizer"
 #endif
@@ -63,7 +32,7 @@
 
 // If set, asan will install its own SEGV signal handler.
 #ifndef ASAN_NEEDS_SEGV
-# if ASAN_ANDROID == 1
+# if SANITIZER_ANDROID == 1
 #  define ASAN_NEEDS_SEGV 0
 # else
 #  define ASAN_NEEDS_SEGV 1
@@ -89,6 +58,10 @@
 #else
 #  define ASAN_LOW_MEMORY 0
 # endif
+#endif
+
+#ifndef ASAN_USE_PREINIT_ARRAY
+# define ASAN_USE_PREINIT_ARRAY (SANITIZER_LINUX && !SANITIZER_ANDROID)
 #endif
 
 // All internal functions in asan reside inside the __asan namespace
@@ -138,7 +111,7 @@ void PoisonShadowPartialRightRedzone(uptr addr,
                                      u8 value);
 
 // Platfrom-specific options.
-#ifdef __APPLE__
+#if SANITIZER_MAC
 bool PlatformHasDifferentMemcpyAndMemmove();
 # define PLATFORM_HAS_DIFFERENT_MEMCPY_AND_MEMMOVE \
     (PlatformHasDifferentMemcpyAndMemmove())

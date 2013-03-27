@@ -367,7 +367,9 @@ clang::ExternalLoadResult
 ClangASTSource::FindExternalLexicalDecls (const DeclContext *decl_context,
                                           bool (*predicate)(Decl::Kind),
                                           llvm::SmallVectorImpl<Decl*> &decls)
-{    
+{
+    ClangASTMetrics::RegisterLexicalQuery();
+
     lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     const Decl *context_decl = dyn_cast<Decl>(decl_context);
@@ -410,7 +412,7 @@ ClangASTSource::FindExternalLexicalDecls (const DeclContext *decl_context,
     
     if (log)
     {       
-        log->Printf("  FELD[%u] Original decl (Decl*)%p:", current_id, original_decl);
+        log->Printf("  FELD[%u] Original decl (ASTContext*)%p (Decl*)%p:", current_id, original_ctx, original_decl);
         ASTDumper(original_decl).ToLog(log, "    ");
     }
     
@@ -466,11 +468,7 @@ ClangASTSource::FindExternalLexicalDecls (const DeclContext *decl_context,
             {
                 QualType copied_field_type = copied_field->getType();
                 
-                if (const TagType *copied_field_tag_type = copied_field_type->getAs<TagType>())
-                    m_ast_importer->CompleteTagDecl(copied_field_tag_type->getDecl());
-                if (const ObjCObjectType *copied_field_object_type = copied_field_type->getAs<ObjCObjectType>())
-                    if (ObjCInterfaceDecl *copied_field_objc_interface_decl = copied_field_object_type->getInterface())
-                        m_ast_importer->CompleteObjCInterfaceDecl(copied_field_objc_interface_decl);
+                m_ast_importer->RequireCompleteType(copied_field_type);
             }
             
             decls.push_back(copied_decl);
@@ -484,6 +482,8 @@ void
 ClangASTSource::FindExternalVisibleDecls (NameSearchContext &context)
 {
     assert (m_ast_context);
+    
+    ClangASTMetrics::RegisterVisibleQuery();
     
     const ConstString name(context.m_decl_name.getAsString().c_str());
     
@@ -1435,6 +1435,8 @@ ClangASTSource::layoutRecordType(const RecordDecl *record,
                                  BaseOffsetMap &base_offsets,
                                  BaseOffsetMap &virtual_base_offsets)
 {
+    ClangASTMetrics::RegisterRecordLayout();
+    
     static unsigned int invocation_id = 0;
     unsigned int current_id = invocation_id++;
     
@@ -1442,9 +1444,10 @@ ClangASTSource::layoutRecordType(const RecordDecl *record,
     
     if (log)
     {
-        log->Printf("LayoutRecordType[%u] on (RecordDecl*)%p [name = '%s']",
+        log->Printf("LayoutRecordType[%u] on (ASTContext*)%p for (RecordDecl*)%p [name = '%s']",
                     current_id,
                     m_ast_context,
+                    record,
                     record->getNameAsString().c_str());
     }
     
@@ -1466,12 +1469,15 @@ ClangASTSource::layoutRecordType(const RecordDecl *record,
     
     const ASTRecordLayout &record_layout(origin_record->getASTContext().getASTRecordLayout(origin_record.decl));
     
-    int field_idx = 0;
+    int field_idx = 0, field_count = record_layout.getFieldCount();
     
     for (RecordDecl::field_iterator fi = origin_record->field_begin(), fe = origin_record->field_end();
          fi != fe;
          ++fi)
     {
+        if (field_idx >= field_count)
+            return false; // Layout didn't go well.  Bail out.
+        
         uint64_t field_offset = record_layout.getFieldOffset(field_idx);
         
         origin_field_offsets.insert(std::pair<const FieldDecl *, uint64_t>(*fi, field_offset));
@@ -1676,7 +1682,9 @@ void *
 ClangASTSource::GuardedCopyType (ASTContext *dest_context, 
                                  ASTContext *source_context,
                                  void *clang_type)
-{    
+{
+    ClangASTMetrics::RegisterLLDBImport();
+    
     SetImportInProgress(true);
     
     QualType ret_qual_type = m_ast_importer->CopyType (m_ast_context, source_context, QualType::getFromOpaquePtr(clang_type));
@@ -1783,8 +1791,7 @@ NameSearchContext::AddGenericFunDecl()
     proto_info.Variadic = true;
     
     QualType generic_function_type(m_ast_source.m_ast_context->getFunctionType (m_ast_source.m_ast_context->UnknownAnyTy,    // result
-                                                                                NULL,                                        // argument types
-                                                                                0,                                           // number of arguments
+                                                                                ArrayRef<QualType>(),                                        // argument types
                                                                                 proto_info));
     
     return AddFunDecl(generic_function_type.getAsOpaquePtr());
@@ -1812,6 +1819,14 @@ NameSearchContext::AddTypeDecl(void *type)
             m_decls.push_back((NamedDecl*)interface_decl);
             
             return (NamedDecl*)interface_decl;
+        }
+        else if (const TypedefType *typedef_type = qual_type->getAs<TypedefType>())
+        {
+            TypedefNameDecl *typedef_name_decl = typedef_type->getDecl();
+            
+            m_decls.push_back(typedef_name_decl);
+            
+            return (NamedDecl*)typedef_name_decl;
         }
     }
     return NULL;

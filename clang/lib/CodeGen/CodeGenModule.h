@@ -28,6 +28,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ValueHandle.h"
 #include "llvm/Transforms/Utils/BlackList.h"
@@ -46,6 +47,7 @@ namespace llvm {
 namespace clang {
   class TargetCodeGenInfo;
   class ASTContext;
+  class AtomicType;
   class FunctionDecl;
   class IdentifierInfo;
   class ObjCMethodDecl;
@@ -145,6 +147,11 @@ namespace CodeGen {
       unsigned char PointerSizeInBytes;
       unsigned char SizeSizeInBytes;     // sizeof(size_t)
     };
+
+    llvm::CallingConv::ID RuntimeCC;
+    llvm::CallingConv::ID getRuntimeCC() const {
+      return RuntimeCC;
+    }
   };
 
 struct RREntrypoints {
@@ -210,6 +217,9 @@ struct ARCEntrypoints {
   /// A void(void) inline asm to use to mark that the return value of
   /// a call will be immediately retain.
   llvm::InlineAsm *retainAutoreleasedReturnValueMarker;
+
+  /// void clang.arc.use(...);
+  llvm::Constant *clang_arc_use;
 };
 
 /// CodeGenModule - This class organizes the cross-function state that is used
@@ -371,6 +381,12 @@ class CodeGenModule : public CodeGenTypeCache {
     int GlobalUniqueCount;
   } Block;
 
+  /// void @llvm.lifetime.start(i64 %size, i8* nocapture <ptr>)
+  llvm::Constant *LifetimeStartFn;
+
+  /// void @llvm.lifetime.end(i64 %size, i8* nocapture <ptr>)
+  llvm::Constant *LifetimeEndFn;
+
   GlobalDecl initializedGlobalDecl;
 
   llvm::BlackList SanitizerBlacklist;
@@ -487,6 +503,9 @@ public:
   llvm::MDNode *getTBAAStructInfo(QualType QTy);
 
   bool isTypeConstant(QualType QTy, bool ExcludeCtorDtor);
+
+  bool isPaddedAtomicType(QualType type);
+  bool isPaddedAtomicType(const AtomicType *type);
 
   static void DecorateInstruction(llvm::Instruction *Inst,
                                   llvm::MDNode *TBAAInfo);
@@ -744,6 +763,9 @@ public:
 
   ///@}
 
+  llvm::Constant *getLLVMLifetimeStartFn();
+  llvm::Constant *getLLVMLifetimeEndFn();
+
   // UpdateCompleteType - Make sure that this type is translated.
   void UpdateCompletedType(const TagDecl *TD);
 
@@ -839,7 +861,8 @@ public:
   void ConstructAttributeList(const CGFunctionInfo &Info,
                               const Decl *TargetDecl,
                               AttributeListType &PAL,
-                              unsigned &CallingConv);
+                              unsigned &CallingConv,
+                              bool AttrOnCallSite);
 
   StringRef getMangledName(GlobalDecl GD);
   void getBlockMangledName(GlobalDecl GD, MangleBuffer &Buffer,

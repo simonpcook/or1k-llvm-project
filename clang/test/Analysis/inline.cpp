@@ -260,6 +260,15 @@ namespace DefaultArgs {
     clang_analyzer_eval(complicatedExprUser(1) == 1); // expected-warning{{TRUE}}
     clang_analyzer_eval(complicatedExprUser() == 84); // expected-warning{{TRUE}}
   }
+
+  int defaultReference(const int &input = 42) {
+    return input;
+  }
+
+  void testReference() {
+    clang_analyzer_eval(defaultReference(1) == 1); // expected-warning{{TRUE}}
+    clang_analyzer_eval(defaultReference() == 42); // expected-warning{{TRUE}}
+  }
 }
 
 namespace OperatorNew {
@@ -279,6 +288,7 @@ namespace OperatorNew {
     IntWrapper *obj = new IntWrapper(42);
     // should be TRUE
     clang_analyzer_eval(obj->value == 42); // expected-warning{{UNKNOWN}}
+    delete obj;
   }
 
   void testPlacement() {

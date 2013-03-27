@@ -49,7 +49,8 @@ PrintingPolicy Sema::getPrintingPolicy(const ASTContext &Context,
   PrintingPolicy Policy = Context.getPrintingPolicy();
   Policy.Bool = Context.getLangOpts().Bool;
   if (!Policy.Bool) {
-    if (MacroInfo *BoolMacro = PP.getMacroInfo(&Context.Idents.get("bool"))) {
+    if (const MacroInfo *
+          BoolMacro = PP.getMacroInfo(&Context.Idents.get("bool"))) {
       Policy.Bool = BoolMacro->isObjectLike() &&
         BoolMacro->getNumTokens() == 1 &&
         BoolMacro->getReplacementToken(0).is(tok::kw__Bool);
@@ -89,7 +90,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(0), TyposCorrected(0),
-    AnalysisWarnings(*this)
+    AnalysisWarnings(*this), Ident_super(0)
 {
   TUScope = 0;
 
@@ -331,6 +332,9 @@ static bool ShouldRemoveFromUnused(Sema *SemaRef, const DeclaratorDecl *D) {
   if (D->getMostRecentDecl()->isUsed())
     return true;
 
+  if (D->hasExternalLinkage())
+    return true;
+
   if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     // UnusedFileScopedDecls stores the first declaration.
     // The declaration may have become definition so check again.
@@ -358,9 +362,6 @@ static bool ShouldRemoveFromUnused(Sema *SemaRef, const DeclaratorDecl *D) {
     if (DeclToCheck != VD)
       return !SemaRef->ShouldWarnIfUnusedFileScopedDecl(DeclToCheck);
   }
-
-  if (D->getLinkage() == ExternalLinkage)
-    return true;
 
   return false;
 }
@@ -401,13 +402,13 @@ void Sema::getUndefinedButUsed(
     if (FunctionDecl *FD = dyn_cast<FunctionDecl>(ND)) {
       if (FD->isDefined())
         continue;
-      if (FD->getLinkage() == ExternalLinkage &&
+      if (FD->hasExternalLinkage() &&
           !FD->getMostRecentDecl()->isInlined())
         continue;
     } else {
       if (cast<VarDecl>(ND)->hasDefinition() != VarDecl::DeclarationOnly)
         continue;
-      if (ND->getLinkage() == ExternalLinkage)
+      if (ND->hasExternalLinkage())
         continue;
     }
 
@@ -615,6 +616,12 @@ void Sema::ActOnEndOfTranslationUnit() {
       << I->first;
   }
 
+  if (LangOpts.CPlusPlus11 &&
+      Diags.getDiagnosticLevel(diag::warn_delegating_ctor_cycle,
+                               SourceLocation())
+        != DiagnosticsEngine::Ignored)
+    CheckDelegatingCtorCycles();
+
   if (TUKind == TU_Module) {
     // If we are building a module, resolve all of the exported declarations
     // now.
@@ -627,11 +634,12 @@ void Sema::ActOnEndOfTranslationUnit() {
         Module *Mod = Stack.back();
         Stack.pop_back();
 
-        // Resolve the exported declarations.
+        // Resolve the exported declarations and conflicts.
         // FIXME: Actually complain, once we figure out how to teach the
-        // diagnostic client to deal with complains in the module map at this
+        // diagnostic client to deal with complaints in the module map at this
         // point.
         ModMap.resolveExports(Mod, /*Complain=*/false);
+        ModMap.resolveConflicts(Mod, /*Complain=*/false);
 
         // Queue the submodules, so their exports will also be resolved.
         for (Module::submodule_iterator Sub = Mod->submodule_begin(),
@@ -698,12 +706,6 @@ void Sema::ActOnEndOfTranslationUnit() {
       Consumer.CompleteTentativeDefinition(VD);
 
   }
-
-  if (LangOpts.CPlusPlus11 &&
-      Diags.getDiagnosticLevel(diag::warn_delegating_ctor_cycle,
-                               SourceLocation())
-        != DiagnosticsEngine::Ignored)
-    CheckDelegatingCtorCycles();
 
   // If there were errors, disable 'unused' warnings since they will mostly be
   // noise.
@@ -837,7 +839,7 @@ void Sema::EmitCurrentDiagnostic(unsigned DiagID) {
   // eliminnated. If it truly cannot be (for example, there is some reentrancy
   // issue I am not seeing yet), then there should at least be a clarifying
   // comment somewhere.
-  if (llvm::Optional<TemplateDeductionInfo*> Info = isSFINAEContext()) {
+  if (Optional<TemplateDeductionInfo*> Info = isSFINAEContext()) {
     switch (DiagnosticIDs::getDiagnosticSFINAEResponse(
               Diags.getCurrentDiagID())) {
     case DiagnosticIDs::SFINAE_Report:
@@ -1300,4 +1302,10 @@ bool Sema::tryToRecoverWithCall(ExprResult &E, const PartialDiagnostic &PD,
   notePlausibleOverloads(*this, Loc, Overloads, IsPlausibleResult);
   E = ExprError();
   return true;
+}
+
+IdentifierInfo *Sema::getSuperIdentifier() const {
+  if (!Ident_super)
+    Ident_super = &Context.Idents.get("super");
+  return Ident_super;
 }

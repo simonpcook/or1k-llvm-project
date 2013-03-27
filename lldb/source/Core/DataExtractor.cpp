@@ -740,9 +740,6 @@ DataExtractor::GetFloat (offset_t *offset_ptr) const
         {
             val = *src;
         }
-
-        // Advance the offset
-        *offset_ptr += sizeof(val);
     }
     return val;
 }
@@ -767,9 +764,6 @@ DataExtractor::GetDouble (offset_t *offset_ptr) const
         {
             val = *src;
         }
-        
-        // Advance the offset
-        *offset_ptr += sizeof(val);
     }
     return val;
 }
@@ -795,9 +789,6 @@ DataExtractor::GetLongDouble (offset_t *offset_ptr) const
         {
             val = *src;
         }
-        
-        // Advance the offset
-        *offset_ptr += sizeof(val);
     }
     return val;
 }
@@ -1332,7 +1323,7 @@ DataExtractor::Dump (Stream *s,
             target_sp = exe_scope->CalculateTarget();
         if (target_sp)
         {
-            DisassemblerSP disassembler_sp (Disassembler::FindPlugin(target_sp->GetArchitecture(), NULL));
+            DisassemblerSP disassembler_sp (Disassembler::FindPlugin(target_sp->GetArchitecture(), NULL,  NULL));
             if (disassembler_sp)
             {
                 lldb::addr_t addr = base_addr + start_offset;
@@ -1820,7 +1811,7 @@ DataExtractor::Dump (Stream *s,
 
         case eFormatVectorOfUInt64:
             s->PutChar('{');
-            offset = Dump (s, offset, eFormatHex,     sizeof(uint32_t), item_byte_size / sizeof(uint32_t), item_byte_size / sizeof(uint32_t), LLDB_INVALID_ADDRESS, 0, 0);
+            offset = Dump (s, offset, eFormatHex,     sizeof(uint64_t), item_byte_size / sizeof(uint64_t), item_byte_size / sizeof(uint64_t), LLDB_INVALID_ADDRESS, 0, 0);
             s->PutChar('}');
             break;
 

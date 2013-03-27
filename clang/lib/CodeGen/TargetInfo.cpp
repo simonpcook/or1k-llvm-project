@@ -37,7 +37,7 @@ static void AssignToArrayRange(CodeGen::CGBuilderTy &Builder,
 }
 
 static bool isAggregateTypeForABI(QualType T) {
-  return CodeGenFunction::hasAggregateLLVMType(T) ||
+  return !CodeGenFunction::hasScalarEvaluationKind(T) ||
          T->isMemberFunctionPointerType();
 }
 
@@ -490,11 +490,9 @@ ABIArgInfo PNaClABIInfo::classifyReturnType(QualType RetTy) const {
           ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
 }
 
-/// UseX86_MMXType - Return true if this is an MMX type that should use the
-/// special x86_mmx type.
-bool UseX86_MMXType(llvm::Type *IRType) {
-  // If the type is an MMX type <2 x i32>, <4 x i16>, or <8 x i8>, use the
-  // special x86_mmx type.
+/// IsX86_MMXType - Return true if this is an MMX type.
+bool IsX86_MMXType(llvm::Type *IRType) {
+  // Return true if the type is an MMX type <2 x i32>, <4 x i16>, or <8 x i8>.
   return IRType->isVectorTy() && IRType->getPrimitiveSizeInBits() == 64 &&
     cast<llvm::VectorType>(IRType)->getElementType()->isIntegerTy() &&
     IRType->getScalarSizeInBits() != 64;
@@ -523,7 +521,6 @@ class X86_32ABIInfo : public ABIInfo {
 
   bool IsDarwinVectorABI;
   bool IsSmallStructInRegABI;
-  bool IsMMXDisabled;
   bool IsWin32FloatStructABI;
   unsigned DefaultNumRegisterParameters;
 
@@ -556,18 +553,17 @@ public:
   virtual llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                                  CodeGenFunction &CGF) const;
 
-  X86_32ABIInfo(CodeGen::CodeGenTypes &CGT, bool d, bool p, bool m, bool w,
+  X86_32ABIInfo(CodeGen::CodeGenTypes &CGT, bool d, bool p, bool w,
                 unsigned r)
     : ABIInfo(CGT), IsDarwinVectorABI(d), IsSmallStructInRegABI(p),
-      IsMMXDisabled(m), IsWin32FloatStructABI(w),
-      DefaultNumRegisterParameters(r) {}
+      IsWin32FloatStructABI(w), DefaultNumRegisterParameters(r) {}
 };
 
 class X86_32TargetCodeGenInfo : public TargetCodeGenInfo {
 public:
   X86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
-      bool d, bool p, bool m, bool w, unsigned r)
-    :TargetCodeGenInfo(new X86_32ABIInfo(CGT, d, p, m, w, r)) {}
+      bool d, bool p, bool w, unsigned r)
+    :TargetCodeGenInfo(new X86_32ABIInfo(CGT, d, p, w, r)) {}
 
   void SetTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const;
@@ -921,15 +917,8 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty,
                                                             Size));
     }
 
-    llvm::Type *IRType = CGT.ConvertType(Ty);
-    if (UseX86_MMXType(IRType)) {
-      if (IsMMXDisabled)
-        return ABIArgInfo::getDirect(llvm::IntegerType::get(getVMContext(),
-                                                            64));
-      ABIArgInfo AAI = ABIArgInfo::getDirect(IRType);
-      AAI.setCoerceToType(llvm::Type::getX86_MMXTy(getVMContext()));
-      return AAI;
-    }
+    if (IsX86_MMXType(CGT.ConvertType(Ty)))
+      return ABIArgInfo::getDirect(llvm::IntegerType::get(getVMContext(), 64));
 
     return ABIArgInfo::getDirect();
   }
@@ -2974,7 +2963,9 @@ private:
   ABIKind Kind;
 
 public:
-  ARMABIInfo(CodeGenTypes &CGT, ABIKind _Kind) : ABIInfo(CGT), Kind(_Kind) {}
+  ARMABIInfo(CodeGenTypes &CGT, ABIKind _Kind) : ABIInfo(CGT), Kind(_Kind) {
+    setRuntimeCC();
+  }
 
   bool isEABI() const {
     StringRef Env =
@@ -2996,6 +2987,10 @@ private:
 
   virtual llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                                  CodeGenFunction &CGF) const;
+
+  llvm::CallingConv::ID getLLVMDefaultCC() const;
+  llvm::CallingConv::ID getABIDefaultCC() const;
+  void setRuntimeCC();
 };
 
 class ARMTargetCodeGenInfo : public TargetCodeGenInfo {
@@ -3065,32 +3060,41 @@ void ARMABIInfo::computeInfo(CGFunctionInfo &FI) const {
   if (FI.getCallingConvention() != llvm::CallingConv::C)
     return;
 
-  // Calling convention as default by an ABI.
-  llvm::CallingConv::ID DefaultCC;
-  if (getContext().getTargetInfo().getTriple().getEnvironmentName()=="gnueabihf")
-    DefaultCC = llvm::CallingConv::ARM_AAPCS_VFP;
-  else if (isEABI())
-    DefaultCC = llvm::CallingConv::ARM_AAPCS;
-  else
-    DefaultCC = llvm::CallingConv::ARM_APCS;
+  llvm::CallingConv::ID cc = getRuntimeCC();
+  if (cc != llvm::CallingConv::C)
+    FI.setEffectiveCallingConvention(cc);    
+}
 
-  // If user did not ask for specific calling convention explicitly (e.g. via
-  // pcs attribute), set effective calling convention if it's different than ABI
-  // default.
+/// Return the default calling convention that LLVM will use.
+llvm::CallingConv::ID ARMABIInfo::getLLVMDefaultCC() const {
+  // The default calling convention that LLVM will infer.
+  if (getContext().getTargetInfo().getTriple().getEnvironmentName()=="gnueabihf")
+    return llvm::CallingConv::ARM_AAPCS_VFP;
+  else if (isEABI())
+    return llvm::CallingConv::ARM_AAPCS;
+  else
+    return llvm::CallingConv::ARM_APCS;
+}
+
+/// Return the calling convention that our ABI would like us to use
+/// as the C calling convention.
+llvm::CallingConv::ID ARMABIInfo::getABIDefaultCC() const {
   switch (getABIKind()) {
-  case APCS:
-    if (DefaultCC != llvm::CallingConv::ARM_APCS)
-      FI.setEffectiveCallingConvention(llvm::CallingConv::ARM_APCS);
-    break;
-  case AAPCS:
-    if (DefaultCC != llvm::CallingConv::ARM_AAPCS)
-      FI.setEffectiveCallingConvention(llvm::CallingConv::ARM_AAPCS);
-    break;
-  case AAPCS_VFP:
-    if (DefaultCC != llvm::CallingConv::ARM_AAPCS_VFP)
-      FI.setEffectiveCallingConvention(llvm::CallingConv::ARM_AAPCS_VFP);
-    break;
+  case APCS: return llvm::CallingConv::ARM_APCS;
+  case AAPCS: return llvm::CallingConv::ARM_AAPCS;
+  case AAPCS_VFP: return llvm::CallingConv::ARM_AAPCS_VFP;
   }
+  llvm_unreachable("bad ABI kind");
+}
+
+void ARMABIInfo::setRuntimeCC() {
+  assert(getRuntimeCC() == llvm::CallingConv::C);
+
+  // Don't muddy up the IR with a ton of explicit annotations if
+  // they'd just match what LLVM will infer from the triple.
+  llvm::CallingConv::ID abiCC = getABIDefaultCC();
+  if (abiCC != getLLVMDefaultCC())
+    RuntimeCC = abiCC;
 }
 
 /// isHomogeneousAggregate - Return true if a type is an AAPCS-VFP homogeneous
@@ -4026,7 +4030,7 @@ namespace {
 
 class NVPTXABIInfo : public ABIInfo {
 public:
-  NVPTXABIInfo(CodeGenTypes &CGT) : ABIInfo(CGT) {}
+  NVPTXABIInfo(CodeGenTypes &CGT) : ABIInfo(CGT) { setRuntimeCC(); }
 
   ABIArgInfo classifyReturnType(QualType RetTy) const;
   ABIArgInfo classifyArgumentType(QualType Ty) const;
@@ -4034,6 +4038,8 @@ public:
   virtual void computeInfo(CGFunctionInfo &FI) const;
   virtual llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                                  CodeGenFunction &CFG) const;
+private:
+  void setRuntimeCC();
 };
 
 class NVPTXTargetCodeGenInfo : public TargetCodeGenInfo {
@@ -4071,25 +4077,26 @@ void NVPTXABIInfo::computeInfo(CGFunctionInfo &FI) const {
   if (FI.getCallingConvention() != llvm::CallingConv::C)
     return;
 
+  FI.setEffectiveCallingConvention(getRuntimeCC());
+}
+
+void NVPTXABIInfo::setRuntimeCC() {
   // Calling convention as default by an ABI.
   // We're still using the PTX_Kernel/PTX_Device calling conventions here,
   // but we should switch to NVVM metadata later on.
-  llvm::CallingConv::ID DefaultCC;
   const LangOptions &LangOpts = getContext().getLangOpts();
   if (LangOpts.OpenCL || LangOpts.CUDA) {
     // If we are in OpenCL or CUDA mode, then default to device functions
-    DefaultCC = llvm::CallingConv::PTX_Device;
+    RuntimeCC = llvm::CallingConv::PTX_Device;
   } else {
     // If we are in standard C/C++ mode, use the triple to decide on the default
     StringRef Env = 
       getContext().getTargetInfo().getTriple().getEnvironmentName();
     if (Env == "device")
-      DefaultCC = llvm::CallingConv::PTX_Device;
+      RuntimeCC = llvm::CallingConv::PTX_Device;
     else
-      DefaultCC = llvm::CallingConv::PTX_Kernel;
+      RuntimeCC = llvm::CallingConv::PTX_Kernel;
   }
-  FI.setEffectiveCallingConvention(DefaultCC);
-   
 }
 
 llvm::Value *NVPTXABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
@@ -4405,11 +4412,17 @@ public:
 
   void SetTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const {
-    //
-    // can fill this in when new attribute work in llvm is done.
-    // attributes mips16 and nomips16 need to be handled here.
-    //
+    const FunctionDecl *FD = dyn_cast<FunctionDecl>(D);
+    if (!FD) return;
+    llvm::Function *Fn = cast<llvm::Function>(GV);
+    if (FD->hasAttr<Mips16Attr>()) {
+      Fn->addFnAttr("mips16");
+    }
+    else if (FD->hasAttr<NoMips16Attr>()) {
+      Fn->addFnAttr("nomips16");
+    }
   }
+
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const;
 
@@ -4963,11 +4976,9 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     return *(TheTargetCodeGenInfo = new TCETargetCodeGenInfo(Types));
 
   case llvm::Triple::x86: {
-    bool DisableMMX = strcmp(getContext().getTargetInfo().getABI(), "no-mmx") == 0;
-
     if (Triple.isOSDarwin())
       return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, true, true, DisableMMX, false,
+               new X86_32TargetCodeGenInfo(Types, true, true, false,
                                            CodeGenOpts.NumRegisterParameters));
 
     switch (Triple.getOS()) {
@@ -4979,19 +4990,17 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     case llvm::Triple::OpenBSD:
     case llvm::Triple::Bitrig:
       return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, false, true, DisableMMX,
-                                           false,
+               new X86_32TargetCodeGenInfo(Types, false, true, false,
                                            CodeGenOpts.NumRegisterParameters));
 
     case llvm::Triple::Win32:
       return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, false, true, DisableMMX, true,
+               new X86_32TargetCodeGenInfo(Types, false, true, true,
                                            CodeGenOpts.NumRegisterParameters));
 
     default:
       return *(TheTargetCodeGenInfo =
-               new X86_32TargetCodeGenInfo(Types, false, false, DisableMMX,
-                                           false,
+               new X86_32TargetCodeGenInfo(Types, false, false, false,
                                            CodeGenOpts.NumRegisterParameters));
     }
   }

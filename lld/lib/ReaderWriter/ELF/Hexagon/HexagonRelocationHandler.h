@@ -6,11 +6,11 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-#ifndef LLD_READER_WRITER_ELF_HEXAGON_RELOCATION_FUNCTIONS_H
-#define LLD_READER_WRITER_ELF_HEXAGON_RELOCATION_FUNCTIONS_H
+#ifndef LLD_READER_WRITER_ELF_HEXAGON_RELOCATION_HANDLER_H
+#define LLD_READER_WRITER_ELF_HEXAGON_RELOCATION_HANDLER_H
 
+#include "HexagonSectionChunks.h"
 #include "HexagonTargetHandler.h"
-#include "HexagonRelocationFunctions.h"
 #include "lld/ReaderWriter/RelocationHelperFunctions.h"
 
 namespace lld {
@@ -18,20 +18,25 @@ namespace elf {
 typedef llvm::object::ELFType<llvm::support::little, 4, false> HexagonELFType;
 
 class HexagonTargetInfo;
+class HexagonTargetHandler;
+template <class HexagonELFType> class HexagonTargetLayout;
 
-class HexagonTargetRelocationHandler LLVM_FINAL
-    : public TargetRelocationHandler<HexagonELFType> {
+class HexagonTargetRelocationHandler LLVM_FINAL :
+    public TargetRelocationHandler<HexagonELFType> {
 public:
-  HexagonTargetRelocationHandler(const HexagonTargetInfo &ti) : _targetInfo(ti) 
-  {}
+  HexagonTargetRelocationHandler(
+      const HexagonTargetInfo &ti, const HexagonTargetHandler &tH,
+      const HexagonTargetLayout<HexagonELFType> &layout)
+      : _targetInfo(ti), _targetHandler(tH), _targetLayout(layout) {}
 
-  virtual ErrorOr<void> applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
-                                        const AtomLayout &,
-                                        const Reference &)const;
-
+  virtual ErrorOr<void>
+  applyRelocation(ELFWriter &, llvm::FileOutputBuffer &, const AtomLayout &,
+                  const Reference &) const;
 private:
   const HexagonTargetInfo &_targetInfo;
+  const HexagonTargetHandler &_targetHandler;
+  const HexagonTargetLayout<HexagonELFType> &_targetLayout;
 };
 } // elf
-} // lld 
+} // lld
 #endif

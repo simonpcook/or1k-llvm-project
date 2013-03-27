@@ -479,11 +479,13 @@ Thread::SetupForResume ()
         // telling the current plan it will resume, since we might change what the current
         // plan is.
 
-        StopReason stop_reason = lldb::eStopReasonInvalid;
-        StopInfoSP stop_info_sp = GetStopInfo();
-        if (stop_info_sp.get())
-            stop_reason = stop_info_sp->GetStopReason();
-        if (stop_reason == lldb::eStopReasonBreakpoint)
+//        StopReason stop_reason = lldb::eStopReasonInvalid;
+//        StopInfoSP stop_info_sp = GetStopInfo();
+//        if (stop_info_sp.get())
+//            stop_reason = stop_info_sp->GetStopReason();
+//        if (stop_reason == lldb::eStopReasonBreakpoint)
+        BreakpointSiteSP bp_site_sp = GetProcess()->GetBreakpointSiteList().FindByAddress(GetRegisterContext()->GetPC());
+        if (bp_site_sp)
         {
             // Note, don't assume there's a ThreadPlanStepOverBreakpoint, the target may not require anything
             // special to step over a breakpoint.
@@ -575,10 +577,6 @@ Thread::ShouldStop (Event* event_ptr)
             log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
                          __FUNCTION__, 
                          GetID ());
-//            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", pc = 0x%16.16" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
-//                         __FUNCTION__, 
-//                         GetID (), 
-//                         GetRegisterContext()->GetPC());
         return false;
     }
     
@@ -588,10 +586,6 @@ Thread::ShouldStop (Event* event_ptr)
             log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
                          __FUNCTION__, 
                          GetID ());
-//            log->Printf ("Thread::%s for tid = 0x%4.4" PRIx64 ", pc = 0x%16.16" PRIx64 ", should_stop = 0 (ignore since thread was suspended)",
-//                         __FUNCTION__, 
-//                         GetID (), 
-//                         GetRegisterContext()->GetPC());
         return false;
     }
     

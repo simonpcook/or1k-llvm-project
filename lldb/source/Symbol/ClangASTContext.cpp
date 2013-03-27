@@ -300,7 +300,7 @@ ParseLangArgs
 //    llvm::StringRef Vis = getLastArgValue(Args, OPT_fvisibility,
 //                                          "default");
 //    if (Vis == "default")
-        Opts.setVisibilityMode(DefaultVisibility);
+        Opts.setValueVisibilityMode(DefaultVisibility);
 //    else if (Vis == "hidden")
 //        Opts.setVisibilityMode(LangOptions::Hidden);
 //    else if (Vis == "protected")
@@ -944,6 +944,12 @@ ClangASTContext::GetBuiltInType_objc_id()
     return getASTContext()->getObjCIdType().getAsOpaquePtr();
 }
 
+lldb::clang_type_t
+ClangASTContext::GetBuiltInType_objc_id(clang::ASTContext *ast)
+{
+    return ast->getObjCIdType().getAsOpaquePtr();
+}
+
 clang_type_t
 ClangASTContext::GetBuiltInType_objc_Class()
 {
@@ -1126,7 +1132,12 @@ ClangASTContext::GetTypeForDecl (ObjCInterfaceDecl *decl)
 #pragma mark Structure, Unions, Classes
 
 clang_type_t
-ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type, const char *name, int kind, LanguageType language, ClangASTMetadata *metadata)
+ClangASTContext::CreateRecordType (DeclContext *decl_ctx,
+                                   AccessType access_type,
+                                   const char *name,
+                                   int kind,
+                                   LanguageType language,
+                                   ClangASTMetadata *metadata)
 {
     ASTContext *ast = getASTContext();
     assert (ast != NULL);
@@ -1154,16 +1165,20 @@ ClangASTContext::CreateRecordType (DeclContext *decl_ctx, AccessType access_type
                                                  SourceLocation(),
                                                  name && name[0] ? &ast->Idents.get(name) : NULL);
     
-    if (decl && metadata)
-        SetMetadata(ast, (uintptr_t)decl, *metadata);
-    
-    if (decl_ctx)
+    if (decl)
     {
+        if (metadata)
+            SetMetadata(ast, decl, *metadata);
+
         if (access_type != eAccessNone)
             decl->setAccess (ConvertAccessTypeToAccessSpecifier (access_type));
-        decl_ctx->addDecl (decl);
+    
+        if (decl_ctx)
+            decl_ctx->addDecl (decl);
+
+        return ast->getTagDeclType(decl).getAsOpaquePtr();
     }
-    return ast->getTagDeclType(decl).getAsOpaquePtr();
+    return NULL;
 }
 
 static TemplateParameterList *
@@ -2235,7 +2250,7 @@ ClangASTContext::CreateBaseClassSpecifier (clang_type_t base_class_type, AccessT
                                      is_virtual, 
                                      base_of_class, 
                                      ConvertAccessTypeToAccessSpecifier (access), 
-                                     getASTContext()->CreateTypeSourceInfo (QualType::getFromOpaquePtr(base_class_type)),
+                                     getASTContext()->getTrivialTypeSourceInfo (QualType::getFromOpaquePtr(base_class_type)),
                                      SourceLocation());
     return NULL;
 }
@@ -2297,7 +2312,7 @@ ClangASTContext::CreateObjCClass
                                                          isInternal);
     
     if (decl && metadata)
-        SetMetadata(ast, (uintptr_t)decl, *metadata);
+        SetMetadata(ast, decl, *metadata);
     
     return ast->getObjCInterfaceType(decl).getAsOpaquePtr();
 }
@@ -2443,9 +2458,9 @@ ClangASTContext::AddObjCClassProperty
             {
                 clang::TypeSourceInfo *prop_type_source;
                 if (ivar_decl)
-                    prop_type_source = ast->CreateTypeSourceInfo (ivar_decl->getType());
+                    prop_type_source = ast->getTrivialTypeSourceInfo (ivar_decl->getType());
                 else
-                    prop_type_source = ast->CreateTypeSourceInfo (QualType::getFromOpaquePtr(property_opaque_type));
+                    prop_type_source = ast->getTrivialTypeSourceInfo (QualType::getFromOpaquePtr(property_opaque_type));
                 
                 ObjCPropertyDecl *property_decl = ObjCPropertyDecl::Create(*ast, 
                                                                            class_interface_decl, 
@@ -2459,7 +2474,7 @@ ClangASTContext::AddObjCClassProperty
                 if (property_decl)
                 {
                     if (metadata)
-                        SetMetadata(ast, (uintptr_t)property_decl, *metadata);
+                        SetMetadata(ast, property_decl, *metadata);
                     
                     class_interface_decl->addDecl (property_decl);
                     
@@ -2539,7 +2554,7 @@ ClangASTContext::AddObjCClassProperty
                                                                         HasRelatedResultType);
                         
                         if (getter && metadata)
-                            SetMetadata(ast, (uintptr_t)getter, *metadata);
+                            SetMetadata(ast, getter, *metadata);
                                                 
                         getter->setMethodParams(*ast, ArrayRef<ParmVarDecl*>(), ArrayRef<SourceLocation>());
                         
@@ -2574,7 +2589,7 @@ ClangASTContext::AddObjCClassProperty
                                                                         HasRelatedResultType);
                         
                         if (setter && metadata)
-                            SetMetadata(ast, (uintptr_t)setter, *metadata);
+                            SetMetadata(ast, setter, *metadata);
                         
                         llvm::SmallVector<ParmVarDecl *, 1> params;
 
@@ -2635,14 +2650,12 @@ ClangASTContext::ObjCDeclHasIVars (ObjCInterfaceDecl *class_interface_decl, bool
 }
 
 ObjCMethodDecl *
-ClangASTContext::AddMethodToObjCObjectType
-(
-    ASTContext *ast,
-    clang_type_t class_opaque_type, 
-    const char *name,  // the full symbol name as seen in the symbol table ("-[NString stringWithCString:]")
-    clang_type_t method_opaque_type,
-    lldb::AccessType access
-)
+ClangASTContext::AddMethodToObjCObjectType (ASTContext *ast,
+                                            clang_type_t class_opaque_type,
+                                            const char *name,  // the full symbol name as seen in the symbol table ("-[NString stringWithCString:]")
+                                            clang_type_t method_opaque_type,
+                                            lldb::AccessType access,
+                                            bool is_artificial)
 {
     if (class_opaque_type == NULL || method_opaque_type == NULL)
         return NULL;
@@ -2673,8 +2686,6 @@ ClangASTContext::AddMethodToObjCObjectType
         return NULL;
     
     selector_start++;
-    if (!(::isalpha (selector_start[0]) || selector_start[0] == '_'))
-        return NULL;
     llvm::SmallVector<IdentifierInfo *, 12> selector_idents;
 
     size_t len = 0;
@@ -2736,7 +2747,7 @@ ClangASTContext::AddMethodToObjCObjectType
                                                                name[0] == '-',
                                                                is_variadic,
                                                                is_synthesized,
-                                                               true, // is_implicitly_declared
+                                                               true, // is_implicitly_declared; we force this to true because we don't have source locations
                                                                is_defined,
                                                                imp_control,
                                                                false /*has_related_result_type*/);
@@ -2915,7 +2926,7 @@ ClangASTContext::GetTypeInfo
         case clang::BuiltinType::ObjCClass:
             if (ast && pointee_or_element_clang_type)
                 *pointee_or_element_clang_type = ast->ObjCBuiltinClassTy.getAsOpaquePtr();
-            return eTypeIsBuiltIn | eTypeIsPointer | eTypeHasValue;
+            return eTypeIsBuiltIn | eTypeIsPointer | eTypeHasValue | eTypeIsObjC;
                 break;
         case clang::BuiltinType::Bool:
         case clang::BuiltinType::Char_U:
@@ -3666,6 +3677,31 @@ ClangASTContext::GetFieldAtIndex (clang::ASTContext *ast,
             break;
     }
     return NULL;
+}
+
+size_t
+ClangASTContext::GetIndexOfFieldWithName (clang::ASTContext *ast,
+                                          lldb::clang_type_t clang_type,
+                                          const char* name,
+                                          lldb::clang_type_t* field_clang_type,
+                                          uint64_t *bit_offset_ptr,
+                                          uint32_t *bitfield_bit_size_ptr,
+                                          bool *is_bitfield_ptr)
+{
+    auto count = ClangASTContext::GetNumFields(ast, clang_type);
+    lldb::clang_type_t field_clang_type_internal;
+    std::string field_name;
+    for (auto index = 0; index < count; index++)
+    {
+        field_clang_type_internal = ClangASTContext::GetFieldAtIndex(ast, clang_type, index, field_name, bit_offset_ptr, bitfield_bit_size_ptr, is_bitfield_ptr);
+        if ( strcmp(field_name.c_str(), name) == 0 )
+        {
+            if (field_clang_type)
+                *field_clang_type = field_clang_type_internal;
+            return index;
+        }
+    }
+    return UINT32_MAX;
 }
 
 lldb::BasicType
@@ -5270,9 +5306,8 @@ ClangASTContext::CreateFunctionType (ASTContext *ast,
     proto_info.Exceptions = NULL;
     
     return ast->getFunctionType (QualType::getFromOpaquePtr(result_type),
-                                 qual_type_args.empty() ? NULL : &qual_type_args.front(),
-                                 qual_type_args.size(),
-                                 proto_info).getAsOpaquePtr();    // NoReturn);
+                                 qual_type_args,
+                                 proto_info).getAsOpaquePtr();
 }
 
 ParmVarDecl *
@@ -5502,6 +5537,8 @@ ClangASTContext::AddEnumerationValueToEnumerationType
         assert (identifier_table != NULL);
         QualType enum_qual_type (QualType::getFromOpaquePtr(enum_clang_type));
 
+        bool is_signed = false;
+        IsIntegerType (enumerator_clang_type, is_signed);
         const clang::Type *clang_type = enum_qual_type.getTypePtr();
         if (clang_type)
         {
@@ -5509,7 +5546,7 @@ ClangASTContext::AddEnumerationValueToEnumerationType
 
             if (enum_type)
             {
-                llvm::APSInt enum_llvm_apsint(enum_value_bit_size, false);
+                llvm::APSInt enum_llvm_apsint(enum_value_bit_size, is_signed);
                 enum_llvm_apsint = enum_value;
                 EnumConstantDecl *enumerator_decl =
                     EnumConstantDecl::Create (*ast,
@@ -5592,7 +5629,7 @@ ClangASTContext::CreateMemberPointerType (clang_type_t clang_pointee_type, clang
     return NULL;
 }
 
-uint32_t
+uint64_t
 ClangASTContext::GetPointerBitSize ()
 {
     ASTContext *ast = getASTContext();
@@ -5730,16 +5767,22 @@ ClangASTContext::IsPossibleDynamicType (clang::ASTContext *ast,
                         if (cxx_record_decl)
                         {
                             bool is_complete = cxx_record_decl->isCompleteDefinition();
-                            if (!is_complete)
-                                is_complete = ClangASTContext::GetCompleteType (ast, pointee_qual_type.getAsOpaquePtr());
-
+                            
                             if (is_complete)
-                            {
                                 success = cxx_record_decl->isDynamicClass();
-                            }
                             else
                             {
-                                success = false;
+                                ClangASTMetadata *metadata = GetMetadata (ast, cxx_record_decl);
+                                if (metadata)
+                                    success = metadata->GetIsDynamicCXXType();
+                                else
+                                {
+                                    is_complete = ClangASTContext::GetCompleteType (ast, pointee_qual_type.getAsOpaquePtr());
+                                    if (is_complete)
+                                        success = cxx_record_decl->isDynamicClass();
+                                    else
+                                        success = false;
+                                }
                             }
 
                             if (success)
@@ -6302,7 +6345,7 @@ ClangASTContext::CreateTypedefType (const char *name, clang_type_t clang_type, D
                                                  SourceLocation(),
                                                  SourceLocation(),
                                                  name ? &identifier_table->get(name) : NULL, // Identifier
-                                                 ast->CreateTypeSourceInfo(qual_type));
+                                                 ast->getTrivialTypeSourceInfo(qual_type));
         
         //decl_ctx->addDecl (decl);
 
@@ -6479,7 +6522,7 @@ ClangASTContext::GetCompleteDecl (clang::ASTContext *ast,
 }
 
 void
-ClangASTContext::SetMetadataAsUserID (uintptr_t object,
+ClangASTContext::SetMetadataAsUserID (const void *object,
                                       user_id_t user_id)
 {
     ClangASTMetadata meta_data;
@@ -6489,7 +6532,7 @@ ClangASTContext::SetMetadataAsUserID (uintptr_t object,
 
 void
 ClangASTContext::SetMetadata (clang::ASTContext *ast,
-                              uintptr_t object,
+                              const void *object,
                               ClangASTMetadata &metadata)
 {
     ClangExternalASTSourceCommon *external_source =
@@ -6501,7 +6544,7 @@ ClangASTContext::SetMetadata (clang::ASTContext *ast,
 
 ClangASTMetadata *
 ClangASTContext::GetMetadata (clang::ASTContext *ast,
-                              uintptr_t object)
+                              const void *object)
 {
     ClangExternalASTSourceCommon *external_source =
         static_cast<ClangExternalASTSourceCommon*>(ast->getExternalSource());
@@ -6568,7 +6611,7 @@ ClangASTContext::GetClassMethodInfoForDeclContext (clang::DeclContext *decl_ctx,
         }
         else if (clang::FunctionDecl *function_decl = llvm::dyn_cast<clang::FunctionDecl>(decl_ctx))
         {
-            ClangASTMetadata *metadata = GetMetadata (&decl_ctx->getParentASTContext(), (uintptr_t) function_decl);
+            ClangASTMetadata *metadata = GetMetadata (&decl_ctx->getParentASTContext(), function_decl);
             if (metadata && metadata->HasObjectPtr())
             {
                 language_object_name.SetCString (metadata->GetObjectPtrName());

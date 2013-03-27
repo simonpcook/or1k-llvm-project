@@ -254,8 +254,6 @@ ObjectFileELF::ObjectFileELF (const lldb::ModuleSP &module_sp,
     m_header(),
     m_program_headers(),
     m_section_headers(),
-    m_sections_ap(),
-    m_symtab_ap(),
     m_filespec_ap(),
     m_shstr_data()
 {
@@ -783,6 +781,12 @@ ParseSymbols(Symtab *symtab,
                 // binding, its section index is SHN_ABS, and it precedes the other
                 // STB_LOCAL symbols for the file, if it is present.
                 symbol_type = eSymbolTypeObjectFile;
+                break;
+
+            case STT_GNU_IFUNC:
+                // The symbol is associated with an indirect function. The actual
+                // function will be resolved if it is referenced.
+                symbol_type = eSymbolTypeResolver;
                 break;
             }
         }

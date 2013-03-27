@@ -1009,24 +1009,25 @@ GetOpcodeDataSize (const DataExtractor &data, const lldb::offset_t data_offset, 
     return LLDB_INVALID_OFFSET;
 }
 
-bool
-DWARFExpression::LocationContains_DW_OP_addr (lldb::addr_t file_addr, bool &error) const
+lldb::addr_t
+DWARFExpression::GetLocation_DW_OP_addr (uint32_t op_addr_idx, bool &error) const
 {
     error = false;
     if (IsLocationList())
-        return false;
+        return LLDB_INVALID_ADDRESS;
     lldb::offset_t offset = 0;
+    uint32_t curr_op_addr_idx = 0;
     while (m_data.ValidOffset(offset))
     {
         const uint8_t op = m_data.GetU8(&offset);
         
         if (op == DW_OP_addr)
         {
-            if (file_addr == LLDB_INVALID_ADDRESS)
-                return true;
-            addr_t op_file_addr = m_data.GetAddress(&offset);
-            if (op_file_addr == file_addr)
-                return true;
+            const lldb::addr_t op_file_addr = m_data.GetAddress(&offset);
+            if (curr_op_addr_idx == op_addr_idx)
+                return op_file_addr;
+            else
+                ++curr_op_addr_idx;
         }
         else
         {
@@ -1039,7 +1040,7 @@ DWARFExpression::LocationContains_DW_OP_addr (lldb::addr_t file_addr, bool &erro
             offset += op_arg_size;
         }
     }
-    return false;
+    return LLDB_INVALID_ADDRESS;
 }
 
 bool
@@ -2611,6 +2612,18 @@ DWARFExpression::Evaluate
                 error_ptr->SetErrorString ("Unimplemented opcode DW_OP_call4.");
             return false;
 
+        //----------------------------------------------------------------------
+        // OPCODE: DW_OP_stack_value
+        // OPERANDS: None
+        // DESCRIPTION: Specifies that the object does not exist in memory but
+        // rather is a constant value.  The value from the top of the stack is
+        // the value to be used.  This is the actual object value and not the
+        // location.
+        //----------------------------------------------------------------------
+        case DW_OP_stack_value:
+            stack.back().SetValueType(Value::eValueTypeScalar);
+            break;
+
 #if 0
         //----------------------------------------------------------------------
         // OPCODE: DW_OP_call_ref
@@ -2781,7 +2794,7 @@ DWARFExpression::Evaluate
                             addr_t source_addr = (addr_t)tmp.GetScalar().ULongLong();
                             addr_t target_addr = (addr_t)stack.back().GetScalar().ULongLong();
                             
-                            size_t byte_size = (ClangASTType::GetClangTypeBitWidth(ast_context, clang_type) + 7) / 8;
+                            const uint64_t byte_size = ClangASTType::GetTypeByteSize(ast_context, clang_type);
                             
                             switch (source_value_type)
                             {

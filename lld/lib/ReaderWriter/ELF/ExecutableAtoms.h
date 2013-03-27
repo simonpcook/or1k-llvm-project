@@ -22,22 +22,23 @@
 namespace lld {
 namespace elf {
 /// \brief All atoms are owned by a File. To add linker specific atoms
-/// the atoms need to be inserted to a file called (CRuntimeFile) which 
-/// are basically additional symbols required by libc and other runtime 
+/// the atoms need to be inserted to a file called (CRuntimeFile) which
+/// are basically additional symbols required by libc and other runtime
 /// libraries part of executing a program. This class provides support
 /// for adding absolute symbols and undefined symbols
 template <class ELFT> class CRuntimeFile : public ELFFile<ELFT> {
 public:
   typedef llvm::object::Elf_Sym_Impl<ELFT> Elf_Sym;
-  CRuntimeFile(const ELFTargetInfo &ti) : ELFFile<ELFT>(ti, "C runtime") {}
+  CRuntimeFile(const ELFTargetInfo &ti, StringRef name = "C runtime")
+      : ELFFile<ELFT>(ti, name) {}
 
   /// \brief add a global absolute atom
-  void addAbsoluteAtom(StringRef symbolName) {
+  virtual void addAbsoluteAtom(StringRef symbolName) {
     Elf_Sym *symbol = new (_allocator.Allocate<Elf_Sym>()) Elf_Sym;
     symbol->st_name = 0;
     symbol->st_value = 0;
     symbol->st_shndx = llvm::ELF::SHN_ABS;
-    symbol->setBindingAndType(llvm::ELF::STB_GLOBAL, 
+    symbol->setBindingAndType(llvm::ELF::STB_GLOBAL,
                               llvm::ELF::STT_OBJECT);
     symbol->st_other = llvm::ELF::STV_DEFAULT;
     symbol->st_size = 0;
@@ -46,8 +47,8 @@ public:
     _absoluteAtoms._atoms.push_back(newAtom);
   }
 
-  /// \brief add an undefined atom 
-  void addUndefinedAtom(StringRef symbolName) {
+  /// \brief add an undefined atom
+  virtual void addUndefinedAtom(StringRef symbolName) {
     Elf_Sym *symbol = new (_allocator) Elf_Sym;
     symbol->st_name = 0;
     symbol->st_value = 0;
@@ -59,28 +60,28 @@ public:
     _undefinedAtoms._atoms.push_back(newAtom);
   }
 
-  const File::atom_collection<DefinedAtom> &defined() const {
+  virtual const File::atom_collection<DefinedAtom> &defined() const {
     return _definedAtoms;
   }
 
-  const File::atom_collection<UndefinedAtom> &undefined() const {
+  virtual const File::atom_collection<UndefinedAtom> &undefined() const {
     return _undefinedAtoms;
   }
 
-  const File::atom_collection<SharedLibraryAtom> &sharedLibrary() const {
+  virtual const File::atom_collection<SharedLibraryAtom> &sharedLibrary() const {
     return _sharedLibraryAtoms;
   }
 
-  const File::atom_collection<AbsoluteAtom> &absolute() const {
+  virtual const File::atom_collection<AbsoluteAtom> &absolute() const {
     return _absoluteAtoms;
   }
 
   // cannot add atoms to C Runtime file
-  virtual void addAtom(const Atom&) {
-    llvm_unreachable("cannot add atoms to C Runtime files");
+  virtual void addAtom(const Atom &) {
+    llvm_unreachable("cannot add atoms to Runtime files");
   }
 
-private:
+protected:
   llvm::BumpPtrAllocator _allocator;
   File::atom_collection_vector<DefinedAtom> _definedAtoms;
   File::atom_collection_vector<UndefinedAtom> _undefinedAtoms;
@@ -88,6 +89,6 @@ private:
   File::atom_collection_vector<AbsoluteAtom> _absoluteAtoms;
 };
 } // end namespace elf
-} // end namespace lld 
+} // end namespace lld
 
 #endif

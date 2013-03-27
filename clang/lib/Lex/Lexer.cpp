@@ -122,8 +122,15 @@ Lexer::Lexer(FileID FID, const llvm::MemoryBuffer *InputFile, Preprocessor &PP)
   InitLexer(InputFile->getBufferStart(), InputFile->getBufferStart(),
             InputFile->getBufferEnd());
 
-  // Default to keeping comments if the preprocessor wants them.
-  SetCommentRetentionState(PP.getCommentRetentionState());
+  resetExtendedTokenMode();
+}
+
+void Lexer::resetExtendedTokenMode() {
+  assert(PP && "Cannot reset token mode without a preprocessor");
+  if (LangOpts.TraditionalCPP)
+    SetKeepWhitespaceMode(true);
+  else
+    SetCommentRetentionState(PP->getCommentRetentionState());
 }
 
 /// Lexer constructor - Create a new raw lexer object.  This object is only
@@ -1623,7 +1630,9 @@ void Lexer::LexStringLiteral(Token &Result, const char *CurPtr,
       (Kind == tok::utf8_string_literal ||
        Kind == tok::utf16_string_literal ||
        Kind == tok::utf32_string_literal))
-    Diag(BufferPtr, diag::warn_cxx98_compat_unicode_literal);
+    Diag(BufferPtr, getLangOpts().CPlusPlus
+           ? diag::warn_cxx98_compat_unicode_literal
+           : diag::warn_c99_compat_unicode_literal);
 
   char C = getAndAdvanceChar(CurPtr, Result);
   while (C != '"') {
@@ -1788,7 +1797,9 @@ void Lexer::LexCharConstant(Token &Result, const char *CurPtr,
 
   if (!isLexingRawMode() &&
       (Kind == tok::utf16_char_constant || Kind == tok::utf32_char_constant))
-    Diag(BufferPtr, diag::warn_cxx98_compat_unicode_literal);
+    Diag(BufferPtr, getLangOpts().CPlusPlus
+           ? diag::warn_cxx98_compat_unicode_literal
+           : diag::warn_c99_compat_unicode_literal);
 
   char C = getAndAdvanceChar(CurPtr, Result);
   if (C == '\'') {
@@ -1844,6 +1855,8 @@ void Lexer::LexCharConstant(Token &Result, const char *CurPtr,
 ///
 bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr) {
   // Whitespace - Skip it, then return the token after the whitespace.
+  bool SawNewline = isVerticalWhitespace(CurPtr[-1]);
+
   unsigned char Char = *CurPtr;  // Skip consequtive spaces efficiently.
   while (1) {
     // Skip horizontal whitespace very aggressively.
@@ -1851,7 +1864,7 @@ bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr) {
       Char = *++CurPtr;
 
     // Otherwise if we have something other than whitespace, we're done.
-    if (Char != '\n' && Char != '\r')
+    if (!isVerticalWhitespace(Char))
       break;
 
     if (ParsingPreprocessorDirective) {
@@ -1861,23 +1874,26 @@ bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr) {
     }
 
     // ok, but handle newline.
-    // The returned token is at the start of the line.
-    Result.setFlag(Token::StartOfLine);
-    // No leading whitespace seen so far.
-    Result.clearFlag(Token::LeadingSpace);
+    SawNewline = true;
     Char = *++CurPtr;
   }
-
-  // If this isn't immediately after a newline, there is leading space.
-  char PrevChar = CurPtr[-1];
-  if (PrevChar != '\n' && PrevChar != '\r')
-    Result.setFlag(Token::LeadingSpace);
 
   // If the client wants us to return whitespace, return it now.
   if (isKeepWhitespaceMode()) {
     FormTokenWithChars(Result, CurPtr, tok::unknown);
+    if (SawNewline)
+      IsAtStartOfLine = true;
+    // FIXME: The next token will not have LeadingSpace set.
     return true;
   }
+
+  // If this isn't immediately after a newline, there is leading space.
+  char PrevChar = CurPtr[-1];
+  bool HasLeadingSpace = !isVerticalWhitespace(PrevChar);
+
+  Result.setFlagValue(Token::LeadingSpace, HasLeadingSpace);
+  if (SawNewline)
+    Result.setFlag(Token::StartOfLine);
 
   BufferPtr = CurPtr;
   return false;
@@ -2269,7 +2285,6 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr) {
   // efficiently now.  This is safe even in KeepWhitespaceMode because we would
   // have already returned above with the comment as a token.
   if (isHorizontalWhitespace(*CurPtr)) {
-    Result.setFlag(Token::LeadingSpace);
     SkipWhitespace(Result, CurPtr+1);
     return false;
   }
@@ -2351,7 +2366,7 @@ bool Lexer::LexEndOfFile(Token &Result, const char *CurPtr) {
     FormTokenWithChars(Result, CurPtr, tok::eod);
 
     // Restore comment saving mode, in case it was disabled for directive.
-    SetCommentRetentionState(PP->getCommentRetentionState());
+    resetExtendedTokenMode();
     return true;  // Have a token.
   }
  
@@ -2718,6 +2733,7 @@ LexNextToken:
     // whitespace.
     if (isKeepWhitespaceMode()) {
       FormTokenWithChars(Result, CurPtr, tok::unknown);
+      // FIXME: The next token will not have LeadingSpace set.
       return;
     }
 
@@ -2785,7 +2801,7 @@ LexNextToken:
 
       // Restore comment saving mode, in case it was disabled for directive.
       if (PP)
-        SetCommentRetentionState(PP->getCommentRetentionState());
+        resetExtendedTokenMode();
 
       // Since we consumed a newline, we are back at the start of a line.
       IsAtStartOfLine = true;
@@ -2793,8 +2809,7 @@ LexNextToken:
       Kind = tok::eod;
       break;
     }
-    // The returned token is at the start of the line.
-    Result.setFlag(Token::StartOfLine);
+
     // No leading whitespace seen so far.
     Result.clearFlag(Token::LeadingSpace);
 
@@ -2837,11 +2852,11 @@ LexNextToken:
     MIOpt.ReadToken();
     return LexNumericConstant(Result, CurPtr);
 
-  case 'u':   // Identifier (uber) or C++0x UTF-8 or UTF-16 string literal
+  case 'u':   // Identifier (uber) or C11/C++11 UTF-8 or UTF-16 string literal
     // Notify MIOpt that we read a non-whitespace/non-comment token.
     MIOpt.ReadToken();
 
-    if (LangOpts.CPlusPlus11) {
+    if (LangOpts.CPlusPlus11 || LangOpts.C11) {
       Char = getCharAndSize(CurPtr, SizeTmp);
 
       // UTF-16 string literal
@@ -2855,7 +2870,8 @@ LexNextToken:
                                tok::utf16_char_constant);
 
       // UTF-16 raw string literal
-      if (Char == 'R' && getCharAndSize(CurPtr + SizeTmp, SizeTmp2) == '"')
+      if (Char == 'R' && LangOpts.CPlusPlus11 &&
+          getCharAndSize(CurPtr + SizeTmp, SizeTmp2) == '"')
         return LexRawStringLiteral(Result,
                                ConsumeChar(ConsumeChar(CurPtr, SizeTmp, Result),
                                            SizeTmp2, Result),
@@ -2871,7 +2887,7 @@ LexNextToken:
                                            SizeTmp2, Result),
                                tok::utf8_string_literal);
 
-        if (Char2 == 'R') {
+        if (Char2 == 'R' && LangOpts.CPlusPlus11) {
           unsigned SizeTmp3;
           char Char3 = getCharAndSize(CurPtr + SizeTmp + SizeTmp2, SizeTmp3);
           // UTF-8 raw string literal
@@ -2889,11 +2905,11 @@ LexNextToken:
     // treat u like the start of an identifier.
     return LexIdentifier(Result, CurPtr);
 
-  case 'U':   // Identifier (Uber) or C++0x UTF-32 string literal
+  case 'U':   // Identifier (Uber) or C11/C++11 UTF-32 string literal
     // Notify MIOpt that we read a non-whitespace/non-comment token.
     MIOpt.ReadToken();
 
-    if (LangOpts.CPlusPlus11) {
+    if (LangOpts.CPlusPlus11 || LangOpts.C11) {
       Char = getCharAndSize(CurPtr, SizeTmp);
 
       // UTF-32 string literal
@@ -2907,7 +2923,8 @@ LexNextToken:
                                tok::utf32_char_constant);
 
       // UTF-32 raw string literal
-      if (Char == 'R' && getCharAndSize(CurPtr + SizeTmp, SizeTmp2) == '"')
+      if (Char == 'R' && LangOpts.CPlusPlus11 &&
+          getCharAndSize(CurPtr + SizeTmp, SizeTmp2) == '"')
         return LexRawStringLiteral(Result,
                                ConsumeChar(ConsumeChar(CurPtr, SizeTmp, Result),
                                            SizeTmp2, Result),
@@ -3110,10 +3127,13 @@ LexNextToken:
       // this as "foo / bar" and langauges with Line comments would lex it as
       // "foo".  Check to see if the character after the second slash is a '*'.
       // If so, we will lex that as a "/" instead of the start of a comment.
-      // However, we never do this in -traditional-cpp mode.
-      if ((LangOpts.LineComment ||
-           getCharAndSize(CurPtr+SizeTmp, SizeTmp2) != '*') &&
-          !LangOpts.TraditionalCPP) {
+      // However, we never do this if we are just preprocessing.
+      bool TreatAsComment = LangOpts.LineComment && !LangOpts.TraditionalCPP;
+      if (!TreatAsComment)
+        if (!(PP && PP->isPreprocessedOutput()))
+          TreatAsComment = getCharAndSize(CurPtr+SizeTmp, SizeTmp2) != '*';
+
+      if (TreatAsComment) {
         if (SkipLineComment(Result, ConsumeChar(CurPtr, SizeTmp, Result)))
           return; // There is a token to return.
 

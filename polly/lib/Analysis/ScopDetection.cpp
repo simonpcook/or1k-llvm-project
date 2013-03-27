@@ -44,9 +44,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "polly/ScopDetection.h"
-
+#include "polly/CodeGen/BlockGenerators.h"
 #include "polly/LinkAllPasses.h"
+#include "polly/ScopDetection.h"
 #include "polly/Support/ScopHelper.h"
 #include "polly/Support/SCEVValidator.h"
 
@@ -109,7 +109,7 @@ STATISTIC(ValidRegion, "Number of regions that a valid part of Scop");
     if (!Context.Verifying)                                                    \
       ++Bad##NAME##ForScop;                                                    \
     return false;                                                              \
-  } while (0);
+  } while (0)
 
 #define INVALID_NOVERIFY(NAME, MESSAGE)                                        \
   do {                                                                         \
@@ -124,7 +124,7 @@ STATISTIC(ValidRegion, "Number of regions that a valid part of Scop");
     if (!Context.Verifying)                                                    \
       ++Bad##NAME##ForScop;                                                    \
     return false;                                                              \
-  } while (0);
+  } while (0)
 
 BADSCOP_STAT(CFG, "CFG too complex");
 BADSCOP_STAT(IndVar, "Non canonical induction variable in loop");
@@ -175,7 +175,8 @@ bool ScopDetection::isValidCFG(BasicBlock &BB,
 
   // Only Constant and ICmpInst are allowed as condition.
   if (!(isa<Constant>(Condition) || isa<ICmpInst>(Condition)))
-    INVALID(AffFunc, "Condition in BB '" + BB.getName() + "' neither "
+    INVALID(AffFunc, "Condition in BB '" + BB.getName() +
+                     "' neither "
                      "constant nor an icmp instruction");
 
   // Allow perfectly nested conditions.
@@ -201,7 +202,8 @@ bool ScopDetection::isValidCFG(BasicBlock &BB,
     if (!isAffineExpr(&Context.CurRegion, LHS, *SE) ||
         !isAffineExpr(&Context.CurRegion, RHS, *SE))
       INVALID(AffFunc, "Non affine branch in BB '" << BB.getName()
-                        << "' with LHS: " << *LHS << " and RHS: " << *RHS);
+                                                   << "' with LHS: " << *LHS
+                                                   << " and RHS: " << *RHS);
   }
 
   // Allow loop exit conditions.
@@ -306,7 +308,7 @@ bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
         break;
     }
 
-    INVALID_NOVERIFY(Alias, OS.str())
+    INVALID_NOVERIFY(Alias, OS.str());
   }
 
   return true;
@@ -338,10 +340,14 @@ bool ScopDetection::hasScalarDependency(Instruction &Inst,
 
 bool ScopDetection::isValidInstruction(Instruction &Inst,
                                        DetectionContext &Context) const {
-  // Only canonical IVs are allowed.
   if (PHINode *PN = dyn_cast<PHINode>(&Inst))
-    if (!isIndVar(PN, LI))
-      INVALID(IndVar, "Non canonical PHI node: " << Inst);
+    if (!canSynthesize(PN, LI, SE, &Context.CurRegion)) {
+      if (SCEVCodegen)
+        INVALID(IndVar,
+                "SCEV of PHI node refers to SSA names in region: " << Inst);
+      else
+        INVALID(IndVar, "Non canonical PHI node: " << Inst);
+    }
 
   // Scalar dependencies are not allowed.
   if (hasScalarDependency(Inst, Context.CurRegion))
@@ -388,17 +394,21 @@ bool ScopDetection::isValidBasicBlock(BasicBlock &BB,
 }
 
 bool ScopDetection::isValidLoop(Loop *L, DetectionContext &Context) const {
-  PHINode *IndVar = L->getCanonicalInductionVariable();
-  // No canonical induction variable.
-  if (!IndVar)
-    INVALID(IndVar, "No canonical IV at loop header: "
-                    << L->getHeader()->getName());
+  if (!SCEVCodegen) {
+    // If code generation is not in scev based mode, we need to ensure that
+    // each loop has a canonical induction variable.
+    PHINode *IndVar = L->getCanonicalInductionVariable();
+    if (!IndVar)
+      INVALID(IndVar,
+              "No canonical IV at loop header: " << L->getHeader()->getName());
+  }
 
   // Is the loop count affine?
   const SCEV *LoopCount = SE->getBackedgeTakenCount(L);
   if (!isAffineExpr(&Context.CurRegion, LoopCount, *SE))
-    INVALID(LoopBound, "Non affine loop bound '" << *LoopCount << "' in loop: "
-                       << L->getHeader()->getName());
+    INVALID(LoopBound,
+            "Non affine loop bound '"
+            << *LoopCount << "' in loop: " << L->getHeader()->getName());
 
   return true;
 }
@@ -443,12 +453,9 @@ Region *ScopDetection::expandRegion(Region &R) {
     }
   }
 
-  DEBUG(
-  if (LastValidRegion)
-    dbgs() << "\tto " << LastValidRegion->getNameStr() << "\n";
-  else
-    dbgs() << "\tExpanding " << R.getNameStr() << " failed\n";
-  );
+  DEBUG(if (LastValidRegion)
+        dbgs() << "\tto " << LastValidRegion->getNameStr() << "\n";
+        else dbgs() << "\tExpanding " << R.getNameStr() << " failed\n";);
 
   return LastValidRegion;
 }
@@ -536,8 +543,7 @@ bool ScopDetection::isValidRegion(DetectionContext &Context) const {
 
   // The toplevel region is no valid region.
   if (!R.getParent()) {
-    DEBUG(dbgs() << "Top level region is invalid";
-          dbgs() << "\n");
+    DEBUG(dbgs() << "Top level region is invalid"; dbgs() << "\n");
     return false;
   }
 
@@ -590,7 +596,12 @@ void ScopDetection::getDebugLocation(const Region *R, unsigned &LineBegin,
     }
 }
 
-void ScopDetection::printLocations() {
+void ScopDetection::printLocations(llvm::Function &F) {
+  int NumberOfScops = std::distance(begin(), end());
+
+  if (NumberOfScops)
+    outs() << ":: Static control regions in " << F.getName() << "\n";
+
   for (iterator RI = begin(), RE = end(); RI != RE; ++RI) {
     unsigned LineEntry, LineExit;
     std::string FileName;
@@ -603,8 +614,9 @@ void ScopDetection::printLocations() {
       return;
     }
 
-    outs() << FileName << ":" << LineEntry << ": Scop start\n";
-    outs() << FileName << ":" << LineExit << ": Scop end\n";
+    outs() << FileName << ":" << LineEntry
+           << ": Start of static control region\n";
+    outs() << FileName << ":" << LineExit << ": End of static control region\n";
   }
 }
 
@@ -626,7 +638,7 @@ bool ScopDetection::runOnFunction(llvm::Function &F) {
   findScops(*TopRegion);
 
   if (ReportLevel >= 1)
-    printLocations();
+    printLocations(F);
 
   return false;
 }
@@ -655,7 +667,7 @@ void ScopDetection::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
 }
 
-void ScopDetection::print(raw_ostream &OS, const Module *)const {
+void ScopDetection::print(raw_ostream &OS, const Module *) const {
   for (RegionSet::const_iterator I = ValidRegions.begin(),
                                  E = ValidRegions.end();
        I != E; ++I)
@@ -672,18 +684,16 @@ void ScopDetection::releaseMemory() {
 
 char ScopDetection::ID = 0;
 
+Pass *polly::createScopDetectionPass() { return new ScopDetection(); }
+
 INITIALIZE_PASS_BEGIN(ScopDetection, "polly-detect",
                       "Polly - Detect static control parts (SCoPs)", false,
-                      false)
-INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
-INITIALIZE_PASS_DEPENDENCY(DominatorTree)
-INITIALIZE_PASS_DEPENDENCY(LoopInfo)
-INITIALIZE_PASS_DEPENDENCY(PostDominatorTree)
-INITIALIZE_PASS_DEPENDENCY(RegionInfo)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
+                      false);
+INITIALIZE_AG_DEPENDENCY(AliasAnalysis);
+INITIALIZE_PASS_DEPENDENCY(DominatorTree);
+INITIALIZE_PASS_DEPENDENCY(LoopInfo);
+INITIALIZE_PASS_DEPENDENCY(PostDominatorTree);
+INITIALIZE_PASS_DEPENDENCY(RegionInfo);
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);
 INITIALIZE_PASS_END(ScopDetection, "polly-detect",
                     "Polly - Detect static control parts (SCoPs)", false, false)
-
-Pass *polly::createScopDetectionPass() {
-  return new ScopDetection();
-}

@@ -33,7 +33,7 @@ public:
     virtual
     ~ValueObjectSynthetic();
 
-    virtual size_t
+    virtual uint64_t
     GetByteSize();
     
     virtual ConstString
@@ -83,7 +83,28 @@ public:
     virtual bool
     IsDynamic ()
     {
-        return false;
+        if (m_parent)
+            return m_parent->IsDynamic();
+        else
+            return false;
+    }
+    
+    virtual lldb::ValueObjectSP
+    GetStaticValue ()
+    {
+        if (m_parent)
+            return m_parent->GetStaticValue();
+        else
+            return GetSP();
+    }
+    
+    virtual lldb::DynamicValueType
+    GetDynamicValueType ()
+    {
+        if (m_parent)
+            return m_parent->GetDynamicValueType();
+        else
+            return lldb::eNoDynamicValues;
     }
 
     virtual ValueObject *

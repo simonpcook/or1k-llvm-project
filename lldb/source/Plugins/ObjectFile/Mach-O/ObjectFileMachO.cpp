@@ -28,6 +28,7 @@
 #include "lldb/Host/Host.h"
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Symbol/ClangNamespaceDecl.h"
+#include "lldb/Symbol/DWARFCallFrameInfo.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
@@ -40,7 +41,7 @@ using namespace lldb;
 using namespace lldb_private;
 using namespace llvm::MachO;
 
-class RegisterContextDarwin_x86_64_Mach : public RegisterContextDarwin_x86_64 
+class RegisterContextDarwin_x86_64_Mach : public RegisterContextDarwin_x86_64
 {
 public:
     RegisterContextDarwin_x86_64_Mach (lldb_private::Thread &thread, const DataExtractor &data) :
@@ -63,7 +64,7 @@ public:
         SetError (FPURegSet, Read, -1);
         SetError (EXCRegSet, Read, -1);
         bool done = false;
-        
+
         while (!done)
         {
             int flavor = data.GetU32 (&offset);
@@ -80,13 +81,13 @@ public:
                             (&gpr.rax)[i] = data.GetU64(&offset);
                         SetError (GPRRegSet, Read, 0);
                         done = true;
-                        
+
                         break;
                     case FPURegSet:
                         // TODO: fill in FPU regs....
                         //SetError (FPURegSet, Read, -1);
                         done = true;
-                        
+
                         break;
                     case EXCRegSet:
                         exc.trapno = data.GetU32(&offset);
@@ -101,7 +102,7 @@ public:
                         // fancy flavors that encapsulate of the the above
                         // falvors...
                         break;
-                        
+
                     default:
                         done = true;
                         break;
@@ -115,31 +116,31 @@ protected:
     {
         return 0;
     }
-    
+
     virtual int
     DoReadFPU (lldb::tid_t tid, int flavor, FPU &fpu)
     {
         return 0;
     }
-    
+
     virtual int
     DoReadEXC (lldb::tid_t tid, int flavor, EXC &exc)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteGPR (lldb::tid_t tid, int flavor, const GPR &gpr)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteFPU (lldb::tid_t tid, int flavor, const FPU &fpu)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteEXC (lldb::tid_t tid, int flavor, const EXC &exc)
     {
@@ -148,7 +149,7 @@ protected:
 };
 
 
-class RegisterContextDarwin_i386_Mach : public RegisterContextDarwin_i386 
+class RegisterContextDarwin_i386_Mach : public RegisterContextDarwin_i386
 {
 public:
     RegisterContextDarwin_i386_Mach (lldb_private::Thread &thread, const DataExtractor &data) :
@@ -156,13 +157,13 @@ public:
     {
         SetRegisterDataFrom_LC_THREAD (data);
     }
-    
+
     virtual void
     InvalidateAllRegisters ()
     {
         // Do nothing... registers are always valid...
     }
-    
+
     void
     SetRegisterDataFrom_LC_THREAD (const DataExtractor &data)
     {
@@ -171,7 +172,7 @@ public:
         SetError (FPURegSet, Read, -1);
         SetError (EXCRegSet, Read, -1);
         bool done = false;
-        
+
         while (!done)
         {
             int flavor = data.GetU32 (&offset);
@@ -209,7 +210,7 @@ public:
                         // fancy flavors that encapsulate of the the above
                         // falvors...
                         break;
-                        
+
                     default:
                         done = true;
                         break;
@@ -223,31 +224,31 @@ protected:
     {
         return 0;
     }
-    
+
     virtual int
     DoReadFPU (lldb::tid_t tid, int flavor, FPU &fpu)
     {
         return 0;
     }
-    
+
     virtual int
     DoReadEXC (lldb::tid_t tid, int flavor, EXC &exc)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteGPR (lldb::tid_t tid, int flavor, const GPR &gpr)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteFPU (lldb::tid_t tid, int flavor, const FPU &fpu)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteEXC (lldb::tid_t tid, int flavor, const EXC &exc)
     {
@@ -255,7 +256,7 @@ protected:
     }
 };
 
-class RegisterContextDarwin_arm_Mach : public RegisterContextDarwin_arm 
+class RegisterContextDarwin_arm_Mach : public RegisterContextDarwin_arm
 {
 public:
     RegisterContextDarwin_arm_Mach (lldb_private::Thread &thread, const DataExtractor &data) :
@@ -263,13 +264,13 @@ public:
     {
         SetRegisterDataFrom_LC_THREAD (data);
     }
-    
+
     virtual void
     InvalidateAllRegisters ()
     {
         // Do nothing... registers are always valid...
     }
-    
+
     void
     SetRegisterDataFrom_LC_THREAD (const DataExtractor &data)
     {
@@ -304,13 +305,13 @@ protected:
     {
         return 0;
     }
-    
+
     virtual int
     DoReadFPU (lldb::tid_t tid, int flavor, FPU &fpu)
     {
         return 0;
     }
-    
+
     virtual int
     DoReadEXC (lldb::tid_t tid, int flavor, EXC &exc)
     {
@@ -322,25 +323,25 @@ protected:
     {
         return -1;
     }
-    
+
     virtual int
     DoWriteGPR (lldb::tid_t tid, int flavor, const GPR &gpr)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteFPU (lldb::tid_t tid, int flavor, const FPU &fpu)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteEXC (lldb::tid_t tid, int flavor, const EXC &exc)
     {
         return 0;
     }
-    
+
     virtual int
     DoWriteDBG (lldb::tid_t tid, int flavor, const DBG &dbg)
     {
@@ -408,9 +409,9 @@ ObjectFileMachO::CreateInstance (const lldb::ModuleSP &module_sp,
 }
 
 ObjectFile *
-ObjectFileMachO::CreateMemoryInstance (const lldb::ModuleSP &module_sp, 
-                                       DataBufferSP& data_sp, 
-                                       const ProcessSP &process_sp, 
+ObjectFileMachO::CreateMemoryInstance (const lldb::ModuleSP &module_sp,
+                                       DataBufferSP& data_sp,
+                                       const ProcessSP &process_sp,
                                        lldb::addr_t header_addr)
 {
     if (ObjectFileMachO::MagicBytesMatch(data_sp, 0, data_sp->GetByteSize()))
@@ -419,7 +420,7 @@ ObjectFileMachO::CreateMemoryInstance (const lldb::ModuleSP &module_sp,
         if (objfile_ap.get() && objfile_ap->ParseHeader())
             return objfile_ap.release();
     }
-    return NULL;    
+    return NULL;
 }
 
 
@@ -482,8 +483,8 @@ MachHeaderSizeFromMagic(uint32_t magic)
 
 
 bool
-ObjectFileMachO::MagicBytesMatch (DataBufferSP& data_sp, 
-                                  lldb::addr_t data_offset, 
+ObjectFileMachO::MagicBytesMatch (DataBufferSP& data_sp,
+                                  lldb::addr_t data_offset,
                                   lldb::addr_t data_length)
 {
     DataExtractor data;
@@ -501,8 +502,6 @@ ObjectFileMachO::ObjectFileMachO(const lldb::ModuleSP &module_sp,
                                  lldb::offset_t file_offset,
                                  lldb::offset_t length) :
     ObjectFile(module_sp, file, file_offset, length, data_sp, data_offset),
-    m_sections_ap(),
-    m_symtab_ap(),
     m_mach_segments(),
     m_mach_sections(),
     m_entry_point_address(),
@@ -518,8 +517,6 @@ ObjectFileMachO::ObjectFileMachO (const lldb::ModuleSP &module_sp,
                                   const lldb::ProcessSP &process_sp,
                                   lldb::addr_t header_addr) :
     ObjectFile(module_sp, process_sp, header_addr, header_data_sp),
-    m_sections_ap(),
-    m_symtab_ap(),
     m_mach_segments(),
     m_mach_sections(),
     m_entry_point_address(),
@@ -582,7 +579,7 @@ ObjectFileMachO::ParseHeader ()
             m_data.GetU32(&offset, &m_header.cputype, 6);
 
             ArchSpec mach_arch(eArchTypeMachO, m_header.cputype, m_header.cpusubtype);
-            
+
             // Check if the module has a required architecture
             const ArchSpec &module_arch = module_sp->GetArchitecture();
             if (module_arch.IsValid() && !module_arch.IsCompatibleMatch(mach_arch))
@@ -702,15 +699,16 @@ ObjectFileMachO::GetAddressClass (lldb::addr_t file_addr)
                     }
                 }
             }
-            
+
             const SymbolType symbol_type = symbol->GetType();
             switch (symbol_type)
             {
             case eSymbolTypeAny:            return eAddressClassUnknown;
             case eSymbolTypeAbsolute:       return eAddressClassUnknown;
-                    
+
             case eSymbolTypeCode:
             case eSymbolTypeTrampoline:
+            case eSymbolTypeResolver:
                 if (m_header.cputype == llvm::MachO::CPUTypeARM)
                 {
                     // For ARM we have a bit in the n_desc field of the symbol
@@ -804,7 +802,7 @@ ObjectFileMachO::ParseSections ()
         const lldb::offset_t load_cmd_offset = offset;
         if (m_data.GetU32(&offset, &encryption_cmd, 2) == NULL)
             break;
-        
+
         if (encryption_cmd.cmd == LoadCommandEncryptionInfo)
         {
             if (m_data.GetU32(&offset, &encryption_cmd.cryptoff, 3))
@@ -840,7 +838,7 @@ ObjectFileMachO::ParseSections ()
                 load_cmd.filesize = m_data.GetAddress(&offset);
                 if (m_data.GetU32(&offset, &load_cmd.maxprot, 4))
                 {
-                    
+
                     const bool segment_is_encrypted = (load_cmd.flags & SegmentCommandFlagBitProtectedVersion1) != 0;
 
                     // Keep a list of mach segments around in case we need to
@@ -870,7 +868,7 @@ ObjectFileMachO::ParseSections ()
                     struct section_64 sect64;
                     ::memset (&sect64, 0, sizeof(sect64));
                     // Push a section into our mach sections for the section at
-                    // index zero (NListSectionNoSection) if we don't have any 
+                    // index zero (NListSectionNoSection) if we don't have any
                     // mach sections yet...
                     if (m_mach_sections.empty())
                         m_mach_sections.push_back(sect64);
@@ -1051,11 +1049,11 @@ ObjectFileMachO::ParseSections ()
                             // TODO: categorize sections by other flags for regular sections
                             case SectionTypeRegular:
                                 if (segment_sp->GetName() == g_sect_name_TEXT)
-                                    sect_type = eSectionTypeCode; 
+                                    sect_type = eSectionTypeCode;
                                 else if (segment_sp->GetName() == g_sect_name_DATA)
-                                    sect_type = eSectionTypeData; 
+                                    sect_type = eSectionTypeData;
                                 else
-                                    sect_type = eSectionTypeOther; 
+                                    sect_type = eSectionTypeOther;
                                 break;
                             case SectionTypeZeroFill:                   sect_type = eSectionTypeZeroFill; break;
                             case SectionTypeCStringLiterals:            sect_type = eSectionTypeDataCString;    break; // section with only literal C strings
@@ -1088,7 +1086,7 @@ ObjectFileMachO::ParseSections ()
                                                           sect64.offset == 0 ? 0 : sect64.size,
                                                           sect64.flags));
                         // Set the section to be encrypted to match the segment
-                        
+
                         bool section_is_encrypted = false;
                         if (!segment_is_encrypted && load_cmd.filesize != 0)
                             section_is_encrypted = encrypted_file_ranges.FindEntryThatContains(sect64.offset) != NULL;
@@ -1264,14 +1262,14 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                     module_sp->LogMessage(log.get(), "LC_SYMTAB.stroff == 0");
                 return 0;
             }
-            
+
             if (symtab_load_command.nsyms == 0)
             {
                 if (log)
                     module_sp->LogMessage(log.get(), "LC_SYMTAB.nsyms == 0");
                 return 0;
             }
-            
+
             if (symtab_load_command.strsize == 0)
             {
                 if (log)
@@ -1312,7 +1310,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         DataExtractor strtab_data (NULL, 0, byte_order, addr_byte_size);
         DataExtractor function_starts_data (NULL, 0, byte_order, addr_byte_size);
         DataExtractor indirect_symbol_index_data (NULL, 0, byte_order, addr_byte_size);
-        
+
         const addr_t nlist_data_byte_size = symtab_load_command.nsyms * nlist_byte_size;
         const addr_t strtab_data_byte_size = symtab_load_command.strsize;
         addr_t strtab_addr = LLDB_INVALID_ADDRESS;
@@ -1390,16 +1388,16 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         }
         else
         {
-            nlist_data.SetData (m_data, 
-                                symtab_load_command.symoff, 
+            nlist_data.SetData (m_data,
+                                symtab_load_command.symoff,
                                 nlist_data_byte_size);
             strtab_data.SetData (m_data,
-                                 symtab_load_command.stroff, 
+                                 symtab_load_command.stroff,
                                  strtab_data_byte_size);
             if (m_dysymtab.nindirectsyms != 0)
             {
-                indirect_symbol_index_data.SetData (m_data, 
-                                                    m_dysymtab.indirectsymoff, 
+                indirect_symbol_index_data.SetData (m_data,
+                                                    m_dysymtab.indirectsymoff,
                                                     m_dysymtab.nindirectsyms * 4);
             }
             if (function_starts_load_command.cmd)
@@ -1452,6 +1450,17 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             eh_frame_section_sp = section_list->FindSectionByName (g_section_name_eh_frame);
 
         const bool is_arm = (m_header.cputype == llvm::MachO::CPUTypeARM);
+
+        // lldb works best if it knows the start addresss of all functions in a module.
+        // Linker symbols or debug info are normally the best source of information for start addr / size but
+        // they may be stripped in a released binary.
+        // Two additional sources of information exist in Mach-O binaries:  
+        //    LC_FUNCTION_STARTS - a list of ULEB128 encoded offsets of each function's start address in the
+        //                         binary, relative to the text section.
+        //    eh_frame           - the eh_frame FDEs have the start addr & size of each function
+        //  LC_FUNCTION_STARTS is the fastest source to read in, and is present on all modern binaries.
+        //  Binaries built to run on older releases may need to use eh_frame information.
+
         if (text_section_sp && function_starts_data.GetByteSize())
         {
             FunctionStarts::Entry function_start_entry;
@@ -1465,8 +1474,33 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 function_start_entry.addr += delta;
                 function_starts.Append(function_start_entry);
             }
+        } 
+        else
+        {
+            // If m_type is eTypeDebugInfo, then this is a dSYM - it will have the load command claiming an eh_frame
+            // but it doesn't actually have the eh_frame content.  And if we have a dSYM, we don't need to do any
+            // of this fill-in-the-missing-symbols works anyway - the debug info should give us all the functions in
+            // the module.
+            if (text_section_sp.get() && eh_frame_section_sp.get() && m_type != eTypeDebugInfo)
+            {
+                DWARFCallFrameInfo eh_frame(*this, eh_frame_section_sp, eRegisterKindGCC, true);
+                DWARFCallFrameInfo::FunctionAddressAndSizeVector functions;
+                eh_frame.GetFunctionAddressAndSizeVector (functions);
+                addr_t text_base_addr = text_section_sp->GetFileAddress();
+                size_t count = functions.GetSize();
+                for (size_t i = 0; i < count; ++i)
+                {
+                    const DWARFCallFrameInfo::FunctionAddressAndSizeVector::Entry *func = functions.GetEntryAtIndex (i);
+                    if (func)
+                    {
+                        FunctionStarts::Entry function_start_entry;
+                        function_start_entry.addr = func->base - text_base_addr;
+                        function_starts.Append(function_start_entry);
+                    }
+                }
+            }
         }
-        
+
         const size_t function_starts_count = function_starts.GetSize();
 
         const user_id_t TEXT_eh_frame_sectID = eh_frame_section_sp.get() ? eh_frame_section_sp->GetID() : NListSectionNoSection;
@@ -1527,28 +1561,54 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             char dsc_path[PATH_MAX];
 
             snprintf(dsc_path, sizeof(dsc_path), "%s%s%s",
-                     "/System/Library/Caches/com.apple.dyld/",	/* IPHONE_DYLD_SHARED_CACHE_DIR */
-                     "dyld_shared_cache_",			/* DYLD_SHARED_CACHE_BASE_NAME */
+                     "/System/Library/Caches/com.apple.dyld/",  /* IPHONE_DYLD_SHARED_CACHE_DIR */
+                     "dyld_shared_cache_",          /* DYLD_SHARED_CACHE_BASE_NAME */
                      header_arch.GetArchitectureName());
 
             FileSpec dsc_filespec(dsc_path, false);
 
             // We need definitions of two structures in the on-disk DSC, copy them here manually
-            struct lldb_copy_dyld_cache_header
+           struct lldb_copy_dyld_cache_header_v0
             {
-                char		magic[16];
-                uint32_t	mappingOffset;
-                uint32_t	mappingCount;
-                uint32_t	imagesOffset;
-                uint32_t	imagesCount;
-                uint64_t	dyldBaseAddress;
-                uint64_t	codeSignatureOffset;
-                uint64_t	codeSignatureSize;
-                uint64_t	slideInfoOffset;
-                uint64_t	slideInfoSize;
-                uint64_t	localSymbolsOffset;
-                uint64_t	localSymbolsSize;
+               char        magic[16];            // e.g. "dyld_v0    i386", "dyld_v1   armv7", etc.
+               uint32_t    mappingOffset;        // file offset to first dyld_cache_mapping_info
+               uint32_t    mappingCount;         // number of dyld_cache_mapping_info entries
+                uint32_t    imagesOffset;
+                uint32_t    imagesCount;
+                uint64_t    dyldBaseAddress;
+                uint64_t    codeSignatureOffset;
+                uint64_t    codeSignatureSize;
+                uint64_t    slideInfoOffset;
+                uint64_t    slideInfoSize;
+               uint64_t    localSymbolsOffset;   // file offset of where local symbols are stored
+               uint64_t    localSymbolsSize;     // size of local symbols information
+           };
+           struct lldb_copy_dyld_cache_header_v1
+           {
+               char        magic[16];            // e.g. "dyld_v0    i386", "dyld_v1   armv7", etc.
+               uint32_t    mappingOffset;        // file offset to first dyld_cache_mapping_info
+               uint32_t    mappingCount;         // number of dyld_cache_mapping_info entries
+               uint32_t    imagesOffset;
+               uint32_t    imagesCount;
+               uint64_t    dyldBaseAddress;
+               uint64_t    codeSignatureOffset;
+               uint64_t    codeSignatureSize;
+               uint64_t    slideInfoOffset;
+               uint64_t    slideInfoSize;
+                uint64_t    localSymbolsOffset;
+                uint64_t    localSymbolsSize;
+               uint8_t     uuid[16];             // v1 and above, also recorded in dyld_all_image_infos v13 and later
             };
+
+           struct lldb_copy_dyld_cache_mapping_info
+           {
+               uint64_t        address;
+               uint64_t        size;
+               uint64_t        fileOffset;
+               uint32_t        maxProt;
+               uint32_t        initProt;
+           };
+
             struct lldb_copy_dyld_cache_local_symbols_info
             {
                     uint32_t        nlistOffset;
@@ -1573,7 +1633,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
 
                There is one dyld_cache_local_symbols_entry per dylib/framework in the dyld shared cache.
                The "dylibOffset" field is the Mach-O header of this dylib/framework in the dyld shared cache.
-               The dyld_cache_local_symbols_entry also lists the start of this dylib/framework's nlist records 
+               The dyld_cache_local_symbols_entry also lists the start of this dylib/framework's nlist records
                and the count of how many nlist records there are for this dylib/framework.
             */
 
@@ -1581,26 +1641,55 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             //
             // Save some VM space, do not map the entire cache in one shot.
 
-            if (DataBufferSP dsc_data_sp = dsc_filespec.MemoryMapFileContents(0, sizeof(struct lldb_copy_dyld_cache_header))) 
+            DataBufferSP dsc_data_sp;
+            dsc_data_sp = dsc_filespec.MemoryMapFileContents(0, sizeof(struct lldb_copy_dyld_cache_header_v1));
+
+            if (dsc_data_sp)
             {
                 DataExtractor dsc_header_data(dsc_data_sp, byte_order, addr_byte_size);
 
-                lldb::offset_t offset = offsetof (struct lldb_copy_dyld_cache_header, mappingOffset); 
+                char version_str[17];
+                int version = -1;
+                lldb::offset_t offset = 0;
+                memcpy (version_str, dsc_header_data.GetData (&offset, 16), 16);
+                version_str[16] = '\0';
+                if (strncmp (version_str, "dyld_v", 6) == 0 && isdigit (version_str[6]))
+                {
+                    int v;
+                    if (::sscanf (version_str + 6, "%d", &v) == 1)
+                    {
+                        version = v;
+                    }
+                }
+
+                offset = offsetof (struct lldb_copy_dyld_cache_header_v1, mappingOffset);
+
                 uint32_t mappingOffset = dsc_header_data.GetU32(&offset);
 
                 // If the mappingOffset points to a location inside the header, we've
                 // opened an old dyld shared cache, and should not proceed further.
-                if (mappingOffset >= sizeof(struct lldb_copy_dyld_cache_header)) 
+                if ((version == 0 && mappingOffset >= sizeof(struct lldb_copy_dyld_cache_header_v0))
+                    || (version >= 1 && mappingOffset >= sizeof(struct lldb_copy_dyld_cache_header_v1)))
                 {
 
-                    offset = offsetof (struct lldb_copy_dyld_cache_header, localSymbolsOffset);
+                    DataBufferSP dsc_mapping_info_data_sp = dsc_filespec.MemoryMapFileContents(mappingOffset, sizeof (struct lldb_copy_dyld_cache_mapping_info));
+                    DataExtractor dsc_mapping_info_data(dsc_mapping_info_data_sp, byte_order, addr_byte_size);
+                    offset = 0;
+
+                    // The File addresses (from the in-memory Mach-O load commands) for the shared libraries
+                    // in the shared library cache need to be adjusted by an offset to match up with the
+                    // dylibOffset identifying field in the dyld_cache_local_symbol_entry's.  This offset is
+                    // recorded in mapping_offset_value.
+                    const uint64_t mapping_offset_value = dsc_mapping_info_data.GetU64(&offset);
+
+                    offset = offsetof (struct lldb_copy_dyld_cache_header_v1, localSymbolsOffset);
                     uint64_t localSymbolsOffset = dsc_header_data.GetU64(&offset);
                     uint64_t localSymbolsSize = dsc_header_data.GetU64(&offset);
 
-                    if (localSymbolsOffset && localSymbolsSize) 
+                    if (localSymbolsOffset && localSymbolsSize)
                     {
                         // Map the local symbols
-                        if (DataBufferSP dsc_local_symbols_data_sp = dsc_filespec.MemoryMapFileContents(localSymbolsOffset, localSymbolsSize)) 
+                        if (DataBufferSP dsc_local_symbols_data_sp = dsc_filespec.MemoryMapFileContents(localSymbolsOffset, localSymbolsSize))
                         {
                             DataExtractor dsc_local_symbols_data(dsc_local_symbols_data_sp, byte_order, addr_byte_size);
 
@@ -1610,14 +1699,9 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                             struct lldb_copy_dyld_cache_local_symbols_info local_symbols_info;
                             dsc_local_symbols_data.GetU32(&offset, &local_symbols_info.nlistOffset, 6);
 
-                            // The local_symbols_infos offsets are offsets into local symbols memory, NOT file offsets!
-                            // We first need to identify the local "entry" that matches the current header.
-                            // The "entry" is stored as a file offset in the dyld_shared_cache, so we need to
-                            // adjust the raw m_header value by slide and 0x30000000.
-
                             SectionSP text_section_sp(section_list->FindSectionByName(GetSegmentNameTEXT()));
 
-                            uint32_t header_file_offset = (text_section_sp->GetFileAddress() - 0x30000000);
+                            uint32_t header_file_offset = (text_section_sp->GetFileAddress() - mapping_offset_value);
 
                             offset = local_symbols_info.entriesOffset;
                             for (uint32_t entry_index = 0; entry_index < local_symbols_info.entriesCount; entry_index++)
@@ -1627,7 +1711,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                 local_symbols_entry.nlistStartIndex = dsc_local_symbols_data.GetU32(&offset);
                                 local_symbols_entry.nlistCount = dsc_local_symbols_data.GetU32(&offset);
 
-                                if (header_file_offset == local_symbols_entry.dylibOffset) 
+                                if (header_file_offset == local_symbols_entry.dylibOffset)
                                 {
                                     unmapped_local_symbols_found = local_symbols_entry.nlistCount;
 
@@ -1638,7 +1722,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                     nlist_data_offset = local_symbols_info.nlistOffset + (nlist_byte_size * local_symbols_entry.nlistStartIndex);
                                     uint32_t string_table_offset = local_symbols_info.stringsOffset;
 
-                                    for (uint32_t nlist_index = 0; nlist_index < local_symbols_entry.nlistCount; nlist_index++) 
+                                    for (uint32_t nlist_index = 0; nlist_index < local_symbols_entry.nlistCount; nlist_index++)
                                     {
                                         /////////////////////////////
                                         {
@@ -2089,7 +2173,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                             else
                                                             {
                                                                 uint32_t section_type = symbol_section->Get() & SectionFlagMaskSectionType;
-                                                                
+
                                                                 switch (section_type)
                                                                 {
                                                                     case SectionTypeRegular:                     break; // regular section
@@ -2111,7 +2195,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                                     case SectionTypeLazyDylibSymbolPointers:    type = eSymbolTypeTrampoline; break;
                                                                     default: break;
                                                                 }
-                                                                
+
                                                                 if (type == eSymbolTypeInvalid)
                                                                 {
                                                                     const char *symbol_sect_name = symbol_section->GetName().AsCString();
@@ -2129,7 +2213,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                                         if (symbol_sect_name && ::strstr (symbol_sect_name, "__objc") == symbol_sect_name)
                                                                         {
                                                                             type = eSymbolTypeRuntime;
-                                                                            
+
                                                                             if (symbol_name &&
                                                                                 symbol_name[0] == '_' &&
                                                                                 symbol_name[1] == 'O' &&
@@ -2195,14 +2279,14 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                             }
                                                         }
                                                         break;
-                                                }                            
+                                                }
                                             }
 
                                             if (add_nlist)
                                             {
                                                 uint64_t symbol_value = nlist.n_value;
                                                 bool symbol_name_is_mangled = false;
-                                                
+
                                                 if (symbol_name_non_abi_mangled)
                                                 {
                                                     sym[sym_idx].GetMangled().SetMangledName (ConstString(symbol_name_non_abi_mangled));
@@ -2215,13 +2299,13 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                         symbol_name_is_mangled = symbol_name[1] == '_';
                                                         symbol_name++;  // Skip the leading underscore
                                                     }
-                                                    
+
                                                     if (symbol_name)
                                                     {
                                                         sym[sym_idx].GetMangled().SetValue(ConstString(symbol_name), symbol_name_is_mangled);
                                                     }
                                                 }
-                                                
+
                                                 if (is_debug == false)
                                                 {
                                                     if (type == eSymbolTypeCode)
@@ -2290,7 +2374,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                         if (func_start_entry)
                                                         {
                                                             func_start_entry->data = true;
-                                                            
+
                                                             addr_t symbol_file_addr = func_start_entry->addr;
                                                             uint32_t symbol_flags = 0;
                                                             if (is_arm)
@@ -2299,7 +2383,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                                     symbol_flags = MACHO_NLIST_ARM_SYMBOL_IS_THUMB;
                                                                 symbol_file_addr &= 0xfffffffffffffffeull;
                                                             }
-                                                            
+
                                                             const FunctionStarts::Entry *next_func_start_entry = function_starts.FindNextEntry (func_start_entry);
                                                             const addr_t section_end_file_addr = section_file_addr + symbol_section->GetByteSize();
                                                             if (next_func_start_entry)
@@ -2319,13 +2403,13 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                                     }
                                                     symbol_value -= section_file_addr;
                                                 }
-                                                
+
                                                 sym[sym_idx].SetID (nlist_idx);
                                                 sym[sym_idx].SetType (type);
                                                 sym[sym_idx].GetAddress().SetSection (symbol_section);
                                                 sym[sym_idx].GetAddress().SetOffset (symbol_value);
                                                 sym[sym_idx].SetFlags (nlist.n_type << 16 | nlist.n_desc);
-                                                
+
                                                 if (symbol_byte_size > 0)
                                                     sym[sym_idx].SetByteSize(symbol_byte_size);
 
@@ -2337,7 +2421,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                             {
                                                 sym[sym_idx].Clear();
                                             }
-                                            
+
                                         }
                                         /////////////////////////////
                                     }
@@ -2387,18 +2471,18 @@ ObjectFileMachO::ParseSymtab (bool minimize)
 
             SymbolType type = eSymbolTypeInvalid;
             const char *symbol_name = NULL;
-            
+
             if (have_strtab_data)
             {
                 symbol_name = strtab_data.PeekCStr(nlist.n_strx);
-                
+
                 if (symbol_name == NULL)
                 {
                     // No symbol should be NULL, even the symbols with no
                     // string values should have an offset zero which points
                     // to an empty C-string
                     Host::SystemLog (Host::eSystemLogError,
-                                     "error: symbol[%u] has invalid string table offset 0x%x in %s/%s, ignoring symbol\n", 
+                                     "error: symbol[%u] has invalid string table offset 0x%x in %s/%s, ignoring symbol\n",
                                      nlist_idx,
                                      nlist.n_strx,
                                      module_sp->GetFileSpec().GetDirectory().GetCString(),
@@ -2431,18 +2515,18 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             {
                 switch (nlist.n_type)
                 {
-                case StabGlobalSymbol:    
+                case StabGlobalSymbol:
                     // N_GSYM -- global symbol: name,,NO_SECT,type,0
                     // Sometimes the N_GSYM value contains the address.
-                    
+
                     // FIXME: In the .o files, we have a GSYM and a debug symbol for all the ObjC data.  They
                     // have the same address, but we want to ensure that we always find only the real symbol,
                     // 'cause we don't currently correctly attribute the GSYM one to the ObjCClass/Ivar/MetaClass
                     // symbol type.  This is a temporary hack to make sure the ObjectiveC symbols get treated
                     // correctly.  To do this right, we should coalesce all the GSYM & global symbols that have the
                     // same address.
-                    
-                    if (symbol_name && symbol_name[0] == '_' && symbol_name[1] ==  'O' 
+
+                    if (symbol_name && symbol_name[0] == '_' && symbol_name[1] ==  'O'
                         && (strncmp (symbol_name, "_OBJC_IVAR_$_", strlen ("_OBJC_IVAR_$_")) == 0
                             || strncmp (symbol_name, "_OBJC_CLASS_$_", strlen ("_OBJC_CLASS_$_")) == 0
                             || strncmp (symbol_name, "_OBJC_METACLASS_$_", strlen ("_OBJC_METACLASS_$_")) == 0))
@@ -2461,13 +2545,13 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                     type = eSymbolTypeCompiler;
                     break;
 
-                case StabFunction:       
+                case StabFunction:
                     // N_FUN -- procedure: name,,n_sect,linenumber,address
                     if (symbol_name)
                     {
                         type = eSymbolTypeCode;
                         symbol_section = section_info.GetSection (nlist.n_sect, nlist.n_value);
-                        
+
                         N_FUN_addr_to_sym_idx[nlist.n_value] = sym_idx;
                         // We use the current number of symbols in the symbol table in lieu of
                         // using nlist_idx in case we ever start trimming entries out
@@ -2492,7 +2576,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                     }
                     break;
 
-                case StabStaticSymbol:   
+                case StabStaticSymbol:
                     // N_STSYM -- static symbol: name,,n_sect,type,address
                     N_STSYM_addr_to_sym_idx[nlist.n_value] = sym_idx;
                     symbol_section = section_info.GetSection (nlist.n_sect, nlist.n_value);
@@ -2652,7 +2736,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                             N_SO_index = sym_idx;
                         }
                     }
-                    
+
                     break;
 
                 case StabObjectFileName:
@@ -2700,7 +2784,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                         add_nlist = false;
                     break;
 
-                case StabCompilerParameters:  
+                case StabCompilerParameters:
                     // N_PARAMS - compiler parameters: name,,NO_SECT,0,0
                     type = eSymbolTypeCompiler;
                     break;
@@ -2862,8 +2946,8 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                 const char *symbol_sect_name = symbol_section->GetName().AsCString();
                                 if (symbol_section->IsDescendant (text_section_sp.get()))
                                 {
-                                    if (symbol_section->IsClear(SectionAttrUserPureInstructions | 
-                                                                SectionAttrUserSelfModifyingCode | 
+                                    if (symbol_section->IsClear(SectionAttrUserPureInstructions |
+                                                                SectionAttrUserSelfModifyingCode |
                                                                 SectionAttrSytemSomeInstructions))
                                         type = eSymbolTypeData;
                                     else
@@ -2876,9 +2960,9 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                     {
                                         type = eSymbolTypeRuntime;
 
-                                        if (symbol_name && 
-                                            symbol_name[0] == '_' && 
-                                            symbol_name[1] == 'O' && 
+                                        if (symbol_name &&
+                                            symbol_name[0] == '_' &&
+                                            symbol_name[1] == 'O' &&
                                             symbol_name[2] == 'B')
                                         {
                                             llvm::StringRef symbol_name_ref(symbol_name);
@@ -2944,7 +3028,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                         }
                     }
                     break;
-                }                            
+                }
             }
 
             if (add_nlist)
@@ -3039,7 +3123,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                         if (func_start_entry)
                         {
                             func_start_entry->data = true;
-                            
+
                             addr_t symbol_file_addr = func_start_entry->addr;
                             if (is_arm)
                                 symbol_file_addr &= 0xfffffffffffffffeull;
@@ -3115,7 +3199,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 }
             }
         }
-        
+
         uint32_t synthetic_sym_id = symtab_load_command.nsyms;
 
         if (function_starts_count > 0)
@@ -3127,7 +3211,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 if (function_starts.GetEntryRef (i).data == false)
                     ++num_synthetic_function_symbols;
             }
-            
+
             if (num_synthetic_function_symbols > 0)
             {
                 if (num_syms < sym_idx + num_synthetic_function_symbols)
@@ -3240,10 +3324,10 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                                     // a current symbol index, so just look this up by index
                                     stub_symbol = symtab->SymbolAtIndex (index_pos->second);
                                 }
-                                else 
+                                else
                                 {
                                     // We need to lookup a symbol using the original nlist
-                                    // symbol index since this index is coming from the 
+                                    // symbol index since this index is coming from the
                                     // S_SYMBOL_STUBS
                                     stub_symbol = symtab->FindSymbolByID (stub_sym_id);
                                 }
@@ -3344,21 +3428,21 @@ ObjectFileMachO::GetUUID (lldb_private::UUID* uuid)
             if (load_cmd.cmd == LoadCommandUUID)
             {
                 const uint8_t *uuid_bytes = m_data.PeekData(offset, 16);
-                
+
                 if (uuid_bytes)
                 {
                     // OpenCL on Mac OS X uses the same UUID for each of its object files.
                     // We pretend these object files have no UUID to prevent crashing.
-                    
+
                     const uint8_t opencl_uuid[] = { 0x8c, 0x8e, 0xb3, 0x9b,
                                                     0x3b, 0xa8,
                                                     0x4b, 0x16,
                                                     0xb6, 0xa4,
                                                     0x27, 0x63, 0xbb, 0x14, 0xf0, 0x0d };
-                    
+
                     if (!memcmp(uuid_bytes, opencl_uuid, 16))
                         return false;
-                    
+
                     uuid->SetBytes (uuid_bytes);
                     return true;
                 }
@@ -3422,23 +3506,23 @@ ObjectFileMachO::GetDependentModules (FileSpecList& files)
 }
 
 lldb_private::Address
-ObjectFileMachO::GetEntryPointAddress () 
+ObjectFileMachO::GetEntryPointAddress ()
 {
     // If the object file is not an executable it can't hold the entry point.  m_entry_point_address
     // is initialized to an invalid address, so we can just return that.
     // If m_entry_point_address is valid it means we've found it already, so return the cached value.
-    
+
     if (!IsExecutable() || m_entry_point_address.IsValid())
         return m_entry_point_address;
-    
-    // Otherwise, look for the UnixThread or Thread command.  The data for the Thread command is given in 
+
+    // Otherwise, look for the UnixThread or Thread command.  The data for the Thread command is given in
     // /usr/include/mach-o.h, but it is basically:
     //
     //  uint32_t flavor  - this is the flavor argument you would pass to thread_get_state
     //  uint32_t count   - this is the count of longs in the thread state data
     //  struct XXX_thread_state state - this is the structure from <machine/thread_status.h> corresponding to the flavor.
     //  <repeat this trio>
-    // 
+    //
     // So we just keep reading the various register flavors till we find the GPR one, then read the PC out of there.
     // FIXME: We will need to have a "RegisterContext data provider" class at some point that can get all the registers
     // out of data in this form & attach them to a given thread.  That should underlie the MacOS X User process plugin,
@@ -3457,7 +3541,7 @@ ObjectFileMachO::GetEntryPointAddress ()
         uint32_t i;
         lldb::addr_t start_address = LLDB_INVALID_ADDRESS;
         bool done = false;
-        
+
         for (i=0; i<m_header.ncmds; ++i)
         {
             const lldb::offset_t cmd_offset = offset;
@@ -3478,7 +3562,7 @@ ObjectFileMachO::GetEntryPointAddress ()
                             // We've gotten off somehow, log and exit;
                             return m_entry_point_address;
                         }
-                        
+
                         switch (m_header.cputype)
                         {
                         case llvm::MachO::CPUTypeARM:
@@ -3536,10 +3620,10 @@ ObjectFileMachO::GetEntryPointAddress ()
             // Go to the next load command:
             offset = cmd_offset + load_cmd.cmdsize;
         }
-        
+
         if (start_address != LLDB_INVALID_ADDRESS)
         {
-            // We got the start address from the load commands, so now resolve that address in the sections 
+            // We got the start address from the load commands, so now resolve that address in the sections
             // of this ObjectFile:
             if (!m_entry_point_address.ResolveAddressUsingFileSections (start_address, GetSectionList()))
             {
@@ -3550,9 +3634,9 @@ ObjectFileMachO::GetEntryPointAddress ()
         {
             // We couldn't read the UnixThread load command - maybe it wasn't there.  As a fallback look for the
             // "start" symbol in the main executable.
-            
+
             ModuleSP module_sp (GetModule());
-            
+
             if (module_sp)
             {
                 SymbolContextList contexts;
@@ -3565,7 +3649,7 @@ ObjectFileMachO::GetEntryPointAddress ()
             }
         }
     }
-    
+
     return m_entry_point_address;
 
 }
@@ -3605,7 +3689,7 @@ ObjectFileMachO::GetNumThreadContexts ()
                 const uint32_t cmd_offset = offset;
                 if (m_data.GetU32(&offset, &thread_cmd, 2) == NULL)
                     break;
-                
+
                 if (thread_cmd.cmd == LoadCommandThread)
                 {
                     file_range.SetRangeBase (offset);
@@ -3634,9 +3718,9 @@ ObjectFileMachO::GetThreadContextAtIndex (uint32_t idx, lldb_private::Thread &th
         const FileRangeArray::Entry *thread_context_file_range = m_thread_context_offsets.GetEntryAtIndex (idx);
         if (thread_context_file_range)
         {
-        
-            DataExtractor data (m_data, 
-                                thread_context_file_range->GetRangeBase(), 
+
+            DataExtractor data (m_data,
+                                thread_context_file_range->GetRangeBase(),
                                 thread_context_file_range->GetByteSize());
 
             switch (m_header.cputype)
@@ -3644,11 +3728,11 @@ ObjectFileMachO::GetThreadContextAtIndex (uint32_t idx, lldb_private::Thread &th
                 case llvm::MachO::CPUTypeARM:
                     reg_ctx_sp.reset (new RegisterContextDarwin_arm_Mach (thread, data));
                     break;
-                    
+
                 case llvm::MachO::CPUTypeI386:
                     reg_ctx_sp.reset (new RegisterContextDarwin_i386_Mach (thread, data));
                     break;
-                    
+
                 case llvm::MachO::CPUTypeX86_64:
                     reg_ctx_sp.reset (new RegisterContextDarwin_x86_64_Mach (thread, data));
                     break;
@@ -3673,7 +3757,7 @@ ObjectFileMachO::CalculateType()
                 if (GetUUID(&uuid))
                 {
                     // this checking for the UUID load command is not enough
-                    // we could eventually look for the symbol named 
+                    // we could eventually look for the symbol named
                     // "OSKextGetCurrentIdentifier" as this is required of kexts
                     if (m_strata == eStrataInvalid)
                         m_strata = eStrataKernel;
@@ -3711,7 +3795,7 @@ ObjectFileMachO::CalculateStrata()
                 if (GetUUID(&uuid))
                 {
                     // this checking for the UUID load command is not enough
-                    // we could eventually look for the symbol named 
+                    // we could eventually look for the symbol named
                     // "OSKextGetCurrentIdentifier" as this is required of kexts
                     if (m_type == eTypeInvalid)
                         m_type = eTypeSharedLibrary;
@@ -3727,7 +3811,7 @@ ObjectFileMachO::CalculateStrata()
             {
                 return eStrataUser;
             }
-            else 
+            else
             {
                 SectionList *section_list = GetSectionList();
                 if (section_list)
@@ -3772,7 +3856,7 @@ ObjectFileMachO::GetVersion (uint32_t *versions, uint32_t num_versions)
             const lldb::offset_t cmd_offset = offset;
             if (m_data.GetU32(&offset, &load_cmd, 2) == NULL)
                 break;
-            
+
             if (load_cmd.cmd == LoadCommandDylibIdent)
             {
                 if (version_cmd == 0)
@@ -3782,12 +3866,12 @@ ObjectFileMachO::GetVersion (uint32_t *versions, uint32_t num_versions)
                         break;
                     version = load_cmd.dylib.current_version;
                 }
-                break; // Break for now unless there is another more complete version 
+                break; // Break for now unless there is another more complete version
                        // number load command in the future.
             }
             offset = cmd_offset + load_cmd.cmdsize;
         }
-        
+
         if (version_cmd == LoadCommandDylibIdent)
         {
             if (versions != NULL && num_versions > 0)
@@ -3818,9 +3902,9 @@ ObjectFileMachO::GetArchitecture (ArchSpec &arch)
     {
         lldb_private::Mutex::Locker locker(module_sp->GetMutex());
         arch.SetArchitecture (eArchTypeMachO, m_header.cputype, m_header.cpusubtype);
-    
+
         // Files with type MH_PRELOAD are currently used in cases where the image
-        // debugs at the addresses in the file itself. Below we set the OS to 
+        // debugs at the addresses in the file itself. Below we set the OS to
         // unknown to make sure we use the DynamicLoaderStatic()...
         if (m_header.filetype == HeaderFileTypePreloadedExecutable)
         {

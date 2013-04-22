@@ -64,6 +64,7 @@ static user_id_t g_value_obj_uid = 0;
 ValueObject::ValueObject (ValueObject &parent) :
     UserID (++g_value_obj_uid), // Unique identifier for every value object
     m_parent (&parent),
+    m_root (NULL),
     m_update_point (parent.GetUpdatePoint ()),
     m_name (),
     m_data (),
@@ -108,6 +109,7 @@ ValueObject::ValueObject (ExecutionContextScope *exe_scope,
                           AddressType child_ptr_or_ref_addr_type) :
     UserID (++g_value_obj_uid), // Unique identifier for every value object
     m_parent (NULL),
+    m_root (NULL),
     m_update_point (exe_scope),
     m_name (),
     m_data (),
@@ -229,7 +231,7 @@ ValueObject::UpdateValueIfNeeded (bool update_format)
 bool
 ValueObject::UpdateFormatsIfNeeded()
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TYPES));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TYPES));
     if (log)
         log->Printf("[%s %p] checking for FormatManager revisions. ValueObject rev: %d - Global rev: %d",
            GetName().GetCString(),
@@ -1005,10 +1007,98 @@ ValueObject::GetData (DataExtractor& data)
     ExecutionContext exe_ctx (GetExecutionContextRef());
     Error error = m_value.GetValueAsData(&exe_ctx, GetClangAST(), data, 0, GetModule().get());
     if (error.Fail())
-        return 0;
+    {
+        if (m_data.GetByteSize())
+        {
+            data = m_data;
+            return data.GetByteSize();
+        }
+        else
+        {
+            return 0;
+        }
+    }
     data.SetAddressByteSize(m_data.GetAddressByteSize());
     data.SetByteOrder(m_data.GetByteOrder());
     return data.GetByteSize();
+}
+
+bool
+ValueObject::SetData (DataExtractor &data, Error &error)
+{
+    error.Clear();
+    // Make sure our value is up to date first so that our location and location
+    // type is valid.
+    if (!UpdateValueIfNeeded(false))
+    {
+        error.SetErrorString("unable to read value");
+        return false;
+    }
+    
+    uint64_t count = 0;
+    Encoding encoding = ClangASTType::GetEncoding (GetClangType(), count);
+    
+    const size_t byte_size = GetByteSize();
+    
+    Value::ValueType value_type = m_value.GetValueType();
+    
+    switch (value_type)
+    {
+    case Value::eValueTypeScalar:
+        {
+            Error set_error = m_value.GetScalar().SetValueFromData(data, encoding, byte_size);
+            
+            if (!set_error.Success())
+            {
+                error.SetErrorStringWithFormat("unable to set scalar value: %s", set_error.AsCString());
+                return false;
+            }
+        }
+        break;
+    case Value::eValueTypeLoadAddress:
+        {
+            // If it is a load address, then the scalar value is the storage location
+            // of the data, and we have to shove this value down to that load location.
+            ExecutionContext exe_ctx (GetExecutionContextRef());
+            Process *process = exe_ctx.GetProcessPtr();
+            if (process)
+            {
+                addr_t target_addr = m_value.GetScalar().ULongLong(LLDB_INVALID_ADDRESS);
+                size_t bytes_written = process->WriteMemory(target_addr,
+                                                            data.GetDataStart(),
+                                                            byte_size,
+                                                            error);
+                if (!error.Success())
+                    return false;
+                if (bytes_written != byte_size)
+                {
+                    error.SetErrorString("unable to write value to memory");
+                    return false;
+                }
+            }
+        }
+        break;
+    case Value::eValueTypeHostAddress:
+        {
+            // If it is a host address, then we stuff the scalar as a DataBuffer into the Value's data.            
+            DataBufferSP buffer_sp (new DataBufferHeap(byte_size, 0));
+            m_data.SetData(buffer_sp, 0);
+            data.CopyByteOrderedData (0,
+                                      byte_size,
+                                      const_cast<uint8_t *>(m_data.GetDataStart()),
+                                      byte_size,
+                                      m_data.GetByteOrder());
+            m_value.GetScalar() = (uintptr_t)m_data.GetDataStart();
+        }
+        break;
+    case Value::eValueTypeFileAddress:
+    case Value::eValueTypeVector:
+        break;
+    }
+    
+    // If we have reached this point, then we have successfully changed the value.
+    SetNeedsUpdate();
+    return true;
 }
 
 // will compute strlen(str), but without consuming more than
@@ -3752,6 +3842,13 @@ ValueObject::AddressOf (Error &error)
             break;
         }
     }
+    else
+    {
+        StreamString expr_path_strm;
+        GetExpressionPath(expr_path_strm, true);
+        error.SetErrorStringWithFormat("'%s' doesn't have a valid address", expr_path_strm.GetString().c_str());
+    }
+    
     return m_addr_of_valobj_sp;
 }
 
@@ -4149,4 +4246,67 @@ ValueObject::CreateValueObjectFromData (const char* name,
     if (new_value_sp && name && *name)
         new_value_sp->SetName(ConstString(name));
     return new_value_sp;
+}
+
+ModuleSP
+ValueObject::GetModule ()
+{
+    ValueObject* root(GetRoot());
+    if (root != this)
+        return root->GetModule();
+    return lldb::ModuleSP();
+}
+
+ValueObject*
+ValueObject::GetRoot ()
+{
+    if (m_root)
+        return m_root;
+    ValueObject* parent = m_parent;
+    if (!parent)
+        return (m_root = this);
+    while (parent->m_parent)
+    {
+        if (parent->m_root)
+            return (m_root = parent->m_root);
+        parent = parent->m_parent;
+    }
+    return (m_root = parent);
+}
+
+AddressType
+ValueObject::GetAddressTypeOfChildren()
+{
+    if (m_address_type_of_ptr_or_ref_children == eAddressTypeInvalid)
+    {
+        ValueObject* root(GetRoot());
+        if (root != this)
+            return root->GetAddressTypeOfChildren();
+    }
+    return m_address_type_of_ptr_or_ref_children;
+}
+
+lldb::DynamicValueType
+ValueObject::GetDynamicValueType ()
+{
+    ValueObject* with_dv_info = this;
+    while (with_dv_info)
+    {
+        if (with_dv_info->HasDynamicValueTypeInfo())
+            return with_dv_info->GetDynamicValueTypeImpl();
+        with_dv_info = with_dv_info->m_parent;
+    }
+    return lldb::eNoDynamicValues;
+}
+lldb::Format
+ValueObject::GetFormat () const
+{
+    const ValueObject* with_fmt_info = this;
+    while (with_fmt_info)
+    {
+        if (with_fmt_info->m_format != lldb::eFormatDefault)
+            return with_fmt_info->m_format;
+        with_fmt_info = with_fmt_info->m_parent;
+    }
+    return m_format;
 }

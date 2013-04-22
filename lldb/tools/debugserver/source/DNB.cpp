@@ -36,7 +36,7 @@
 #include "CFBundle.h"
 
 
-typedef STD_SHARED_PTR(MachProcess) MachProcessSP;
+typedef std::shared_ptr<MachProcess> MachProcessSP;
 typedef std::map<nub_process_t, MachProcessSP> ProcessMap;
 typedef ProcessMap::iterator ProcessMapIter;
 typedef ProcessMap::const_iterator ProcessMapConstIter;
@@ -1769,6 +1769,18 @@ DNBProcessGetCurrentThread (nub_process_t pid)
     MachProcessSP procSP;
     if (GetProcessSP (pid, procSP))
         return procSP->GetCurrentThread();
+    return 0;
+}
+
+//----------------------------------------------------------------------
+// Get the mach port number of the current thread.
+//----------------------------------------------------------------------
+nub_thread_t
+DNBProcessGetCurrentThreadMachPort (nub_process_t pid)
+{
+    MachProcessSP procSP;
+    if (GetProcessSP (pid, procSP))
+        return procSP->GetCurrentThreadMachPort();
     return 0;
 }
 

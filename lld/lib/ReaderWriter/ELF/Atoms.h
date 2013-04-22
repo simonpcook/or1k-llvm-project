@@ -33,16 +33,18 @@ template <class ELFT> class ELFReference LLVM_FINAL : public Reference {
   typedef llvm::object::Elf_Rel_Impl<ELFT, true> Elf_Rela;
 public:
 
-  ELFReference(const Elf_Rela *rela, uint64_t offset, const Atom *target)
-      : _target(target), _targetSymbolIndex(rela->getSymbol()),
+  ELFReference(const Elf_Rela *rela, uint64_t offset, const Atom *target,
+               Kind kind, uint32_t symbol)
+      : _target(target), _targetSymbolIndex(symbol),
         _offsetInAtom(offset), _addend(rela->r_addend) {
-    _kind = (Kind) rela->getType();
+    _kind = kind;
   }
 
-  ELFReference(const Elf_Rel *rel, uint64_t offset, const Atom *target)
-      : _target(target), _targetSymbolIndex(rel->getSymbol()),
+  ELFReference(const Elf_Rel *rel, uint64_t offset, const Atom *target,
+               Kind kind, uint32_t symbol)
+      : _target(target), _targetSymbolIndex(symbol),
         _offsetInAtom(offset), _addend(0) {
-    _kind = (Kind) rel->getType();
+    _kind = kind;
   }
 
   ELFReference(Kind kind)
@@ -124,17 +126,12 @@ class ELFUndefinedAtom LLVM_FINAL : public lld::UndefinedAtom {
   typedef llvm::object::Elf_Sym_Impl<ELFT> Elf_Sym;
 
 public:
-  ELFUndefinedAtom(const ELFFile<ELFT> &file, StringRef name,
-                   const Elf_Sym *symbol)
+  ELFUndefinedAtom(const File &file, StringRef name, const Elf_Sym *symbol)
       : _owningFile(file), _name(name), _symbol(symbol) {}
 
-  virtual const ELFFile<ELFT> &file() const {
-    return _owningFile;
-  }
+  virtual const File &file() const { return _owningFile; }
 
-  virtual StringRef name() const {
-    return _name;
-  }
+  virtual StringRef name() const { return _name; }
 
   // FIXME: What distinguishes a symbol in ELF that can help decide if the
   // symbol is undefined only during build and not runtime? This will make us
@@ -147,7 +144,7 @@ public:
   }
 
 private:
-  const ELFFile<ELFT> &_owningFile;
+  const File &_owningFile;
   StringRef _name;
   const Elf_Sym *_symbol;
 };
@@ -179,7 +176,9 @@ public:
     , _referenceStartIndex(referenceStart)
     , _referenceEndIndex(referenceEnd)
     , _referenceList(referenceList)
-    , _targetAtomHandler(nullptr) {}
+    , _targetAtomHandler(nullptr)
+    , _contentType(typeUnknown)
+    , _permissions(permUnknown) {}
 
   virtual const ELFFile<ELFT> &file() const {
     return _owningFile;
@@ -260,6 +259,9 @@ public:
   }
 
   virtual ContentType contentType() const {
+    if (_contentType != typeUnknown)
+      return _contentType;
+
     ContentType ret = typeUnknown;
     uint64_t flags = _section->sh_flags;
 
@@ -272,20 +274,20 @@ public:
         TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
         _targetAtomHandler = &TargetHandler.targetAtomHandler();
       }
-      return _targetAtomHandler->contentType(this);
+      return _contentType = _targetAtomHandler->contentType(this);
     }
 
     if (_section->sh_flags ==
         (llvm::ELF::SHF_ALLOC | llvm::ELF::SHF_WRITE | llvm::ELF::SHF_TLS)) {
-      return _section->sh_type == llvm::ELF::SHT_NOBITS ? typeTLVInitialZeroFill
+      return _contentType = _section->sh_type == llvm::ELF::SHT_NOBITS ? typeTLVInitialZeroFill
                                                         : typeTLVInitialData;
     }
 
     if (_symbol->getType() == llvm::ELF::STT_GNU_IFUNC)
-      return typeResolver;
+      return _contentType = typeResolver;
 
     if (_symbol->st_shndx == llvm::ELF::SHN_COMMON)
-      return typeZeroFill;
+      return _contentType = typeZeroFill;
 
     switch (_section->sh_type) {
     case llvm::ELF::SHT_PROGBITS:
@@ -321,7 +323,7 @@ public:
       break;
     }
 
-    return ret;
+    return _contentType = ret;
   }
 
   virtual Alignment alignment() const {
@@ -374,6 +376,9 @@ public:
   }
 
   virtual ContentPermissions permissions() const {
+    if (_permissions != permUnknown)
+      return _permissions;
+
     uint64_t flags = _section->sh_flags;
     // Treat target defined symbols
     if ((_symbol->st_shndx > llvm::ELF::SHN_LOPROC &&
@@ -383,14 +388,14 @@ public:
         TargetHandler<ELFT> &TargetHandler = eti.getTargetHandler<ELFT>();
         _targetAtomHandler = &TargetHandler.targetAtomHandler();
       }
-      return (_targetAtomHandler->contentPermissions(this));
+      return _permissions = _targetAtomHandler->contentPermissions(this);
     }
     switch (_section->sh_type) {
     // permRW_L is for sections modified by the runtime
     // loader.
     case llvm::ELF::SHT_REL:
     case llvm::ELF::SHT_RELA:
-      return permRW_L;
+      return _permissions = permRW_L;
 
     case llvm::ELF::SHT_DYNAMIC:
     case llvm::ELF::SHT_PROGBITS:
@@ -399,31 +404,31 @@ public:
       switch (flags) {
       // Code
       case llvm::ELF::SHF_EXECINSTR:
-        return permR_X;
+        return _permissions = permR_X;
       case (llvm::ELF::SHF_WRITE|llvm::ELF::SHF_EXECINSTR):
-        return permRWX;
+        return _permissions = permRWX;
       // Data
       case llvm::ELF::SHF_WRITE:
-        return permRW_;
+        return _permissions = permRW_;
       // Strings
       case llvm::ELF::SHF_MERGE:
       case llvm::ELF::SHF_STRINGS:
-        return permR__;
+        return _permissions = permR__;
 
       default:
         if (flags & llvm::ELF::SHF_WRITE)
-          return permRW_;
-        return permR__;
+          return _permissions = permRW_;
+        return _permissions = permR__;
       }
 
     case llvm::ELF::SHT_NOBITS:
-      return permRW_;
+      return _permissions = permRW_;
 
     case llvm::ELF::SHT_INIT_ARRAY:
-      return permRW_;
+      return _permissions = permRW_;
 
     default:
-      return perm___;
+      return _permissions = perm___;
     }
   }
 
@@ -489,6 +494,8 @@ private:
   std::vector<ELFReference<ELFT> *> &_referenceList;
   // Cached size of the TLS segment.
   mutable TargetAtomHandler<ELFT> *_targetAtomHandler;
+  mutable ContentType _contentType;
+  mutable ContentPermissions _permissions;
 };
 
 /// \brief This atom stores mergeable Strings
@@ -500,7 +507,8 @@ public:
                const Elf_Shdr *section, llvm::ArrayRef<uint8_t> contentData,
                uint64_t offset)
       : _owningFile(file), _sectionName(sectionName), _section(section),
-        _contentData(contentData), _offset(offset) {}
+        _contentData(contentData), _offset(offset) {
+  }
 
   virtual const class ELFFile<ELFT> &file() const {
     return _owningFile;

@@ -1,4 +1,4 @@
-//===-- IRExecutionUnit.cpp ------------------------------*- C++ -*-===//
+//===-- IRExecutionUnit.cpp -------------------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -25,12 +25,14 @@
 
 using namespace lldb_private;
 
-IRExecutionUnit::IRExecutionUnit (std::auto_ptr<llvm::Module> &module_ap,
+IRExecutionUnit::IRExecutionUnit (std::unique_ptr<llvm::LLVMContext> &context_ap,
+                                  std::unique_ptr<llvm::Module> &module_ap,
                                   ConstString &name,
-                                  lldb::ProcessSP process_sp,
+                                  const lldb::TargetSP &target_sp,
                                   std::vector<std::string> &cpu_features) :
-    m_process_wp(process_sp),
-    m_module_ap(module_ap),
+    IRMemoryMap(target_sp),
+    m_context_ap(context_ap.release()),
+    m_module_ap(module_ap.release()),
     m_module(m_module_ap.get()),
     m_cpu_features(cpu_features),
     m_name(name),
@@ -45,96 +47,62 @@ IRExecutionUnit::WriteNow (const uint8_t *bytes,
                            size_t size,
                            Error &error)
 {    
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    lldb::addr_t allocation_process_addr = Malloc (size,
+                                                   8,
+                                                   lldb::ePermissionsWritable | lldb::ePermissionsReadable,
+                                                   eAllocationPolicyMirror,
+                                                   error);
+    
+    if (!error.Success())
+        return LLDB_INVALID_ADDRESS;
+    
+    WriteMemory(allocation_process_addr, bytes, size, error);
+    
+    if (!error.Success())
+    {
+        Error err;
+        Free (allocation_process_addr, err);
+        
+        return LLDB_INVALID_ADDRESS;
+    }
+    
+    if (Log *log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS))
+    {
+        DataBufferHeap my_buffer(size, 0);
+        Error err;
+        ReadMemory(my_buffer.GetBytes(), allocation_process_addr, size, err);
+        
+        if (err.Success())
+        {
+            DataExtractor my_extractor(my_buffer.GetBytes(), my_buffer.GetByteSize(), lldb::eByteOrderBig, 8);
 
-    auto iter = m_allocations.insert(m_allocations.end(), Allocation());
-    
-    Allocation &allocation(*iter);
-    
-    allocation.m_size = size;
-    allocation.m_alignment = 8;
-    allocation.m_data.reset(new DataBufferHeap(bytes, size));
-    allocation.m_local_start = (uintptr_t)allocation.m_data->GetBytes();
-    allocation.m_section_id = Allocation::eSectionIDNone;
-        
-    lldb_private::Error err;
-    
-    size_t allocation_size = (allocation.m_size ? allocation.m_size : 1) + allocation.m_alignment - 1;
-    
-    if (allocation_size == 0)
-        allocation_size = 1;
-    
-    lldb::ProcessSP process_sp = m_process_wp.lock();
-    
-    if (!process_sp)
-    {
-        err.SetErrorToGenericError();
-        err.SetErrorString("Couldn't find the process");
-        return LLDB_INVALID_ADDRESS;
+            StreamString ss;
+            
+            my_extractor.Dump(&ss, 0, lldb::eFormatBytesWithASCII, 1, my_buffer.GetByteSize(), 32, allocation_process_addr, 0, 0);
+            
+            log->PutCString(ss.GetData());
+        }
     }
     
-    allocation.m_remote_allocation = process_sp->AllocateMemory(allocation_size,
-                                                                (lldb::ePermissionsReadable | lldb::ePermissionsWritable),
-                                                                err);
-    
-    if (!err.Success())
-        return LLDB_INVALID_ADDRESS;
-    
-    process_sp->WriteMemory(allocation.m_remote_allocation, bytes, size, err);
-    
-    if (!err.Success())
-    {
-        process_sp->DeallocateMemory(allocation.m_remote_allocation);
-        allocation.m_remote_allocation = LLDB_INVALID_ADDRESS;
-        return LLDB_INVALID_ADDRESS;
-    }
-    
-    uint64_t mask = allocation.m_alignment - 1;
-    
-    allocation.m_remote_start = (allocation.m_remote_allocation + mask) & (~mask);
-    
-    allocation.m_allocated = true;
-    
-    if (log)
-    {
-        log->Printf("IRExecutionUnit::WriteNow() wrote to 0x%llx", allocation.m_remote_start);
-        allocation.dump(log);
-    }
-        
-    return allocation.m_remote_start;
+    return allocation_process_addr;
 }
 
 void
 IRExecutionUnit::FreeNow (lldb::addr_t allocation)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-
     if (allocation == LLDB_INVALID_ADDRESS)
         return;
     
-    lldb::ProcessSP process_sp = m_process_wp.lock();
-
-    if (!process_sp)
-        return;
+    Error err;
     
-    for (auto ai = m_allocations.begin(), ae = m_allocations.end();
-         ai != ae;
-         ++ai)
-    {
-        if (ai->m_remote_allocation == allocation)
-        {
-            m_allocations.erase(ai);
-            log->Printf("IRExecutionUnit::FreeNow() freed 0x%llx", allocation);
-            return;
-        }
-    }
+    Free(allocation, err);
 }
 
 Error
 IRExecutionUnit::DisassembleFunction (Stream &stream,
                                       lldb::ProcessSP &process_wp)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     ExecutionContext exe_ctx(process_wp);
         
@@ -226,7 +194,7 @@ IRExecutionUnit::DisassembleFunction (Stream &stream,
     if (log)
     {
         log->Printf("Function data has contents:");
-        extractor.PutToLog (log.get(),
+        extractor.PutToLog (log,
                             0,
                             extractor.GetByteSize(),
                             func_remote_addr,
@@ -234,7 +202,7 @@ IRExecutionUnit::DisassembleFunction (Stream &stream,
                             DataExtractor::TypeUInt8);
     }
     
-    disassembler->DecodeInstructions (Address (func_remote_addr), extractor, 0, UINT32_MAX, false);
+    disassembler->DecodeInstructions (Address (func_remote_addr), extractor, 0, UINT32_MAX, false, false);
     
     InstructionList &instruction_list = disassembler->GetInstructionList();
     const uint32_t max_opcode_byte_size = instruction_list.GetMaxOpcocdeByteSize();
@@ -271,8 +239,7 @@ IRExecutionUnit::GetRunnableInfo(Error &error,
                                  lldb::addr_t &func_addr,
                                  lldb::addr_t &func_end)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-    lldb::ProcessSP process_sp(m_process_wp.lock());
+    lldb::ProcessSP process_sp(GetProcessWP().lock());
     
     func_addr = LLDB_INVALID_ADDRESS;
     func_end = LLDB_INVALID_ADDRESS;
@@ -290,163 +257,154 @@ IRExecutionUnit::GetRunnableInfo(Error &error,
         func_end = m_function_end_load_addr;
         
         return;
-    }; // someone else may have gotten the mutex first
+    };
     
+    m_did_jit = true;
+    
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    
+    std::string error_string;
+    
+    if (log)
     {
-        Mutex::Locker jit_mutex_locker(m_jit_mutex);
+        std::string s;
+        llvm::raw_string_ostream oss(s);
         
-        if (m_did_jit)
-        {
-            func_addr = m_function_load_addr;
-            func_end = m_function_end_load_addr;
-            
-            return;
-        }; // someone else may have gotten the mutex first
+        m_module->print(oss, NULL);
         
-        m_did_jit = true;
+        oss.flush();
         
-        lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-        
-        std::string error_string;
-        
-        if (log)
-        {
-            std::string s;
-            llvm::raw_string_ostream oss(s);
-            
-            m_module->print(oss, NULL);
-            
-            oss.flush();
-            
-            log->Printf ("Module being sent to JIT: \n%s", s.c_str());
-        }
-        
-        llvm::Triple triple(m_module->getTargetTriple());
-        llvm::Function *function = m_module->getFunction (m_name.AsCString());
-        llvm::Reloc::Model relocModel;
-        llvm::CodeModel::Model codeModel;
-        
-        if (triple.isOSBinFormatELF())
-        {
-            relocModel = llvm::Reloc::Static;
-            // This will be small for 32-bit and large for 64-bit.
-            codeModel = llvm::CodeModel::JITDefault;
-        }
-        else
-        {
-            relocModel = llvm::Reloc::PIC_;
-            codeModel = llvm::CodeModel::Small;
-        }
-        
-        m_module_ap->getContext().setInlineAsmDiagnosticHandler(ReportInlineAsmError, &error);
-        
-        llvm::EngineBuilder builder(m_module_ap.get());
-        
-        builder.setEngineKind(llvm::EngineKind::JIT)
-        .setErrorStr(&error_string)
-        .setRelocationModel(relocModel)
-        .setJITMemoryManager(new MemoryManager(*this))
-        .setOptLevel(llvm::CodeGenOpt::Less)
-        .setAllocateGVsWithCode(true)
-        .setCodeModel(codeModel)
-        .setUseMCJIT(true);
-        
-        llvm::StringRef mArch;
-        llvm::StringRef mCPU;
-        llvm::SmallVector<std::string, 0> mAttrs;
-        
-        for (std::string &feature : m_cpu_features)
-            mAttrs.push_back(feature);
-        
-        llvm::TargetMachine *target_machine = builder.selectTarget(triple,
-                                                                   mArch,
-                                                                   mCPU,
-                                                                   mAttrs);
-        
-        m_execution_engine_ap.reset(builder.create(target_machine));
-        
-        if (!m_execution_engine_ap.get())
-        {
-            error.SetErrorToGenericError();
-            error.SetErrorStringWithFormat("Couldn't JIT the function: %s", error_string.c_str());
-            return;
-        }
-        else
-        {
-            m_module_ap.release(); // ownership was transferred
-        }
-        
-        m_execution_engine_ap->DisableLazyCompilation();
-        
-        // We don't actually need the function pointer here, this just forces it to get resolved.
-        
-        void *fun_ptr = m_execution_engine_ap->getPointerToFunction(function);
-        
-        if (!error.Success())
-        {
-            // We got an error through our callback!
-            return;
-        }
-        
-        if (!function)
-        {
-            error.SetErrorToGenericError();
-            error.SetErrorStringWithFormat("Couldn't find '%s' in the JITted module", m_name.AsCString());
-            return;
-        }
-        
-        if (!fun_ptr)
-        {
-            error.SetErrorToGenericError();
-            error.SetErrorStringWithFormat("'%s' was in the JITted module but wasn't lowered", m_name.AsCString());
-            return;
-        }
-        
-        m_jitted_functions.push_back (JittedFunction(m_name.AsCString(), (lldb::addr_t)fun_ptr));
-        
-        CommitAllocations(process_sp);
-        ReportAllocations(*m_execution_engine_ap);
-        WriteData(process_sp);
-                
-        for (JittedFunction &jitted_function : m_jitted_functions)
-        {
-            jitted_function.m_remote_addr = GetRemoteAddressForLocal (jitted_function.m_local_addr);
-            
-            if (!jitted_function.m_name.compare(m_name.AsCString()))
-            {
-                AddrRange func_range = GetRemoteRangeForLocal(jitted_function.m_local_addr);
-                m_function_end_load_addr = func_range.first + func_range.second;
-                m_function_load_addr = jitted_function.m_remote_addr;
-            }
-        }
-        
-        if (log)
-        {
-            log->Printf("Code can be run in the target.");
-            
-            StreamString disassembly_stream;
-            
-            Error err = DisassembleFunction(disassembly_stream, process_sp);
-            
-            if (!err.Success())
-            {
-                log->Printf("Couldn't disassemble function : %s", err.AsCString("unknown error"));
-            }
-            else
-            {
-                log->Printf("Function disassembly:\n%s", disassembly_stream.GetData());
-            }
-        }
-        
-        func_addr = m_function_load_addr;
-        func_end = m_function_end_load_addr;
-        
+        log->Printf ("Module being sent to JIT: \n%s", s.c_str());
+    }
+    
+    llvm::Triple triple(m_module->getTargetTriple());
+    llvm::Function *function = m_module->getFunction (m_name.AsCString());
+    llvm::Reloc::Model relocModel;
+    llvm::CodeModel::Model codeModel;
+    
+    if (triple.isOSBinFormatELF())
+    {
+        relocModel = llvm::Reloc::Static;
+        // This will be small for 32-bit and large for 64-bit.
+        codeModel = llvm::CodeModel::JITDefault;
+    }
+    else
+    {
+        relocModel = llvm::Reloc::PIC_;
+        codeModel = llvm::CodeModel::Small;
+    }
+    
+    m_module_ap->getContext().setInlineAsmDiagnosticHandler(ReportInlineAsmError, &error);
+    
+    llvm::EngineBuilder builder(m_module_ap.get());
+    
+    builder.setEngineKind(llvm::EngineKind::JIT)
+    .setErrorStr(&error_string)
+    .setRelocationModel(relocModel)
+    .setJITMemoryManager(new MemoryManager(*this))
+    .setOptLevel(llvm::CodeGenOpt::Less)
+    .setAllocateGVsWithCode(true)
+    .setCodeModel(codeModel)
+    .setUseMCJIT(true);
+    
+    llvm::StringRef mArch;
+    llvm::StringRef mCPU;
+    llvm::SmallVector<std::string, 0> mAttrs;
+    
+    for (std::string &feature : m_cpu_features)
+        mAttrs.push_back(feature);
+    
+    llvm::TargetMachine *target_machine = builder.selectTarget(triple,
+                                                               mArch,
+                                                               mCPU,
+                                                               mAttrs);
+    
+    m_execution_engine_ap.reset(builder.create(target_machine));
+    
+    if (!m_execution_engine_ap.get())
+    {
+        error.SetErrorToGenericError();
+        error.SetErrorStringWithFormat("Couldn't JIT the function: %s", error_string.c_str());
         return;
     }
+    else
+    {
+        m_module_ap.release(); // ownership was transferred
+    }
+    
+    m_execution_engine_ap->DisableLazyCompilation();
+    
+    // We don't actually need the function pointer here, this just forces it to get resolved.
+    
+    void *fun_ptr = m_execution_engine_ap->getPointerToFunction(function);
+    
+    if (!error.Success())
+    {
+        // We got an error through our callback!
+        return;
+    }
+    
+    if (!function)
+    {
+        error.SetErrorToGenericError();
+        error.SetErrorStringWithFormat("Couldn't find '%s' in the JITted module", m_name.AsCString());
+        return;
+    }
+    
+    if (!fun_ptr)
+    {
+        error.SetErrorToGenericError();
+        error.SetErrorStringWithFormat("'%s' was in the JITted module but wasn't lowered", m_name.AsCString());
+        return;
+    }
+    
+    m_jitted_functions.push_back (JittedFunction(m_name.AsCString(), (lldb::addr_t)fun_ptr));
+    
+    CommitAllocations(process_sp);
+    ReportAllocations(*m_execution_engine_ap);
+    WriteData(process_sp);
+            
+    for (JittedFunction &jitted_function : m_jitted_functions)
+    {
+        jitted_function.m_remote_addr = GetRemoteAddressForLocal (jitted_function.m_local_addr);
+        
+        if (!jitted_function.m_name.compare(m_name.AsCString()))
+        {
+            AddrRange func_range = GetRemoteRangeForLocal(jitted_function.m_local_addr);
+            m_function_end_load_addr = func_range.first + func_range.second;
+            m_function_load_addr = jitted_function.m_remote_addr;
+        }
+    }
+    
+    if (log)
+    {
+        log->Printf("Code can be run in the target.");
+        
+        StreamString disassembly_stream;
+        
+        Error err = DisassembleFunction(disassembly_stream, process_sp);
+        
+        if (!err.Success())
+        {
+            log->Printf("Couldn't disassemble function : %s", err.AsCString("unknown error"));
+        }
+        else
+        {
+            log->Printf("Function disassembly:\n%s", disassembly_stream.GetData());
+        }
+    }
+    
+    func_addr = m_function_load_addr;
+    func_end = m_function_end_load_addr;
+    
+    return;
 }
 
 IRExecutionUnit::~IRExecutionUnit ()
 {
+    m_module_ap.reset();
+    m_execution_engine_ap.reset();
+    m_context_ap.reset();
 }
 
 IRExecutionUnit::MemoryManager::MemoryManager (IRExecutionUnit &parent) :
@@ -480,23 +438,19 @@ IRExecutionUnit::MemoryManager::allocateStub(const llvm::GlobalValue* F,
                                              unsigned StubSize,
                                              unsigned Alignment)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
     uint8_t *return_value = m_default_mm_ap->allocateStub(F, StubSize, Alignment);
-    
-    auto iter = m_parent.m_allocations.insert(m_parent.m_allocations.end(), Allocation());
-    
-    Allocation &allocation(*iter);
-    
-    allocation.m_size = StubSize;
-    allocation.m_alignment = Alignment;
-    allocation.m_local_start = (uintptr_t)return_value;
+
+    m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
+                                                  lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                                  StubSize,
+                                                  Alignment));
 
     if (log)
     {
         log->Printf("IRExecutionUnit::allocateStub (F=%p, StubSize=%u, Alignment=%u) = %p",
                     F, StubSize, Alignment, return_value);
-        allocation.dump(log);
     }
         
     return return_value;
@@ -513,23 +467,19 @@ IRExecutionUnit::MemoryManager::endFunctionBody(const llvm::Function *F,
 uint8_t *
 IRExecutionUnit::MemoryManager::allocateSpace(intptr_t Size, unsigned Alignment)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
     uint8_t *return_value = m_default_mm_ap->allocateSpace(Size, Alignment);
     
-    auto iter = m_parent.m_allocations.insert(m_parent.m_allocations.end(), Allocation());
-    
-    Allocation &allocation(*iter);
-    
-    allocation.m_size = Size;
-    allocation.m_alignment = Alignment;
-    allocation.m_local_start = (uintptr_t)return_value;
+    m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
+                                                  lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                                  Size,
+                                                  Alignment));
     
     if (log)
     {
         log->Printf("IRExecutionUnit::allocateSpace(Size=%" PRIu64 ", Alignment=%u) = %p",
                                (uint64_t)Size, Alignment, return_value);
-        allocation.dump(log);
     }
         
     return return_value;
@@ -540,25 +490,20 @@ IRExecutionUnit::MemoryManager::allocateCodeSection(uintptr_t Size,
                                                     unsigned Alignment,
                                                     unsigned SectionID)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     uint8_t *return_value = m_default_mm_ap->allocateCodeSection(Size, Alignment, SectionID);
     
-    auto iter = m_parent.m_allocations.insert(m_parent.m_allocations.end(), Allocation());
-    
-    Allocation &allocation(*iter);
-    
-    allocation.m_size = Size;
-    allocation.m_alignment = Alignment;
-    allocation.m_local_start = (uintptr_t)return_value;
-    allocation.m_section_id = SectionID;
-    allocation.m_executable = true;
+    m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
+                                                  lldb::ePermissionsReadable | lldb::ePermissionsExecutable,
+                                                  Size,
+                                                  Alignment,
+                                                  SectionID));
     
     if (log)
     {
         log->Printf("IRExecutionUnit::allocateCodeSection(Size=0x%" PRIx64 ", Alignment=%u, SectionID=%u) = %p",
                     (uint64_t)Size, Alignment, SectionID, return_value);
-        allocation.dump(log);
     }
         
     return return_value;
@@ -570,24 +515,19 @@ IRExecutionUnit::MemoryManager::allocateDataSection(uintptr_t Size,
                                                     unsigned SectionID,
                                                     bool IsReadOnly)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
     uint8_t *return_value = m_default_mm_ap->allocateDataSection(Size, Alignment, SectionID, IsReadOnly);
     
-    auto iter = m_parent.m_allocations.insert(m_parent.m_allocations.end(), Allocation());
-    
-    Allocation &allocation(*iter);
-
-    allocation.m_size = Size;
-    allocation.m_alignment = Alignment;
-    allocation.m_local_start = (uintptr_t)return_value;
-    allocation.m_section_id = SectionID;
-    
+    m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
+                                                  lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                                  Size,
+                                                  Alignment,
+                                                  SectionID));
     if (log)
     {
         log->Printf("IRExecutionUnit::allocateDataSection(Size=0x%" PRIx64 ", Alignment=%u, SectionID=%u) = %p",
                     (uint64_t)Size, Alignment, SectionID, return_value);
-        allocation.dump(log);
     }
         
     return return_value; 
@@ -597,23 +537,19 @@ uint8_t *
 IRExecutionUnit::MemoryManager::allocateGlobal(uintptr_t Size,
                                                unsigned Alignment)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
     uint8_t *return_value = m_default_mm_ap->allocateGlobal(Size, Alignment);
     
-    auto iter = m_parent.m_allocations.insert(m_parent.m_allocations.end(), Allocation());
-    
-    Allocation &allocation(*iter);
-    
-    allocation.m_size = Size;
-    allocation.m_alignment = Alignment;
-    allocation.m_local_start = (uintptr_t)return_value;
+    m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
+                                                  lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                                  Size,
+                                                  Alignment));
     
     if (log)
     {
         log->Printf("IRExecutionUnit::allocateGlobal(Size=0x%" PRIx64 ", Alignment=%u) = %p",
                     (uint64_t)Size, Alignment, return_value);
-        allocation.dump(log);
     }
     
     return return_value;
@@ -650,11 +586,16 @@ IRExecutionUnit::MemoryManager::deallocateExceptionTable(void *ET)
 lldb::addr_t
 IRExecutionUnit::GetRemoteAddressForLocal (lldb::addr_t local_address)
 {
-    for (Allocation &allocation : m_allocations)
+    for (AllocationRecord &record : m_records)
     {
-        if (local_address >= allocation.m_local_start &&
-            local_address < allocation.m_local_start + allocation.m_size)
-            return allocation.m_remote_start + (local_address - allocation.m_local_start);
+        if (local_address >= record.m_host_address &&
+            local_address < record.m_host_address + record.m_size)
+        {
+            if (record.m_process_address == LLDB_INVALID_ADDRESS)
+                return LLDB_INVALID_ADDRESS;
+        }
+        
+        return record.m_process_address + (local_address - record.m_host_address);
     }
 
     return LLDB_INVALID_ADDRESS;
@@ -663,11 +604,16 @@ IRExecutionUnit::GetRemoteAddressForLocal (lldb::addr_t local_address)
 IRExecutionUnit::AddrRange
 IRExecutionUnit::GetRemoteRangeForLocal (lldb::addr_t local_address)
 {
-    for (Allocation &allocation : m_allocations)
+    for (AllocationRecord &record : m_records)
     {
-        if (local_address >= allocation.m_local_start &&
-            local_address < allocation.m_local_start + allocation.m_size)
-            return AddrRange(allocation.m_remote_start, allocation.m_size);
+        if (local_address >= record.m_host_address &&
+            local_address < record.m_host_address + record.m_size)
+        {
+            if (record.m_process_address == LLDB_INVALID_ADDRESS)
+                return AddrRange(0, 0);
+            
+            return AddrRange(record.m_process_address, record.m_size);
+        }
     }
     
     return AddrRange (0, 0);
@@ -676,53 +622,38 @@ IRExecutionUnit::GetRemoteRangeForLocal (lldb::addr_t local_address)
 bool
 IRExecutionUnit::CommitAllocations (lldb::ProcessSP &process_sp)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-
     bool ret = true;
     
-    for (Allocation &allocation : m_allocations)
+    lldb_private::Error err;
+    
+    for (AllocationRecord &record : m_records)
     {
-        if (allocation.m_allocated)
+        if (record.m_process_address != LLDB_INVALID_ADDRESS)
             continue;
         
-        lldb_private::Error err;
         
-        size_t allocation_size = (allocation.m_size ? allocation.m_size : 1) + allocation.m_alignment - 1;
-        
-        if (allocation_size == 0)
-            allocation_size = 1;
-        
-        allocation.m_remote_allocation = process_sp->AllocateMemory(
-            allocation_size,
-            allocation.m_executable ? (lldb::ePermissionsReadable | lldb::ePermissionsExecutable) 
-                                    : (lldb::ePermissionsReadable | lldb::ePermissionsWritable), 
-            err);
-        
-        uint64_t mask = allocation.m_alignment - 1;
-        
-        allocation.m_remote_start = (allocation.m_remote_allocation + mask) & (~mask);
+        record.m_process_address = Malloc(record.m_size,
+                                          record.m_alignment,
+                                          record.m_permissions,
+                                          eAllocationPolicyProcessOnly,
+                                          err);
         
         if (!err.Success())
         {
             ret = false;
             break;
         }
-        
-        allocation.m_allocated = true;
-        
-        if (log)
-        {
-            log->Printf("IRExecutionUnit::CommitAllocations() committed an allocation");
-            allocation.dump(log);
-        }
     }
     
     if (!ret)
     {
-        for (Allocation &allocation : m_allocations)
+        for (AllocationRecord &record : m_records)
         {
-            if (allocation.m_allocated)
-                process_sp->DeallocateMemory(allocation.m_remote_start);
+            if (record.m_process_address != LLDB_INVALID_ADDRESS)
+            {
+                Free(record.m_process_address, err);
+                record.m_process_address = LLDB_INVALID_ADDRESS;
+            }
         }
     }
     
@@ -732,16 +663,17 @@ IRExecutionUnit::CommitAllocations (lldb::ProcessSP &process_sp)
 void
 IRExecutionUnit::ReportAllocations (llvm::ExecutionEngine &engine)
 {
-    for (Allocation &allocation : m_allocations)
+    for (AllocationRecord &record : m_records)
     {
-        if (!allocation.m_allocated)
+        if (record.m_process_address == LLDB_INVALID_ADDRESS)
             continue;
         
-        if (allocation.m_section_id == Allocation::eSectionIDNone)
+        if (record.m_section_id == eSectionIDInvalid)
             continue;
         
-        engine.mapSectionAddress((void*)allocation.m_local_start, allocation.m_remote_start);
+        engine.mapSectionAddress((void*)record.m_host_address, record.m_process_address);
     }
+    
     // Trigger re-application of relocations.
     engine.finalizeObject();
 }
@@ -749,45 +681,29 @@ IRExecutionUnit::ReportAllocations (llvm::ExecutionEngine &engine)
 bool
 IRExecutionUnit::WriteData (lldb::ProcessSP &process_sp)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-
-    for (Allocation &allocation : m_allocations)
+    for (AllocationRecord &record : m_records)
     {
-        if (!allocation.m_allocated)
+        if (record.m_process_address == LLDB_INVALID_ADDRESS)
             return false;
-        
-        if (allocation.m_local_start == LLDB_INVALID_ADDRESS)
-            continue;
         
         lldb_private::Error err;
-        
-        if (process_sp->WriteMemory(allocation.m_remote_start,
-                                    (void*)allocation.m_local_start, 
-                                    allocation.m_size, 
-                                    err) != allocation.m_size ||
-            !err.Success())
-            return false;
-        
-        if (log)
-        {
-            log->Printf("IRExecutionUnit::CommitAllocations() wrote an allocation");
-            allocation.dump(log);
-        }
+
+        WriteMemory (record.m_process_address, (uint8_t*)record.m_host_address, record.m_size, err);
     }
     
     return true;
 }
 
 void 
-IRExecutionUnit::Allocation::dump (lldb::LogSP log)
+IRExecutionUnit::AllocationRecord::dump (Log *log)
 {
     if (!log)
         return;
     
     log->Printf("[0x%llx+0x%llx]->0x%llx (alignment %d, section ID %d)",
-                (unsigned long long)m_local_start,
+                (unsigned long long)m_host_address,
                 (unsigned long long)m_size,
-                (unsigned long long)m_remote_start,
+                (unsigned long long)m_process_address,
                 (unsigned)m_alignment,
                 (unsigned)m_section_id);
 }

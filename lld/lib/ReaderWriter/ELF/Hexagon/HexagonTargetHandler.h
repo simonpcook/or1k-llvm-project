@@ -170,8 +170,10 @@ public:
 
   void addDefaultAtoms() {
     _hexagonRuntimeFile.addAbsoluteAtom("_SDA_BASE_");
-    if (_targetInfo.isDynamic())
+    if (_targetInfo.isDynamic()) {
       _hexagonRuntimeFile.addAbsoluteAtom("_GLOBAL_OFFSET_TABLE_");
+      _hexagonRuntimeFile.addAbsoluteAtom("_DYNAMIC");
+    }
   }
 
   virtual void addFiles(InputFiles &inputFiles) {
@@ -192,10 +194,19 @@ public:
         _gotSymAtom->_virtualAddr = gotpltSection->virtualAddr();
       else
         _gotSymAtom->_virtualAddr = 0;
+      auto dynamicAtomIter = _targetLayout.findAbsoluteAtom("_DYNAMIC");
+      auto dynamicSection = _targetLayout.findOutputSection(".dynamic");
+      if (dynamicSection)
+        (*dynamicAtomIter)->_virtualAddr = dynamicSection->virtualAddr();
+      else
+        (*dynamicAtomIter)->_virtualAddr = 0;
     }
   }
 
-  uint64_t getGOTSymAddr() const { return _gotSymAtom->_virtualAddr; }
+  uint64_t getGOTSymAddr() const {
+    if (!_gotSymAtom) return 0;
+    return _gotSymAtom->_virtualAddr;
+  }
 
 private:
   HexagonTargetLayout<HexagonELFType> _targetLayout;

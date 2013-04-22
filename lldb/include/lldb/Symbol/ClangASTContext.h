@@ -11,11 +11,11 @@
 #define liblldb_ClangASTContext_h_
 
 // C Includes
+#include <stdint.h>
+
 // C++ Includes
 #include <string>
 #include <vector>
-#include <memory>
-#include <stdint.h>
 
 // Other libraries and framework includes
 #include "llvm/ADT/OwningPtr.h"
@@ -53,7 +53,11 @@ public:
         eTypeIsTemplate         = (1u << 14),
         eTypeIsTypedef          = (1u << 15),
         eTypeIsVector           = (1u << 16),
-        eTypeIsScalar           = (1u << 17)
+        eTypeIsScalar           = (1u << 17),
+        eTypeIsInteger          = (1u << 18),
+        eTypeIsFloat            = (1u << 19),
+        eTypeIsComplex          = (1u << 20),
+        eTypeIsSigned           = (1u << 21)
     };
 
     typedef void (*CompleteTagDeclCallback)(void *baton, clang::TagDecl *);
@@ -332,6 +336,26 @@ public:
                                                       bitfield_bit_size);
     }
     
+    clang::VarDecl *
+    AddVariableToRecordType (lldb::clang_type_t record_opaque_type,
+                             const char *name,
+                             lldb::clang_type_t var_opaque_type,
+                             lldb::AccessType access)
+    {
+        return ClangASTContext::AddVariableToRecordType (getASTContext(),
+                                                         record_opaque_type,
+                                                         name,
+                                                         var_opaque_type,
+                                                         access);
+    }
+
+    static clang::VarDecl *
+    AddVariableToRecordType (clang::ASTContext *ast,
+                             lldb::clang_type_t record_opaque_type,
+                             const char *name,
+                             lldb::clang_type_t var_opaque_type,
+                             lldb::AccessType access);
+
     static void
     BuildIndirectFields (clang::ASTContext *ast,
                          lldb::clang_type_t record_qual_type);
@@ -578,8 +602,8 @@ public:
     // Returns a mask containing bits from the ClangASTContext::eTypeXXX enumerations
     static uint32_t
     GetTypeInfo (lldb::clang_type_t clang_type, 
-                     clang::ASTContext *ast,                // The AST for clang_type (can be NULL)
-                     lldb::clang_type_t *pointee_or_element_type);  // (can be NULL)
+                 clang::ASTContext *ast,                // The AST for clang_type (can be NULL)
+                 lldb::clang_type_t *pointee_or_element_type);  // (can be NULL)
 
     static uint32_t
     GetNumChildren (clang::ASTContext *ast,
@@ -800,7 +824,8 @@ public:
 
     lldb::clang_type_t
     CreateArrayType (lldb::clang_type_t element_type,
-                     size_t element_count);
+                     size_t element_count,
+                     bool is_vector);
 
     //------------------------------------------------------------------
     // Tag Declarations
@@ -988,22 +1013,22 @@ protected:
     //------------------------------------------------------------------
     // Classes that inherit from ClangASTContext can see and modify these
     //------------------------------------------------------------------
-    std::string                             m_target_triple;
-    std::auto_ptr<clang::ASTContext>        m_ast_ap;
-    std::auto_ptr<clang::LangOptions>       m_language_options_ap;
-    std::auto_ptr<clang::FileManager>       m_file_manager_ap;
-    std::auto_ptr<clang::FileSystemOptions> m_file_system_options_ap;
-    std::auto_ptr<clang::SourceManager>     m_source_manager_ap;
-    std::auto_ptr<clang::DiagnosticsEngine>  m_diagnostics_engine_ap;
-    std::auto_ptr<clang::DiagnosticConsumer> m_diagnostic_consumer_ap;
+    std::string                                     m_target_triple;
+    std::unique_ptr<clang::ASTContext>               m_ast_ap;
+    std::unique_ptr<clang::LangOptions>              m_language_options_ap;
+    std::unique_ptr<clang::FileManager>              m_file_manager_ap;
+    std::unique_ptr<clang::FileSystemOptions>        m_file_system_options_ap;
+    std::unique_ptr<clang::SourceManager>            m_source_manager_ap;
+    std::unique_ptr<clang::DiagnosticsEngine>        m_diagnostics_engine_ap;
+    std::unique_ptr<clang::DiagnosticConsumer>       m_diagnostic_consumer_ap;
     llvm::IntrusiveRefCntPtr<clang::TargetOptions>  m_target_options_rp;
-    std::auto_ptr<clang::TargetInfo>        m_target_info_ap;
-    std::auto_ptr<clang::IdentifierTable>   m_identifier_table_ap;
-    std::auto_ptr<clang::SelectorTable>     m_selector_table_ap;
-    std::auto_ptr<clang::Builtin::Context>  m_builtins_ap;
-    CompleteTagDeclCallback                 m_callback_tag_decl;
-    CompleteObjCInterfaceDeclCallback       m_callback_objc_decl;
-    void *                                  m_callback_baton;
+    std::unique_ptr<clang::TargetInfo>               m_target_info_ap;
+    std::unique_ptr<clang::IdentifierTable>          m_identifier_table_ap;
+    std::unique_ptr<clang::SelectorTable>            m_selector_table_ap;
+    std::unique_ptr<clang::Builtin::Context>         m_builtins_ap;
+    CompleteTagDeclCallback                         m_callback_tag_decl;
+    CompleteObjCInterfaceDeclCallback               m_callback_objc_decl;
+    void *                                          m_callback_baton;
 private:
     //------------------------------------------------------------------
     // For ClangASTContext only

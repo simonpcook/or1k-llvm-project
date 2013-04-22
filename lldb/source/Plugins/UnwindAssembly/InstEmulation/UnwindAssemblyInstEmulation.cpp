@@ -59,7 +59,7 @@ UnwindAssemblyInstEmulation::GetNonCallSiteUnwindPlanFromAssembly (AddressRange&
                                                                   exe_ctx,
                                                                   range));
         
-        LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
+        Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
 
         if (disasm_sp)
         {
@@ -298,7 +298,7 @@ UnwindAssemblyInstEmulation::FirstNonPrologueInsn (AddressRange& func,
 UnwindAssembly *
 UnwindAssemblyInstEmulation::CreateInstance (const ArchSpec &arch)
 {
-    std::auto_ptr<EmulateInstruction> inst_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypePrologueEpilogue, NULL));
+    std::unique_ptr<EmulateInstruction> inst_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypePrologueEpilogue, NULL));
     // Make sure that all prologue instructions are handled
     if (inst_emulator_ap.get())
         return new UnwindAssemblyInstEmulation (arch, inst_emulator_ap.release());
@@ -397,7 +397,7 @@ UnwindAssemblyInstEmulation::ReadMemory (EmulateInstruction *instruction,
                                          void *dst,
                                          size_t dst_len)
 {
-    LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
+    Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
 
     if (log && log->GetVerbose ())
     {
@@ -438,7 +438,7 @@ UnwindAssemblyInstEmulation::WriteMemory (EmulateInstruction *instruction,
                         instruction->GetArchitecture ().GetByteOrder(), 
                         instruction->GetArchitecture ().GetAddressByteSize());
 
-    LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
+    Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
 
     if (log && log->GetVerbose ())
     {
@@ -545,7 +545,7 @@ UnwindAssemblyInstEmulation::ReadRegister (EmulateInstruction *instruction,
 {
     bool synthetic = GetRegisterValue (*reg_info, reg_value);
 
-    LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
+    Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
     
     if (log && log->GetVerbose ())
     {
@@ -575,7 +575,7 @@ UnwindAssemblyInstEmulation::WriteRegister (EmulateInstruction *instruction,
                                             const RegisterInfo *reg_info,
                                             const RegisterValue &reg_value)
 {
-    LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
+    Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
 
     if (log && log->GetVerbose ())
     {

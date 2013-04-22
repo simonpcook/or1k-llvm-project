@@ -42,6 +42,7 @@
 #include "../Commands/CommandObjectVersion.h"
 #include "../Commands/CommandObjectWatchpoint.h"
 
+
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/InputReader.h"
 #include "lldb/Core/Log.h"
@@ -51,8 +52,9 @@
 #include "lldb/Host/Host.h"
 
 #include "lldb/Interpreter/Args.h"
-#include "lldb/Interpreter/CommandReturnObject.h"
+#include "lldb/Interpreter/CommandCompletions.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
+#include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Interpreter/Options.h"
 #include "lldb/Interpreter/ScriptInterpreterNone.h"
 #include "lldb/Interpreter/ScriptInterpreterPython.h"
@@ -280,9 +282,7 @@ CommandInterpreter::Initialize ()
     
     cmd_obj_sp = GetCommandSPExact ("expression", false);
     if (cmd_obj_sp)
-    {
-        AddAlias ("expr", cmd_obj_sp);
-        
+    {        
         ProcessAliasOptionsArgs (cmd_obj_sp, "--", alias_arguments_vector_sp);
         AddAlias ("p", cmd_obj_sp);
         AddAlias ("print", cmd_obj_sp);
@@ -391,11 +391,14 @@ CommandInterpreter::LoadCommandDictionary ()
     
     size_t num_regexes = sizeof break_regexes/sizeof(char *[2]);
         
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     break_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                       "_regexp-break",
                                                       "Set a breakpoint using a regular expression to specify the location, where <linenum> is in decimal and <address> is in hex.",
-                                                      "_regexp-break [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>", 2));
+                                                      "_regexp-break [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>",
+                                                      2,
+                                                      CommandCompletions::eSymbolCompletion |
+                                                      CommandCompletions::eSourceFileCompletion));
 
     if (break_regex_cmd_ap.get())
     {
@@ -415,11 +418,14 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     tbreak_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                       "_regexp-tbreak",
                                                       "Set a one shot breakpoint using a regular expression to specify the location, where <linenum> is in decimal and <address> is in hex.",
-                                                      "_regexp-tbreak [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>", 2));
+                                                      "_regexp-tbreak [<filename>:<linenum>]\n_regexp-break [<linenum>]\n_regexp-break [<address>]\n_regexp-break <...>",
+                                                       2,
+                                                       CommandCompletions::eSymbolCompletion |
+                                                       CommandCompletions::eSourceFileCompletion));
 
     if (tbreak_regex_cmd_ap.get())
     {
@@ -443,11 +449,12 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     attach_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                        "_regexp-attach",
                                                        "Attach to a process id if in decimal, otherwise treat the argument as a process name to attach to.",
-                                                       "_regexp-attach [<pid>]\n_regexp-attach [<process-name>]", 2));
+                                                       "_regexp-attach [<pid>]\n_regexp-attach [<process-name>]",
+                                                       2));
     if (attach_regex_cmd_ap.get())
     {
         if (attach_regex_cmd_ap->AddRegexCommand("^([0-9]+)[[:space:]]*$", "process attach --pid %1") &&
@@ -460,7 +467,7 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
     
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     down_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                      "_regexp-down",
                                                      "Go down \"n\" frames in the stack (1 frame by default).",
@@ -475,7 +482,7 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
     
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     up_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                    "_regexp-up",
                                                    "Go up \"n\" frames in the stack (1 frame by default).",
@@ -490,11 +497,11 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     display_regex_cmd_ap(new CommandObjectRegexCommand (*this,
-                                                   "_regexp-display",
-                                                   "Add an expression evaluation stop-hook.",
-                                                   "_regexp-display expression", 2));
+                                                        "_regexp-display",
+                                                        "Add an expression evaluation stop-hook.",
+                                                        "_regexp-display expression", 2));
     if (display_regex_cmd_ap.get())
     {
         if (display_regex_cmd_ap->AddRegexCommand("^(.+)$", "target stop-hook add -o \"expr -- %1\""))
@@ -504,11 +511,11 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     undisplay_regex_cmd_ap(new CommandObjectRegexCommand (*this,
-                                                   "_regexp-undisplay",
-                                                   "Remove an expression evaluation stop-hook.",
-                                                   "_regexp-undisplay stop-hook-number", 2));
+                                                          "_regexp-undisplay",
+                                                          "Remove an expression evaluation stop-hook.",
+                                                          "_regexp-undisplay stop-hook-number", 2));
     if (undisplay_regex_cmd_ap.get())
     {
         if (undisplay_regex_cmd_ap->AddRegexCommand("^([0-9]+)$", "target stop-hook delete %1"))
@@ -518,11 +525,11 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     connect_gdb_remote_cmd_ap(new CommandObjectRegexCommand (*this,
-                                                      "gdb-remote",
-                                                      "Connect to a remote GDB server.  If no hostname is provided, localhost is assumed.",
-                                                      "gdb-remote [<hostname>:]<portnum>", 2));
+                                                             "gdb-remote",
+                                                             "Connect to a remote GDB server.  If no hostname is provided, localhost is assumed.",
+                                                             "gdb-remote [<hostname>:]<portnum>", 2));
     if (connect_gdb_remote_cmd_ap.get())
     {
         if (connect_gdb_remote_cmd_ap->AddRegexCommand("^([^:]+:[[:digit:]]+)$", "process connect --plugin gdb-remote connect://%1") &&
@@ -533,7 +540,7 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     connect_kdp_remote_cmd_ap(new CommandObjectRegexCommand (*this,
                                                              "kdp-remote",
                                                              "Connect to a remote KDP server.  udp port 41139 is the default port number.",
@@ -548,7 +555,7 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     bt_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                      "_regexp-bt",
                                                      "Show a backtrace.  An optional argument is accepted; if that argument is a number, it specifies the number of frames to display.  If that argument is 'all', full backtraces of all threads are displayed.",
@@ -568,11 +575,13 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     list_regex_cmd_ap(new CommandObjectRegexCommand (*this,
                                                      "_regexp-list",
                                                      "Implements the GDB 'list' command in all of its forms except FILE:FUNCTION and maps them to the appropriate 'source list' commands.",
-                                                     "_regexp-list [<line>]\n_regexp-attach [<file>:<line>]\n_regexp-attach [<file>:<line>]", 2));
+                                                     "_regexp-list [<line>]\n_regexp-attach [<file>:<line>]\n_regexp-attach [<file>:<line>]",
+                                                     2,
+                                                     CommandCompletions::eSourceFileCompletion));
     if (list_regex_cmd_ap.get())
     {
         if (list_regex_cmd_ap->AddRegexCommand("^([0-9]+)[[:space:]]*$", "source list --line %1") &&
@@ -588,11 +597,11 @@ CommandInterpreter::LoadCommandDictionary ()
         }
     }
 
-    std::auto_ptr<CommandObjectRegexCommand>
+    std::unique_ptr<CommandObjectRegexCommand>
     env_regex_cmd_ap(new CommandObjectRegexCommand (*this,
-                                                     "_regexp-env",
-                                                     "Implements a shortcut to viewing and setting environment variables.",
-                                                     "_regexp-env\n_regexp-env FOO=BAR", 2));
+                                                    "_regexp-env",
+                                                    "Implements a shortcut to viewing and setting environment variables.",
+                                                    "_regexp-env\n_regexp-env FOO=BAR", 2));
     if (env_regex_cmd_ap.get())
     {
         if (env_regex_cmd_ap->AddRegexCommand("^$", "settings show target.env-vars") &&
@@ -905,6 +914,40 @@ CommandInterpreter::ProcessAliasOptionsArgs (lldb::CommandObjectSP &cmd_obj_sp,
     }
         
     return success;
+}
+
+bool
+CommandInterpreter::GetAliasFullName (const char *cmd, std::string &full_name)
+{
+    bool exact_match  = (m_alias_dict.find(cmd) != m_alias_dict.end());
+    if (exact_match)
+    {
+        full_name.assign(cmd);
+        return exact_match;
+    }
+    else
+    {
+        StringList matches;
+        size_t num_alias_matches;
+        num_alias_matches = CommandObject::AddNamesMatchingPartialString (m_alias_dict, cmd, matches);
+        if (num_alias_matches == 1)
+        {
+            // Make sure this isn't shadowing a command in the regular command space:
+            StringList regular_matches;
+            const bool include_aliases = false;
+            const bool exact = false;
+            CommandObjectSP cmd_obj_sp(GetCommandSP (cmd, include_aliases, exact, &regular_matches));
+            if (cmd_obj_sp || regular_matches.GetSize() > 0)
+                return false;
+            else
+            {
+                full_name.assign (matches.GetStringAtIndex(0));
+                return true;
+            }
+        }
+        else
+            return false;
+    }
 }
 
 bool
@@ -1441,7 +1484,7 @@ CommandInterpreter::HandleCommand (const char *command_line,
     std::string command_string (command_line);
     std::string original_command_string (command_line);
     
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_COMMANDS));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_COMMANDS));
     Host::SetCrashDescriptionWithFormat ("HandleCommand(command = \"%s\")", command_line);
     
     // Make a scoped cleanup object that will clear the crash description string 
@@ -1559,10 +1602,11 @@ CommandInterpreter::HandleCommand (const char *command_line,
         ExtractCommand (command_string, next_word, suffix, quote_char);
         if (cmd_obj == NULL)
         {
-            if (AliasExists (next_word.c_str())) 
+            std::string full_name;
+            if (GetAliasFullName(next_word.c_str(), full_name))
             {
                 std::string alias_result;
-                cmd_obj = BuildAliasResult (next_word.c_str(), command_string, alias_result, result);
+                cmd_obj = BuildAliasResult (full_name.c_str(), command_string, alias_result, result);
                 revised_command_line.Printf ("%s", alias_result.c_str());
                 if (cmd_obj)
                 {
@@ -2588,7 +2632,7 @@ CommandInterpreter::GetScriptInterpreter (bool can_create)
     static Mutex g_interpreter_mutex(Mutex::eMutexTypeRecursive);
     Mutex::Locker interpreter_lock(g_interpreter_mutex);
     
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf("Initializing the ScriptInterpreter now\n");
     

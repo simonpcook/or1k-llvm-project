@@ -25,6 +25,7 @@
 #include "lldb/Expression/ASTStructExtractor.h"
 #include "lldb/Expression/ClangExpressionParser.h"
 #include "lldb/Expression/ClangFunction.h"
+#include "lldb/Expression/IRExecutionUnit.h"
 #include "lldb/Symbol/Type.h"
 #include "lldb/Core/DataExtractor.h"
 #include "lldb/Core/State.h"
@@ -214,7 +215,7 @@ ClangFunction::CompileFunction (Stream &errors)
     m_wrapper_function_text.append (args_list_buffer);
     m_wrapper_function_text.append (");\n}\n");
 
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     if (log)
         log->Printf ("Expression: \n\n%s\n\n", m_wrapper_function_text.c_str());
         
@@ -259,16 +260,14 @@ ClangFunction::WriteFunctionWrapper (ExecutionContext &exe_ctx, Stream &errors)
 
     if (m_JITted)
         return true;
-    
-    lldb::ClangExpressionVariableSP const_result;
-    
-    bool evaluated_statically = false; // should stay that way
+        
+    bool can_interpret = false; // should stay that way
     
     Error jit_error (m_parser->PrepareForExecution (m_jit_start_addr,
                                                     m_jit_end_addr,
+                                                    m_execution_unit_ap,
                                                     exe_ctx, 
-                                                    evaluated_statically,
-                                                    const_result,
+                                                    can_interpret,
                                                     eExecutionPolicyAlways));
     
     if (!jit_error.Success())
@@ -388,7 +387,7 @@ ClangFunction::InsertFunction (ExecutionContext &exe_ctx, lldb::addr_t &args_add
     if (!WriteFunctionArguments(exe_ctx, args_addr_ref, errors))
         return false;
 
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     if (log)
         log->Printf ("Call Address: 0x%" PRIx64 " Struct Address: 0x%" PRIx64 ".\n", m_jit_start_addr, args_addr_ref);
         
@@ -406,7 +405,7 @@ ClangFunction::GetThreadPlanToCallFunction (ExecutionContext &exe_ctx,
                                             lldb::addr_t *this_arg,
                                             lldb::addr_t *cmd_arg)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
     
     if (log)
         log->Printf("-- [ClangFunction::GetThreadPlanToCallFunction] Creating thread plan to call function --");
@@ -444,7 +443,7 @@ ClangFunction::FetchFunctionResults (ExecutionContext &exe_ctx, lldb::addr_t arg
     // FIXME: Create our ThreadPlanCallFunction with the return ClangASTType, and then use GetReturnValueObject
     // to fetch the value.  That way we can fetch any values we need.
     
-    lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
     
     if (log)
         log->Printf("-- [ClangFunction::FetchFunctionResults] Fetching function results --");
@@ -526,7 +525,7 @@ ClangFunction::ExecuteFunction (
         Stream &errors,
         lldb::addr_t *this_arg)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
 
     if (log)
         log->Printf("== [ClangFunction::ExecuteFunction] Executing function ==");

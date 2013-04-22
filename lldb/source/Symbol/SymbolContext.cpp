@@ -493,7 +493,7 @@ SymbolContext::GetParentOfInlinedScope (const Address &curr_frame_pc,
             }
             else
             {
-                LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SYMBOLS));
+                Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SYMBOLS));
 
                 if (log)
                 {
@@ -1050,6 +1050,17 @@ SymbolContextList::GetContextAtIndex(size_t idx, SymbolContext& sc) const
     if (idx < m_symbol_contexts.size())
     {
         sc = m_symbol_contexts[idx];
+        return true;
+    }
+    return false;
+}
+
+bool
+SymbolContextList::GetLastContext(SymbolContext& sc) const
+{
+    if (!m_symbol_contexts.empty())
+    {
+        sc = m_symbol_contexts.back();
         return true;
     }
     return false;

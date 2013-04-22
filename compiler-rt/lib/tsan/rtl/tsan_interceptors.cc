@@ -1656,7 +1656,7 @@ TSAN_INTERCEPTOR(int, poll, void *fds, long_t nfds, int timeout) {
   return res;
 }
 
-static void ALWAYS_INLINE rtl_generic_sighandler(bool sigact, int sig,
+void ALWAYS_INLINE rtl_generic_sighandler(bool sigact, int sig,
     my_siginfo_t *info, void *ctx) {
   ThreadState *thr = cur_thread();
   SignalContext *sctx = SigCtx(thr);
@@ -1855,6 +1855,13 @@ struct TsanInterceptorContext {
 #define COMMON_INTERCEPTOR_SET_THREAD_NAME(ctx, name) \
     ThreadSetName(((TsanInterceptorContext*)ctx)->thr, name)
 #include "sanitizer_common/sanitizer_common_interceptors.inc"
+
+// FIXME: Implement these with MemoryAccessRange().
+#define COMMON_SYSCALL_PRE_READ_RANGE(p, s)
+#define COMMON_SYSCALL_PRE_WRITE_RANGE(p, s)
+#define COMMON_SYSCALL_POST_READ_RANGE(p, s)
+#define COMMON_SYSCALL_POST_WRITE_RANGE(p, s)
+#include "sanitizer_common/sanitizer_common_syscalls.inc"
 
 namespace __tsan {
 

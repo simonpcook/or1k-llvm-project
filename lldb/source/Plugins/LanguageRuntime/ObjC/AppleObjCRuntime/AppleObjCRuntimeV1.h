@@ -46,10 +46,12 @@ public:
             return m_valid;
         }
         
+        // v1 does not support tagged pointers
         virtual bool
-        IsTagged ()
+        GetTaggedPointerInfo (uint64_t* info_bits = NULL,
+                              uint64_t* value_bits = NULL)
         {
-            return false;   // v1 runtime does not support tagged pointers
+            return false;
         }
         
         virtual uint64_t
@@ -182,7 +184,7 @@ protected:
     
     HashTableSignature m_hash_signature;
     lldb::addr_t m_isa_hash_table_ptr;
-    std::auto_ptr<TypeVendor> m_type_vendor_ap;
+    std::unique_ptr<TypeVendor> m_type_vendor_ap;
 private:
     AppleObjCRuntimeV1(Process *process);
 };

@@ -125,8 +125,24 @@ void test13(void) {
 }
 
 // <rdar://problem/12700799>
-struct S;  // expected-note {{forward declaration of 'struct S'}} expected-note {{forward declaration of 'struct S'}}
+struct S;  // expected-note 2 {{forward declaration of 'struct S'}}
 void test14(struct S *s) {
   __asm("": : "a"(*s)); // expected-error {{dereference of pointer to incomplete type 'struct S'}}
   __asm("": "=a" (*s) :); // expected-error {{dereference of pointer to incomplete type 'struct S'}}
+}
+
+// PR15759.
+double test15() {
+  double ret = 0;
+  __asm("0.0":"="(ret)); // expected-error {{invalid output constraint '=' in asm}}
+  __asm("0.0":"=&"(ret)); // expected-error {{invalid output constraint '=&' in asm}}
+  __asm("0.0":"+?"(ret)); // expected-error {{invalid output constraint '+?' in asm}}
+  __asm("0.0":"+!"(ret)); // expected-error {{invalid output constraint '+!' in asm}}
+  __asm("0.0":"+#"(ret)); // expected-error {{invalid output constraint '+#' in asm}}
+  __asm("0.0":"+*"(ret)); // expected-error {{invalid output constraint '+*' in asm}}
+  __asm("0.0":"=%"(ret)); // expected-error {{invalid output constraint '=%' in asm}}
+  __asm("0.0":"=,="(ret)); // expected-error {{invalid output constraint '=,=' in asm}}
+  __asm("0.0":"=,g"(ret)); // no-error
+  __asm("0.0":"=g"(ret)); // no-error
+  return ret;
 }

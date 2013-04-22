@@ -127,6 +127,8 @@ public:
     if (EC)
       return;
 
+    int ordinal = 0;
+
     // Point Obj to correct class and bitwidth ELF object
     _objFile.reset(
         llvm::dyn_cast<llvm::object::ELFObjectFile<ELFT> >(binaryFile.get()));
@@ -143,7 +145,7 @@ public:
     // Sections that have merge string property
     std::vector<const Elf_Shdr *> mergeStringSections;
 
-    bool doStringsMerge = _elfTargetInfo.getLinkerOptions()._mergeCommonStrings;
+    bool doStringsMerge = _elfTargetInfo.mergeCommonStrings();
 
     // Handle: SHT_REL and SHT_RELA sections:
     // Increment over the sections, when REL/RELA section types are found add
@@ -334,10 +336,11 @@ public:
         sym->st_size = 0;
         ArrayRef<uint8_t> content((const uint8_t *)sectionContents.data(),
                                   sectionContents.size());
-        _definedAtoms._atoms.push_back(
-            new (_readerStorage)
+        auto newAtom = new (_readerStorage)
             ELFDefinedAtom<ELFT>(*this, sectionName, sectionName, sym, i.first,
-                                 content, 0, 0, _references));
+                                 content, 0, 0, _references);
+        newAtom->setOrdinal(++ordinal);
+        _definedAtoms._atoms.push_back(newAtom);
       }
 
       ELFDefinedAtom<ELFT> *previous_atom = nullptr;
@@ -410,8 +413,10 @@ public:
           sym->setBinding(llvm::ELF::STB_GLOBAL);
           anonAtom = createDefinedAtomAndAssignRelocations(
               "", sectionName, sym, i.first,
-              ArrayRef<uint8_t>((uint8_t *)sectionContents.data() +
-                                (*si)->st_value, contentSize));
+              ArrayRef<uint8_t>(
+                  (uint8_t *)sectionContents.data() + (*si)->st_value,
+                  contentSize));
+          anonAtom->setOrdinal(++ordinal);
 
           // If this is the last atom, lets not create a followon
           // reference
@@ -453,6 +458,8 @@ public:
 
         auto newAtom = createDefinedAtomAndAssignRelocations(
             symbolName, sectionName, *si, i.first, symbolData);
+
+        newAtom->setOrdinal(++ordinal);
 
         // If the atom was a weak symbol, lets create a followon
         // reference to the anonymous atom that we created
@@ -576,8 +583,12 @@ private:
         if (!((rai.r_offset >= symbol->st_value) &&
               (rai.r_offset < symbol->st_value + content.size())))
           continue;
+        bool isMips64EL = _objFile->isMips64EL();
+        Kind kind = (Kind) rai.getType(isMips64EL);
+        uint32_t symbolIndex = rai.getSymbol(isMips64EL);
         auto *ERef = new (_readerStorage)
-            ELFReference<ELFT>(&rai, rai.r_offset - symbol->st_value, nullptr);
+            ELFReference<ELFT>(&rai, rai.r_offset - symbol->st_value, nullptr,
+                               kind, symbolIndex);
         _references.push_back(ERef);
       }
 
@@ -586,8 +597,12 @@ private:
       for (auto &ri : rri->second) {
         if ((ri.r_offset >= symbol->st_value) &&
             (ri.r_offset < symbol->st_value + content.size())) {
+          bool isMips64EL = _objFile->isMips64EL();
+          Kind kind = (Kind) ri.getType(isMips64EL);
+          uint32_t symbolIndex = ri.getSymbol(isMips64EL);
           auto *ERef = new (_readerStorage)
-              ELFReference<ELFT>(&ri, ri.r_offset - symbol->st_value, nullptr);
+              ELFReference<ELFT>(&ri, ri.r_offset - symbol->st_value, nullptr,
+                                 kind, symbolIndex);
           // Read the addend from the section contents
           // TODO : We should move the way lld reads relocations totally from
           // ELFObjectFile
@@ -598,9 +613,12 @@ private:
       }
 
     // Create the DefinedAtom and add it to the list of DefinedAtoms.
-    return new (_readerStorage) ELFDefinedAtom<
+    auto ret = new (_readerStorage) ELFDefinedAtom<
         ELFT>(*this, symbolName, sectionName, symbol, section, content,
               referenceStart, _references.size(), _references);
+    ret->permissions();
+    ret->contentType();
+    return ret;
   }
 
   llvm::BumpPtrAllocator _readerStorage;

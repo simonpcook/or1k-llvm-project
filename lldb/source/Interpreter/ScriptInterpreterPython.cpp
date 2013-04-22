@@ -135,6 +135,7 @@ ScriptInterpreterPython::Locker::Locker (ScriptInterpreterPython *py_interpreter
                                          uint16_t on_entry,
                                          uint16_t on_leave,
                                          FILE* wait_msg_handle) :
+    ScriptInterpreterLocker (),
     m_teardown_session( (on_leave & TearDownSession) == TearDownSession ),
     m_python_interpreter(py_interpreter),
     m_tmp_fh(wait_msg_handle)
@@ -156,7 +157,7 @@ ScriptInterpreterPython::Locker::Locker (ScriptInterpreterPython *py_interpreter
 bool
 ScriptInterpreterPython::Locker::DoAcquireLock()
 {
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
     m_GILState = PyGILState_Ensure();
     if (log)
         log->Printf("Ensured PyGILState. Previous state = %slocked\n", m_GILState == PyGILState_UNLOCKED ? "un" : "");
@@ -174,7 +175,7 @@ ScriptInterpreterPython::Locker::DoInitSession(bool init_lldb_globals)
 bool
 ScriptInterpreterPython::Locker::DoFreeLock()
 {
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
     if (log)
         log->Printf("Releasing PyGILState. Returning to state = %slocked\n", m_GILState == PyGILState_UNLOCKED ? "un" : "");
     PyGILState_Release(m_GILState);
@@ -266,7 +267,7 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback (void *ba
                                                                         size_t bytes_len)
 {
     lldb::thread_t embedded_interpreter_thread;
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
     
     if (baton == NULL)
         return 0;
@@ -582,7 +583,7 @@ ScriptInterpreterPython::RestoreTerminalState ()
 void
 ScriptInterpreterPython::LeaveSession ()
 {
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
     if (log)
         log->PutCString("ScriptInterpreterPython::LeaveSession()");
 
@@ -615,7 +616,7 @@ ScriptInterpreterPython::EnterSession (bool init_lldb_globals)
 {
     // If we have already entered the session, without having officially 'left' it, then there is no need to 
     // 'enter' it again.
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
     if (m_session_is_active)
     {
         if (log)
@@ -832,7 +833,7 @@ ScriptInterpreterPython::InputReaderCallback
 )
 {
     lldb::thread_t embedded_interpreter_thread;
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
 
     if (baton == NULL)
         return 0;
@@ -1320,7 +1321,7 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
     case eInputReaderDone:
         {
             BreakpointOptions *bp_options = (BreakpointOptions *)baton;
-            std::auto_ptr<BreakpointOptions::CommandData> data_ap(new BreakpointOptions::CommandData());
+            std::unique_ptr<BreakpointOptions::CommandData> data_ap(new BreakpointOptions::CommandData());
             data_ap->user_source.AppendList (commands_in_progress);
             if (data_ap.get())
             {
@@ -1426,7 +1427,7 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
     case eInputReaderDone:
         {
             WatchpointOptions *wp_options = (WatchpointOptions *)baton;
-            std::auto_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
+            std::unique_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
             data_ap->user_source.AppendList (commands_in_progress);
             if (data_ap.get())
             {
@@ -1533,7 +1534,7 @@ void
 ScriptInterpreterPython::SetBreakpointCommandCallback (BreakpointOptions *bp_options,
                                                        const char *oneliner)
 {
-    std::auto_ptr<BreakpointOptions::CommandData> data_ap(new BreakpointOptions::CommandData());
+    std::unique_ptr<BreakpointOptions::CommandData> data_ap(new BreakpointOptions::CommandData());
 
     // It's necessary to set both user_source and script_source to the oneliner.
     // The former is used to generate callback description (as in breakpoint command list)
@@ -1556,7 +1557,7 @@ void
 ScriptInterpreterPython::SetWatchpointCommandCallback (WatchpointOptions *wp_options,
                                                        const char *oneliner)
 {
-    std::auto_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
+    std::unique_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
 
     // It's necessary to set both user_source and script_source to the oneliner.
     // The former is used to generate callback description (as in watchpoint command list)
@@ -2265,7 +2266,7 @@ ScriptInterpreterPython::RunEmbeddedPythonInterpreter (lldb::thread_arg_t baton)
 {
     ScriptInterpreterPython *script_interpreter = (ScriptInterpreterPython *) baton;
     
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT));
     
     if (log)
         log->Printf ("%p ScriptInterpreterPython::RunEmbeddedPythonInterpreter () thread starting...", baton);
@@ -2806,6 +2807,15 @@ ScriptInterpreterPython::GetDocumentationForItem(const char* item, std::string& 
     }
 }
 
+std::unique_ptr<ScriptInterpreterLocker>
+ScriptInterpreterPython::AcquireInterpreterLock ()
+{
+    std::unique_ptr<ScriptInterpreterLocker> py_lock(new Locker(this,
+                                                              Locker::AcquireLock | Locker::InitSession,
+                                                              Locker::FreeLock | Locker::TearDownSession));
+    return py_lock;
+}
+
 void
 ScriptInterpreterPython::InitializeInterpreter (SWIGInitCallback python_swig_init_callback)
 {
@@ -2836,7 +2846,7 @@ ScriptInterpreterPython::InitializePrivate ()
     stdin_tty_state.Save(STDIN_FILENO, false);
 
     PyGILState_STATE gstate;
-    LogSP log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
+    Log *log (lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SCRIPT | LIBLLDB_LOG_VERBOSE));
     bool threads_already_initialized = false;
     if (PyEval_ThreadsInitialized ()) {
         gstate = PyGILState_Ensure ();

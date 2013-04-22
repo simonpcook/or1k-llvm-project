@@ -22,6 +22,12 @@ template <class ValueType>
 class Metric
 {
 public:
+    enum class StandardDeviationMode
+    {
+        eSample,
+        ePopulation
+    };
+    
     Metric ();
     Metric (const char*, const char* = NULL);
     
@@ -36,6 +42,9 @@ public:
     
     ValueType
     GetSum () const;
+    
+    ValueType
+    GetStandardDeviation (StandardDeviationMode mode = StandardDeviationMode::ePopulation) const;
     
     const char*
     GetName () const

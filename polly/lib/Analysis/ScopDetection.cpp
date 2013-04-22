@@ -133,7 +133,7 @@ BADSCOP_STAT(FuncCall, "Function call with side effects appeared");
 BADSCOP_STAT(AffFunc, "Expression not affine");
 BADSCOP_STAT(Scalar, "Found scalar dependency");
 BADSCOP_STAT(Alias, "Found base address alias");
-BADSCOP_STAT(SimpleRegion, "Region not simple");
+BADSCOP_STAT(SimpleLoop, "Loop not in -loop-simplify form");
 BADSCOP_STAT(Other, "Others");
 
 //===----------------------------------------------------------------------===//
@@ -150,8 +150,8 @@ std::string ScopDetection::regionIsInvalidBecause(const Region *R) const {
   return InvalidRegions.find(R)->second;
 }
 
-bool ScopDetection::isValidCFG(BasicBlock &BB,
-                               DetectionContext &Context) const {
+bool
+ScopDetection::isValidCFG(BasicBlock &BB, DetectionContext &Context) const {
   Region &RefRegion = Context.CurRegion;
   TerminatorInst *TI = BB.getTerminator();
 
@@ -176,8 +176,7 @@ bool ScopDetection::isValidCFG(BasicBlock &BB,
   // Only Constant and ICmpInst are allowed as condition.
   if (!(isa<Constant>(Condition) || isa<ICmpInst>(Condition)))
     INVALID(AffFunc, "Condition in BB '" + BB.getName() +
-                     "' neither "
-                     "constant nor an icmp instruction");
+                         "' neither constant nor an icmp instruction");
 
   // Allow perfectly nested conditions.
   assert(Br->getNumSuccessors() == 2 && "Unexpected number of successors");
@@ -196,8 +195,9 @@ bool ScopDetection::isValidCFG(BasicBlock &BB,
         isa<UndefValue>(ICmp->getOperand(1)))
       INVALID(AffFunc, "undef operand in branch at BB: " + BB.getName());
 
-    const SCEV *LHS = SE->getSCEV(ICmp->getOperand(0));
-    const SCEV *RHS = SE->getSCEV(ICmp->getOperand(1));
+    Loop *L = LI->getLoopFor(ICmp->getParent());
+    const SCEV *LHS = SE->getSCEVAtScope(ICmp->getOperand(0), L);
+    const SCEV *RHS = SE->getSCEVAtScope(ICmp->getOperand(1), L);
 
     if (!isAffineExpr(&Context.CurRegion, LHS, *SE) ||
         !isAffineExpr(&Context.CurRegion, RHS, *SE))
@@ -239,7 +239,8 @@ bool ScopDetection::isValidCallInst(CallInst &CI) {
 bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
                                         DetectionContext &Context) const {
   Value *Ptr = getPointerOperand(Inst);
-  const SCEV *AccessFunction = SE->getSCEV(Ptr);
+  Loop *L = LI->getLoopFor(Inst.getParent());
+  const SCEV *AccessFunction = SE->getSCEVAtScope(Ptr, L);
   const SCEVUnknown *BasePointer;
   Value *BaseValue;
 
@@ -314,8 +315,8 @@ bool ScopDetection::isValidMemoryAccess(Instruction &Inst,
   return true;
 }
 
-bool ScopDetection::hasScalarDependency(Instruction &Inst,
-                                        Region &RefRegion) const {
+bool
+ScopDetection::hasScalarDependency(Instruction &Inst, Region &RefRegion) const {
   for (Instruction::use_iterator UI = Inst.use_begin(), UE = Inst.use_end();
        UI != UE; ++UI)
     if (Instruction *Use = dyn_cast<Instruction>(*UI))
@@ -408,7 +409,7 @@ bool ScopDetection::isValidLoop(Loop *L, DetectionContext &Context) const {
   if (!isAffineExpr(&Context.CurRegion, LoopCount, *SE))
     INVALID(LoopBound,
             "Non affine loop bound '"
-            << *LoopCount << "' in loop: " << L->getHeader()->getName());
+                << *LoopCount << "' in loop: " << L->getHeader()->getName());
 
   return true;
 }
@@ -436,7 +437,8 @@ Region *ScopDetection::expandRegion(Region &R) {
       if (LastValidRegion)
         delete LastValidRegion;
 
-      // Store this region, because it is the greatest valid (encountered so far)
+      // Store this region, because it is the greatest valid (encountered so
+      // far).
       LastValidRegion = ExpandedRegion;
 
       // Create and test the next greater region (if any)
@@ -454,7 +456,7 @@ Region *ScopDetection::expandRegion(Region &R) {
   }
 
   DEBUG(if (LastValidRegion)
-        dbgs() << "\tto " << LastValidRegion->getNameStr() << "\n";
+            dbgs() << "\tto " << LastValidRegion->getNameStr() << "\n";
         else dbgs() << "\tExpanding " << R.getNameStr() << " failed\n";);
 
   return LastValidRegion;
@@ -542,19 +544,21 @@ bool ScopDetection::isValidRegion(DetectionContext &Context) const {
   DEBUG(dbgs() << "Checking region: " << R.getNameStr() << "\n\t");
 
   // The toplevel region is no valid region.
-  if (!R.getParent()) {
+  if (R.isTopLevelRegion()) {
     DEBUG(dbgs() << "Top level region is invalid"; dbgs() << "\n");
     return false;
+  }
+
+  if (!R.getEnteringBlock()){
+    Loop *L = LI->getLoopFor(R.getEntry());
+    if (L && !L->isLoopSimplifyForm())
+      INVALID(SimpleLoop, "Loop not in simplify form is invalid!");
   }
 
   // SCoP cannot contain the entry block of the function, because we need
   // to insert alloca instruction there when translate scalar to array.
   if (R.getEntry() == &(R.getEntry()->getParent()->getEntryBlock()))
     INVALID(Other, "Region containing entry block of function is invalid!");
-
-  // Only a simple region is allowed.
-  if (!R.isSimple())
-    INVALID(SimpleRegion, "Region not simple: " << R.getNameStr());
 
   if (!isValidExit(Context))
     return false;

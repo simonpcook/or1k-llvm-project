@@ -93,14 +93,15 @@ protected:
     
     lldb::ThreadSP
     CreateThreadFromThreadInfo (lldb_private::PythonDictionary &thread_dict,
-                                lldb_private::ThreadList *old_thread_list_ptr,
+                                lldb_private::ThreadList &core_thread_list,
+                                lldb_private::ThreadList &old_thread_list,
                                 bool *did_create_ptr);
 
     DynamicRegisterInfo *
     GetDynamicRegisterInfo ();
 
     lldb::ValueObjectSP m_thread_list_valobj_sp;
-    std::auto_ptr<DynamicRegisterInfo> m_register_info_ap;
+    std::unique_ptr<DynamicRegisterInfo> m_register_info_ap;
     lldb_private::ScriptInterpreter *m_interpreter;
     lldb::ScriptInterpreterObjectSP m_python_object_sp;
     

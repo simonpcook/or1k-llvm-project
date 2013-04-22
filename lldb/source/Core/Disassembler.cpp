@@ -250,7 +250,8 @@ Disassembler::DisassembleRange
 
         if (disasm_sp)
         {
-            size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx, range, NULL);
+            const bool prefer_file_cache = false;
+            size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx, range, NULL, prefer_file_cache);
             if (bytes_disassembled == 0)
                 disasm_sp.reset();
         }
@@ -259,32 +260,31 @@ Disassembler::DisassembleRange
 }
 
 lldb::DisassemblerSP 
-Disassembler::DisassembleBytes 
-(
-    const ArchSpec &arch,
-    const char *plugin_name,
-    const char *flavor,
-    const Address &start,
-    const void *bytes,
-    size_t length,
-    uint32_t num_instructions
-)
+Disassembler::DisassembleBytes (const ArchSpec &arch,
+                                const char *plugin_name,
+                                const char *flavor,
+                                const Address &start,
+                                const void *src,
+                                size_t src_len,
+                                uint32_t num_instructions,
+                                bool data_from_file)
 {
     lldb::DisassemblerSP disasm_sp;
     
-    if (bytes)
+    if (src)
     {
         disasm_sp = Disassembler::FindPlugin(arch, flavor, plugin_name);
         
         if (disasm_sp)
         {
-            DataExtractor data(bytes, length, arch.GetByteOrder(), arch.GetAddressByteSize());
+            DataExtractor data(src, src_len, arch.GetByteOrder(), arch.GetAddressByteSize());
             
             (void)disasm_sp->DecodeInstructions (start,
                                                  data,
                                                  0,
                                                  num_instructions,
-                                                 false);
+                                                 false,
+                                                 data_from_file);
         }
     }
     
@@ -316,8 +316,8 @@ Disassembler::Disassemble
             AddressRange range;
             ResolveAddress (exe_ctx, disasm_range.GetBaseAddress(), range.GetBaseAddress());
             range.SetByteSize (disasm_range.GetByteSize());
-            
-            size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx, range, &strm);
+            const bool prefer_file_cache = false;
+            size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx, range, &strm, prefer_file_cache);
             if (bytes_disassembled == 0)
                 return false;
 
@@ -351,13 +351,19 @@ Disassembler::Disassemble
 {
     if (num_instructions > 0)
     {
-        lldb::DisassemblerSP disasm_sp (Disassembler::FindPluginForTarget(exe_ctx.GetTargetSP(), arch, flavor, plugin_name));
+        lldb::DisassemblerSP disasm_sp (Disassembler::FindPluginForTarget(exe_ctx.GetTargetSP(),
+                                                                          arch,
+                                                                          flavor,
+                                                                          plugin_name));
         if (disasm_sp.get())
         {
             Address addr;
             ResolveAddress (exe_ctx, start_address, addr);
-
-            size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx, addr, num_instructions);
+            const bool prefer_file_cache = false;
+            size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx,
+                                                                      addr,
+                                                                      num_instructions,
+                                                                      prefer_file_cache);
             if (bytes_disassembled == 0)
                 return false;
             return PrintInstructions (disasm_sp.get(),
@@ -632,7 +638,7 @@ Instruction::Dump (lldb_private::Stream *s,
 bool
 Instruction::DumpEmulation (const ArchSpec &arch)
 {
-	std::auto_ptr<EmulateInstruction> insn_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypeAny, NULL));
+	std::unique_ptr<EmulateInstruction> insn_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypeAny, NULL));
 	if (insn_emulator_ap.get())
 	{
         insn_emulator_ap->SetInstruction (GetOpcode(), GetAddress(), NULL);
@@ -678,10 +684,11 @@ Instruction::ReadArray (FILE *in_file, Stream *out_stream, OptionValue::Type dat
         if (line.size() > 0)
         {
             std::string value;
-            RegularExpression reg_exp ("^[ \t]*([^ \t]+)[ \t]*$");
-            bool reg_exp_success = reg_exp.Execute (line.c_str(), 1);
+            static RegularExpression g_reg_exp ("^[ \t]*([^ \t]+)[ \t]*$");
+            RegularExpression::Match regex_match(1);
+            bool reg_exp_success = g_reg_exp.Execute (line.c_str(), &regex_match);
             if (reg_exp_success)
-                reg_exp.GetMatchAtIndex (line.c_str(), 1, value);
+                regex_match.GetMatchAtIndex (line.c_str(), 1, value);
             else
                 value = line;
                 
@@ -746,14 +753,16 @@ Instruction::ReadDictionary (FILE *in_file, Stream *out_stream)
         // Try to find a key-value pair in the current line and add it to the dictionary.
         if (line.size() > 0)
         {
-            RegularExpression reg_exp ("^[ \t]*([a-zA-Z_][a-zA-Z0-9_]*)[ \t]*=[ \t]*(.*)[ \t]*$");
-            bool reg_exp_success = reg_exp.Execute (line.c_str(), 2);
+            static RegularExpression g_reg_exp ("^[ \t]*([a-zA-Z_][a-zA-Z0-9_]*)[ \t]*=[ \t]*(.*)[ \t]*$");
+            RegularExpression::Match regex_match(2);
+
+            bool reg_exp_success = g_reg_exp.Execute (line.c_str(), &regex_match);
             std::string key;
             std::string value;
             if (reg_exp_success)
             {
-                reg_exp.GetMatchAtIndex (line.c_str(), 1, key);
-                reg_exp.GetMatchAtIndex (line.c_str(), 2, value);
+                regex_match.GetMatchAtIndex (line.c_str(), 1, key);
+                regex_match.GetMatchAtIndex (line.c_str(), 2, value);
             }
             else 
             {
@@ -895,7 +904,7 @@ Instruction::TestEmulation (Stream *out_stream, const char *file_name)
     arch.SetTriple (llvm::Triple (value_sp->GetStringValue()));
 
     bool success = false;
-    std::auto_ptr<EmulateInstruction> insn_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypeAny, NULL));
+    std::unique_ptr<EmulateInstruction> insn_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypeAny, NULL));
     if (insn_emulator_ap.get())
         success = insn_emulator_ap->TestEmulation (out_stream, arch, data_dictionary);
 
@@ -916,7 +925,7 @@ Instruction::Emulate (const ArchSpec &arch,
                       EmulateInstruction::ReadRegisterCallback read_reg_callback,
                       EmulateInstruction::WriteRegisterCallback write_reg_callback)
 {
-	std::auto_ptr<EmulateInstruction> insn_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypeAny, NULL));
+	std::unique_ptr<EmulateInstruction> insn_emulator_ap (EmulateInstruction::FindPlugin (arch, eInstructionTypeAny, NULL));
 	if (insn_emulator_ap.get())
 	{
 		insn_emulator_ap->SetBaton (baton);
@@ -1045,12 +1054,10 @@ InstructionList::GetIndexOfInstructionAtLoadAddress (lldb::addr_t load_addr, Tar
 }
 
 size_t
-Disassembler::ParseInstructions
-(
-    const ExecutionContext *exe_ctx,
-    const AddressRange &range,
-    Stream *error_strm_ptr
-)
+Disassembler::ParseInstructions (const ExecutionContext *exe_ctx,
+                                 const AddressRange &range,
+                                 Stream *error_strm_ptr,
+                                 bool prefer_file_cache)
 {
     if (exe_ctx)
     {
@@ -1063,12 +1070,13 @@ Disassembler::ParseInstructions
         DataBufferSP data_sp(heap_buffer);
 
         Error error;
-        const bool prefer_file_cache = true;
-        const size_t bytes_read = target->ReadMemory (range.GetBaseAddress(), 
+        lldb::addr_t load_addr = LLDB_INVALID_ADDRESS;
+        const size_t bytes_read = target->ReadMemory (range.GetBaseAddress(),
                                                       prefer_file_cache, 
                                                       heap_buffer->GetBytes(), 
                                                       heap_buffer->GetByteSize(), 
-                                                      error);
+                                                      error,
+                                                      &load_addr);
         
         if (bytes_read > 0)
         {
@@ -1077,7 +1085,8 @@ Disassembler::ParseInstructions
             DataExtractor data (data_sp, 
                                 m_arch.GetByteOrder(),
                                 m_arch.GetAddressByteSize());
-            return DecodeInstructions (range.GetBaseAddress(), data, 0, UINT32_MAX, false);
+            const bool data_from_file = load_addr == LLDB_INVALID_ADDRESS;
+            return DecodeInstructions (range.GetBaseAddress(), data, 0, UINT32_MAX, false, data_from_file);
         }
         else if (error_strm_ptr)
         {
@@ -1096,12 +1105,10 @@ Disassembler::ParseInstructions
 }
 
 size_t
-Disassembler::ParseInstructions
-(
-    const ExecutionContext *exe_ctx,
-    const Address &start,
-    uint32_t num_instructions
-)
+Disassembler::ParseInstructions (const ExecutionContext *exe_ctx,
+                                 const Address &start,
+                                 uint32_t num_instructions,
+                                 bool prefer_file_cache)
 {
     m_instruction_list.Clear();
 
@@ -1119,12 +1126,15 @@ Disassembler::ParseInstructions
     DataBufferSP data_sp (heap_buffer);
 
     Error error;
-    bool prefer_file_cache = true;
-    const size_t bytes_read = target->ReadMemory (start, 
+    lldb::addr_t load_addr = LLDB_INVALID_ADDRESS;
+    const size_t bytes_read = target->ReadMemory (start,
                                                   prefer_file_cache, 
                                                   heap_buffer->GetBytes(), 
                                                   byte_size, 
-                                                  error);
+                                                  error,
+                                                  &load_addr);
+
+    const bool data_from_file = load_addr == LLDB_INVALID_ADDRESS;
 
     if (bytes_read == 0)
         return 0;
@@ -1137,7 +1147,8 @@ Disassembler::ParseInstructions
                         data, 
                         0, 
                         num_instructions, 
-                        append_instructions);
+                        append_instructions,
+                        data_from_file);
 
     return m_instruction_list.GetSize();
 }

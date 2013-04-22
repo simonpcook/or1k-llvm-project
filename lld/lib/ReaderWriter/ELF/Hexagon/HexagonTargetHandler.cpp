@@ -38,6 +38,7 @@ template <class Derived> class GOTPLTPass : public Pass {
   void handleReference(const DefinedAtom &atom, const Reference &ref) {
     switch (ref.kind()) {
     case R_HEX_PLT_B22_PCREL:
+    case R_HEX_B22_PCREL:
       static_cast<Derived *>(this)->handlePLT32(ref);
       break;
     case R_HEX_GOT_LO16:
@@ -54,7 +55,7 @@ protected:
   /// \brief Create a GOT entry containing 0.
   const GOTAtom *getNullGOT() {
     if (!_null) {
-      _null = new (_file._alloc) HexagonGOTAtom(_file, ".got.plt");
+      _null = new (_file._alloc) HexagonGOTPLTAtom(_file);
 #ifndef NDEBUG
       _null->_name = "__got_null";
 #endif
@@ -132,9 +133,7 @@ protected:
 class DynamicGOTPLTPass LLVM_FINAL : public GOTPLTPass<DynamicGOTPLTPass> {
 public:
   DynamicGOTPLTPass(const elf::HexagonTargetInfo &ti) : GOTPLTPass(ti) {
-    // Fill in the null entry.
-    getNullGOT();
-    _got0 = new (_file._alloc) HexagonGOTAtom(_file, ".got.plt");
+    _got0 = new (_file._alloc) HexagonGOTPLT0Atom(_file);
 #ifndef NDEBUG
     _got0->_name = "__got0";
 #endif
@@ -145,7 +144,7 @@ public:
       return _PLT0;
     _PLT0 = new (_file._alloc) HexagonPLT0Atom(_file);
     _PLT0->addReference(R_HEX_B32_PCREL_X, 0, _got0, 0);
-    _PLT0->addReference(R_HEX_6_PCREL_X, 4, _got0, 0);
+    _PLT0->addReference(R_HEX_6_PCREL_X, 4, _got0, 4);
     DEBUG_WITH_TYPE("PLT", llvm::dbgs() << "[ PLT0/GOT0 ] "
                                         << "Adding plt0/got0 \n");
     return _PLT0;
@@ -155,7 +154,7 @@ public:
     auto plt = _pltMap.find(a);
     if (plt != _pltMap.end())
       return plt->second;
-    auto ga = new (_file._alloc) HexagonGOTAtom(_file, ".got.plt");
+    auto ga = new (_file._alloc) HexagonGOTPLTAtom(_file);
     ga->addReference(R_HEX_JMP_SLOT, 0, a, 0);
     auto pa = new (_file._alloc) HexagonPLTAtom(_file, ".plt");
     pa->addReference(R_HEX_B32_PCREL_X, 0, ga, 0);
@@ -183,7 +182,7 @@ public:
     auto got = _gotMap.find(a);
     if (got != _gotMap.end())
       return got->second;
-    auto ga = new (_file._alloc) HexagonGOTAtom(_file, ".got");
+    auto ga = new (_file._alloc) HexagonGOTAtom(_file);
     ga->addReference(R_HEX_GLOB_DAT, 0, a, 0);
 
 #ifndef NDEBUG
@@ -198,7 +197,7 @@ public:
   }
 
   ErrorOr<void> handleGOTREL(const Reference &ref) {
-    // Turn this so that the target is set to the GOT entry 
+    // Turn this so that the target is set to the GOT entry
     const_cast<Reference &>(ref).setTarget(getGOTEntry(ref.target()));
     return error_code::success();
   }
@@ -213,8 +212,7 @@ public:
 } // end anonymous namespace
 
 void elf::HexagonTargetInfo::addPasses(PassManager &pm) const {
-  if (_options._outputKind == OutputKind::DynamicExecutable ||
-           _options._outputKind == OutputKind::Shared)
+  if (isDynamic())
     pm.add(std::unique_ptr<Pass>(new DynamicGOTPLTPass(*this)));
   ELFTargetInfo::addPasses(pm);
 }

@@ -166,7 +166,7 @@ public:
             }
             else
             {
-                LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
+                Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
                 if (log)
                     log->Printf ("Process::%s could not find breakpoint site id: %" PRId64 "...", __FUNCTION__, m_value);
@@ -285,7 +285,16 @@ protected:
             return;
         m_should_perform_action = false;
         
-        LogSP log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS);
+        Log *log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS);
+        
+        if (!m_thread.IsValid())
+        {
+            // This shouldn't ever happen, but just in case, don't do more harm.
+            log->Printf ("PerformAction got called with an invalid thread.");
+            m_should_stop = true;
+            m_should_stop_is_valid = true;
+            return;
+        }
         
         BreakpointSiteSP bp_site_sp (m_thread.GetProcess()->GetBreakpointSiteList().FindByID (m_value));
         
@@ -354,87 +363,60 @@ protected:
                 }
                 
                 StoppointCallbackContext context (event_ptr, exe_ctx, false);
+                
+                // Let's copy the breakpoint locations out of the site and store them in a local list.  That way if
+                // one of the breakpoint actions changes the site, then we won't be operating on a bad list.
+                
+                BreakpointLocationCollection site_locations;
+                for (size_t j = 0; j < num_owners; j++)
+                    site_locations.Add(bp_site_sp->GetOwnerAtIndex(j));
 
                 for (size_t j = 0; j < num_owners; j++)
                 {
-                    lldb::BreakpointLocationSP bp_loc_sp = bp_site_sp->GetOwnerAtIndex(j);
+                    lldb::BreakpointLocationSP bp_loc_sp = site_locations.GetByIndex(j);
+                    
+                    // If another action disabled this breakpoint or its location, then don't run the actions.
+                    if (!bp_loc_sp->IsEnabled() || !bp_loc_sp->GetBreakpoint().IsEnabled())
+                        continue;
+                    
+                    // The breakpoint site may have many locations associated with it, not all of them valid for
+                    // this thread.  Skip the ones that aren't:
+                    if (!bp_loc_sp->ValidForThisThread(&m_thread))
+                        continue;
                                                       
                     // First run the condition for the breakpoint.  If that says we should stop, then we'll run
-                    // the callback for the breakpoint.  If the callback says we shouldn't stop that will win.
+                    // the callback for the breakpoint.  If the callback says we shouldn't stop that will win.                    
                     
-                    bool condition_says_stop = true;
                     if (bp_loc_sp->GetConditionText() != NULL)
                     {
-                        // We need to make sure the user sees any parse errors in their condition, so we'll hook the
-                        // constructor errors up to the debugger's Async I/O.
+                        Error condition_error;
+                        bool condition_says_stop = bp_loc_sp->ConditionSaysStop(exe_ctx, condition_error);
                         
-                        ValueObjectSP result_valobj_sp;
-                        
-                        ExecutionResults result_code;
-                        ValueObjectSP result_value_sp;
-                        const bool unwind_on_error = true;
-                        const bool ignore_breakpoints = true;
-                        Error error;
-                        result_code = ClangUserExpression::EvaluateWithError (exe_ctx,
-                                                                              eExecutionPolicyOnlyWhenNeeded,
-                                                                              lldb::eLanguageTypeUnknown,
-                                                                              ClangUserExpression::eResultTypeAny,
-                                                                              unwind_on_error,
-                                                                              ignore_breakpoints,
-                                                                              bp_loc_sp->GetConditionText(),
-                                                                              NULL,
-                                                                              result_value_sp,
-                                                                              error,
-                                                                              true,
-                                                                              ClangUserExpression::kDefaultTimeout);
-                        if (result_code == eExecutionCompleted)
-                        {
-                            if (result_value_sp)
-                            {
-                                Scalar scalar_value;
-                                if (result_value_sp->ResolveValue (scalar_value))
-                                {
-                                    if (scalar_value.ULongLong(1) == 0)
-                                        condition_says_stop = false;
-                                    else
-                                        condition_says_stop = true;
-                                    if (log)
-                                        log->Printf("Condition successfully evaluated, result is %s.\n", 
-                                                    m_should_stop ? "true" : "false");
-                                }
-                                else
-                                {
-                                    condition_says_stop = true;
-                                    if (log)
-                                        log->Printf("Failed to get an integer result from the expression.");
-                                }
-                            }
-                        }
-                        else
+                        if (!condition_error.Success())
                         {
                             Debugger &debugger = exe_ctx.GetTargetRef().GetDebugger();
                             StreamSP error_sp = debugger.GetAsyncErrorStream ();
                             error_sp->Printf ("Stopped due to an error evaluating condition of breakpoint ");
                             bp_loc_sp->GetDescription (error_sp.get(), eDescriptionLevelBrief);
-                            error_sp->Printf (": \"%s\"", 
+                            error_sp->Printf (": \"%s\"",
                                               bp_loc_sp->GetConditionText());
                             error_sp->EOL();
-                            const char *err_str = error.AsCString("<Unknown Error>");
+                            const char *err_str = condition_error.AsCString("<Unknown Error>");
                             if (log)
                                 log->Printf("Error evaluating condition: \"%s\"\n", err_str);
                             
                             error_sp->PutCString (err_str);
-                            error_sp->EOL();                       
+                            error_sp->EOL();
                             error_sp->Flush();
                             // If the condition fails to be parsed or run, we should stop.
                             condition_says_stop = true;
                         }
+                        else
+                        {
+                            if (!condition_says_stop)
+                                continue;
+                        }
                     }
-                                            
-                    // If this location's condition says we should aren't going to stop, 
-                    // then don't run the callback for this location.
-                    if (!condition_says_stop)
-                        continue;
                                 
                     bool callback_says_stop;
                     
@@ -476,7 +458,7 @@ protected:
         {
             m_should_stop = true;
             m_should_stop_is_valid = true;
-            LogSP log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
+            Log * log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
             if (log_process)
                 log_process->Printf ("Process::%s could not find breakpoint site id: %" PRId64 "...", __FUNCTION__, m_value);
@@ -592,7 +574,7 @@ protected:
         }
         else
         {
-            LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
+            Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
             if (log)
                 log->Printf ("Process::%s could not find watchpoint location id: %" PRId64 "...",
@@ -616,7 +598,7 @@ protected:
     virtual void
     PerformAction (Event *event_ptr)
     {
-        LogSP log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS);
+        Log *log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS);
         // We're going to calculate if we should stop or not in some way during the course of
         // this code.  Also by default we're going to stop, so set that here.
         m_should_stop = true;
@@ -760,7 +742,7 @@ protected:
         }
         else
         {
-            LogSP log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
+            Log * log_process(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_PROCESS));
 
             if (log_process)
                 log_process->Printf ("Process::%s could not find watchpoint id: %" PRId64 "...", __FUNCTION__, m_value);

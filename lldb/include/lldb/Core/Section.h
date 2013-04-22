@@ -88,13 +88,19 @@ public:
     void
     Finalize ();
 
+    void
+    Clear ()
+    {
+        m_sections.clear();
+    }
+
 protected:
     collection  m_sections;
 };
 
 
 class Section :
-    public STD_ENABLE_SHARED_FROM_THIS(Section),
+    public std::enable_shared_from_this<Section>,
     public ModuleChild,
     public UserID,
     public Flags

@@ -14,6 +14,7 @@
 // C++ Includes
 #include <functional>
 #include <map>
+#include <unordered_set>
 
 // Other libraries and framework includes
 // Project includes
@@ -137,7 +138,7 @@ public:
     typedef lldb::addr_t ObjCISA;
     
     class ClassDescriptor;
-    typedef STD_SHARED_PTR(ClassDescriptor) ClassDescriptorSP;
+    typedef std::shared_ptr<ClassDescriptor> ClassDescriptorSP;
     
     // the information that we want to support retrieving from an ObjC class
     // this needs to be pure virtual since there are at least 2 different implementations
@@ -197,7 +198,8 @@ public:
         IsValid () = 0;
         
         virtual bool
-        IsTagged () = 0;
+        GetTaggedPointerInfo (uint64_t* info_bits = NULL,
+                              uint64_t* value_bits = NULL) = 0;
         
         virtual uint64_t
         GetInstanceSize () = 0;
@@ -256,10 +258,10 @@ public:
     GetNonKVOClassDescriptor (ValueObject& in_value);
 
     virtual ClassDescriptorSP
-    GetClassDescriptor (const ConstString &class_name);
+    GetClassDescriptorFromClassName (const ConstString &class_name);
 
     virtual ClassDescriptorSP
-    GetClassDescriptor (ObjCISA isa);
+    GetClassDescriptorFromISA (ObjCISA isa);
 
     ClassDescriptorSP
     GetNonKVOClassDescriptor (ObjCISA isa);
@@ -463,6 +465,12 @@ public:
         return (m_has_new_literals_and_indexing == eLazyBoolYes);
     }
     
+    virtual void
+    SymbolsDidLoad (const ModuleList& module_list)
+    {
+        m_negative_complete_class_cache.clear();
+    }
+    
 protected:
     //------------------------------------------------------------------
     // Classes that inherit from ObjCLanguageRuntime can see and modify these
@@ -567,10 +575,23 @@ private:
 
 protected:
     uint32_t m_isa_to_descriptor_stop_id;
+
     typedef std::map<ConstString, lldb::TypeWP> CompleteClassMap;
     CompleteClassMap m_complete_class_cache;
-
     
+    struct ConstStringSetHelpers {
+        size_t operator () (const ConstString& arg) const // for hashing
+        {
+            return (size_t)arg.GetCString();
+        }
+        bool operator () (const ConstString& arg1, const ConstString& arg2) const // for equality
+        {
+            return arg1.operator==(arg2);
+        }
+    };
+    typedef std::unordered_set<ConstString, ConstStringSetHelpers, ConstStringSetHelpers> CompleteClassSet;
+    CompleteClassSet m_negative_complete_class_cache;
+
     ISAToDescriptorIterator
     GetDescriptorIterator (const ConstString &name);
 

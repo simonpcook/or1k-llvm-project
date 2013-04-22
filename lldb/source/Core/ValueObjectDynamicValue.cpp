@@ -202,7 +202,7 @@ ValueObjectDynamicValue::UpdateValue ()
     
     Value old_value(m_value);
 
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TYPES));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TYPES));
     
     bool has_changed_type = false;
     
@@ -340,6 +340,45 @@ ValueObjectDynamicValue::SetValueFromCString (const char *value_str, Error& erro
     }
     
     bool ret_val = m_parent->SetValueFromCString(value_str,error);
+    SetNeedsUpdate();
+    return ret_val;
+}
+
+bool
+ValueObjectDynamicValue::SetData (DataExtractor &data, Error &error)
+{
+    if (!UpdateValueIfNeeded(false))
+    {
+        error.SetErrorString("unable to read value");
+        return false;
+    }
+    
+    uint64_t my_value = GetValueAsUnsigned(UINT64_MAX);
+    uint64_t parent_value = m_parent->GetValueAsUnsigned(UINT64_MAX);
+    
+    if (my_value == UINT64_MAX || parent_value == UINT64_MAX)
+    {
+        error.SetErrorString("unable to read value");
+        return false;
+    }
+    
+    // if we are at an offset from our parent, in order to set ourselves correctly we would need
+    // to change the new value so that it refers to the correct dynamic type. we choose not to deal
+    // with that - if anything more than a value overwrite is required, you should be using the
+    // expression parser instead of the value editing facility
+    if (my_value != parent_value)
+    {
+        // but NULL'ing out a value should always be allowed
+        lldb::offset_t offset = 0;
+        
+        if (data.GetPointer(&offset) != 0)
+        {
+            error.SetErrorString("unable to modify dynamic value, use 'expression' command");
+            return false;
+        }
+    }
+    
+    bool ret_val = m_parent->SetData(data, error);
     SetNeedsUpdate();
     return ret_val;
 }

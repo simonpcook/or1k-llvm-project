@@ -69,7 +69,6 @@ public:
             size_t      FindAllSymbolsWithNameAndType (const ConstString &name, lldb::SymbolType symbol_type, Debug symbol_debug_type, Visibility symbol_visibility, std::vector<uint32_t>& symbol_indexes);
             size_t      FindAllSymbolsMatchingRexExAndType (const RegularExpression &regex, lldb::SymbolType symbol_type, Debug symbol_debug_type, Visibility symbol_visibility, std::vector<uint32_t>& symbol_indexes);
             Symbol *    FindFirstSymbolWithNameAndType (const ConstString &name, lldb::SymbolType symbol_type, Debug symbol_debug_type, Visibility symbol_visibility);
-            Symbol *    FindSymbolWithFileAddress (lldb::addr_t file_addr);
             Symbol *    FindSymbolContainingFileAddress (lldb::addr_t file_addr, const uint32_t* indexes, uint32_t num_indexes);
             Symbol *    FindSymbolContainingFileAddress (lldb::addr_t file_addr);
             size_t      FindFunctionSymbols (const ConstString &name, uint32_t name_type_mask, SymbolContextList& sc_list);
@@ -107,6 +106,8 @@ protected:
     collection          m_symbols;
     std::vector<uint32_t> m_addr_indexes;
     UniqueCStringMap<uint32_t> m_name_to_index;
+    UniqueCStringMap<uint32_t> m_basename_to_index;
+    UniqueCStringMap<uint32_t> m_method_to_index;
     UniqueCStringMap<uint32_t> m_selector_to_index;
     mutable Mutex       m_mutex; // Provide thread safety for this symbol table
     bool                m_addr_indexes_computed:1,

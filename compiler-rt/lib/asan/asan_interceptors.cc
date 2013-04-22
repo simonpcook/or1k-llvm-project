@@ -17,6 +17,7 @@
 #include "asan_intercepted_functions.h"
 #include "asan_internal.h"
 #include "asan_mapping.h"
+#include "asan_poisoning.h"
 #include "asan_report.h"
 #include "asan_stack.h"
 #include "asan_stats.h"
@@ -101,16 +102,24 @@ using namespace __asan;  // NOLINT
 #define COMMON_INTERCEPTOR_WRITE_RANGE(ctx, ptr, size) \
   ASAN_WRITE_RANGE(ptr, size)
 #define COMMON_INTERCEPTOR_READ_RANGE(ctx, ptr, size) ASAN_READ_RANGE(ptr, size)
-#define COMMON_INTERCEPTOR_ENTER(ctx, func, ...) \
-  do {                                           \
-    ctx = 0;                                     \
-    (void)ctx;                                   \
-    ENSURE_ASAN_INITED();                        \
+#define COMMON_INTERCEPTOR_ENTER(ctx, func, ...)  \
+  do {                                            \
+    if (asan_init_is_running)                     \
+      return REAL(func)(__VA_ARGS__);             \
+    ctx = 0;                                      \
+    (void)ctx;                                    \
+    ENSURE_ASAN_INITED();                         \
   } while (false)
 #define COMMON_INTERCEPTOR_FD_ACQUIRE(ctx, fd) do { } while (false)
 #define COMMON_INTERCEPTOR_FD_RELEASE(ctx, fd) do { } while (false)
 #define COMMON_INTERCEPTOR_SET_THREAD_NAME(ctx, name) SetThreadName(name)
 #include "sanitizer_common/sanitizer_common_interceptors.inc"
+
+#define COMMON_SYSCALL_PRE_READ_RANGE(p, s) ASAN_READ_RANGE(p, s)
+#define COMMON_SYSCALL_PRE_WRITE_RANGE(p, s) ASAN_WRITE_RANGE(p, s)
+#define COMMON_SYSCALL_POST_READ_RANGE(p, s)
+#define COMMON_SYSCALL_POST_WRITE_RANGE(p, s)
+#include "sanitizer_common/sanitizer_common_syscalls.inc"
 
 static thread_return_t THREAD_CALLING_CONV asan_thread_start(void *arg) {
   AsanThread *t = (AsanThread*)arg;
@@ -521,7 +530,7 @@ static inline bool IsValidStrtolBase(int base) {
 }
 
 static inline void FixRealStrtolEndptr(const char *nptr, char **endptr) {
-  CHECK(endptr != 0);
+  CHECK(endptr);
   if (nptr == *endptr) {
     // No digits were found at strtol call, we need to find out the last
     // symbol accessed by strtoll on our own.
@@ -736,7 +745,7 @@ void InitializeAsanInterceptors() {
   if (flags()->verbosity > 0) {
     Report("AddressSanitizer: libc interceptors initialized\n");
   }
-#endif  // __APPLE__
+#endif  // SANITIZER_MAC
 }
 
 }  // namespace __asan

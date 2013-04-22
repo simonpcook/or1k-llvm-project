@@ -284,7 +284,7 @@ static bool mayBeSharedVariable(const Decl *D) {
   if (isa<FieldDecl>(D))
     return true;
   if (const VarDecl *vd = dyn_cast<VarDecl>(D))
-    return (vd->hasGlobalStorage() && !(vd->isThreadSpecified()));
+    return vd->hasGlobalStorage() && !vd->getTLSKind();
 
   return false;
 }
@@ -1656,7 +1656,7 @@ static void handleTLSModelAttr(Sema &S, Decl *D,
     return;
   }
 
-  if (!isa<VarDecl>(D) || !cast<VarDecl>(D)->isThreadSpecified()) {
+  if (!isa<VarDecl>(D) || !cast<VarDecl>(D)->getTLSKind()) {
     S.Diag(Attr.getLoc(), diag::err_attribute_wrong_decl_type)
       << Attr.getName() << ExpectedTLSVar;
     return;
@@ -2246,8 +2246,11 @@ AvailabilityAttr *Sema::mergeAvailabilityAttr(NamedDecl *D, SourceRange Range,
       MergedObsoleted == Obsoleted)
     return NULL;
 
+  // Only create a new attribute if !Override, but we want to do
+  // the checking.
   if (!checkAvailabilityAttr(*this, Range, Platform, MergedIntroduced,
-                             MergedDeprecated, MergedObsoleted)) {
+                             MergedDeprecated, MergedObsoleted) &&
+      !Override) {
     return ::new (Context) AvailabilityAttr(Range, Context, Platform,
                                             Introduced, Deprecated,
                                             Obsoleted, IsUnavailable, Message,
@@ -4886,6 +4889,7 @@ static void ProcessInheritableDeclAttr(Sema &S, Scope *scope, Decl *D,
     break;
 
   // Microsoft attributes:
+  case AttributeList::AT_MsProperty: break;
   case AttributeList::AT_MsStruct:
     handleMsStructAttr(S, D, Attr);
     break;
@@ -5092,8 +5096,7 @@ NamedDecl * Sema::DeclClonePragmaWeak(NamedDecl *ND, IdentifierInfo *II,
     NewFD = FunctionDecl::Create(FD->getASTContext(), FD->getDeclContext(),
                                  Loc, Loc, DeclarationName(II),
                                  FD->getType(), FD->getTypeSourceInfo(),
-                                 SC_None, SC_None,
-                                 false/*isInlineSpecified*/,
+                                 SC_None, false/*isInlineSpecified*/,
                                  FD->hasPrototype(),
                                  false/*isConstexprSpecified*/);
     NewD = NewFD;
@@ -5118,8 +5121,7 @@ NamedDecl * Sema::DeclClonePragmaWeak(NamedDecl *ND, IdentifierInfo *II,
     NewD = VarDecl::Create(VD->getASTContext(), VD->getDeclContext(),
                            VD->getInnerLocStart(), VD->getLocation(), II,
                            VD->getType(), VD->getTypeSourceInfo(),
-                           VD->getStorageClass(),
-                           VD->getStorageClassAsWritten());
+                           VD->getStorageClass());
     if (VD->getQualifier()) {
       VarDecl *NewVD = cast<VarDecl>(NewD);
       NewVD->setQualifierInfo(VD->getQualifierLoc());

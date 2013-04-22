@@ -367,12 +367,12 @@ private:
     lldb::TargetSP                 m_target_sp;
     std::string                    m_module_spec;
     lldb::ModuleSP                 m_module_sp;
-    std::auto_ptr<FileSpec>        m_file_spec_ap;
+    std::unique_ptr<FileSpec>       m_file_spec_ap;
     size_t                         m_start_line;
     size_t                         m_end_line;
     std::string                    m_function_spec;
     std::string                    m_class_name;
-    std::auto_ptr<AddressRange>    m_address_range_ap;
+    std::unique_ptr<AddressRange>   m_address_range_ap;
     uint32_t                       m_type; // Or'ed bits from SpecificationType
 
 };
@@ -460,6 +460,19 @@ public:
     //------------------------------------------------------------------
     bool
     GetContextAtIndex(size_t idx, SymbolContext& sc) const;
+
+    //------------------------------------------------------------------
+    /// Get accessor for the last symbol context in the list.
+    ///
+    /// @param[out] sc
+    ///     A reference to the symbol context to fill in.
+    ///
+    /// @return
+    ///     Returns \b true if \a sc was filled in, \b false if the
+    ///     list is empty.
+    //------------------------------------------------------------------
+    bool
+    GetLastContext(SymbolContext& sc) const;
 
     bool
     RemoveContextAtIndex (size_t idx);

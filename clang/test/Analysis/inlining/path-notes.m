@@ -13,7 +13,7 @@ void dispatch_sync(dispatch_queue_t, dispatch_block_t);
 
 int *getZeroIfNil(Test *x) {
   return x.p;
-  // expected-note@-1 {{No method is called because the receiver is nil}}
+  // expected-note@-1 {{'p' not called because the receiver is nil}}
   // expected-note@-2 {{Returning null pointer}}
 }
 
@@ -303,9 +303,9 @@ int testDispatchSyncInliningNoPruning(int coin) {
 // CHECK-NEXT:      </array>
 // CHECK-NEXT:      <key>depth</key><integer>1</integer>
 // CHECK-NEXT:      <key>extended_message</key>
-// CHECK-NEXT:      <string>No method is called because the receiver is nil</string>
+// CHECK-NEXT:      <string>&apos;p&apos; not called because the receiver is nil</string>
 // CHECK-NEXT:      <key>message</key>
-// CHECK-NEXT:      <string>No method is called because the receiver is nil</string>
+// CHECK-NEXT:      <string>&apos;p&apos; not called because the receiver is nil</string>
 // CHECK-NEXT:     </dict>
 // CHECK-NEXT:     <dict>
 // CHECK-NEXT:      <key>kind</key><string>control</string>
@@ -393,45 +393,11 @@ int testDispatchSyncInliningNoPruning(int coin) {
 // CHECK-NEXT:         </dict>
 // CHECK-NEXT:        </array>
 // CHECK-NEXT:      </array>
-// CHECK-NEXT:      <key>depth</key><integer>1</integer>
+// CHECK-NEXT:      <key>depth</key><integer>0</integer>
 // CHECK-NEXT:      <key>extended_message</key>
 // CHECK-NEXT:      <string>Returning from &apos;getZeroIfNil&apos;</string>
 // CHECK-NEXT:      <key>message</key>
 // CHECK-NEXT:      <string>Returning from &apos;getZeroIfNil&apos;</string>
-// CHECK-NEXT:     </dict>
-// CHECK-NEXT:     <dict>
-// CHECK-NEXT:      <key>kind</key><string>control</string>
-// CHECK-NEXT:      <key>edges</key>
-// CHECK-NEXT:       <array>
-// CHECK-NEXT:        <dict>
-// CHECK-NEXT:         <key>start</key>
-// CHECK-NEXT:          <array>
-// CHECK-NEXT:           <dict>
-// CHECK-NEXT:            <key>line</key><integer>21</integer>
-// CHECK-NEXT:            <key>col</key><integer>3</integer>
-// CHECK-NEXT:            <key>file</key><integer>0</integer>
-// CHECK-NEXT:           </dict>
-// CHECK-NEXT:           <dict>
-// CHECK-NEXT:            <key>line</key><integer>21</integer>
-// CHECK-NEXT:            <key>col</key><integer>3</integer>
-// CHECK-NEXT:            <key>file</key><integer>0</integer>
-// CHECK-NEXT:           </dict>
-// CHECK-NEXT:          </array>
-// CHECK-NEXT:         <key>end</key>
-// CHECK-NEXT:          <array>
-// CHECK-NEXT:           <dict>
-// CHECK-NEXT:            <key>line</key><integer>21</integer>
-// CHECK-NEXT:            <key>col</key><integer>4</integer>
-// CHECK-NEXT:            <key>file</key><integer>0</integer>
-// CHECK-NEXT:           </dict>
-// CHECK-NEXT:           <dict>
-// CHECK-NEXT:            <key>line</key><integer>21</integer>
-// CHECK-NEXT:            <key>col</key><integer>15</integer>
-// CHECK-NEXT:            <key>file</key><integer>0</integer>
-// CHECK-NEXT:           </dict>
-// CHECK-NEXT:          </array>
-// CHECK-NEXT:        </dict>
-// CHECK-NEXT:       </array>
 // CHECK-NEXT:     </dict>
 // CHECK-NEXT:     <dict>
 // CHECK-NEXT:      <key>kind</key><string>control</string>
@@ -689,7 +655,7 @@ int testDispatchSyncInliningNoPruning(int coin) {
 // CHECK-NEXT:       <key>col</key><integer>1</integer>
 // CHECK-NEXT:       <key>file</key><integer>0</integer>
 // CHECK-NEXT:      </dict>
-// CHECK-NEXT:      <key>depth</key><integer>2</integer>
+// CHECK-NEXT:      <key>depth</key><integer>1</integer>
 // CHECK-NEXT:      <key>extended_message</key>
 // CHECK-NEXT:      <string>Returning to caller</string>
 // CHECK-NEXT:      <key>message</key>
@@ -718,7 +684,7 @@ int testDispatchSyncInliningNoPruning(int coin) {
 // CHECK-NEXT:         </dict>
 // CHECK-NEXT:        </array>
 // CHECK-NEXT:      </array>
-// CHECK-NEXT:      <key>depth</key><integer>1</integer>
+// CHECK-NEXT:      <key>depth</key><integer>0</integer>
 // CHECK-NEXT:      <key>extended_message</key>
 // CHECK-NEXT:      <string>Returning from &apos;dispatch_sync&apos;</string>
 // CHECK-NEXT:      <key>message</key>

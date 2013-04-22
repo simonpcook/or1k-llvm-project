@@ -57,7 +57,7 @@ ThreadPlanCallFunction::ConstructorSetup (Thread &thread,
     
     TargetSP target_sp (thread.CalculateTarget());
 
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_STEP));
     
     SetBreakpoints();
     
@@ -68,8 +68,9 @@ ThreadPlanCallFunction::ConstructorSetup (Thread &thread,
     process_sp->ReadUnsignedIntegerFromMemory(m_function_sp, 4, 0, error);
     if (!error.Success())
     {
+        m_constructor_errors.Printf ("Trying to put the stack in unreadable memory at: 0x%" PRIx64 ".", m_function_sp);
         if (log)
-            log->Printf ("ThreadPlanCallFunction(%p): Trying to put the stack in unreadable memory at: 0x%" PRIx64 ".", this, m_function_sp);
+            log->Printf ("ThreadPlanCallFunction(%p): %s.", this, m_constructor_errors.GetData());
         return false;
     }
     
@@ -77,8 +78,9 @@ ThreadPlanCallFunction::ConstructorSetup (Thread &thread,
 
     if (exe_module == NULL)
     {
+        m_constructor_errors.Printf ("Can't execute code without an executable module.");
         if (log)
-            log->Printf ("ThreadPlanCallFunction(%p): Can't execute code without an executable module.", this);
+            log->Printf ("ThreadPlanCallFunction(%p): %s.", this, m_constructor_errors.GetData());
         return false;
     }
     else
@@ -86,17 +88,21 @@ ThreadPlanCallFunction::ConstructorSetup (Thread &thread,
         ObjectFile *objectFile = exe_module->GetObjectFile();
         if (!objectFile)
         {
+            m_constructor_errors.Printf ("Could not find object file for module \"%s\".", 
+                                         exe_module->GetFileSpec().GetFilename().AsCString());
+
             if (log)
-                log->Printf ("ThreadPlanCallFunction(%p): Could not find object file for module \"%s\".", 
-                             this, exe_module->GetFileSpec().GetFilename().AsCString());
+                log->Printf ("ThreadPlanCallFunction(%p): %s.", this, m_constructor_errors.GetData());
             return false;
         }
+        
         m_start_addr = objectFile->GetEntryPointAddress();
         if (!m_start_addr.IsValid())
         {
+            m_constructor_errors.Printf ("Could not find entry point address for executable module \"%s\".", 
+                                         exe_module->GetFileSpec().GetFilename().AsCString());
             if (log)
-                log->Printf ("ThreadPlanCallFunction(%p): Could not find entry point address for executable module \"%s\".", 
-                             this, exe_module->GetFileSpec().GetFilename().AsCString());
+                log->Printf ("ThreadPlanCallFunction(%p): %s.", this, m_constructor_errors.GetData());
             return false;
         }
     }
@@ -109,8 +115,9 @@ ThreadPlanCallFunction::ConstructorSetup (Thread &thread,
 
     if (!thread.CheckpointThreadState (m_stored_thread_state))
     {
+        m_constructor_errors.Printf ("Setting up ThreadPlanCallFunction, failed to checkpoint thread state.");
         if (log)
-            log->Printf ("ThreadPlanCallFunction(%p): Setting up ThreadPlanCallFunction, failed to checkpoint thread state.", this);
+            log->Printf ("ThreadPlanCallFunction(%p): %s.", this, m_constructor_errors.GetData());
         return false;
     }
     function_load_addr = m_function_addr.GetLoadAddress (target_sp.get());
@@ -237,7 +244,7 @@ ThreadPlanCallFunction::~ThreadPlanCallFunction ()
 void
 ThreadPlanCallFunction::ReportRegisterState (const char *message)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP | LIBLLDB_LOG_VERBOSE));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP | LIBLLDB_LOG_VERBOSE));
     if (log)
     {
         StreamString strm;
@@ -265,7 +272,7 @@ ThreadPlanCallFunction::ReportRegisterState (const char *message)
 void
 ThreadPlanCallFunction::DoTakedown (bool success)
 {
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_STEP));
     
     if (!m_valid)
     {
@@ -330,7 +337,16 @@ bool
 ThreadPlanCallFunction::ValidatePlan (Stream *error)
 {
     if (!m_valid)
+    {
+        if (error)
+        {
+            if (m_constructor_errors.GetSize() > 0)
+                error->PutCString (m_constructor_errors.GetData());
+            else
+                error->PutCString ("Unknown error");
+        }
         return false;
+    }
 
     return true;
 }
@@ -348,7 +364,7 @@ ThreadPlanCallFunction::ShouldReportStop(Event *event_ptr)
 bool
 ThreadPlanCallFunction::PlanExplainsStop (Event *event_ptr)
 {    
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_STEP|LIBLLDB_LOG_PROCESS));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_STEP|LIBLLDB_LOG_PROCESS));
     m_real_stop_info_sp = GetPrivateStopReason();
     
     // If our subplan knows why we stopped, even if it's done (which would forward the question to us)
@@ -524,7 +540,7 @@ ThreadPlanCallFunction::WillStop ()
 bool
 ThreadPlanCallFunction::MischiefManaged ()
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     
     if (IsPlanComplete())
     {

@@ -24,7 +24,7 @@ using namespace clang;
 ClangASTMetrics::Counters ClangASTMetrics::global_counters = { 0, 0, 0, 0, 0, 0 };
 ClangASTMetrics::Counters ClangASTMetrics::local_counters = { 0, 0, 0, 0, 0, 0 };
 
-void ClangASTMetrics::DumpCounters (lldb::LogSP log, ClangASTMetrics::Counters &counters)
+void ClangASTMetrics::DumpCounters (Log *log, ClangASTMetrics::Counters &counters)
 {
     log->Printf("  Number of visible Decl queries by name     : %" PRIu64, counters.m_visible_query_count);
     log->Printf("  Number of lexical Decl queries             : %" PRIu64, counters.m_lexical_query_count);
@@ -34,7 +34,7 @@ void ClangASTMetrics::DumpCounters (lldb::LogSP log, ClangASTMetrics::Counters &
     log->Printf("  Number of records laid out                 : %" PRIu64, counters.m_record_layout_count);
 }
 
-void ClangASTMetrics::DumpCounters (lldb::LogSP log)
+void ClangASTMetrics::DumpCounters (Log *log)
 {
     if (!log)
         return;
@@ -82,7 +82,7 @@ ClangASTImporter::CopyDecl (clang::ASTContext *dst_ast,
         
         if (!result)
         {
-            lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+            Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
             if (log)
             {
@@ -113,37 +113,27 @@ lldb::clang_type_t
 ClangASTImporter::DeportType (clang::ASTContext *dst_ctx,
                               clang::ASTContext *src_ctx,
                               lldb::clang_type_t type)
-{
+{    
+    MinionSP minion_sp (GetMinion (dst_ctx, src_ctx));
+    
+    if (!minion_sp)
+        return NULL;
+    
+    std::set<NamedDecl *> decls_to_deport;
+    std::set<NamedDecl *> decls_already_deported;
+    
+    minion_sp->InitDeportWorkQueues(&decls_to_deport,
+                                    &decls_already_deported);
+    
     lldb::clang_type_t result = CopyType(dst_ctx, src_ctx, type);
+    
+    minion_sp->ExecuteDeportWorkQueues();
     
     if (!result)
         return NULL;
     
-    QualType qual_type = QualType::getFromOpaquePtr(type);
-    
-    if (const TagType *tag_type = qual_type->getAs<TagType>())
-    {
-        TagDecl *tag_decl = tag_type->getDecl();
-        const TagType *result_tag_type = QualType::getFromOpaquePtr(result)->getAs<TagType>();
-        TagDecl *result_tag_decl = result_tag_type->getDecl();
-        
-        if (tag_decl)
-        {
-            MinionSP minion_sp (GetMinion (dst_ctx, src_ctx));
-
-            minion_sp->ImportDefinitionTo(result_tag_decl, tag_decl);
-            
-            ASTContextMetadataSP to_context_md = GetContextMetadata(dst_ctx);
-            
-            OriginMap::iterator oi = to_context_md->m_origins.find(result_tag_decl);
-            
-            if (oi != to_context_md->m_origins.end() &&
-                oi->second.ctx == src_ctx)
-                to_context_md->m_origins.erase(oi);
-        }
-    }
-    
     return result;
+
 }
 
 clang::Decl *
@@ -151,7 +141,7 @@ ClangASTImporter::DeportDecl (clang::ASTContext *dst_ctx,
                               clang::ASTContext *src_ctx,
                               clang::Decl *decl)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     if (log)
         log->Printf("    [ClangASTImporter] DeportDecl called on (%sDecl*)%p from (ASTContext*)%p to (ASTContex*)%p",
@@ -160,31 +150,23 @@ ClangASTImporter::DeportDecl (clang::ASTContext *dst_ctx,
                     src_ctx,
                     dst_ctx);
     
+    MinionSP minion_sp (GetMinion (dst_ctx, src_ctx));
+    
+    if (!minion_sp)
+        return NULL;
+    
+    std::set<NamedDecl *> decls_to_deport;
+    std::set<NamedDecl *> decls_already_deported;
+    
+    minion_sp->InitDeportWorkQueues(&decls_to_deport,
+                                    &decls_already_deported);
+    
     clang::Decl *result = CopyDecl(dst_ctx, src_ctx, decl);
+
+    minion_sp->ExecuteDeportWorkQueues();
     
     if (!result)
         return NULL;
-        
-    ClangASTContext::GetCompleteDecl (src_ctx, decl);
-
-    MinionSP minion_sp (GetMinion (dst_ctx, src_ctx));
-    
-    if (minion_sp && isa<TagDecl>(decl))
-        minion_sp->ImportDefinitionTo(result, decl);
-    
-    ASTContextMetadataSP to_context_md = GetContextMetadata(dst_ctx);
-
-    OriginMap::iterator oi = to_context_md->m_origins.find(result);
-    
-    if (oi != to_context_md->m_origins.end() &&
-        oi->second.ctx == src_ctx)
-        to_context_md->m_origins.erase(oi);
-    
-    if (TagDecl *result_tag_decl = dyn_cast<TagDecl>(result))
-    {
-        result_tag_decl->setHasExternalLexicalStorage(false);
-        result_tag_decl->setHasExternalVisibleStorage(false);
-    }
     
     if (log)
         log->Printf("    [ClangASTImporter] DeportDecl deported (%sDecl*)%p to (%sDecl*)%p",
@@ -199,7 +181,7 @@ ClangASTImporter::DeportDecl (clang::ASTContext *dst_ctx,
 void
 ClangASTImporter::CompleteDecl (clang::Decl *decl)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
     if (log)    
         log->Printf("    [ClangASTImporter] CompleteDecl called on (%sDecl*)%p",
@@ -283,8 +265,6 @@ bool
 ClangASTImporter::CompleteObjCInterfaceDecl (clang::ObjCInterfaceDecl *interface_decl)
 {
     ClangASTMetrics::RegisterDeclCompletion();
-
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     DeclOrigin decl_origin = GetDeclOrigin(interface_decl);
     
@@ -431,7 +411,7 @@ ClangASTImporter::BuildNamespaceMap(const clang::NamespaceDecl *decl)
 void 
 ClangASTImporter::ForgetDestination (clang::ASTContext *dst_ast)
 {
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     if (log)
         log->Printf("    [ClangASTImporter] Forgetting destination (ASTContext*)%p", dst_ast); 
@@ -444,7 +424,7 @@ ClangASTImporter::ForgetSource (clang::ASTContext *dst_ast, clang::ASTContext *s
 {
     ASTContextMetadataSP md = MaybeGetContextMetadata (dst_ast);
     
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     if (log)
         log->Printf("    [ClangASTImporter] Forgetting source->dest (ASTContext*)%p->(ASTContext*)%p", src_ast, dst_ast); 
@@ -468,6 +448,63 @@ ClangASTImporter::ForgetSource (clang::ASTContext *dst_ast, clang::ASTContext *s
 ClangASTImporter::MapCompleter::~MapCompleter ()
 {
     return;
+}
+
+void
+ClangASTImporter::Minion::InitDeportWorkQueues (std::set<clang::NamedDecl *> *decls_to_deport,
+                                                std::set<clang::NamedDecl *> *decls_already_deported)
+{
+    assert(!m_decls_to_deport); // TODO make debug only
+    assert(!m_decls_already_deported);
+    
+    m_decls_to_deport = decls_to_deport;
+    m_decls_already_deported = decls_already_deported;
+}
+
+void
+ClangASTImporter::Minion::ExecuteDeportWorkQueues ()
+{
+    assert(m_decls_to_deport); // TODO make debug only
+    assert(m_decls_already_deported);
+    
+    ASTContextMetadataSP to_context_md = m_master.GetContextMetadata(&getToContext());
+        
+    while (!m_decls_to_deport->empty())
+    {
+        NamedDecl *decl = *m_decls_to_deport->begin();
+        
+        m_decls_already_deported->insert(decl);
+        m_decls_to_deport->erase(decl);
+        
+        DeclOrigin &origin = to_context_md->m_origins[decl];
+        
+        assert (origin.ctx == m_source_ctx);    // otherwise we should never have added this
+                                                // because it doesn't need to be deported
+        
+        Decl *original_decl = to_context_md->m_origins[decl].decl;
+        
+        ClangASTContext::GetCompleteDecl (m_source_ctx, original_decl);
+        
+        if (TagDecl *tag_decl = dyn_cast<TagDecl>(decl))
+        {
+            if (TagDecl *original_tag_decl = dyn_cast<TagDecl>(original_decl))
+                if (original_tag_decl->isCompleteDefinition())
+                    ImportDefinitionTo(tag_decl, original_tag_decl);
+            
+            tag_decl->setHasExternalLexicalStorage(false);
+            tag_decl->setHasExternalVisibleStorage(false);
+        }
+        else if (ObjCInterfaceDecl *interface_decl = dyn_cast<ObjCInterfaceDecl>(decl))
+        {
+            interface_decl->setHasExternalLexicalStorage(false);
+            interface_decl->setHasExternalVisibleStorage(false);
+        }
+        
+        to_context_md->m_origins.erase(decl);
+    }
+    
+    m_decls_to_deport = NULL;
+    m_decls_already_deported = NULL;
 }
 
 void
@@ -536,7 +573,7 @@ clang::Decl
 {
     ClangASTMetrics::RegisterClangImport();
     
-    lldb::LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
         
     if (log)
     {
@@ -596,6 +633,17 @@ clang::Decl
         }
         else
         {
+            if (m_decls_to_deport && m_decls_already_deported)
+            {
+                if (isa<TagDecl>(to) || isa<ObjCInterfaceDecl>(to))
+                {
+                    NamedDecl *to_named_decl = dyn_cast<NamedDecl>(to);
+                    
+                    if (!m_decls_already_deported->count(to_named_decl))
+                        m_decls_to_deport->insert(to_named_decl);
+                }
+
+            }
             to_context_md->m_origins[to] = DeclOrigin(m_source_ctx, from);
             
             if (log)
@@ -632,15 +680,13 @@ clang::Decl
         
         to_tag_decl->setHasExternalLexicalStorage();
         to_tag_decl->setMustBuildLookupTable();
-                                
+        
         if (log)
             log->Printf("    [ClangASTImporter] To is a TagDecl - attributes %s%s [%s->%s]",
                         (to_tag_decl->hasExternalLexicalStorage() ? " Lexical" : ""),
                         (to_tag_decl->hasExternalVisibleStorage() ? " Visible" : ""),
                         (from_tag_decl->isCompleteDefinition() ? "complete" : "incomplete"),
                         (to_tag_decl->isCompleteDefinition() ? "complete" : "incomplete"));
-        
-        to_tag_decl = NULL;
     }
     
     if (isa<NamespaceDecl>(from))
@@ -658,7 +704,7 @@ clang::Decl
                 
         to_interface_decl->setHasExternalLexicalStorage();
         to_interface_decl->setHasExternalVisibleStorage();
-                 
+        
         /*to_interface_decl->setExternallyCompleted();*/
                 
         if (log)

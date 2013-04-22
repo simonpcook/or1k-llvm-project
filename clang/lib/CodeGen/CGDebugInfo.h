@@ -119,6 +119,7 @@ class CGDebugInfo {
   llvm::DIType CreateType(const MemberPointerType *Ty, llvm::DIFile F);
   llvm::DIType CreateType(const AtomicType *Ty, llvm::DIFile F);
   llvm::DIType CreateEnumType(const EnumDecl *ED);
+  llvm::DIType CreateSelfType(const QualType &QualTy, llvm::DIType Ty);
   llvm::DIType getTypeOrNull(const QualType);
   llvm::DIType getCompletedTypeOrNull(const QualType);
   llvm::DIType getOrCreateMethodType(const CXXMethodDecl *Method,
@@ -280,7 +281,7 @@ private:
                                             uint64_t *OffSet);
 
   /// getContextDescriptor - Get context info for the decl.
-  llvm::DIDescriptor getContextDescriptor(const Decl *Decl);
+  llvm::DIScope getContextDescriptor(const Decl *Decl);
 
   /// createRecordFwdDecl - Create a forward decl for a RecordType in a given
   /// context.

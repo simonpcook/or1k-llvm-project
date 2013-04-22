@@ -1062,8 +1062,8 @@ DWARFExpression::Update_DW_OP_addr (lldb::addr_t file_addr)
             // we then replace the data for this expression
             
             // So first we copy the data into a heap buffer
-            std::auto_ptr<DataBufferHeap> head_data_ap (new DataBufferHeap (m_data.GetDataStart(), 
-                                                                            m_data.GetByteSize()));
+            std::unique_ptr<DataBufferHeap> head_data_ap (new DataBufferHeap (m_data.GetDataStart(),
+                                                                             m_data.GetByteSize()));
             
             // Make en encoder so we can write the address into the buffer using
             // the correct byte order (endianness)
@@ -1331,7 +1331,7 @@ DWARFExpression::Evaluate
             error_ptr->SetErrorString ("Invalid offset and/or length for opcodes buffer.");
         return false;
     }
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
 
     while (opcodes.ValidOffset(offset) && offset < end_offset)

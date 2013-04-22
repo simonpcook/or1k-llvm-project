@@ -68,7 +68,7 @@ public:
     }
     
     virtual bool
-	Setup (int argc, const char** argv)
+	Setup (int& argc, const char**& argv)
     {
         if (m_exe_path.empty())
             return false;
@@ -88,7 +88,7 @@ public:
         {
             case 0:
                 {
-                    Xcode::RunCommand(m_debugger,"log enable -f /tmp/packets.txt gdb-remote packets",true);
+                    //Xcode::RunCommand(m_debugger,"log enable -f /tmp/packets.txt gdb-remote packets",true);
 
                     m_memory_total.Start();
                     m_time_total.Start();
@@ -187,7 +187,7 @@ public:
     {
         Results::Dictionary& results_dict = results.GetDictionary();
         
-        m_time_set_bp_main.WriteAverageValue(results);
+        m_time_set_bp_main.WriteAverageAndStandardDeviation(results);
         results_dict.Add ("memory-change-create-target",
                           "Memory increase that occurs due to creating the target.",
                           m_memory_change_create_target.GetDeltaValue().GetResult(NULL, NULL));
@@ -196,10 +196,10 @@ public:
                           "Memory increase that occurs due to setting a breakpoint at main by name.",
                           m_memory_change_break_main.GetDeltaValue().GetResult(NULL, NULL));
 
-        m_time_create_target.WriteAverageValue(results);
-        m_expr_first_evaluate.WriteAverageValue(results);
-        m_expr_frame_zero.WriteAverageValue(results);
-        m_expr_frame_non_zero.WriteAverageValue(results);
+        m_time_create_target.WriteAverageAndStandardDeviation(results);
+        m_expr_first_evaluate.WriteAverageAndStandardDeviation(results);
+        m_expr_frame_zero.WriteAverageAndStandardDeviation(results);
+        m_expr_frame_non_zero.WriteAverageAndStandardDeviation(results);
         results_dict.Add ("memory-total-break-main",
                           "The total memory that the current process is using after setting the first breakpoint.",
                           m_memory_total.GetStopValue().GetResult(NULL, NULL));
@@ -333,7 +333,7 @@ GetShortOptionString (struct option *long_options)
 int main(int argc, const char * argv[])
 {
 
-    // Prepare for & make calls to getopt_long.
+    // Prepare for & make calls to getopt_long_only.
     
     std::string short_option_string (GetShortOptionString(g_long_options));
     

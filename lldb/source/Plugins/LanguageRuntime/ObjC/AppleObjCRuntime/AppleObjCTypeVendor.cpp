@@ -37,7 +37,7 @@ public:
         static unsigned int invocation_id = 0;
         unsigned int current_id = invocation_id++;
 
-        lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
+        Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
 
         if (log)
         {
@@ -85,7 +85,7 @@ public:
         static unsigned int invocation_id = 0;
         unsigned int current_id = invocation_id++;
 
-        lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
+        Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
         
         if (log)
         {
@@ -115,7 +115,7 @@ public:
         static unsigned int invocation_id = 0;
         unsigned int current_id = invocation_id++;
         
-        lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
+        Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
         
         if (log)
         {
@@ -182,7 +182,7 @@ AppleObjCTypeVendor::GetDeclForISA(ObjCLanguageRuntime::ObjCISA isa)
     
     clang::ASTContext *ast_ctx = m_ast_ctx.getASTContext();
     
-    ObjCLanguageRuntime::ClassDescriptorSP descriptor = m_runtime.GetClassDescriptor(isa);
+    ObjCLanguageRuntime::ClassDescriptorSP descriptor = m_runtime.GetClassDescriptorFromISA(isa);
     
     if (!descriptor)
         return NULL;
@@ -326,8 +326,6 @@ public:
     
     clang::ObjCMethodDecl *BuildMethod (clang::ObjCInterfaceDecl *interface_decl, const char *name, bool instance)
     {
-        lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
-        
         if (!m_is_valid || m_type_vector.size() < 3)
             return NULL;
         
@@ -404,7 +402,6 @@ public:
                                                            NULL,
                                                            arg_type,
                                                            NULL,
-                                                           clang::SC_None,
                                                            clang::SC_None,
                                                            NULL));
         }
@@ -498,7 +495,7 @@ private:
 bool
 AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
 {
-    lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
     
     ClangASTMetadata *metadata = m_external_source->GetMetadata(interface_decl);
     ObjCLanguageRuntime::ObjCISA objc_isa = 0;
@@ -516,7 +513,7 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
     interface_decl->setHasExternalVisibleStorage(false);
     interface_decl->setHasExternalLexicalStorage(false);
     
-    ObjCLanguageRuntime::ClassDescriptorSP descriptor = m_runtime.GetClassDescriptor(objc_isa);
+    ObjCLanguageRuntime::ClassDescriptorSP descriptor = m_runtime.GetClassDescriptorFromISA(objc_isa);
     
     if (!descriptor)
         return false;
@@ -594,7 +591,7 @@ AppleObjCTypeVendor::FindTypes (const ConstString &name,
     static unsigned int invocation_id = 0;
     unsigned int current_id = invocation_id++;
     
-    lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));  // FIXME - a more appropriate log channel?
     
     if (log)
         log->Printf("AppleObjCTypeVendor::FindTypes [%u] ('%s', %s, %u, )",

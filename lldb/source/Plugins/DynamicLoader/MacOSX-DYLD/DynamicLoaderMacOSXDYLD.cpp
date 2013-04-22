@@ -38,6 +38,10 @@
 #define DEBUG_PRINTF(fmt, ...)
 #endif
 
+#ifndef __APPLE__
+#include "Utility/UuidCompatibility.h"
+#endif
+
 using namespace lldb;
 using namespace lldb_private;
 
@@ -709,7 +713,10 @@ DynamicLoaderMacOSXDYLD::ReadAllImageInfosStructure ()
                                  addr_size +         // errorClientOfDylibPath
                                  addr_size +         // errorTargetDylibPath
                                  addr_size;          // errorSymbol
-        assert (sizeof (buf) >= count_v11);
+        const size_t count_v13 = count_v11 +
+                                 addr_size +         // sharedCacheSlide
+                                 sizeof (uuid_t);    // sharedCacheUUID
+        assert (sizeof (buf) >= count_v13);
 
         Error error;
         if (m_process->ReadMemory (m_dyld_all_image_infos_addr, buf, 4, error) == 4)
@@ -788,7 +795,7 @@ bool
 DynamicLoaderMacOSXDYLD::AddModulesUsingImageInfosAddress (lldb::addr_t image_infos_addr, uint32_t image_infos_count)
 {
     DYLDImageInfo::collection image_infos;
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     if (log)
         log->Printf ("Adding %d modules.\n", image_infos_count);
         
@@ -813,7 +820,7 @@ DynamicLoaderMacOSXDYLD::AddModulesUsingImageInfos (DYLDImageInfo::collection &i
 {
     // Now add these images to the main list.
     ModuleList loaded_module_list;
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     Target &target = m_process->GetTarget();
     ModuleList& target_images = target.GetImages();
     
@@ -822,7 +829,7 @@ DynamicLoaderMacOSXDYLD::AddModulesUsingImageInfos (DYLDImageInfo::collection &i
         if (log)
         {
             log->Printf ("Adding new image at address=0x%16.16" PRIx64 ".", image_infos[idx].address);
-            image_infos[idx].PutToLog (log.get());
+            image_infos[idx].PutToLog (log);
         }
         
         m_dyld_image_infos.push_back(image_infos[idx]);
@@ -917,7 +924,7 @@ bool
 DynamicLoaderMacOSXDYLD::RemoveModulesUsingImageInfosAddress (lldb::addr_t image_infos_addr, uint32_t image_infos_count)
 {
     DYLDImageInfo::collection image_infos;
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     
     Mutex::Locker locker(m_mutex);
     if (m_process->GetStopID() == m_dyld_image_infos_stop_id)
@@ -940,7 +947,7 @@ DynamicLoaderMacOSXDYLD::RemoveModulesUsingImageInfosAddress (lldb::addr_t image
         if (log)
         {
             log->Printf ("Removing module at address=0x%16.16" PRIx64 ".", image_infos[idx].address);
-            image_infos[idx].PutToLog (log.get());
+            image_infos[idx].PutToLog (log);
         }
             
         // Remove this image_infos from the m_all_image_infos.  We do the comparision by address
@@ -973,7 +980,7 @@ DynamicLoaderMacOSXDYLD::RemoveModulesUsingImageInfosAddress (lldb::addr_t image
                     if (log)
                     {
                         log->Printf ("Could not find module for unloading info entry:");
-                        image_infos[idx].PutToLog(log.get());
+                        image_infos[idx].PutToLog(log);
                     }
                 }
                 
@@ -989,7 +996,7 @@ DynamicLoaderMacOSXDYLD::RemoveModulesUsingImageInfosAddress (lldb::addr_t image
             if (log)
             {
                 log->Printf ("Could not find image_info entry for unloading image:");
-                image_infos[idx].PutToLog(log.get());            
+                image_infos[idx].PutToLog(log);
             }
         }
     }
@@ -1059,7 +1066,7 @@ DynamicLoaderMacOSXDYLD::ReadImageInfos (lldb::addr_t image_infos_addr,
 bool
 DynamicLoaderMacOSXDYLD::InitializeFromAllImageInfos ()
 {
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     
     Mutex::Locker locker(m_mutex);
     if (m_process->GetStopID() == m_dyld_image_infos_stop_id
@@ -1304,7 +1311,6 @@ DynamicLoaderMacOSXDYLD::UpdateImageInfosHeaderAndLoadCommands(DYLDImageInfo::co
                                                                bool update_executable)
 {
     uint32_t exe_idx = UINT32_MAX;
-    LogSP log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     // Read any UUID values that we can get
     for (uint32_t i = 0; i < infos_count; i++)
     {
@@ -1592,7 +1598,7 @@ DynamicLoaderMacOSXDYLD::GetStepThroughTrampolinePlan (Thread &thread, bool stop
     StackFrame *current_frame = thread.GetStackFrameAtIndex(0).get();
     const SymbolContext &current_context = current_frame->GetSymbolContext(eSymbolContextSymbol);
     Symbol *current_symbol = current_context.symbol;
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
 
     if (current_symbol != NULL)
     {

@@ -28,7 +28,7 @@ public:
     ~StepTest() {}
     
     virtual bool
-    Setup (int argc, const char **argv)
+    Setup (int& argc, const char**& argv)
     {
         TestCase::Setup (argc, argv);
         
@@ -91,7 +91,8 @@ public:
 
         }
         results_dict.AddDouble ("total-time", "Total time spent stepping.", m_time_measurements.GetMetric().GetSum());
-        
+        results_dict.AddDouble ("stddev-time", "StdDev of time spent stepping.", m_time_measurements.GetMetric().GetStandardDeviation());
+
         results.Write(m_out_path.c_str());
     }
     
@@ -222,7 +223,7 @@ GetShortOptionString (struct option *long_options)
 int main(int argc, const char * argv[])
 {
 
-    // Prepare for & make calls to getopt_long.
+    // Prepare for & make calls to getopt_long_only.
     
     std::string short_option_string (GetShortOptionString(g_long_options));
     

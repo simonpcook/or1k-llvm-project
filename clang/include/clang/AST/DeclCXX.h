@@ -254,6 +254,16 @@ public:
   TypeSourceInfo *getTypeSourceInfo() const { return BaseTypeInfo; }
 };
 
+/// The inheritance model to use for member pointers of a given CXXRecordDecl.
+enum MSInheritanceModel {
+  MSIM_Single,
+  MSIM_SinglePolymorphic,
+  MSIM_Multiple,
+  MSIM_MultiplePolymorphic,
+  MSIM_Virtual,
+  MSIM_Unspecified
+};
+
 /// CXXRecordDecl - Represents a C++ struct/union/class.
 /// FIXME: This class will disappear once we've properly taught RecordDecl
 /// to deal with C++-specific things.
@@ -1532,6 +1542,9 @@ public:
     getLambdaData().ContextDecl = ContextDecl;
   }
 
+  /// \brief Returns the inheritance model used for this record.
+  MSInheritanceModel getMSInheritanceModel() const;
+
   /// \brief Determine whether this lambda expression was known to be dependent
   /// at the time it was created, even if its context does not appear to be
   /// dependent.
@@ -1570,11 +1583,10 @@ protected:
   CXXMethodDecl(Kind DK, CXXRecordDecl *RD, SourceLocation StartLoc,
                 const DeclarationNameInfo &NameInfo,
                 QualType T, TypeSourceInfo *TInfo,
-                bool isStatic, StorageClass SCAsWritten, bool isInline,
+                StorageClass SC, bool isInline,
                 bool isConstexpr, SourceLocation EndLocation)
     : FunctionDecl(DK, RD, StartLoc, NameInfo, T, TInfo,
-                   (isStatic ? SC_Static : SC_None),
-                   SCAsWritten, isInline, isConstexpr) {
+                   SC, isInline, isConstexpr) {
     if (EndLocation.isValid())
       setRangeEnd(EndLocation);
   }
@@ -1584,15 +1596,14 @@ public:
                                SourceLocation StartLoc,
                                const DeclarationNameInfo &NameInfo,
                                QualType T, TypeSourceInfo *TInfo,
-                               bool isStatic,
-                               StorageClass SCAsWritten,
+                               StorageClass SC,
                                bool isInline,
                                bool isConstexpr,
                                SourceLocation EndLocation);
 
   static CXXMethodDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-  
-  bool isStatic() const { return getStorageClass() == SC_Static; }
+
+  bool isStatic() const;
   bool isInstance() const { return !isStatic(); }
 
   bool isConst() const { return getType()->castAs<FunctionType>()->isConst(); }
@@ -2000,7 +2011,7 @@ class CXXConstructorDecl : public CXXMethodDecl {
                      QualType T, TypeSourceInfo *TInfo,
                      bool isExplicitSpecified, bool isInline,
                      bool isImplicitlyDeclared, bool isConstexpr)
-    : CXXMethodDecl(CXXConstructor, RD, StartLoc, NameInfo, T, TInfo, false,
+    : CXXMethodDecl(CXXConstructor, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, isConstexpr, SourceLocation()),
       IsExplicitSpecified(isExplicitSpecified), ImplicitlyDefined(false),
       CtorInitializers(0), NumCtorInitializers(0) {
@@ -2219,7 +2230,7 @@ class CXXDestructorDecl : public CXXMethodDecl {
                     const DeclarationNameInfo &NameInfo,
                     QualType T, TypeSourceInfo *TInfo,
                     bool isInline, bool isImplicitlyDeclared)
-    : CXXMethodDecl(CXXDestructor, RD, StartLoc, NameInfo, T, TInfo, false,
+    : CXXMethodDecl(CXXDestructor, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, /*isConstexpr=*/false, SourceLocation()),
       ImplicitlyDefined(false), OperatorDelete(0) {
     setImplicit(isImplicitlyDeclared);
@@ -2286,7 +2297,7 @@ class CXXConversionDecl : public CXXMethodDecl {
                     QualType T, TypeSourceInfo *TInfo,
                     bool isInline, bool isExplicitSpecified,
                     bool isConstexpr, SourceLocation EndLocation)
-    : CXXMethodDecl(CXXConversion, RD, StartLoc, NameInfo, T, TInfo, false,
+    : CXXMethodDecl(CXXConversion, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, isConstexpr, EndLocation),
       IsExplicitSpecified(isExplicitSpecified) { }
 
@@ -2969,6 +2980,56 @@ public:
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == StaticAssert; }
+
+  friend class ASTDeclReader;
+};
+
+/// An instance of this class represents the declaration of a property
+/// member.  This is a Microsoft extension to C++, first introduced in
+/// Visual Studio .NET 2003 as a parallel to similar features in C#
+/// and Managed C++.
+///
+/// A property must always be a non-static class member.
+///
+/// A property member superficially resembles a non-static data
+/// member, except preceded by a property attribute:
+///   __declspec(property(get=GetX, put=PutX)) int x;
+/// Either (but not both) of the 'get' and 'put' names may be omitted.
+///
+/// A reference to a property is always an lvalue.  If the lvalue
+/// undergoes lvalue-to-rvalue conversion, then a getter name is
+/// required, and that member is called with no arguments.
+/// If the lvalue is assigned into, then a setter name is required,
+/// and that member is called with one argument, the value assigned.
+/// Both operations are potentially overloaded.  Compound assignments
+/// are permitted, as are the increment and decrement operators.
+///
+/// The getter and putter methods are permitted to be overloaded,
+/// although their return and parameter types are subject to certain
+/// restrictions according to the type of the property.
+///
+/// A property declared using an incomplete array type may
+/// additionally be subscripted, adding extra parameters to the getter
+/// and putter methods.
+class MSPropertyDecl : public DeclaratorDecl {
+  IdentifierInfo *GetterId, *SetterId;
+
+public:
+  MSPropertyDecl(DeclContext *DC, SourceLocation L,
+                 DeclarationName N, QualType T, TypeSourceInfo *TInfo,
+                 SourceLocation StartL, IdentifierInfo *Getter,
+                 IdentifierInfo *Setter):
+  DeclaratorDecl(MSProperty, DC, L, N, T, TInfo, StartL), GetterId(Getter),
+  SetterId(Setter) {}
+
+  static MSPropertyDecl *CreateDeserialized(ASTContext &C, unsigned ID);
+
+  static bool classof(const Decl *D) { return D->getKind() == MSProperty; }
+
+  bool hasGetter() const { return GetterId != NULL; }
+  IdentifierInfo* getGetterId() const { return GetterId; }
+  bool hasSetter() const { return SetterId != NULL; }
+  IdentifierInfo* getSetterId() const { return SetterId; }
 
   friend class ASTDeclReader;
 };

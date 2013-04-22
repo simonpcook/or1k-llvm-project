@@ -15,6 +15,7 @@
 #include "lldb/lldb-private-log.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/DataBuffer.h"
+#include "lldb/Core/Debugger.h"
 #include "lldb/Core/FileSpecList.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
@@ -36,6 +37,15 @@
 #include "Plugins/Process/Utility/RegisterContextDarwin_arm.h"
 #include "Plugins/Process/Utility/RegisterContextDarwin_i386.h"
 #include "Plugins/Process/Utility/RegisterContextDarwin_x86_64.h"
+
+#if defined (__APPLE__) && defined (__arm__)
+// GetLLDBSharedCacheUUID() needs to call dlsym()
+#include <dlfcn.h>
+#endif
+
+#ifndef __APPLE__
+#include "Utility/UuidCompatibility.h"
+#endif
 
 using namespace lldb;
 using namespace lldb_private;
@@ -401,7 +411,7 @@ ObjectFileMachO::CreateInstance (const lldb::ModuleSP &module_sp,
             data_sp = file->MemoryMapFileContents(file_offset, length);
             data_offset = 0;
         }
-        std::auto_ptr<ObjectFile> objfile_ap(new ObjectFileMachO (module_sp, data_sp, data_offset, file, file_offset, length));
+        std::unique_ptr<ObjectFile> objfile_ap(new ObjectFileMachO (module_sp, data_sp, data_offset, file, file_offset, length));
         if (objfile_ap.get() && objfile_ap->ParseHeader())
             return objfile_ap.release();
     }
@@ -416,7 +426,7 @@ ObjectFileMachO::CreateMemoryInstance (const lldb::ModuleSP &module_sp,
 {
     if (ObjectFileMachO::MagicBytesMatch(data_sp, 0, data_sp->GetByteSize()))
     {
-        std::auto_ptr<ObjectFile> objfile_ap(new ObjectFileMachO (module_sp, data_sp, process_sp, header_addr));
+        std::unique_ptr<ObjectFile> objfile_ap(new ObjectFileMachO (module_sp, data_sp, process_sp, header_addr));
         if (objfile_ap.get() && objfile_ap->ParseHeader())
             return objfile_ap.release();
     }
@@ -836,6 +846,42 @@ ObjectFileMachO::ParseSections ()
                 load_cmd.vmsize = m_data.GetAddress(&offset);
                 load_cmd.fileoff = m_data.GetAddress(&offset);
                 load_cmd.filesize = m_data.GetAddress(&offset);
+                if (m_length != 0 && load_cmd.filesize != 0)
+                {
+                    if (load_cmd.fileoff > m_length)
+                    {
+                        // We have a load command that says it extends past the end of hte file.  This is likely
+                        // a corrupt file.  We don't have any way to return an error condition here (this method
+                        // was likely invokved from something like ObjectFile::GetSectionList()) -- all we can do
+                        // is null out the SectionList vector and if a process has been set up, dump a message
+                        // to stdout.  The most common case here is core file debugging with a truncated file.
+                        const char *lc_segment_name = load_cmd.cmd == LoadCommandSegment64 ? "LC_SEGMENT_64" : "LC_SEGMENT";
+                        GetModule()->ReportError("is a corrupt mach-o file: load command %u %s has a fileoff (0x%" PRIx64 ") that extends beyond the end of the file (0x%" PRIx64 ")",
+                                                 i,
+                                                 lc_segment_name,
+                                                 load_cmd.fileoff,
+                                                 m_length);
+                        m_sections_ap->Clear();
+                        return 0;
+                    }
+                    
+                    if (load_cmd.fileoff + load_cmd.filesize > m_length)
+                    {
+                        // We have a load command that says it extends past the end of hte file.  This is likely
+                        // a corrupt file.  We don't have any way to return an error condition here (this method
+                        // was likely invokved from something like ObjectFile::GetSectionList()) -- all we can do
+                        // is null out the SectionList vector and if a process has been set up, dump a message
+                        // to stdout.  The most common case here is core file debugging with a truncated file.
+                        const char *lc_segment_name = load_cmd.cmd == LoadCommandSegment64 ? "LC_SEGMENT_64" : "LC_SEGMENT";
+                        GetModule()->ReportError("is a corrupt mach-o file: load command %u %s has a fileoff + filesize (0x%" PRIx64 ") that extends beyond the end of the file (0x%" PRIx64 ")",
+                                                 i,
+                                                 lc_segment_name,
+                                                 load_cmd.fileoff + load_cmd.filesize,
+                                                 m_length);
+                        m_sections_ap->Clear();
+                        return 0;
+                    }
+                }
                 if (m_data.GetU32(&offset, &load_cmd.maxprot, 4))
                 {
 
@@ -1231,7 +1277,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
     lldb::offset_t offset = MachHeaderSizeFromMagic(m_header.magic);
     uint32_t i;
 
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SYMBOLS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SYMBOLS));
 
     for (i=0; i<m_header.ncmds; ++i)
     {
@@ -1252,28 +1298,28 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             if (symtab_load_command.symoff == 0)
             {
                 if (log)
-                    module_sp->LogMessage(log.get(), "LC_SYMTAB.symoff == 0");
+                    module_sp->LogMessage(log, "LC_SYMTAB.symoff == 0");
                 return 0;
             }
 
             if (symtab_load_command.stroff == 0)
             {
                 if (log)
-                    module_sp->LogMessage(log.get(), "LC_SYMTAB.stroff == 0");
+                    module_sp->LogMessage(log, "LC_SYMTAB.stroff == 0");
                 return 0;
             }
 
             if (symtab_load_command.nsyms == 0)
             {
                 if (log)
-                    module_sp->LogMessage(log.get(), "LC_SYMTAB.nsyms == 0");
+                    module_sp->LogMessage(log, "LC_SYMTAB.nsyms == 0");
                 return 0;
             }
 
             if (symtab_load_command.strsize == 0)
             {
                 if (log)
-                    module_sp->LogMessage(log.get(), "LC_SYMTAB.strsize == 0");
+                    module_sp->LogMessage(log, "LC_SYMTAB.strsize == 0");
                 return 0;
             }
             break;
@@ -1346,8 +1392,21 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                     // symbol and string table. Reading all of this symbol and string table
                     // data across can slow down debug launch times, so we optimize this by
                     // reading the memory for the __LINKEDIT section from this process.
+
+                    UUID lldb_shared_cache(GetLLDBSharedCacheUUID());
+                    UUID process_shared_cache(GetProcessSharedCacheUUID(process));
+                    bool use_lldb_cache = true;
+                    if (lldb_shared_cache.IsValid() && process_shared_cache.IsValid() && lldb_shared_cache != process_shared_cache)
+                    {
+                            use_lldb_cache = false;
+                            ModuleSP module_sp (GetModule());
+                            if (module_sp)
+                                module_sp->ReportWarning ("shared cache in process does not match lldb's own shared cache, startup will be slow.");
+
+                    }
+
                     PlatformSP platform_sp (target.GetPlatform());
-                    if (platform_sp && platform_sp->IsHost())
+                    if (platform_sp && platform_sp->IsHost() && use_lldb_cache)
                     {
                         data_was_read = true;
                         nlist_data.SetData((void *)symoff_addr, nlist_data_byte_size, eByteOrderLittle);
@@ -1411,7 +1470,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         if (nlist_data.GetByteSize() == 0)
         {
             if (log)
-                module_sp->LogMessage(log.get(), "failed to read nlist data");
+                module_sp->LogMessage(log, "failed to read nlist data");
             return 0;
         }
 
@@ -1424,14 +1483,14 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 if (strtab_addr == LLDB_INVALID_ADDRESS)
                 {
                     if (log)
-                        module_sp->LogMessage(log.get(), "failed to locate the strtab in memory");
+                        module_sp->LogMessage(log, "failed to locate the strtab in memory");
                     return 0;
                 }
             }
             else
             {
                 if (log)
-                    module_sp->LogMessage(log.get(), "failed to read strtab data");
+                    module_sp->LogMessage(log, "failed to read strtab data");
                 return 0;
             }
         }
@@ -1454,7 +1513,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
         // lldb works best if it knows the start addresss of all functions in a module.
         // Linker symbols or debug info are normally the best source of information for start addr / size but
         // they may be stripped in a released binary.
-        // Two additional sources of information exist in Mach-O binaries:  
+        // Two additional sources of information exist in Mach-O binaries:
         //    LC_FUNCTION_STARTS - a list of ULEB128 encoded offsets of each function's start address in the
         //                         binary, relative to the text section.
         //    eh_frame           - the eh_frame FDEs have the start addr & size of each function
@@ -1474,7 +1533,7 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 function_start_entry.addr += delta;
                 function_starts.Append(function_start_entry);
             }
-        } 
+        }
         else
         {
             // If m_type is eTypeDebugInfo, then this is a dSYM - it will have the load command claiming an eh_frame
@@ -1545,16 +1604,6 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             // Before we can start mapping the DSC, we need to make certain the target process is actually
             // using the cache we can find.
 
-            /*
-             * TODO (FIXME!)
-             *
-             * Consider the case of testing with a separate DSC file.
-             * If we go through the normal code paths, we will give symbols for the wrong DSC, and
-             * that is bad.  We need to read the target process' all_image_infos struct, and look
-             * at the values of the processDetachedFromSharedRegion field. If that is set, we should skip
-             * this code section.
-             */
-
             // Next we need to determine the correct path for the dyld shared cache.
 
             ArchSpec header_arch(eArchTypeMachO, m_header.cputype, m_header.cpusubtype);
@@ -1568,11 +1617,11 @@ ObjectFileMachO::ParseSymtab (bool minimize)
             FileSpec dsc_filespec(dsc_path, false);
 
             // We need definitions of two structures in the on-disk DSC, copy them here manually
-           struct lldb_copy_dyld_cache_header_v0
+            struct lldb_copy_dyld_cache_header_v0
             {
-               char        magic[16];            // e.g. "dyld_v0    i386", "dyld_v1   armv7", etc.
-               uint32_t    mappingOffset;        // file offset to first dyld_cache_mapping_info
-               uint32_t    mappingCount;         // number of dyld_cache_mapping_info entries
+                char        magic[16];            // e.g. "dyld_v0    i386", "dyld_v1   armv7", etc.
+                uint32_t    mappingOffset;        // file offset to first dyld_cache_mapping_info
+                uint32_t    mappingCount;         // number of dyld_cache_mapping_info entries
                 uint32_t    imagesOffset;
                 uint32_t    imagesCount;
                 uint64_t    dyldBaseAddress;
@@ -1580,49 +1629,49 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                 uint64_t    codeSignatureSize;
                 uint64_t    slideInfoOffset;
                 uint64_t    slideInfoSize;
-               uint64_t    localSymbolsOffset;   // file offset of where local symbols are stored
-               uint64_t    localSymbolsSize;     // size of local symbols information
-           };
-           struct lldb_copy_dyld_cache_header_v1
-           {
-               char        magic[16];            // e.g. "dyld_v0    i386", "dyld_v1   armv7", etc.
-               uint32_t    mappingOffset;        // file offset to first dyld_cache_mapping_info
-               uint32_t    mappingCount;         // number of dyld_cache_mapping_info entries
-               uint32_t    imagesOffset;
-               uint32_t    imagesCount;
-               uint64_t    dyldBaseAddress;
-               uint64_t    codeSignatureOffset;
-               uint64_t    codeSignatureSize;
-               uint64_t    slideInfoOffset;
-               uint64_t    slideInfoSize;
+                uint64_t    localSymbolsOffset;   // file offset of where local symbols are stored
+                uint64_t    localSymbolsSize;     // size of local symbols information
+            };
+            struct lldb_copy_dyld_cache_header_v1
+            {
+                char        magic[16];            // e.g. "dyld_v0    i386", "dyld_v1   armv7", etc.
+                uint32_t    mappingOffset;        // file offset to first dyld_cache_mapping_info
+                uint32_t    mappingCount;         // number of dyld_cache_mapping_info entries
+                uint32_t    imagesOffset;
+                uint32_t    imagesCount;
+                uint64_t    dyldBaseAddress;
+                uint64_t    codeSignatureOffset;
+                uint64_t    codeSignatureSize;
+                uint64_t    slideInfoOffset;
+                uint64_t    slideInfoSize;
                 uint64_t    localSymbolsOffset;
                 uint64_t    localSymbolsSize;
-               uint8_t     uuid[16];             // v1 and above, also recorded in dyld_all_image_infos v13 and later
+                uint8_t     uuid[16];             // v1 and above, also recorded in dyld_all_image_infos v13 and later
             };
 
-           struct lldb_copy_dyld_cache_mapping_info
-           {
-               uint64_t        address;
-               uint64_t        size;
-               uint64_t        fileOffset;
-               uint32_t        maxProt;
-               uint32_t        initProt;
-           };
+            struct lldb_copy_dyld_cache_mapping_info
+            {
+                uint64_t        address;
+                uint64_t        size;
+                uint64_t        fileOffset;
+                uint32_t        maxProt;
+                uint32_t        initProt;
+            };
 
             struct lldb_copy_dyld_cache_local_symbols_info
             {
-                    uint32_t        nlistOffset;
-                    uint32_t        nlistCount;
-                    uint32_t        stringsOffset;
-                    uint32_t        stringsSize;
-                    uint32_t        entriesOffset;
-                    uint32_t        entriesCount;
+                uint32_t        nlistOffset;
+                uint32_t        nlistCount;
+                uint32_t        stringsOffset;
+                uint32_t        stringsSize;
+                uint32_t        entriesOffset;
+                uint32_t        entriesCount;
             };
             struct lldb_copy_dyld_cache_local_symbols_entry
             {
-                    uint32_t        dylibOffset;
-                    uint32_t        nlistStartIndex;
-                    uint32_t        nlistCount;
+                uint32_t        dylibOffset;
+                uint32_t        nlistStartIndex;
+                uint32_t        nlistCount;
             };
 
             /* The dyld_cache_header has a pointer to the dyld_cache_local_symbols_info structure (localSymbolsOffset).
@@ -1662,14 +1711,38 @@ ObjectFileMachO::ParseSymtab (bool minimize)
                     }
                 }
 
+                UUID dsc_uuid;
+                if (version >= 1)
+                {
+                    offset = offsetof (struct lldb_copy_dyld_cache_header_v1, uuid);
+                    uint8_t uuid_bytes[sizeof (uuid_t)];
+                    memcpy (uuid_bytes, dsc_header_data.GetData (&offset, sizeof (uuid_t)), sizeof (uuid_t));
+                    dsc_uuid.SetBytes (uuid_bytes);
+                }
+
+                bool uuid_match = true;
+                if (dsc_uuid.IsValid() && process)
+                {
+                    UUID shared_cache_uuid(GetProcessSharedCacheUUID(process));
+
+                    if (shared_cache_uuid.IsValid() && dsc_uuid != shared_cache_uuid)
+                    {
+                        // The on-disk dyld_shared_cache file is not the same as the one in this
+                        // process' memory, don't use it.
+                        uuid_match = false;
+                        ModuleSP module_sp (GetModule());
+                        if (module_sp)
+                            module_sp->ReportWarning ("process shared cache does not match on-disk dyld_shared_cache file, some symbol names will be missing.");
+                    }
+                }
+
                 offset = offsetof (struct lldb_copy_dyld_cache_header_v1, mappingOffset);
 
                 uint32_t mappingOffset = dsc_header_data.GetU32(&offset);
 
                 // If the mappingOffset points to a location inside the header, we've
                 // opened an old dyld shared cache, and should not proceed further.
-                if ((version == 0 && mappingOffset >= sizeof(struct lldb_copy_dyld_cache_header_v0))
-                    || (version >= 1 && mappingOffset >= sizeof(struct lldb_copy_dyld_cache_header_v1)))
+                if (uuid_match && mappingOffset >= sizeof(struct lldb_copy_dyld_cache_header_v0))
                 {
 
                     DataBufferSP dsc_mapping_info_data_sp = dsc_filespec.MemoryMapFileContents(mappingOffset, sizeof (struct lldb_copy_dyld_cache_mapping_info));
@@ -3913,6 +3986,76 @@ ObjectFileMachO::GetArchitecture (ArchSpec &arch)
         return true;
     }
     return false;
+}
+
+
+UUID
+ObjectFileMachO::GetProcessSharedCacheUUID (Process *process)
+{
+    UUID uuid;
+    if (process)
+    {
+        addr_t all_image_infos = process->GetImageInfoAddress();
+
+        // The address returned by GetImageInfoAddress may be the address of dyld (don't want)
+        // or it may be the address of the dyld_all_image_infos structure (want).  The first four
+        // bytes will be either the version field (all_image_infos) or a Mach-O file magic constant.
+        // Version 13 and higher of dyld_all_image_infos is required to get the sharedCacheUUID field.
+
+        Error err;
+        uint32_t version_or_magic = process->ReadUnsignedIntegerFromMemory (all_image_infos, 4, -1, err);
+        if (version_or_magic != -1 
+            && version_or_magic != HeaderMagic32
+            && version_or_magic != HeaderMagic32Swapped
+            && version_or_magic != HeaderMagic64
+            && version_or_magic != HeaderMagic64Swapped
+            && version_or_magic >= 13)
+        {
+            addr_t sharedCacheUUID_address = LLDB_INVALID_ADDRESS;
+            int wordsize = process->GetAddressByteSize();
+            if (wordsize == 8)
+            {
+                sharedCacheUUID_address = all_image_infos + 160;  // sharedCacheUUID <mach-o/dyld_images.h>
+            }
+            if (wordsize == 4)
+            {
+                sharedCacheUUID_address = all_image_infos + 84;   // sharedCacheUUID <mach-o/dyld_images.h>
+            }
+            if (sharedCacheUUID_address != LLDB_INVALID_ADDRESS)
+            {
+                uuid_t shared_cache_uuid;
+                if (process->ReadMemory (sharedCacheUUID_address, shared_cache_uuid, sizeof (uuid_t), err) == sizeof (uuid_t))
+                {
+                    uuid.SetBytes (shared_cache_uuid);
+                }
+            }
+        }
+    }
+    return uuid;
+}
+
+UUID
+ObjectFileMachO::GetLLDBSharedCacheUUID ()
+{
+    UUID uuid;
+#if defined (__APPLE__) && defined (__arm__)
+    uint8_t *(*dyld_get_all_image_infos)(void);
+    dyld_get_all_image_infos = (uint8_t*(*)()) dlsym (RTLD_DEFAULT, "_dyld_get_all_image_infos");
+    if (dyld_get_all_image_infos)
+    {
+        uint8_t *dyld_all_image_infos_address = dyld_get_all_image_infos();
+        if (dyld_all_image_infos_address)
+        {
+            uint32_t *version = (uint32_t*) dyld_all_image_infos_address;              // version <mach-o/dyld_images.h>
+            if (*version >= 13)
+            {
+                uuid_t *sharedCacheUUID_address = (uuid_t*) ((uint8_t*) dyld_all_image_infos_address + 84);  // sharedCacheUUID <mach-o/dyld_images.h>
+                uuid.SetBytes (sharedCacheUUID_address);
+            }
+        }
+    }
+#endif
+    return uuid;
 }
 
 

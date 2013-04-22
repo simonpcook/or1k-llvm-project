@@ -40,6 +40,8 @@
 #include <sys/vfs.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <pwd.h>
+#include <sys/socket.h>
 
 #if defined(__i386__) || defined(__x86_64__)
 # include <emmintrin.h>
@@ -604,6 +606,26 @@ TEST(MemorySanitizer, pipe) {
   close(pipefd[1]);
 }
 
+TEST(MemorySanitizer, pipe2) {
+  int* pipefd = new int[2];
+  int res = pipe2(pipefd, O_NONBLOCK);
+  assert(!res);
+  EXPECT_NOT_POISONED(pipefd[0]);
+  EXPECT_NOT_POISONED(pipefd[1]);
+  close(pipefd[0]);
+  close(pipefd[1]);
+}
+
+TEST(MemorySanitizer, socketpair) {
+  int sv[2];
+  int res = socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
+  assert(!res);
+  EXPECT_NOT_POISONED(sv[0]);
+  EXPECT_NOT_POISONED(sv[1]);
+  close(sv[0]);
+  close(sv[1]);
+}
+
 TEST(MemorySanitizer, getcwd) {
   char path[PATH_MAX + 1];
   char* res = getcwd(path, sizeof(path));
@@ -849,6 +871,53 @@ TEST(MemorySanitizer, gettimeofday) {
   EXPECT_NOT_POISONED(tz.tz_dsttime);
 }
 
+TEST(MemorySanitizer, clock_gettime) {
+  struct timespec tp;
+  EXPECT_POISONED(tp.tv_sec);
+  EXPECT_POISONED(tp.tv_nsec);
+  assert(0 == clock_gettime(CLOCK_REALTIME, &tp));
+  EXPECT_NOT_POISONED(tp.tv_sec);
+  EXPECT_NOT_POISONED(tp.tv_nsec);
+}
+
+TEST(MemorySanitizer, getitimer) {
+  struct itimerval it1, it2;
+  int res;
+  EXPECT_POISONED(it1.it_interval.tv_sec);
+  EXPECT_POISONED(it1.it_interval.tv_usec);
+  EXPECT_POISONED(it1.it_value.tv_sec);
+  EXPECT_POISONED(it1.it_value.tv_usec);
+  res = getitimer(ITIMER_VIRTUAL, &it1);
+  assert(!res);
+  EXPECT_NOT_POISONED(it1.it_interval.tv_sec);
+  EXPECT_NOT_POISONED(it1.it_interval.tv_usec);
+  EXPECT_NOT_POISONED(it1.it_value.tv_sec);
+  EXPECT_NOT_POISONED(it1.it_value.tv_usec);
+
+  it1.it_interval.tv_sec = it1.it_value.tv_sec = 10000;
+  it1.it_interval.tv_usec = it1.it_value.tv_usec = 0;
+
+  res = setitimer(ITIMER_VIRTUAL, &it1, &it2);
+  assert(!res);
+  EXPECT_NOT_POISONED(it2.it_interval.tv_sec);
+  EXPECT_NOT_POISONED(it2.it_interval.tv_usec);
+  EXPECT_NOT_POISONED(it2.it_value.tv_sec);
+  EXPECT_NOT_POISONED(it2.it_value.tv_usec);
+
+  // Check that old_value can be 0, and disable the timer.
+  memset(&it1, 0, sizeof(it1));
+  res = setitimer(ITIMER_VIRTUAL, &it1, 0);
+  assert(!res);
+}
+
+TEST(MemorySanitizer, time) {
+  time_t t;
+  EXPECT_POISONED(t);
+  time_t t2 = time(&t);
+  assert(t2 != (time_t)-1);
+  EXPECT_NOT_POISONED(t);
+}
+
 TEST(MemorySanitizer, localtime) {
   time_t t = 123;
   struct tm *time = localtime(&t);
@@ -919,6 +988,68 @@ TEST(MemorySanitizer, frexp) {
   EXPECT_NOT_POISONED(rl);
   EXPECT_NOT_POISONED(x);
 }
+
+namespace {
+
+static int cnt;
+
+void SigactionHandler(int signo, siginfo_t* si, void* uc) {
+  assert(signo == SIGPROF);
+  assert(si);
+  EXPECT_NOT_POISONED(si->si_errno);
+  EXPECT_NOT_POISONED(si->si_pid);
+#if __linux__
+# if defined(__x86_64__)
+  EXPECT_NOT_POISONED(((ucontext_t*)uc)->uc_mcontext.gregs[REG_RIP]);
+# elif defined(__i386__)
+  EXPECT_NOT_POISONED(((ucontext_t*)uc)->uc_mcontext.gregs[REG_EIP]);
+# endif
+#endif
+  ++cnt;
+}
+
+TEST(MemorySanitizer, sigaction) {
+  struct sigaction act = {};
+  struct sigaction oldact = {};
+  struct sigaction origact = {};
+
+  sigaction(SIGPROF, 0, &origact);
+
+  act.sa_flags |= SA_SIGINFO;
+  act.sa_sigaction = &SigactionHandler;
+  sigaction(SIGPROF, &act, 0);
+
+  kill(getpid(), SIGPROF);
+
+  act.sa_flags &= ~SA_SIGINFO;
+  act.sa_handler = SIG_DFL;
+  sigaction(SIGPROF, &act, 0);
+
+  act.sa_flags &= ~SA_SIGINFO;
+  act.sa_handler = SIG_IGN;
+  sigaction(SIGPROF, &act, &oldact);
+  EXPECT_FALSE(oldact.sa_flags & SA_SIGINFO);
+  EXPECT_EQ(SIG_DFL, oldact.sa_handler);
+  kill(getpid(), SIGPROF);
+
+  act.sa_flags |= SA_SIGINFO;
+  act.sa_sigaction = &SigactionHandler;
+  sigaction(SIGPROF, &act, &oldact);
+  EXPECT_FALSE(oldact.sa_flags & SA_SIGINFO);
+  EXPECT_EQ(SIG_IGN, oldact.sa_handler);
+  kill(getpid(), SIGPROF);
+
+  act.sa_flags &= ~SA_SIGINFO;
+  act.sa_handler = SIG_DFL;
+  sigaction(SIGPROF, &act, &oldact);
+  EXPECT_TRUE(oldact.sa_flags & SA_SIGINFO);
+  EXPECT_EQ(&SigactionHandler, oldact.sa_sigaction);
+  EXPECT_EQ(2, cnt);
+
+  sigaction(SIGPROF, &origact, 0);
+}
+
+} // namespace
 
 struct StructWithDtor {
   ~StructWithDtor();
@@ -1166,8 +1297,8 @@ TEST(MemorySanitizer, StructByVal) {
 
 
 #if MSAN_HAS_M128
-NOINLINE __m128i m128Eq(__m128i *a, __m128i *b) { return *a == *b; }
-NOINLINE __m128i m128Lt(__m128i *a, __m128i *b) { return *a < *b; }
+NOINLINE __m128i m128Eq(__m128i *a, __m128i *b) { return _mm_cmpeq_epi16(*a, *b); }
+NOINLINE __m128i m128Lt(__m128i *a, __m128i *b) { return _mm_cmplt_epi16(*a, *b); }
 TEST(MemorySanitizer, m128) {
   __m128i a = _mm_set1_epi16(0x1234);
   __m128i b = _mm_set1_epi16(0x7890);
@@ -1434,6 +1565,7 @@ TEST(MemorySanitizer, SimpleThread) {
   void *p;
   int res = pthread_create(&t, NULL, SimpleThread_threadfn, NULL);
   assert(!res);
+  EXPECT_NOT_POISONED(t);
   res = pthread_join(t, &p);
   assert(!res);
   if (!__msan_has_dynamic_component())  // FIXME: intercept pthread_join (?).
@@ -1498,6 +1630,40 @@ TEST(MemorySanitizer, gethostname) {
   int res = gethostname(buf, 100);
   assert(!res);
   EXPECT_NOT_POISONED(strlen(buf));
+}
+
+TEST(MemorySanitizer, getpwuid) {
+  struct passwd *p = getpwuid(0); // root
+  assert(p);
+  EXPECT_NOT_POISONED(p->pw_name);
+  assert(p->pw_name);
+  EXPECT_NOT_POISONED(p->pw_name[0]);
+  EXPECT_NOT_POISONED(p->pw_uid);
+  assert(p->pw_uid == 0);
+}
+
+TEST(MemorySanitizer, getpwnam_r) {
+  struct passwd pwd;
+  struct passwd *pwdres;
+  char buf[10000];
+  int res = getpwnam_r("root", &pwd, buf, sizeof(buf), &pwdres);
+  assert(!res);
+  EXPECT_NOT_POISONED(pwd.pw_name);
+  assert(pwd.pw_name);
+  EXPECT_NOT_POISONED(pwd.pw_name[0]);
+  EXPECT_NOT_POISONED(pwd.pw_uid);
+  assert(pwd.pw_uid == 0);
+}
+
+TEST(MemorySanitizer, getpwnam_r_positive) {
+  struct passwd pwd;
+  struct passwd *pwdres;
+  char s[5];
+  strncpy(s, "abcd", 5);
+  __msan_poison(s, 5);
+  char buf[10000];
+  int res;
+  EXPECT_UMR(res = getpwnam_r(s, &pwd, buf, sizeof(buf), &pwdres));
 }
 
 template<class T>
@@ -1578,14 +1744,17 @@ TEST(MemorySanitizer, ICmpRelational) {
 
 #if MSAN_HAS_M128
 TEST(MemorySanitizer, ICmpVectorRelational) {
-  EXPECT_NOT_POISONED(poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0)) <
-                      poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0)));
-  EXPECT_NOT_POISONED(poisoned(_mm_set1_epi32(0), _mm_set1_epi32(0)) <
-                      poisoned(_mm_set1_epi32(0), _mm_set1_epi32(0)));
-  EXPECT_POISONED(poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0xFFFF)) <
-                  poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0xFFFF)));
-  EXPECT_POISONED(poisoned(_mm_set1_epi16(6), _mm_set1_epi16(0xF)) >
-                  poisoned(_mm_set1_epi16(7), _mm_set1_epi16(0)));
+  EXPECT_NOT_POISONED(
+      _mm_cmplt_epi16(poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0)),
+                   poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0))));
+  EXPECT_NOT_POISONED(
+      _mm_cmplt_epi16(poisoned(_mm_set1_epi32(0), _mm_set1_epi32(0)),
+                   poisoned(_mm_set1_epi32(0), _mm_set1_epi32(0))));
+  EXPECT_POISONED(
+      _mm_cmplt_epi16(poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0xFFFF)),
+                   poisoned(_mm_set1_epi16(0), _mm_set1_epi16(0xFFFF))));
+  EXPECT_POISONED(_mm_cmpgt_epi16(poisoned(_mm_set1_epi16(6), _mm_set1_epi16(0xF)),
+                               poisoned(_mm_set1_epi16(7), _mm_set1_epi16(0))));
 }
 #endif
 

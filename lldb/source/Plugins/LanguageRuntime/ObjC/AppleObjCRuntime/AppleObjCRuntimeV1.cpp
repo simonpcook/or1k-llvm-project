@@ -150,7 +150,7 @@ struct BufStruct {
 ClangUtilityFunction *
 AppleObjCRuntimeV1::CreateObjectChecker(const char *name)
 {
-    std::auto_ptr<BufStruct> buf(new BufStruct);
+    std::unique_ptr<BufStruct> buf(new BufStruct);
     
     assert(snprintf(&buf->contents[0], sizeof(buf->contents),
                     "struct __objc_class                                                    \n"
@@ -366,7 +366,7 @@ AppleObjCRuntimeV1::UpdateISAToDescriptorMapIfNeeded()
         // map, wether it was successful or not.
         m_isa_to_descriptor_stop_id = process->GetStopID();
         
-        lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
+        Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
         
         ProcessSP process_sp = process->shared_from_this();
         

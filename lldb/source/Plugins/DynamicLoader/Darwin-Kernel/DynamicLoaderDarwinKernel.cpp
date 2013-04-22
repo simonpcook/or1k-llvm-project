@@ -116,7 +116,7 @@ public:
 
 };
 
-typedef STD_SHARED_PTR(DynamicLoaderDarwinKernelProperties) DynamicLoaderDarwinKernelPropertiesSP;
+typedef std::shared_ptr<DynamicLoaderDarwinKernelProperties> DynamicLoaderDarwinKernelPropertiesSP;
 
 static const DynamicLoaderDarwinKernelPropertiesSP &
 GetGlobalProperties()
@@ -294,21 +294,19 @@ DynamicLoaderDarwinKernel::SearchForKernelNearPC (Process *process)
     if (pc == LLDB_INVALID_ADDRESS)
         return LLDB_INVALID_ADDRESS;
 
-    addr_t kernel_range_low, kernel_range_high;
+    addr_t kernel_range_low;
     if (process->GetTarget().GetArchitecture().GetAddressByteSize() == 8)
     {
         kernel_range_low = 1ULL << 63;
-        kernel_range_high = UINT64_MAX;
     }
     else
     {
         kernel_range_low = 1ULL << 31;
-        kernel_range_high = UINT32_MAX;
     }
 
     // Outside the normal kernel address range, this is probably userland code running right now
     if (pc < kernel_range_low)
-        LLDB_INVALID_ADDRESS;
+        return LLDB_INVALID_ADDRESS;
 
     // The kernel will load at at one megabyte boundary (0x100000), or at that boundary plus 
     // an offset of one page (0x1000) or two, depending on the device.
@@ -457,6 +455,14 @@ DynamicLoaderDarwinKernel::DynamicLoaderDarwinKernel (Process* process, lldb::ad
     m_mutex(Mutex::eMutexTypeRecursive),
     m_break_id (LLDB_INVALID_BREAK_ID)
 {
+    PlatformSP platform_sp(Platform::FindPlugin (process, "darwin-kernel"));
+    // Only select the darwin-kernel Platform if we've been asked to load kexts.
+    // It can take some time to scan over all of the kext info.plists and that
+    // shouldn't be done if kext loading is explicitly disabled.
+    if (platform_sp.get() && GetGlobalProperties()->GetLoadKexts())
+    {
+        process->GetTarget().SetPlatform (platform_sp);
+    }
 }
 
 //----------------------------------------------------------------------
@@ -797,6 +803,22 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
                 }
             }
 
+            // If the current platform is PlatformDarwinKernel, create a ModuleSpec with the filename set 
+            // to be the bundle ID for this kext, e.g. "com.apple.filesystems.msdosfs", and ask the platform
+            // to find it.
+            PlatformSP platform_sp (target.GetPlatform());
+            if (platform_sp)
+            {
+                const char *pname = platform_sp->GetShortPluginName();
+                if (pname && strcmp (pname, "darwin-kernel") == 0)
+                {
+                    ModuleSpec kext_bundle_module_spec(module_spec);
+                    FileSpec kext_filespec(m_name.c_str(), false);
+                    kext_bundle_module_spec.GetFileSpec() = kext_filespec;
+                    platform_sp->GetSharedModule (kext_bundle_module_spec, m_module_sp, &target.GetExecutableSearchPaths(), NULL, NULL);
+                }
+            }
+
             // Ask the Target to find this file on the local system, if possible.
             // This will search in the list of currently-loaded files, look in the 
             // standard search paths on the system, and on a Mac it will try calling
@@ -1082,14 +1104,14 @@ DynamicLoaderDarwinKernel::BreakpointHit (StoppointCallbackContext *context,
                                           user_id_t break_id, 
                                           user_id_t break_loc_id)
 {    
-    LogSP log(GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
+    Log *log(GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     if (log)
         log->Printf ("DynamicLoaderDarwinKernel::BreakpointHit (...)\n");
 
     ReadAllKextSummaries ();
     
     if (log)
-        PutToLog(log.get());
+        PutToLog(log);
 
     return GetStopWhenImagesChange();
 }
@@ -1156,7 +1178,7 @@ bool
 DynamicLoaderDarwinKernel::ParseKextSummaries (const Address &kext_summary_addr, uint32_t count)
 {
     KextImageInfo::collection kext_summaries;
-    LogSP log(GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
+    Log *log(GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
     if (log)
         log->Printf ("Kexts-changed breakpoint hit, there are %d kexts currently.\n", count);
         
@@ -1287,7 +1309,7 @@ DynamicLoaderDarwinKernel::ParseKextSummaries (const Address &kext_summary_addr,
                     s->Printf (".");
 
                 if (log)
-                    kext_summaries[new_kext].PutToLog (log.get());
+                    kext_summaries[new_kext].PutToLog (log);
             }
         }
         m_process->GetTarget().ModulesDidLoad (loaded_module_list);
@@ -1381,8 +1403,6 @@ DynamicLoaderDarwinKernel::ReadKextSummaries (const Address &kext_summary_addr,
 bool
 DynamicLoaderDarwinKernel::ReadAllKextSummaries ()
 {
-    LogSP log(GetLogIfAnyCategoriesSet (LIBLLDB_LOG_DYNAMIC_LOADER));
-    
     Mutex::Locker locker(m_mutex);
     
     if (ReadKextSummaryHeader ())
@@ -1537,7 +1557,7 @@ ThreadPlanSP
 DynamicLoaderDarwinKernel::GetStepThroughTrampolinePlan (Thread &thread, bool stop_others)
 {
     ThreadPlanSP thread_plan_sp;
-    LogSP log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     if (log)
         log->Printf ("Could not find symbol for step through.");
     return thread_plan_sp;

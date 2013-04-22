@@ -35,7 +35,6 @@
 
 using namespace lldb;
 using namespace lldb_private;
-using namespace std;
 
 static bool
 GetFileStats (const FileSpec *file_spec, struct stat *stats_ptr)
@@ -745,10 +744,11 @@ DataBufferSP
 FileSpec::MemoryMapFileContents(off_t file_offset, size_t file_size) const
 {
     DataBufferSP data_sp;
-    auto_ptr<DataBufferMemoryMap> mmap_data(new DataBufferMemoryMap());
+    std::unique_ptr<DataBufferMemoryMap> mmap_data(new DataBufferMemoryMap());
     if (mmap_data.get())
     {
-        if (mmap_data->MemoryMapFromFileSpec (this, file_offset, file_size) >= file_size)
+        const size_t mapped_length = mmap_data->MemoryMapFromFileSpec (this, file_offset, file_size);
+        if (((file_size == SIZE_MAX) && (mapped_length > 0)) || (mapped_length >= file_size))
             data_sp.reset(mmap_data.release());
     }
     return data_sp;
@@ -863,7 +863,7 @@ FileSpec::ReadFileLines (STLStringArray &lines)
     char path[PATH_MAX];
     if (GetPath(path, sizeof(path)))
     {
-        ifstream file_stream (path);
+        std::ifstream file_stream (path);
 
         if (file_stream)
         {
@@ -891,8 +891,15 @@ FileSpec::EnumerateDirectory
         lldb_utility::CleanUp <DIR *, int> dir_path_dir (opendir(dir_path), NULL, closedir);
         if (dir_path_dir.is_valid())
         {
-            struct dirent* dp;
-            while ((dp = readdir(dir_path_dir.get())) != NULL)
+            long path_max = fpathconf (dirfd (dir_path_dir.get()), _PC_NAME_MAX);
+#if defined (__APPLE_) && defined (__DARWIN_MAXPATHLEN)
+            if (path_max < __DARWIN_MAXPATHLEN)
+                path_max = __DARWIN_MAXPATHLEN;
+#endif
+            struct dirent *buf, *dp;
+            buf = (struct dirent *) malloc (offsetof (struct dirent, d_name) + path_max + 1);
+
+            while (buf && readdir_r(dir_path_dir.get(), buf, &dp) == 0 && dp)
             {
                 // Only search directories
                 if (dp->d_type == DT_DIR || dp->d_type == DT_UNKNOWN)
@@ -968,6 +975,10 @@ FileSpec::EnumerateDirectory
                         }
                     }
                 }
+            }
+            if (buf)
+            {
+                free (buf);
             }
         }
     }

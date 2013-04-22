@@ -15,6 +15,7 @@
 #include "asan_interceptors.h"
 #include "asan_internal.h"
 #include "asan_mapping.h"
+#include "asan_poisoning.h"
 #include "asan_report.h"
 #include "asan_stack.h"
 #include "asan_stats.h"
@@ -63,13 +64,9 @@ static void AsanCheckFailed(const char *file, int line, const char *cond,
 }
 
 // -------------------------- Flags ------------------------- {{{1
-static const int kDeafultMallocContextSize = 30;
+static const int kDefaultMallocContextSize = 30;
 
-static Flags asan_flags;
-
-Flags *flags() {
-  return &asan_flags;
-}
+Flags asan_flags_dont_use_directly;  // use via flags().
 
 static const char *MaybeCallAsanDefaultOptions() {
   return (&__asan_default_options) ? __asan_default_options() : "";
@@ -91,12 +88,12 @@ static void ParseFlagsFromString(Flags *f, const char *str) {
   ParseFlag(str, &f->symbolize, "symbolize");
   ParseFlag(str, &f->verbosity, "verbosity");
   ParseFlag(str, &f->redzone, "redzone");
-  CHECK(f->redzone >= 16);
+  CHECK_GE(f->redzone, 16);
   CHECK(IsPowerOfTwo(f->redzone));
 
   ParseFlag(str, &f->debug, "debug");
   ParseFlag(str, &f->report_globals, "report_globals");
-  ParseFlag(str, &f->check_initialization_order, "initialization_order");
+  ParseFlag(str, &f->check_initialization_order, "check_initialization_order");
   ParseFlag(str, &f->malloc_context_size, "malloc_context_size");
   CHECK((uptr)f->malloc_context_size <= kStackTraceMax);
 
@@ -105,6 +102,7 @@ static void ParseFlagsFromString(Flags *f, const char *str) {
   ParseFlag(str, &f->mac_ignore_invalid_free, "mac_ignore_invalid_free");
   ParseFlag(str, &f->use_fake_stack, "use_fake_stack");
   ParseFlag(str, &f->max_malloc_fill_size, "max_malloc_fill_size");
+  ParseFlag(str, &f->malloc_fill_byte, "malloc_fill_byte");
   ParseFlag(str, &f->exitcode, "exitcode");
   ParseFlag(str, &f->allow_user_poisoning, "allow_user_poisoning");
   ParseFlag(str, &f->sleep_before_dying, "sleep_before_dying");
@@ -127,6 +125,7 @@ static void ParseFlagsFromString(Flags *f, const char *str) {
   ParseFlag(str, &f->alloc_dealloc_mismatch, "alloc_dealloc_mismatch");
   ParseFlag(str, &f->use_stack_depot, "use_stack_depot");
   ParseFlag(str, &f->strict_memcmp, "strict_memcmp");
+  ParseFlag(str, &f->strict_init_order, "strict_init_order");
 }
 
 static const char *asan_external_symbolizer;
@@ -137,16 +136,17 @@ void InitializeFlags(Flags *f, const char *env) {
   f->quarantine_size = (ASAN_LOW_MEMORY) ? 1UL << 26 : 1UL << 28;
   f->symbolize = (asan_external_symbolizer != 0);
   f->verbosity = 0;
-  f->redzone = ASAN_ALLOCATOR_VERSION == 2 ? 16 : (ASAN_LOW_MEMORY) ? 64 : 128;
+  f->redzone = 16;
   f->debug = false;
   f->report_globals = 1;
   f->check_initialization_order = false;
-  f->malloc_context_size = kDeafultMallocContextSize;
+  f->malloc_context_size = kDefaultMallocContextSize;
   f->replace_str = true;
   f->replace_intrin = true;
   f->mac_ignore_invalid_free = false;
   f->use_fake_stack = true;
-  f->max_malloc_fill_size = 0;
+  f->max_malloc_fill_size = 0x1000;  // By default, fill only the first 4K.
+  f->malloc_fill_byte = 0xbe;
   f->exitcode = ASAN_DEFAULT_FAILURE_EXITCODE;
   f->allow_user_poisoning = true;
   f->sleep_before_dying = 0;
@@ -171,6 +171,7 @@ void InitializeFlags(Flags *f, const char *env) {
   f->alloc_dealloc_mismatch = (SANITIZER_MAC == 0);;
   f->use_stack_depot = true;  // Only affects allocator2.
   f->strict_memcmp = true;
+  f->strict_init_order = false;
 
   // Override from compile definition.
   ParseFlagsFromString(f, MaybeUseAsanDefaultOptionsCompileDefiniton());
@@ -204,8 +205,8 @@ void ShowStatsAndAbort() {
 // ---------------------- mmap -------------------- {{{1
 // Reserve memory range [beg, end].
 static void ReserveShadowMemoryRange(uptr beg, uptr end) {
-  CHECK((beg % GetPageSizeCached()) == 0);
-  CHECK(((end + 1) % GetPageSizeCached()) == 0);
+  CHECK_EQ((beg % GetPageSizeCached()), 0);
+  CHECK_EQ(((end + 1) % GetPageSizeCached()), 0);
   uptr size = end - beg + 1;
   void *res = MmapFixedNoReserve(beg, size);
   if (res != (void*)beg) {

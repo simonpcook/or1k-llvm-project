@@ -152,6 +152,7 @@ static void BackgroundThread(void *arg) {
                              memory_order_relaxed);
       if (last != 0 && last + flags()->flush_symbolizer_ms * kMs2Ns < now) {
         Lock l(&ctx->report_mtx);
+        SpinMutexLock l2(&CommonSanitizerReportMutex);
         SymbolizeFlush();
         atomic_store(&ctx->last_symbolize_time_ns, 0, memory_order_relaxed);
       }
@@ -253,6 +254,8 @@ int Finalize(ThreadState *thr) {
 
   // Wait for pending reports.
   ctx->report_mtx.Lock();
+  CommonSanitizerReportMutex.Lock();
+  CommonSanitizerReportMutex.Unlock();
   ctx->report_mtx.Unlock();
 
 #ifndef TSAN_GO
@@ -279,6 +282,10 @@ int Finalize(ThreadState *thr) {
 
   if (flags()->print_suppressions)
     PrintMatchedSuppressions();
+#ifndef TSAN_GO
+  if (flags()->print_benign)
+    PrintMatchedBenignRaces();
+#endif
 
   failed = OnFinalize(failed);
 
@@ -345,18 +352,18 @@ extern "C" void __tsan_report_race() {
 #endif
 
 ALWAYS_INLINE
-static Shadow LoadShadow(u64 *p) {
+Shadow LoadShadow(u64 *p) {
   u64 raw = atomic_load((atomic_uint64_t*)p, memory_order_relaxed);
   return Shadow(raw);
 }
 
 ALWAYS_INLINE
-static void StoreShadow(u64 *sp, u64 s) {
+void StoreShadow(u64 *sp, u64 s) {
   atomic_store((atomic_uint64_t*)sp, s, memory_order_relaxed);
 }
 
 ALWAYS_INLINE
-static void StoreIfNotYetStored(u64 *sp, u64 *s) {
+void StoreIfNotYetStored(u64 *sp, u64 *s) {
   StoreShadow(sp, *s);
   *s = 0;
 }
@@ -381,7 +388,7 @@ static inline bool HappensBefore(Shadow old, ThreadState *thr) {
   return thr->clock.get(old.TidWithIgnore()) >= old.epoch();
 }
 
-ALWAYS_INLINE
+ALWAYS_INLINE USED
 void MemoryAccessImpl(ThreadState *thr, uptr addr,
     int kAccessSizeLog, bool kAccessIsWrite, bool kIsAtomic,
     u64 *shadow_mem, Shadow cur) {
@@ -455,7 +462,7 @@ void MemoryAccessImpl(ThreadState *thr, uptr addr,
   return;
 }
 
-ALWAYS_INLINE
+ALWAYS_INLINE USED
 void MemoryAccess(ThreadState *thr, uptr pc, uptr addr,
     int kAccessSizeLog, bool kAccessIsWrite, bool kIsAtomic) {
   u64 *shadow_mem = (u64*)MemToShadow(addr);
@@ -593,7 +600,7 @@ void MemoryRangeImitateWrite(ThreadState *thr, uptr pc, uptr addr, uptr size) {
   MemoryRangeSet(thr, pc, addr, size, s.raw());
 }
 
-ALWAYS_INLINE
+ALWAYS_INLINE USED
 void FuncEntry(ThreadState *thr, uptr pc) {
   DCHECK_EQ(thr->in_rtl, 0);
   StatInc(thr, StatFuncEnter);
@@ -623,7 +630,7 @@ void FuncEntry(ThreadState *thr, uptr pc) {
   thr->shadow_stack_pos++;
 }
 
-ALWAYS_INLINE
+ALWAYS_INLINE USED
 void FuncExit(ThreadState *thr) {
   DCHECK_EQ(thr->in_rtl, 0);
   StatInc(thr, StatFuncExit);

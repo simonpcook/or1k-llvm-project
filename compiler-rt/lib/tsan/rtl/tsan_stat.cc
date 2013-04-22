@@ -287,6 +287,23 @@ void StatOutput(u64 *stat) {
   name[StatInt_frexp]                    = "  frexp                           ";
   name[StatInt_frexpf]                   = "  frexpf                          ";
   name[StatInt_frexpl]                   = "  frexpl                          ";
+  name[StatInt_getpwnam]                 = "  getpwnam                        ";
+  name[StatInt_getpwuid]                 = "  getpwuid                        ";
+  name[StatInt_getpwnam_r]               = "  getpwnam_r                      ";
+  name[StatInt_getpwuid_r]               = "  getpwuid_r                      ";
+  name[StatInt_clock_getres]             = "  clock_getres                    ";
+  name[StatInt_clock_gettime]            = "  clock_gettime                   ";
+  name[StatInt_clock_settime]            = "  clock_settime                   ";
+  name[StatInt_getitimer]                = "  getitimer                       ";
+  name[StatInt_setitimer]                = "  setitimer                       ";
+  name[StatInt_time]                     = "  time                            ";
+  name[StatInt_glob]                     = "  glob                            ";
+  name[StatInt_glob64]                   = "  glob64                          ";
+  name[StatInt_wait]                     = "  wait                            ";
+  name[StatInt_waitid]                   = "  waitid                          ";
+  name[StatInt_waitpid]                  = "  waitpid                         ";
+  name[StatInt_wait3]                    = "  wait3                           ";
+  name[StatInt_wait4]                    = "  wait4                           ";
 
   name[StatAnnotation]                   = "Dynamic annotations               ";
   name[StatAnnotateHappensBefore]        = "  HappensBefore                   ";

@@ -12,6 +12,7 @@
 
 #include "lldb/API/LLDB.h"
 #include "Measurement.h"
+#include <getopt.h>
 
 namespace lldb_perf {
 
@@ -29,13 +30,17 @@ public:
 			eStepOver,
 			eContinue,
             eStepOut,
+            eRelaunch,
+            eCallNext,
 			eKill
 		} type;
 		lldb::SBThread thread;
+        lldb::SBLaunchInfo launch_info;
         
         ActionWanted () :
             type (Type::eContinue),
-            thread ()
+            thread (),
+            launch_info (NULL)
         {
         }
         
@@ -61,9 +66,24 @@ public:
         }
         
         void
+        Relaunch (lldb::SBLaunchInfo l)
+        {
+            type = Type::eRelaunch;
+            thread = lldb::SBThread();
+            launch_info = l;
+        }
+        
+        void
         Kill ()
         {
             type = Type::eKill;
+            thread = lldb::SBThread();
+        }
+        
+        void
+        CallNext ()
+        {
+            type = Type::eCallNext;
             thread = lldb::SBThread();
         }
 	};
@@ -74,7 +94,7 @@ public:
     }
     
 	virtual bool
-	Setup (int argc, const char** argv);
+	Setup (int& argc, const char**& argv);
     
 	virtual void
 	TestStep (int counter, ActionWanted &next_action) = 0;
@@ -82,6 +102,9 @@ public:
 	bool
 	Launch (lldb::SBLaunchInfo &launch_info);
 	
+    bool
+	Launch (std::initializer_list<const char*> args = {});
+    
 	void
 	Loop();
     
@@ -112,8 +135,20 @@ public:
         return MemoryMeasurement<A> (a,name, description);
     }
     
-    static void
+    static int
     Run (TestCase& test, int argc, const char** argv);
+    
+    virtual bool
+    ParseOption (int short_option, const char* optarg)
+    {
+        return false;
+    }
+    
+    virtual struct option*
+    GetLongOptions ()
+    {
+        return NULL;
+    }
     
     lldb::SBDebugger &
     GetDebugger()
@@ -144,6 +179,9 @@ public:
     {
         return m_step;
     }
+    
+    static const int RUN_SUCCESS = 0;
+    static const int RUN_SETUP_ERROR = 100;
     
 protected:
     lldb::SBDebugger m_debugger;

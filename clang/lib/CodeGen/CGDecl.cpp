@@ -45,6 +45,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
   case Decl::CXXDestructor:
   case Decl::CXXConversion:
   case Decl::Field:
+  case Decl::MSProperty:
   case Decl::IndirectField:
   case Decl::ObjCIvar:
   case Decl::ObjCAtDefsField:
@@ -69,6 +70,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
   case Decl::Friend:
   case Decl::FriendTemplate:
   case Decl::Block:
+  case Decl::Captured:
   case Decl::ClassScopeFunctionSpecialization:
     llvm_unreachable("Declaration should not be in declstmts!");
   case Decl::Function:  // void X();
@@ -109,7 +111,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
 /// EmitVarDecl - This method handles emission of any variable declaration
 /// inside a function, including static vars etc.
 void CodeGenFunction::EmitVarDecl(const VarDecl &D) {
-  switch (D.getStorageClassAsWritten()) {
+  switch (D.getStorageClass()) {
   case SC_None:
   case SC_Auto:
   case SC_Register:
@@ -198,7 +200,7 @@ CodeGenFunction::CreateStaticVarDecl(const VarDecl &D,
   if (Linkage != llvm::GlobalValue::InternalLinkage)
     GV->setVisibility(CurFn->getVisibility());
 
-  if (D.isThreadSpecified())
+  if (D.getTLSKind())
     CGM.setTLSMode(GV, D);
 
   return GV;
@@ -786,6 +788,9 @@ static bool shouldUseMemSetPlusStoresToInitialize(llvm::Constant *Init,
 /// Should we use the LLVM lifetime intrinsics for the given local variable?
 static bool shouldUseLifetimeMarkers(CodeGenFunction &CGF, const VarDecl &D,
                                      unsigned Size) {
+  // Always emit lifetime markers in -fsanitize=use-after-scope mode.
+  if (CGF.getLangOpts().Sanitize.UseAfterScope)
+    return true;
   // For now, only in optimized builds.
   if (CGF.CGM.getCodeGenOpts().OptimizationLevel == 0)
     return false;
@@ -895,7 +900,7 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
       CharUnits allocaAlignment = alignment;
       if (isByRef)
         allocaAlignment = std::max(allocaAlignment,
-            getContext().toCharUnitsFromBits(Target.getPointerAlign(0)));
+            getContext().toCharUnitsFromBits(getTarget().getPointerAlign(0)));
       Alloc->setAlignment(allocaAlignment.getQuantity());
       DeclPtr = Alloc;
 
@@ -1578,7 +1583,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
       LocalDeclMap[&D] = Arg;
       llvm::Value *LocalAddr = 0;
       if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
-        // Allocate a stack slot to let debug info survive the RA.
+        // Allocate a stack slot to let the debug info survive the RA.
         llvm::AllocaInst *Alloc = CreateTempAlloca(ConvertTypeForMem(Ty),
                                                    D.getName() + ".addr");
         Alloc->setAlignment(getContext().getDeclAlign(&D).getQuantity());

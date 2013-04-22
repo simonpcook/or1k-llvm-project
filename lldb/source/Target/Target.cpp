@@ -76,9 +76,9 @@ Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::Plat
     m_valid (true),
     m_search_filter_sp (),
     m_image_search_paths (ImageSearchPathsChanged, this),
-    m_scratch_ast_context_ap (NULL),
-    m_scratch_ast_source_ap (NULL),
-    m_ast_importer_ap (NULL),
+    m_scratch_ast_context_ap (),
+    m_scratch_ast_source_ap (),
+    m_ast_importer_ap (),
     m_persistent_variables (),
     m_source_manager_ap(),
     m_stop_hooks (),
@@ -90,10 +90,11 @@ Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::Plat
     SetEventName (eBroadcastBitModulesLoaded, "modules-loaded");
     SetEventName (eBroadcastBitModulesUnloaded, "modules-unloaded");
     SetEventName (eBroadcastBitWatchpointChanged, "watchpoint-changed");
+    SetEventName (eBroadcastBitSymbolsLoaded, "symbols-loaded");
     
     CheckInWithManager();
 
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf ("%p Target::Target()", this);
     if (m_arch.IsValid())
@@ -107,7 +108,7 @@ Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::Plat
 //----------------------------------------------------------------------
 Target::~Target()
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf ("%p Target::~Target()", this);
     DeleteCurrentProcess ();
@@ -295,11 +296,14 @@ Target::CreateBreakpoint (const FileSpecList *containingModules,
     {
         filter_sp = GetSearchFilterForModuleList (containingModules);
     }
+    if (skip_prologue == eLazyBoolCalculate)
+        skip_prologue = GetSkipPrologue() ? eLazyBoolYes : eLazyBoolNo;
+
     BreakpointResolverSP resolver_sp(new BreakpointResolverFileLine (NULL,
                                                                      file,
                                                                      line_no,
                                                                      check_inlines,
-                                                                     skip_prologue == eLazyBoolCalculate ? GetSkipPrologue() : skip_prologue));
+                                                                     skip_prologue));
     return CreateBreakpoint (filter_sp, resolver_sp, internal);
 }
 
@@ -342,12 +346,15 @@ Target::CreateBreakpoint (const FileSpecList *containingModules,
     if (func_name)
     {
         SearchFilterSP filter_sp(GetSearchFilterForModuleAndCUList (containingModules, containingSourceFiles));
-        
+
+        if (skip_prologue == eLazyBoolCalculate)
+            skip_prologue = GetSkipPrologue() ? eLazyBoolYes : eLazyBoolNo;
+
         BreakpointResolverSP resolver_sp (new BreakpointResolverName (NULL, 
                                                                       func_name, 
                                                                       func_name_type_mask, 
                                                                       Breakpoint::Exact, 
-                                                                      skip_prologue == eLazyBoolCalculate ? GetSkipPrologue() : skip_prologue));
+                                                                      skip_prologue));
         bp_sp = CreateBreakpoint (filter_sp, resolver_sp, internal);
     }
     return bp_sp;
@@ -366,11 +373,14 @@ Target::CreateBreakpoint (const FileSpecList *containingModules,
     if (num_names > 0)
     {
         SearchFilterSP filter_sp(GetSearchFilterForModuleAndCUList (containingModules, containingSourceFiles));
-        
-        BreakpointResolverSP resolver_sp (new BreakpointResolverName (NULL, 
+
+        if (skip_prologue == eLazyBoolCalculate)
+            skip_prologue = GetSkipPrologue() ? eLazyBoolYes : eLazyBoolNo;
+
+        BreakpointResolverSP resolver_sp (new BreakpointResolverName (NULL,
                                                                       func_names,
                                                                       func_name_type_mask,
-                                                                      skip_prologue == eLazyBoolCalculate ? GetSkipPrologue() : skip_prologue));
+                                                                      skip_prologue));
         bp_sp = CreateBreakpoint (filter_sp, resolver_sp, internal);
     }
     return bp_sp;
@@ -390,11 +400,14 @@ Target::CreateBreakpoint (const FileSpecList *containingModules,
     {
         SearchFilterSP filter_sp(GetSearchFilterForModuleAndCUList (containingModules, containingSourceFiles));
         
-        BreakpointResolverSP resolver_sp (new BreakpointResolverName (NULL, 
+        if (skip_prologue == eLazyBoolCalculate)
+            skip_prologue = GetSkipPrologue() ? eLazyBoolYes : eLazyBoolNo;
+
+        BreakpointResolverSP resolver_sp (new BreakpointResolverName (NULL,
                                                                       func_names,
                                                                       num_names, 
                                                                       func_name_type_mask,
-                                                                      skip_prologue == eLazyBoolCalculate ? GetSkipPrologue() : skip_prologue));
+                                                                      skip_prologue));
         bp_sp = CreateBreakpoint (filter_sp, resolver_sp, internal);
     }
     return bp_sp;
@@ -495,7 +508,7 @@ Target::CreateBreakpoint (SearchFilterSP &filter_sp, BreakpointResolverSP &resol
         else
             m_breakpoint_list.Add (bp_sp, true);
 
-        LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+        Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
         if (log)
         {
             StreamString s;
@@ -540,7 +553,7 @@ CheckIfWatchpointsExhausted(Target *target, Error &error)
 WatchpointSP
 Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *type, uint32_t kind, Error &error)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf("Target::%s (addr = 0x%8.8" PRIx64 " size = %" PRIu64 " type = %u)\n",
                     __FUNCTION__, addr, (uint64_t)size, kind);
@@ -620,7 +633,7 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
 void
 Target::RemoveAllBreakpoints (bool internal_also)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
     if (log)
         log->Printf ("Target::%s (internal_also = %s)\n", __FUNCTION__, internal_also ? "yes" : "no");
 
@@ -634,7 +647,7 @@ Target::RemoveAllBreakpoints (bool internal_also)
 void
 Target::DisableAllBreakpoints (bool internal_also)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
     if (log)
         log->Printf ("Target::%s (internal_also = %s)\n", __FUNCTION__, internal_also ? "yes" : "no");
 
@@ -646,7 +659,7 @@ Target::DisableAllBreakpoints (bool internal_also)
 void
 Target::EnableAllBreakpoints (bool internal_also)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
     if (log)
         log->Printf ("Target::%s (internal_also = %s)\n", __FUNCTION__, internal_also ? "yes" : "no");
 
@@ -658,7 +671,7 @@ Target::EnableAllBreakpoints (bool internal_also)
 bool
 Target::RemoveBreakpointByID (break_id_t break_id)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
     if (log)
         log->Printf ("Target::%s (break_id = %i, internal = %s)\n", __FUNCTION__, break_id, LLDB_BREAK_ID_IS_INTERNAL (break_id) ? "yes" : "no");
 
@@ -683,7 +696,7 @@ Target::RemoveBreakpointByID (break_id_t break_id)
 bool
 Target::DisableBreakpointByID (break_id_t break_id)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
     if (log)
         log->Printf ("Target::%s (break_id = %i, internal = %s)\n", __FUNCTION__, break_id, LLDB_BREAK_ID_IS_INTERNAL (break_id) ? "yes" : "no");
 
@@ -704,7 +717,7 @@ Target::DisableBreakpointByID (break_id_t break_id)
 bool
 Target::EnableBreakpointByID (break_id_t break_id)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS));
     if (log)
         log->Printf ("Target::%s (break_id = %i, internal = %s)\n",
                      __FUNCTION__,
@@ -734,7 +747,7 @@ Target::EnableBreakpointByID (break_id_t break_id)
 bool
 Target::RemoveAllWatchpoints (bool end_to_end)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s\n", __FUNCTION__);
 
@@ -768,7 +781,7 @@ Target::RemoveAllWatchpoints (bool end_to_end)
 bool
 Target::DisableAllWatchpoints (bool end_to_end)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s\n", __FUNCTION__);
 
@@ -801,7 +814,7 @@ Target::DisableAllWatchpoints (bool end_to_end)
 bool
 Target::EnableAllWatchpoints (bool end_to_end)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s\n", __FUNCTION__);
 
@@ -833,7 +846,7 @@ Target::EnableAllWatchpoints (bool end_to_end)
 bool
 Target::ClearAllWatchpointHitCounts ()
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s\n", __FUNCTION__);
 
@@ -854,7 +867,7 @@ Target::ClearAllWatchpointHitCounts ()
 bool
 Target::IgnoreAllWatchpoints (uint32_t ignore_count)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s\n", __FUNCTION__);
 
@@ -877,7 +890,7 @@ Target::IgnoreAllWatchpoints (uint32_t ignore_count)
 bool
 Target::DisableWatchpointByID (lldb::watch_id_t watch_id)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s (watch_id = %i)\n", __FUNCTION__, watch_id);
 
@@ -900,7 +913,7 @@ Target::DisableWatchpointByID (lldb::watch_id_t watch_id)
 bool
 Target::EnableWatchpointByID (lldb::watch_id_t watch_id)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s (watch_id = %i)\n", __FUNCTION__, watch_id);
 
@@ -923,7 +936,7 @@ Target::EnableWatchpointByID (lldb::watch_id_t watch_id)
 bool
 Target::RemoveWatchpointByID (lldb::watch_id_t watch_id)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s (watch_id = %i)\n", __FUNCTION__, watch_id);
 
@@ -939,7 +952,7 @@ Target::RemoveWatchpointByID (lldb::watch_id_t watch_id)
 bool
 Target::IgnoreWatchpointByID (lldb::watch_id_t watch_id, uint32_t ignore_count)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_WATCHPOINTS));
     if (log)
         log->Printf ("Target::%s (watch_id = %i)\n", __FUNCTION__, watch_id);
 
@@ -982,7 +995,7 @@ LoadScriptingResourceForModule (const ModuleSP &module_sp, Target *target)
 void
 Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TARGET));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TARGET));
     m_images.Clear();
     m_scratch_ast_context_ap.reset();
     m_scratch_ast_source_ap.reset();
@@ -1037,7 +1050,7 @@ Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
 bool
 Target::SetArchitecture (const ArchSpec &arch_spec)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TARGET));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_TARGET));
     if (m_arch.IsCompatibleMatch(arch_spec) || !m_arch.IsValid())
     {
         // If we haven't got a valid arch spec, or the architectures are
@@ -1123,6 +1136,23 @@ Target::ModulesDidLoad (ModuleList &module_list)
         // TODO: make event data that packages up the module_list
         BroadcastEvent (eBroadcastBitModulesLoaded, NULL);
     }
+}
+
+void
+Target::SymbolsDidLoad (ModuleList &module_list)
+{
+    if (module_list.GetSize() == 0)
+        return;
+    if (m_process_sp)
+    {
+        LanguageRuntime* runtime = m_process_sp->GetLanguageRuntime(lldb::eLanguageTypeObjC);
+        if (runtime)
+        {
+            ObjCLanguageRuntime *objc_runtime = (ObjCLanguageRuntime*)runtime;
+            objc_runtime->SymbolsDidLoad(module_list);
+        }
+    }
+    BroadcastEvent(eBroadcastBitSymbolsLoaded, NULL);
 }
 
 void
@@ -2125,7 +2155,7 @@ Target::StopHook::StopHook (lldb::TargetSP target_sp, lldb::user_id_t uid) :
         m_target_sp (target_sp),
         m_commands (),
         m_specifier_sp (),
-        m_thread_spec_ap(NULL),
+        m_thread_spec_ap(),
         m_active (true)
 {
 }
@@ -2135,7 +2165,7 @@ Target::StopHook::StopHook (const StopHook &rhs) :
         m_target_sp (rhs.m_target_sp),
         m_commands (rhs.m_commands),
         m_specifier_sp (rhs.m_specifier_sp),
-        m_thread_spec_ap (NULL),
+        m_thread_spec_ap (),
         m_active (rhs.m_active)
 {
     if (rhs.m_thread_spec_ap.get() != NULL)
@@ -2271,7 +2301,7 @@ g_properties[] =
         "file and line breakpoints." },
     // FIXME: This is the wrong way to do per-architecture settings, but we don't have a general per architecture settings system in place yet.
     { "x86-disassembly-flavor"             , OptionValue::eTypeEnum      , false, eX86DisFlavorDefault,       NULL, g_x86_dis_flavor_value_types, "The default disassembly flavor to use for x86 or x86-64 targets." },
-    { "use-fast-stepping"                  , OptionValue::eTypeBoolean   , false, false,                      NULL, NULL, "Use a fast stepping algorithm based on running from branch to branch rather than instruction single-stepping." },
+    { "use-fast-stepping"                  , OptionValue::eTypeBoolean   , false, true,                       NULL, NULL, "Use a fast stepping algorithm based on running from branch to branch rather than instruction single-stepping." },
     { NULL                                 , OptionValue::eTypeInvalid   , false, 0                         , NULL, NULL, NULL }
 };
 enum

@@ -14,7 +14,6 @@
 // C++ Includes
 #include <string>
 #include <map>
-#include <memory>
 #include <vector>
 
 // Other libraries and framework includes
@@ -91,13 +90,6 @@ public:
     //------------------------------------------------------------------
     virtual ClangExpressionDeclMap *
     DeclMap () = 0;
-    
-    //------------------------------------------------------------------
-    /// Return the object that the parser should use when registering
-    /// local variables.  May be NULL if the Expression doesn't care.
-    //------------------------------------------------------------------
-    virtual ClangExpressionVariableList *
-    LocalVariables () = 0;
     
     //------------------------------------------------------------------
     /// Return the object that the parser should allow to access ASTs.

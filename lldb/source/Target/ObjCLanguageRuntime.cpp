@@ -57,7 +57,7 @@ ObjCLanguageRuntime::AddClass (ObjCISA isa, const ClassDescriptorSP &descriptor_
 void
 ObjCLanguageRuntime::AddToMethodCache (lldb::addr_t class_addr, lldb::addr_t selector, lldb::addr_t impl_addr)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
     if (log)
     {
         log->Printf ("Caching: class 0x%" PRIx64 " selector 0x%" PRIx64 " implementation 0x%" PRIx64 ".", class_addr, selector, impl_addr);
@@ -91,6 +91,9 @@ ObjCLanguageRuntime::LookupInCompleteClassCache (ConstString &name)
         else
             m_complete_class_cache.erase(name);
     }
+    
+    if (m_negative_complete_class_cache.count(name) > 0)
+        return TypeSP();
     
     const ModuleList &modules = m_process->GetTarget().GetImages();
 
@@ -139,6 +142,7 @@ ObjCLanguageRuntime::LookupInCompleteClassCache (ConstString &name)
             }
         }
     }
+    m_negative_complete_class_cache.insert(name);
     return TypeSP();
 }
 
@@ -492,7 +496,7 @@ ObjCLanguageRuntime::GetDescriptorIterator (const ConstString &name)
 ObjCLanguageRuntime::ObjCISA
 ObjCLanguageRuntime::GetParentClass(ObjCLanguageRuntime::ObjCISA isa)
 {
-    ClassDescriptorSP objc_class_sp (GetClassDescriptor(isa));
+    ClassDescriptorSP objc_class_sp (GetClassDescriptorFromISA(isa));
     if (objc_class_sp)
     {
         ClassDescriptorSP objc_super_class_sp (objc_class_sp->GetSuperclass());
@@ -512,7 +516,7 @@ ObjCLanguageRuntime::GetActualTypeName(ObjCLanguageRuntime::ObjCISA isa)
 }
 
 ObjCLanguageRuntime::ClassDescriptorSP
-ObjCLanguageRuntime::GetClassDescriptor (const ConstString &class_name)
+ObjCLanguageRuntime::GetClassDescriptorFromClassName (const ConstString &class_name)
 {
     ISAToDescriptorIterator pos = GetDescriptorIterator (class_name);
     if (pos != m_isa_to_descriptor.end())
@@ -541,7 +545,7 @@ ObjCLanguageRuntime::GetClassDescriptor (ValueObject& valobj)
                 Error error;
                 ObjCISA isa = process->ReadPointerFromMemory(isa_pointer, error);
                 if (isa != LLDB_INVALID_ADDRESS)
-                    objc_class_sp = GetClassDescriptor (isa);
+                    objc_class_sp = GetClassDescriptorFromISA (isa);
             }
         }
     }
@@ -566,7 +570,7 @@ ObjCLanguageRuntime::GetNonKVOClassDescriptor (ValueObject& valobj)
 
 
 ObjCLanguageRuntime::ClassDescriptorSP
-ObjCLanguageRuntime::GetClassDescriptor (ObjCISA isa)
+ObjCLanguageRuntime::GetClassDescriptorFromISA (ObjCISA isa)
 {
     if (isa)
     {
@@ -583,7 +587,7 @@ ObjCLanguageRuntime::GetNonKVOClassDescriptor (ObjCISA isa)
 {
     if (isa)
     {
-        ClassDescriptorSP objc_class_sp = GetClassDescriptor (isa);
+        ClassDescriptorSP objc_class_sp = GetClassDescriptorFromISA (isa);
         if (objc_class_sp && objc_class_sp->IsValid())
         {
             if (!objc_class_sp->IsKVO())

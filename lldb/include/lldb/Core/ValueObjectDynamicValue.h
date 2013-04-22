@@ -90,15 +90,24 @@ public:
     virtual bool
     SetValueFromCString (const char *value_str, Error& error);
     
-    virtual lldb::DynamicValueType
-    GetDynamicValueType ()
-    {
-        return m_use_dynamic;
-    }
+    virtual bool
+    SetData (DataExtractor &data, Error &error);
     
 protected:
     virtual bool
     UpdateValue ();
+    
+    virtual lldb::DynamicValueType
+    GetDynamicValueTypeImpl ()
+    {
+        return m_use_dynamic;
+    }
+    
+    virtual bool
+    HasDynamicValueTypeInfo ()
+    {
+        return true;
+    }
     
     virtual clang::ASTContext *
     GetClangASTImpl ();

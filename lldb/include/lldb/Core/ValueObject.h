@@ -12,6 +12,7 @@
 
 // C Includes
 // C++ Includes
+#include <initializer_list>
 #include <map>
 #include <vector>
 // Other libraries and framework includes
@@ -738,12 +739,10 @@ public:
     // value is from an executable file and might have its data in
     // sections of the file. This can be used for variables.
     virtual lldb::ModuleSP
-    GetModule()
-    {
-        if (m_parent)
-            return m_parent->GetModule();
-        return lldb::ModuleSP();
-    }
+    GetModule();
+    
+    virtual ValueObject*
+    GetRoot ();
     
     virtual bool
     GetDeclaration (Declaration &decl);
@@ -876,14 +875,8 @@ public:
     virtual lldb::ValueObjectSP
     GetDynamicValue (lldb::DynamicValueType valueType);
     
-    virtual lldb::DynamicValueType
-    GetDynamicValueType ()
-    {
-        if (m_parent)
-            return m_parent->GetDynamicValueType ();
-        else
-            return lldb::eNoDynamicValues;
-    }
+    lldb::DynamicValueType
+    GetDynamicValueType ();
     
     virtual lldb::ValueObjectSP
     GetStaticValue ();
@@ -1006,6 +999,9 @@ public:
     
     virtual uint64_t
     GetData (DataExtractor& data);
+    
+    virtual bool
+    SetData (DataExtractor &data, Error &error);
 
     bool
     GetIsConstant () const
@@ -1020,12 +1016,7 @@ public:
     }
 
     lldb::Format
-    GetFormat () const
-    {
-        if (m_parent && m_format == lldb::eFormatDefault)
-            return m_parent->GetFormat();
-        return m_format;
-    }
+    GetFormat () const;
     
     void
     SetFormat (lldb::Format format)
@@ -1104,15 +1095,7 @@ public:
     }
     
     AddressType
-    GetAddressTypeOfChildren()
-    {
-        if (m_address_type_of_ptr_or_ref_children == eAddressTypeInvalid)
-        {
-            if (m_parent)
-                return m_parent->GetAddressTypeOfChildren();
-        }
-        return m_address_type_of_ptr_or_ref_children;
-    }
+    GetAddressTypeOfChildren();
     
     void
     SetHasCompleteType()
@@ -1213,6 +1196,7 @@ protected:
     // Classes that inherit from ValueObject can see and modify these
     //------------------------------------------------------------------
     ValueObject  *      m_parent;       // The parent value object, or NULL if this has no parent
+    ValueObject  *      m_root;         // The root of the hierarchy for this ValueObject (or NULL if never calculated)
     EvaluationPoint     m_update_point; // Stores both the stop id and the full context at which this value was last 
                                         // updated.  When we are asked to update the value object, we check whether
                                         // the context & stop id are the same before updating.
@@ -1299,6 +1283,18 @@ protected:
 
     virtual void
     CalculateDynamicValue (lldb::DynamicValueType use_dynamic);
+    
+    virtual lldb::DynamicValueType
+    GetDynamicValueTypeImpl ()
+    {
+        return lldb::eNoDynamicValues;
+    }
+    
+    virtual bool
+    HasDynamicValueTypeInfo ()
+    {
+        return false;
+    }
     
     virtual void
     CalculateSyntheticValue (bool use_synthetic = true);

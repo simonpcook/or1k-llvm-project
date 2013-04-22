@@ -4320,7 +4320,7 @@ protected:
                             // if it is currently loaded
                             ModuleList module_list;
                             module_list.Append (module_sp);
-                            target->ModulesDidLoad (module_list);
+                            target->SymbolsDidLoad (module_list);
                             
                             // Make sure we load any scripting resources that may be embedded
                             // in the debug info files in case the platform supports that.
@@ -4882,7 +4882,7 @@ protected:
             target->AddStopHook (new_hook_sp);
 
             //  First step, make the specifier.
-            std::auto_ptr<SymbolContextSpecifier> specifier_ap;
+            std::unique_ptr<SymbolContextSpecifier> specifier_ap;
             if (m_options.m_sym_ctx_specified)
             {
                 specifier_ap.reset(new SymbolContextSpecifier(m_interpreter.GetDebugger().GetSelectedTarget()));

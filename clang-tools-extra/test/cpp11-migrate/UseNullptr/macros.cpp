@@ -1,6 +1,9 @@
 // RUN: grep -Ev "// *[A-Z-]+:" %s > %t.cpp
 // RUN: cpp11-migrate -use-nullptr %t.cpp -- -I %S
 // RUN: FileCheck -input-file=%t.cpp %s
+// RUN: grep -Ev "// *[A-Z-]+:" %s > %t2.cpp
+// RUN: cpp11-migrate -use-nullptr -user-null-macros=MY_NULL %t2.cpp -- -I %S
+// RUN: FileCheck -check-prefix=USER-SUPPLIED-NULL -input-file=%t2.cpp %s
 
 #define NULL 0
 // CHECK: #define NULL 0
@@ -36,7 +39,21 @@ void test_macro_expansion1() {
 #undef MACRO_EXPANSION_HAS_NULL
 }
 
+// Test macro expansion with cast sequence, PR15572
 void test_macro_expansion2() {
+#define MACRO_EXPANSION_HAS_NULL \
+  dummy((int*)0); \
+  side_effect();
+  // CHECK: dummy((int*)0); \
+  // CHECK-NEXT: side_effect();
+
+  MACRO_EXPANSION_HAS_NULL;
+  // CHECK: MACRO_EXPANSION_HAS_NULL;
+
+#undef MACRO_EXPANSION_HAS_NULL
+}
+
+void test_macro_expansion3() {
 #define MACRO_EXPANSION_HAS_NULL \
   dummy(NULL); \
   side_effect();
@@ -54,12 +71,11 @@ void test_macro_expansion2() {
 #undef MACRO_EXPANSION_HAS_NULL
 }
 
-void test_macro_expansion3() {
+void test_macro_expansion4() {
 #define MY_NULL NULL
-  // TODO: Eventually we should fix the transform to detect cases like this so
-  // that we can replace MY_NULL with nullptr.
   int *p = MY_NULL;
   // CHECK: int *p = MY_NULL;
+  // USER-SUPPLIED-NULL: int *p = nullptr;
 #undef MY_NULL
 }
 
@@ -89,5 +105,3 @@ void test_function_like_macro2() {
   // CHECK: my_macro(p != nullptr);
 #undef my_macro
 }
-
-

@@ -1,7 +1,5 @@
 ; RUN: opt %loadPolly -polly-detect -analyze < %s | FileCheck %s
-; RUN: opt %loadPolly -polly-region-simplify -polly-detect -analyze < %s | FileCheck %s -check-prefix=CHECK-SIMPLIFY
 ; RUN: opt %loadPolly -polly-detect -polly-codegen-scev -analyze < %s | FileCheck %s
-; RUN: opt %loadPolly -polly-region-simplify -polly-detect -polly-codegen-scev -analyze < %s | FileCheck %s -check-prefix=CHECK-SIMPLIFY
 
 ; void f(long A[], long N) {
 ;   long i;
@@ -34,5 +32,4 @@ return:
   ret void
 }
 
-; CHECK: Valid Region for Scop: for.i => return
-; CHECK-SIMPLIFY: Valid Region for Scop: next => return
+; CHECK: Valid Region for Scop: next => return

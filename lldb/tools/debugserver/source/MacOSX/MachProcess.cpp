@@ -186,6 +186,12 @@ MachProcess::GetCurrentThread ()
 }
 
 nub_thread_t
+MachProcess::GetCurrentThreadMachPort ()
+{
+    return m_thread_list.GetMachPortNumberByThreadID(m_thread_list.CurrentThreadID());
+}
+
+nub_thread_t
 MachProcess::SetCurrentThread(nub_thread_t tid)
 {
     return m_thread_list.SetCurrentThread(tid);
@@ -384,6 +390,21 @@ MachProcess::Kill (const struct timespec *timeout_abstime)
     DNBLogThreadedIf(LOG_PROCESS, "MachProcess::Kill() DoSIGSTOP() ::ptrace (PT_KILL, pid=%u, 0, 0) => 0x%8.8x (%s)", m_pid, err.Error(), err.AsString());
     m_thread_actions = DNBThreadResumeActions (eStateRunning, 0);
     PrivateResume ();
+    
+    // Try and reap the process without touching our m_events since
+    // we want the code above this to still get the eStateExited event
+    const uint32_t reap_timeout_usec = 1000000;    // Wait 1 second and try to reap the process
+    const uint32_t reap_interval_usec = 10000;  //
+    uint32_t reap_time_elapsed;
+    for (reap_time_elapsed = 0;
+         reap_time_elapsed < reap_timeout_usec;
+         reap_time_elapsed += reap_interval_usec)
+    {
+        if (GetState() == eStateExited)
+            break;
+        usleep(reap_interval_usec);
+    }
+    DNBLog ("Waited %u ms for process to be reaped (state = %s)", reap_time_elapsed/1000, DNBStateAsString(GetState()));
     return true;
 }
 
@@ -1507,7 +1528,8 @@ MachProcess::PrepareForAttach (const char *path, nub_launch_flavor_t launch_flav
         return NULL;
 
     const char *app_ext = strstr(path, ".app");
-    if (app_ext == NULL)
+    const bool is_app = app_ext != NULL && (app_ext[4] == '\0' || app_ext[4] == '/');
+    if (!is_app)
     {
         DNBLogThreadedIf(LOG_PROCESS, "MachProcess::PrepareForAttach(): path '%s' doesn't contain .app, we can't tell springboard to wait for launch...", path);
         return NULL;
@@ -1652,8 +1674,22 @@ MachProcess::LaunchForDebug
 
     case eLaunchFlavorSpringBoard:
         {
-            const char *app_ext = strstr(path, ".app");
-            if (app_ext && (app_ext[4] == '\0' || app_ext[4] == '/'))
+            //  .../whatever.app/whatever ?  
+            //  Or .../com.apple.whatever.app/whatever -- be careful of ".app" in "com.apple.whatever" here
+            const char *app_ext = strstr (path, ".app/");
+            if (app_ext == NULL)
+            {
+                // .../whatever.app ?
+                int len = strlen (path);
+                if (len > 5)
+                {
+                    if (strcmp (path + len - 4, ".app") == 0)
+                    {
+                        app_ext = path + len - 4;
+                    }
+                }
+            }
+            if (app_ext)
             {
                 std::string app_bundle_path(path, app_ext + strlen(".app"));
                 if (SBLaunchForDebug (app_bundle_path.c_str(), argv, envp, no_stdio, launch_err) != 0)
@@ -2207,19 +2243,6 @@ MachProcess::SBForkChildForPTraceDebugging (const char *app_bundle_path, char co
 
     std::string bundleID;
     CFString::UTF8(bundleIDCFStr, bundleID);
-
-    CFData argv_data(NULL);
-
-    if (launch_argv.get())
-    {
-        if (argv_data.Serialize(launch_argv.get(), kCFPropertyListBinaryFormat_v1_0) == NULL)
-        {
-            DNBLogThreadedIf(LOG_PROCESS, "%s() error: failed to serialize launch arg array...", __FUNCTION__);
-            return INVALID_NUB_PROCESS;
-        }
-    }
-
-    DNBLogThreadedIf(LOG_PROCESS, "%s() serialized launch arg array", __FUNCTION__);
 
     // Find SpringBoard
     SBSApplicationLaunchError sbs_error = 0;

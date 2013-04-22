@@ -66,7 +66,7 @@ PtraceWrapper(int req, lldb::pid_t pid, void *addr, int data,
 {
     long int result;
 
-    LogSP log (ProcessPOSIXLog::GetLogIfAllCategoriesSet(POSIX_LOG_PTRACE));
+    Log *log (ProcessPOSIXLog::GetLogIfAllCategoriesSet(POSIX_LOG_PTRACE));
 
     if (log) {
         log->Printf("ptrace(%s, %u, %p, %x) called from file %s line %d",
@@ -691,7 +691,7 @@ ProcessMonitor::ProcessMonitor(ProcessPOSIX *process,
       m_client_fd(-1),
       m_server_fd(-1)
 {
-    std::auto_ptr<LaunchArgs> args;
+    std::unique_ptr<LaunchArgs> args;
 
     args.reset(new LaunchArgs(this, module, argv, envp,
                               stdin_path, stdout_path, stderr_path, working_dir));
@@ -752,7 +752,7 @@ ProcessMonitor::ProcessMonitor(ProcessPOSIX *process,
       m_client_fd(-1),
       m_server_fd(-1)
 {
-    std::auto_ptr<AttachArgs> args;
+    std::unique_ptr<AttachArgs> args;
 
     args.reset(new AttachArgs(this, pid));
 

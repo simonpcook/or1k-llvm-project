@@ -23,7 +23,7 @@
 // Usage:   modularize [-prefix (optional header path prefix)]
 //   (include-files_list) [(front-end-options) ...]
 //
-// Note that unless a "-prefex (header path)" option is specified,
+// Note that unless a "-prefix (header path)" option is specified,
 // non-absolute file paths in the header list file will be relative
 // to the header list file directory.  Use -prefix to specify a different
 // directory.
@@ -35,8 +35,9 @@
 // Modularize will do normal parsing, reporting normal errors and warnings,
 // but will also report special error messages like the following:
 //
-// error: '(symbol)' defined at both (file):(row):(column) and
-//  (file):(row):(column)
+// error: '(symbol)' defined at multiple locations:
+//     (file):(row):(column)
+//     (file):(row):(column)
 //
 // error: header '(file)' has different contents dependening on how it was
 //   included
@@ -52,15 +53,13 @@
 //
 // Some ideas:
 //
-// 1. Group duplicate definition messages into a single list.
-//
-// 2. Try to figure out the preprocessor conditional directives that
+// 1. Try to figure out the preprocessor conditional directives that
 // contribute to problems.
 //
-// 3. Check for correct and consistent usage of extern "C" {} and other
+// 2. Check for correct and consistent usage of extern "C" {} and other
 // directives. Warn about #include inside extern "C" {}.
 //
-// 4. What else?
+// 3. What else?
 //
 // General clean-up and refactoring:
 //
@@ -209,14 +208,34 @@ struct Location {
 };
 
 struct Entry {
-  enum Kind {
-    Tag,
-    Value,
-    Macro
+  enum EntryKind {
+    EK_Tag,
+    EK_Value,
+    EK_Macro,
+
+    EK_NumberOfKinds
   } Kind;
 
   Location Loc;
+
+  StringRef getKindName() { return getKindName(Kind); }
+  static StringRef getKindName(EntryKind kind);
 };
+
+// Return a string representing the given kind.
+StringRef Entry::getKindName(Entry::EntryKind kind) {
+  switch (kind) {
+  case EK_Tag:
+    return "tag";
+  case EK_Value:
+    return "value";
+  case EK_Macro:
+    return "macro";
+  case EK_NumberOfKinds:
+    break;
+  }
+  llvm_unreachable("invalid Entry kind");
+}
 
 struct HeaderEntry {
   std::string Name;
@@ -248,7 +267,7 @@ class EntityMap : public StringMap<SmallVector<Entry, 2> > {
 public:
   DenseMap<const FileEntry *, HeaderContents> HeaderContentMismatches;
 
-  void add(const std::string &Name, enum Entry::Kind Kind, Location Loc) {
+  void add(const std::string &Name, enum Entry::EntryKind Kind, Location Loc) {
     // Record this entity in its header.
     HeaderEntry HE = { Name, Loc };
     CurHeaderContents[Loc.File].push_back(HE);
@@ -351,7 +370,7 @@ public:
     if (!Loc)
       return true;
 
-    Entities.add(Name, isa<TagDecl>(ND) ? Entry::Tag : Entry::Value, Loc);
+    Entities.add(Name, isa<TagDecl>(ND) ? Entry::EK_Tag : Entry::EK_Value, Loc);
     return true;
   }
 private:
@@ -379,7 +398,7 @@ public:
       if (!Loc)
         continue;
 
-      Entities.add(M->first->getName().str(), Entry::Macro, Loc);
+      Entities.add(M->first->getName().str(), Entry::EK_Macro, Loc);
     }
 
     // Merge header contents.
@@ -444,35 +463,48 @@ int main(int argc, const char **argv) {
   ClangTool Tool(*Compilations, Headers);
   int HadErrors = Tool.run(new ModularizeFrontendActionFactory(Entities));
 
+  // Create a place to save duplicate entity locations, separate bins per kind.
+  typedef SmallVector<Location, 8> LocationArray;
+  typedef SmallVector<LocationArray, Entry::EK_NumberOfKinds> EntryBinArray;
+  EntryBinArray EntryBins;
+  int kindIndex;
+  for (kindIndex = 0; kindIndex < Entry::EK_NumberOfKinds; ++kindIndex) {
+    LocationArray array;
+    EntryBins.push_back(array);
+  }
+
   // Check for the same entity being defined in multiple places.
-  // FIXME: Could they be grouped into a list?
   for (EntityMap::iterator E = Entities.begin(), EEnd = Entities.end();
        E != EEnd; ++E) {
-    Location Tag, Value, Macro;
+    // If only one occurance, exit early.
+    if (E->second.size() == 1)
+      continue;
+    // Clear entity locations.
+    for (EntryBinArray::iterator CI = EntryBins.begin(), CE = EntryBins.end();
+         CI != CE; ++CI) {
+      CI->clear();
+    }
+    // Walk the entities of a single name, collecting the locations,
+    // separated into separate bins.
     for (unsigned I = 0, N = E->second.size(); I != N; ++I) {
-      Location *Which;
-      switch (E->second[I].Kind) {
-      case Entry::Tag:
-        Which = &Tag;
-        break;
-      case Entry::Value:
-        Which = &Value;
-        break;
-      case Entry::Macro:
-        Which = &Macro;
-        break;
-      }
-
-      if (!Which->File) {
-        *Which = E->second[I].Loc;
+      EntryBins[E->second[I].Kind].push_back(E->second[I].Loc);
+    }
+    // Report any duplicate entity definition errors.
+    int kindIndex = 0;
+    for (EntryBinArray::iterator DI = EntryBins.begin(), DE = EntryBins.end();
+         DI != DE; ++DI, ++kindIndex) {
+      int eCount = DI->size();
+      // If only 1 occurance, skip;
+      if (eCount <= 1)
         continue;
+      LocationArray::iterator FI = DI->begin();
+      StringRef kindName = Entry::getKindName((Entry::EntryKind) kindIndex);
+      errs() << "error: " << kindName << " '" << E->first()
+             << "' defined at multiple locations:\n";
+      for (LocationArray::iterator FE = DI->end(); FI != FE; ++FI) {
+        errs() << "    " << FI->File->getName() << ":" << FI->Line << ":"
+               << FI->Column << "\n";
       }
-
-      errs() << "error: '" << E->first() << "' defined at both "
-             << Which->File->getName() << ":" << Which->Line << ":"
-             << Which->Column << " and " << E->second[I].Loc.File->getName()
-             << ":" << E->second[I].Loc.Line << ":" << E->second[I].Loc.Column
-             << "\n";
       HadErrors = 1;
     }
   }

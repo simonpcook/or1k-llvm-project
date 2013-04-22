@@ -71,7 +71,7 @@ public:
     }
     
     virtual bool
-	Setup (int argc, const char** argv)
+	Setup (int& argc, const char**& argv)
     {
         m_app_path.assign(argv[1]);
         m_out_path.assign(argv[2]);
@@ -148,7 +148,7 @@ public:
         switch (counter)
         {
             case 0:
-                m_target.BreakpointCreateByLocation("fmts_tester.mm", 68);
+                m_target.BreakpointCreateByLocation("fmts_tester.mm", 78);
                 next_action.Continue();
                 break;
             case 1:
@@ -200,17 +200,17 @@ public:
     virtual void
     WriteResults (Results &results)
     {
-        m_dump_std_vector_measurement.WriteAverageValue(results);
-        m_dump_std_list_measurement.WriteAverageValue(results);
-        m_dump_std_map_measurement.WriteAverageValue(results);
-        m_dump_std_string_measurement.WriteAverageValue(results);
+        m_dump_std_vector_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_std_list_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_std_map_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_std_string_measurement.WriteAverageAndStandardDeviation(results);
         
-        m_dump_nsstring_measurement.WriteAverageValue(results);
-        m_dump_nsarray_measurement.WriteAverageValue(results);
-        m_dump_nsdictionary_measurement.WriteAverageValue(results);
-        m_dump_nsset_measurement.WriteAverageValue(results);
-        m_dump_nsbundle_measurement.WriteAverageValue(results);
-        m_dump_nsdate_measurement.WriteAverageValue(results);
+        m_dump_nsstring_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_nsarray_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_nsdictionary_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_nsset_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_nsbundle_measurement.WriteAverageAndStandardDeviation(results);
+        m_dump_nsdate_measurement.WriteAverageAndStandardDeviation(results);
         results.Write(m_out_path.c_str());
     }
     

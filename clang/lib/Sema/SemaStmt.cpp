@@ -76,10 +76,23 @@ StmtResult Sema::ActOnDeclStmt(DeclGroupPtrTy dg, SourceLocation StartLoc,
 
 void Sema::ActOnForEachDeclStmt(DeclGroupPtrTy dg) {
   DeclGroupRef DG = dg.getAsVal<DeclGroupRef>();
+  
+  // If we don't have a declaration, or we have an invalid declaration,
+  // just return.
+  if (DG.isNull() || !DG.isSingleDecl())
+    return;
 
-  // If we have an invalid decl, just return.
-  if (DG.isNull() || !DG.isSingleDecl()) return;
-  VarDecl *var = cast<VarDecl>(DG.getSingleDecl());
+  Decl *decl = DG.getSingleDecl();
+  if (!decl || decl->isInvalidDecl())
+    return;
+
+  // Only variable declarations are permitted.
+  VarDecl *var = dyn_cast<VarDecl>(decl);
+  if (!var) {
+    Diag(decl->getLocation(), diag::err_non_variable_decl_in_for);
+    decl->setInvalidDecl();
+    return;
+  }
 
   // suppress any potential 'unused variable' warning.
   var->setUsed();
@@ -1426,9 +1439,10 @@ Sema::ActOnForStmt(SourceLocation ForLoc, SourceLocation LParenLoc,
         VarDecl *VD = dyn_cast<VarDecl>(*DI);
         if (VD && VD->isLocalVarDecl() && !VD->hasLocalStorage())
           VD = 0;
-        if (VD == 0)
-          Diag((*DI)->getLocation(), diag::err_non_variable_decl_in_for);
-        // FIXME: mark decl erroneous!
+        if (VD == 0) {
+          Diag((*DI)->getLocation(), diag::err_non_local_variable_decl_in_for);
+          (*DI)->setInvalidDecl();
+        }
       }
     }
   }
@@ -1562,14 +1576,44 @@ Sema::ActOnObjCForCollectionStmt(SourceLocation ForLoc,
         return StmtError(Diag((*DS->decl_begin())->getLocation(),
                          diag::err_toomany_element_decls));
 
-      VarDecl *D = cast<VarDecl>(DS->getSingleDecl());
+      VarDecl *D = dyn_cast<VarDecl>(DS->getSingleDecl());
+      if (!D || D->isInvalidDecl())
+        return StmtError();
+      
       FirstType = D->getType();
       // C99 6.8.5p3: The declaration part of a 'for' statement shall only
       // declare identifiers for objects having storage class 'auto' or
       // 'register'.
       if (!D->hasLocalStorage())
         return StmtError(Diag(D->getLocation(),
-                              diag::err_non_variable_decl_in_for));
+                              diag::err_non_local_variable_decl_in_for));
+
+      // If the type contained 'auto', deduce the 'auto' to 'id'.
+      if (FirstType->getContainedAutoType()) {
+        TypeSourceInfo *DeducedType = 0;
+        OpaqueValueExpr OpaqueId(D->getLocation(), Context.getObjCIdType(),
+                                 VK_RValue);
+        Expr *DeducedInit = &OpaqueId;
+        if (DeduceAutoType(D->getTypeSourceInfo(), DeducedInit, DeducedType)
+              == DAR_Failed) {
+          DiagnoseAutoDeductionFailure(D, DeducedInit);
+        }
+        if (!DeducedType) {
+          D->setInvalidDecl();
+          return StmtError();
+        }
+
+        D->setTypeSourceInfo(DeducedType);
+        D->setType(DeducedType->getType());
+        FirstType = DeducedType->getType();
+
+        if (ActiveTemplateInstantiations.empty()) {
+          SourceLocation Loc = DeducedType->getTypeLoc().getBeginLoc();
+          Diag(Loc, diag::warn_auto_var_is_id)
+            << D->getDeclName();
+        }
+      }
+
     } else {
       Expr *FirstE = cast<Expr>(First);
       if (!FirstE->isTypeDependent() && !FirstE->isLValue())
@@ -1665,7 +1709,7 @@ VarDecl *BuildForRangeVarDecl(Sema &SemaRef, SourceLocation Loc,
   IdentifierInfo *II = &SemaRef.PP.getIdentifierTable().get(Name);
   TypeSourceInfo *TInfo = SemaRef.Context.getTrivialTypeSourceInfo(Type, Loc);
   VarDecl *Decl = VarDecl::Create(SemaRef.Context, DC, Loc, Loc, II, Type,
-                                  TInfo, SC_Auto, SC_None);
+                                  TInfo, SC_None);
   Decl->setImplicit();
   return Decl;
 }
@@ -2359,6 +2403,10 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       Diag(ReturnLoc, diag::err_noreturn_block_has_return_expr);
       return StmtError();
     }
+  } else if (CapturedRegionScopeInfo *CurRegion =
+                 dyn_cast<CapturedRegionScopeInfo>(CurCap)) {
+    Diag(ReturnLoc, diag::err_return_in_captured_stmt) << CurRegion->getRegionName();
+    return StmtError();
   } else {
     LambdaScopeInfo *LSI = cast<LambdaScopeInfo>(CurCap);
     if (LSI->CallOperator->getType()->getAs<FunctionType>()->getNoReturnAttr()){
@@ -2869,4 +2917,111 @@ StmtResult Sema::ActOnMSDependentExistsStmt(SourceLocation KeywordLoc,
                                     SS.getWithLocInContext(Context),
                                     GetNameFromUnqualifiedId(Name),
                                     Nested);
+}
+
+RecordDecl*
+Sema::CreateCapturedStmtRecordDecl(CapturedDecl *&CD, SourceLocation Loc)
+{
+  DeclContext *DC = CurContext;
+  while (!(DC->isFunctionOrMethod() || DC->isRecord() || DC->isFileContext()))
+    DC = DC->getParent();
+
+  RecordDecl *RD = 0;
+  if (getLangOpts().CPlusPlus)
+    RD = CXXRecordDecl::Create(Context, TTK_Struct, DC, Loc, Loc, /*Id=*/0);
+  else
+    RD = RecordDecl::Create(Context, TTK_Struct, DC, Loc, Loc, /*Id=*/0);
+
+  DC->addDecl(RD);
+  RD->setImplicit();
+  RD->startDefinition();
+
+  CD = CapturedDecl::Create(Context, CurContext);
+  DC->addDecl(CD);
+
+  return RD;
+}
+
+static void buildCapturedStmtCaptureList(
+    SmallVectorImpl<CapturedStmt::Capture> &Captures,
+    SmallVectorImpl<Expr *> &CaptureInits,
+    ArrayRef<CapturingScopeInfo::Capture> Candidates) {
+
+  typedef ArrayRef<CapturingScopeInfo::Capture>::const_iterator CaptureIter;
+  for (CaptureIter Cap = Candidates.begin(); Cap != Candidates.end(); ++Cap) {
+
+    if (Cap->isThisCapture()) {
+      Captures.push_back(CapturedStmt::Capture(Cap->getLocation(),
+                                               CapturedStmt::VCK_This));
+      CaptureInits.push_back(Cap->getCopyExpr());
+      continue;
+    }
+
+    assert(Cap->isReferenceCapture() &&
+           "non-reference capture not yet implemented");
+
+    Captures.push_back(CapturedStmt::Capture(Cap->getLocation(),
+                                             CapturedStmt::VCK_ByRef,
+                                             Cap->getVariable()));
+    CaptureInits.push_back(Cap->getCopyExpr());
+  }
+}
+
+void Sema::ActOnCapturedRegionStart(SourceLocation Loc, Scope *CurScope,
+                                    CapturedRegionScopeInfo::CapturedRegionKind Kind) {
+  CapturedDecl *CD = 0;
+  RecordDecl *RD = CreateCapturedStmtRecordDecl(CD, Loc);
+
+  // Enter the capturing scope for this captured region.
+  PushCapturedRegionScope(CurScope, CD, RD, Kind);
+
+  if (CurScope)
+    PushDeclContext(CurScope, CD);
+  else
+    CurContext = CD;
+
+  PushExpressionEvaluationContext(PotentiallyEvaluated);
+}
+
+void Sema::ActOnCapturedRegionError(bool IsInstantiation) {
+  DiscardCleanupsInEvaluationContext();
+  PopExpressionEvaluationContext();
+
+  if (!IsInstantiation)
+    PopDeclContext();
+
+  CapturedRegionScopeInfo *RSI = getCurCapturedRegion();
+  RecordDecl *Record = RSI->TheRecordDecl;
+  Record->setInvalidDecl();
+
+  SmallVector<Decl*, 4> Fields;
+  for (RecordDecl::field_iterator I = Record->field_begin(),
+                                  E = Record->field_end(); I != E; ++I)
+    Fields.push_back(*I);
+  ActOnFields(/*Scope=*/0, Record->getLocation(), Record, Fields,
+              SourceLocation(), SourceLocation(), /*AttributeList=*/0);
+
+  PopFunctionScopeInfo();
+}
+
+StmtResult Sema::ActOnCapturedRegionEnd(Stmt *S) {
+  CapturedRegionScopeInfo *RSI = getCurCapturedRegion();
+
+  SmallVector<CapturedStmt::Capture, 4> Captures;
+  SmallVector<Expr *, 4> CaptureInits;
+  buildCapturedStmtCaptureList(Captures, CaptureInits, RSI->Captures);
+
+  CapturedDecl *CD = RSI->TheCapturedDecl;
+  RecordDecl *RD = RSI->TheRecordDecl;
+
+  CapturedStmt *Res = CapturedStmt::Create(getASTContext(), S, Captures,
+                                           CaptureInits, CD, RD);
+
+  CD->setBody(Res->getCapturedStmt());
+  RD->completeDefinition();
+
+  PopDeclContext();
+  PopFunctionScopeInfo();
+
+  return Owned(Res);
 }

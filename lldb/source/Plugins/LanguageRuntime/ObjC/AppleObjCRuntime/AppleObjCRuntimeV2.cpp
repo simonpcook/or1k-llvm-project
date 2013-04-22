@@ -11,7 +11,6 @@
 
 #include <string>
 #include <vector>
-#include <memory>
 #include <stdint.h>
 
 #include "lldb/lldb-enumerations.h"
@@ -307,6 +306,10 @@ AppleObjCRuntimeV2::AppleObjCRuntimeV2 (Process *process,
 {
     static const ConstString g_gdb_object_getClass("gdb_object_getClass");
     m_has_object_getClass = (objc_module_sp->FindFirstSymbolWithNameAndType(g_gdb_object_getClass, eSymbolTypeCode) != NULL);
+}
+
+AppleObjCRuntimeV2::~AppleObjCRuntimeV2()
+{
 }
 
 bool
@@ -817,9 +820,9 @@ public:
 
             if (process)
             {
-                std::auto_ptr<objc_class_t> objc_class;
-                std::auto_ptr<class_ro_t> class_ro;
-                std::auto_ptr<class_rw_t> class_rw;
+                std::unique_ptr<objc_class_t> objc_class;
+                std::unique_ptr<class_ro_t> class_ro;
+                std::unique_ptr<class_rw_t> class_rw;
                 
                 if (!Read_objc_class(process, objc_class))
                     return m_name;
@@ -840,12 +843,12 @@ public:
         if (!process)
             return ObjCLanguageRuntime::ClassDescriptorSP();
         
-        std::auto_ptr<objc_class_t> objc_class;
+        std::unique_ptr<objc_class_t> objc_class;
 
         if (!Read_objc_class(process, objc_class))
             return ObjCLanguageRuntime::ClassDescriptorSP();
 
-        return m_runtime.ObjCLanguageRuntime::GetClassDescriptor(objc_class->m_superclass);
+        return m_runtime.ObjCLanguageRuntime::GetClassDescriptorFromISA(objc_class->m_superclass);
     }
     
     virtual bool
@@ -854,10 +857,12 @@ public:
         return true;    // any Objective-C v2 runtime class descriptor we vend is valid
     }
     
+    // a custom descriptor is used for tagged pointers
     virtual bool
-    IsTagged ()
+    GetTaggedPointerInfo (uint64_t* info_bits = NULL,
+                          uint64_t* value_bits = NULL)
     {
-        return false;   // we use a special class for tagged descriptors
+        return false;
     }
     
     virtual uint64_t
@@ -867,9 +872,9 @@ public:
         
         if (process)
         {
-            std::auto_ptr<objc_class_t> objc_class;
-            std::auto_ptr<class_ro_t> class_ro;
-            std::auto_ptr<class_rw_t> class_rw;
+            std::unique_ptr<objc_class_t> objc_class;
+            std::unique_ptr<class_ro_t> class_ro;
+            std::unique_ptr<class_rw_t> class_rw;
             
             if (!Read_objc_class(process, objc_class))
                 return 0;
@@ -896,9 +901,9 @@ public:
     {
         lldb_private::Process *process = m_runtime.GetProcess();
 
-        std::auto_ptr<objc_class_t> objc_class;
-        std::auto_ptr<class_ro_t> class_ro;
-        std::auto_ptr<class_rw_t> class_rw;
+        std::unique_ptr<objc_class_t> objc_class;
+        std::unique_ptr<class_ro_t> class_ro;
+        std::unique_ptr<class_rw_t> class_rw;
         
         if (!Read_objc_class(process, objc_class))
             return 0;
@@ -912,7 +917,7 @@ public:
         
         if (instance_method_func)
         {
-            std::auto_ptr <method_list_t> base_method_list;
+            std::unique_ptr<method_list_t> base_method_list;
             
             base_method_list.reset(new method_list_t);
             if (!base_method_list->Read(process, class_ro->m_baseMethods_ptr))
@@ -921,7 +926,7 @@ public:
             if (base_method_list->m_entsize != method_t::GetSize(process))
                 return false;
             
-            std::auto_ptr <method_t> method;
+            std::unique_ptr<method_t> method;
             method.reset(new method_t);
             
             for (uint32_t i = 0, e = base_method_list->m_count; i < e; ++i)
@@ -948,23 +953,20 @@ public:
         
         if (ivar_func)
         {
-            std::auto_ptr <ivar_list_t> ivar_list;
-            
-            ivar_list.reset(new ivar_list_t);
-            if (!ivar_list->Read(process, class_ro->m_ivars_ptr))
+            ivar_list_t ivar_list;
+            if (!ivar_list.Read(process, class_ro->m_ivars_ptr))
                 return false;
             
-            if (ivar_list->m_entsize != ivar_t::GetSize(process))
+            if (ivar_list.m_entsize != ivar_t::GetSize(process))
                 return false;
             
-            std::auto_ptr <ivar_t> ivar;
-            ivar.reset(new ivar_t);
+            ivar_t ivar;
             
-            for (uint32_t i = 0, e = ivar_list->m_count; i < e; ++i)
+            for (uint32_t i = 0, e = ivar_list.m_count; i < e; ++i)
             {
-                ivar->Read(process, ivar_list->m_first_ptr + (i * ivar_list->m_entsize));
+                ivar.Read(process, ivar_list.m_first_ptr + (i * ivar_list.m_entsize));
                 
-                if (ivar_func(ivar->m_name.c_str(), ivar->m_type.c_str(), ivar->m_offset_ptr, ivar->m_size))
+                if (ivar_func(ivar.m_name.c_str(), ivar.m_type.c_str(), ivar.m_offset_ptr, ivar.m_size))
                     break;
             }
         }
@@ -1352,7 +1354,7 @@ private:
         }
     };
     
-    bool Read_objc_class (Process* process, std::auto_ptr<objc_class_t> &objc_class)
+    bool Read_objc_class (Process* process, std::unique_ptr<objc_class_t> &objc_class)
     {
         objc_class.reset(new objc_class_t);
         
@@ -1364,7 +1366,7 @@ private:
         return ret;
     }
     
-    bool Read_class_row (Process* process, const objc_class_t &objc_class, std::auto_ptr<class_ro_t> &class_ro, std::auto_ptr<class_rw_t> &class_rw)
+    bool Read_class_row (Process* process, const objc_class_t &objc_class, std::unique_ptr<class_ro_t> &class_ro, std::unique_ptr<class_rw_t> &class_rw)
     {
         class_ro.reset();
         class_rw.reset();
@@ -1530,9 +1532,14 @@ public:
     }
     
     virtual bool
-    IsTagged ()
+    GetTaggedPointerInfo (uint64_t* info_bits = NULL,
+                          uint64_t* value_bits = NULL)
     {
-        return true;   // we use this class to describe tagged pointers
+        if (info_bits)
+            *info_bits = GetInfoBits();
+        if (value_bits)
+            *value_bits = GetValueBits();
+        return true;
     }
     
     virtual uint64_t
@@ -1635,10 +1642,10 @@ AppleObjCRuntimeV2::GetClassDescriptor (ValueObject& valobj)
                 ObjCISA isa = process->ReadPointerFromMemory(isa_pointer, error);
                 if (isa != LLDB_INVALID_ADDRESS)
                 {
-                    objc_class_sp = ObjCLanguageRuntime::GetClassDescriptor (isa);
+                    objc_class_sp = ObjCLanguageRuntime::GetClassDescriptorFromISA (isa);
                     if (isa && !objc_class_sp)
                     {
-                        lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
+                        Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
                         if (log)
                             log->Printf("0x%" PRIx64 ": AppleObjCRuntimeV2::GetClassDescriptor() ISA was not in class descriptor cache 0x%" PRIx64,
                                         isa_pointer,
@@ -1659,6 +1666,9 @@ AppleObjCRuntimeV2::GetISAHashTablePointer ()
         Process *process = GetProcess();
 
         ModuleSP objc_module_sp(GetObjCModule());
+        
+        if (!objc_module_sp)
+            return LLDB_INVALID_ADDRESS;
 
         static ConstString g_gdb_objc_realized_classes("gdb_objc_realized_classes");
         
@@ -1685,7 +1695,7 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapDynamic(RemoteNXMapTable &hash_table
     if (process == NULL)
         return false;
     
-    lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
     
     ExecutionContext exe_ctx;
     
@@ -1892,7 +1902,7 @@ AppleObjCRuntimeV2::ParseClassInfoArray (const DataExtractor &data, uint32_t num
     //        uint32_t hash;
     //    } __attribute__((__packed__));
 
-    lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
 
     // Iterate through all ClassInfo structures
     lldb::offset_t offset = 0;
@@ -1932,7 +1942,7 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapSharedCache()
     if (process == NULL)
         return false;
     
-    lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
     
     ExecutionContext exe_ctx;
     
@@ -2141,7 +2151,7 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapSharedCache()
 bool
 AppleObjCRuntimeV2::UpdateISAToDescriptorMapFromMemory (RemoteNXMapTable &hash_table)
 {
-    lldb::LogSP log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
     
     Process *process = GetProcess();
 
@@ -2315,7 +2325,7 @@ AppleObjCRuntimeV2::LookupRuntimeSymbol (const ConstString &name)
             if (class_and_ivar.first.size() && class_and_ivar.second.size())
             {
                 const ConstString class_name_cs(class_and_ivar.first);
-                ClassDescriptorSP descriptor = ObjCLanguageRuntime::GetClassDescriptor(class_name_cs);
+                ClassDescriptorSP descriptor = ObjCLanguageRuntime::GetClassDescriptorFromClassName(class_name_cs);
                                 
                 if (descriptor)
                 {

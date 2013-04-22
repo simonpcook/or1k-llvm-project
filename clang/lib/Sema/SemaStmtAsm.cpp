@@ -494,9 +494,40 @@ public:
 
 }
 
+// FIXME: Temporary hack until the frontend parser is hooked up to parse 
+// variables.
+static bool isIdentifierChar(char c) {
+  return isalnum(c) || c == '_' || c == '$' || c == '.' || c == '@';
+}
+
+static void lexIdentifier(const char *&CurPtr) {
+  while (isIdentifierChar(*CurPtr))
+    ++CurPtr;
+}
+
+static StringRef parseIdentifier(StringRef Identifier) {
+  const char *StartPtr = Identifier.data(), *EndPtr, *CurPtr;
+  EndPtr = StartPtr + Identifier.size();
+  CurPtr = StartPtr;
+  while(CurPtr <= EndPtr) {
+    if (isIdentifierChar(*CurPtr))
+      lexIdentifier(CurPtr);
+    else if (CurPtr[0] == ':' && CurPtr[1] == ':')
+      CurPtr += 2;
+    else
+      break;
+  }
+  return StringRef(StartPtr, CurPtr - StartPtr);
+}
+
 NamedDecl *Sema::LookupInlineAsmIdentifier(StringRef Name, SourceLocation Loc,
                                            unsigned &Length, unsigned &Size, 
                                            unsigned &Type, bool &IsVarDecl) {
+  // FIXME: Temporary hack until the frontend parser is hooked up to parse 
+  // variables.
+  StringRef ParsedName = parseIdentifier(Name);
+  assert (ParsedName == Name && "Identifier not parsed correctly!");
+
   Length = 1;
   Size = 0;
   Type = 0;
@@ -515,21 +546,19 @@ NamedDecl *Sema::LookupInlineAsmIdentifier(StringRef Name, SourceLocation Loc,
     return 0;
   }
 
-  NamedDecl *ND = Result.getFoundDecl();
-  if (isa<VarDecl>(ND) || isa<FunctionDecl>(ND)) {
-    if (VarDecl *Var = dyn_cast<VarDecl>(ND)) {
-      Type = Context.getTypeInfo(Var->getType()).first;
-      QualType Ty = Var->getType();
-      if (Ty->isArrayType()) {
-        const ArrayType *ATy = Context.getAsArrayType(Ty);
-        Length = Type / Context.getTypeInfo(ATy->getElementType()).first;
-        Type /= Length; // Type is in terms of a single element.
-      }
-      Type /= 8; // Type is in terms of bits, but we want bytes.
-      Size = Length * Type;
-      IsVarDecl = true;
+  NamedDecl *FoundDecl = Result.getFoundDecl();
+  if (isa<FunctionDecl>(FoundDecl))
+    return FoundDecl;
+  if (VarDecl *Var = dyn_cast<VarDecl>(FoundDecl)) {
+    QualType Ty = Var->getType();
+    Type = Size = Context.getTypeSizeInChars(Ty).getQuantity();
+    if (Ty->isArrayType()) {
+      const ArrayType *ATy = Context.getAsArrayType(Ty);
+      Type = Context.getTypeSizeInChars(ATy->getElementType()).getQuantity();
+      Length = Size / Type;
     }
-    return ND;
+    IsVarDecl = true;
+    return FoundDecl;
   }
 
   // FIXME: Handle other kinds of results? (FieldDecl, etc.)
@@ -549,13 +578,12 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   if (!BaseResult.isSingleResult())
     return true;
 
-  NamedDecl *FoundDecl = BaseResult.getFoundDecl();
   const RecordType *RT = 0;
-  if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl)) {
+  NamedDecl *FoundDecl = BaseResult.getFoundDecl();
+  if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
     RT = VD->getType()->getAs<RecordType>();
-  } else if (TypedefDecl *TD = dyn_cast<TypedefDecl>(FoundDecl)) {
+  else if (TypedefDecl *TD = dyn_cast<TypedefDecl>(FoundDecl))
     RT = TD->getUnderlyingType()->getAs<RecordType>();
-  }
   if (!RT)
     return true;
 
@@ -625,7 +653,7 @@ StmtResult Sema::ActOnMSAsmStmt(SourceLocation AsmLoc, SourceLocation LBraceLoc,
   llvm::SourceMgr SrcMgr;
   llvm::MCContext Ctx(*MAI, *MRI, MOFI.get(), &SrcMgr);
   llvm::MemoryBuffer *Buffer =
-    llvm::MemoryBuffer::getMemBuffer(AsmString, "<inline asm>");
+    llvm::MemoryBuffer::getMemBuffer(AsmString, "<MS inline asm>");
 
   // Tell SrcMgr about this buffer, which is what the parser will pick up.
   SrcMgr.AddNewSourceBuffer(Buffer, llvm::SMLoc());

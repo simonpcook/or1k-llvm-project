@@ -59,7 +59,7 @@ ObjectFile::FindPlugin (const lldb::ModuleSP &module_sp,
                 {
                     for (uint32_t idx = 0; (create_object_container_callback = PluginManager::GetObjectContainerCreateCallbackAtIndex(idx)) != NULL; ++idx)
                     {
-                        std::auto_ptr<ObjectContainer> object_container_ap(create_object_container_callback(module_sp, data_sp, data_offset, file, file_offset, file_size));
+                        std::unique_ptr<ObjectContainer> object_container_ap(create_object_container_callback(module_sp, data_sp, data_offset, file, file_offset, file_size));
                         
                         if (object_container_ap.get())
                             object_file_sp = object_container_ap->GetObjectFile(file);
@@ -101,7 +101,7 @@ ObjectFile::FindPlugin (const lldb::ModuleSP &module_sp,
                         // (like BSD archives caching the contained objects within an file).
                         for (uint32_t idx = 0; (create_object_container_callback = PluginManager::GetObjectContainerCreateCallbackAtIndex(idx)) != NULL; ++idx)
                         {
-                            std::auto_ptr<ObjectContainer> object_container_ap(create_object_container_callback(module_sp, data_sp, data_offset, file, file_offset, file_size));
+                            std::unique_ptr<ObjectContainer> object_container_ap(create_object_container_callback(module_sp, data_sp, data_offset, file, file_offset, file_size));
                             
                             if (object_container_ap.get())
                                 object_file_sp = object_container_ap->GetObjectFile(file);
@@ -133,7 +133,7 @@ ObjectFile::FindPlugin (const lldb::ModuleSP &module_sp,
                 // an object file from the container.
                 for (uint32_t idx = 0; (create_object_container_callback = PluginManager::GetObjectContainerCreateCallbackAtIndex(idx)) != NULL; ++idx)
                 {
-                    std::auto_ptr<ObjectContainer> object_container_ap(create_object_container_callback(module_sp, data_sp, data_offset, file, file_offset, file_size));
+                    std::unique_ptr<ObjectContainer> object_container_ap(create_object_container_callback(module_sp, data_sp, data_offset, file, file_offset, file_size));
 
                     if (object_container_ap.get())
                         object_file_sp = object_container_ap->GetObjectFile(file);
@@ -208,7 +208,7 @@ ObjectFile::ObjectFile (const lldb::ModuleSP &module_sp,
         m_file = *file_spec_ptr;
     if (data_sp)
         m_data.SetData (data_sp, data_offset, length);
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
     {
         const ConstString object_name (module_sp->GetObjectName());
@@ -261,7 +261,7 @@ ObjectFile::ObjectFile (const lldb::ModuleSP &module_sp,
 {
     if (header_data_sp)
         m_data.SetData (header_data_sp, 0, header_data_sp->GetByteSize());
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
     {
         const ConstString object_name (module_sp->GetObjectName());
@@ -280,7 +280,7 @@ ObjectFile::ObjectFile (const lldb::ModuleSP &module_sp,
 
 ObjectFile::~ObjectFile()
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf ("%p ObjectFile::~ObjectFile ()\n", this);
 }
@@ -392,7 +392,7 @@ ObjectFile::ReadMemory (const ProcessSP &process_sp, lldb::addr_t addr, size_t b
     DataBufferSP data_sp;
     if (process_sp)
     {
-        std::auto_ptr<DataBufferHeap> data_ap (new DataBufferHeap (byte_size, 0));
+        std::unique_ptr<DataBufferHeap> data_ap (new DataBufferHeap (byte_size, 0));
         Error error;
         const size_t bytes_read = process_sp->ReadMemory (addr, 
                                                           data_ap->GetBytes(), 
@@ -517,12 +517,13 @@ bool
 ObjectFile::SplitArchivePathWithObject (const char *path_with_object, FileSpec &archive_file, ConstString &archive_object, bool must_exist)
 {
     RegularExpression g_object_regex("(.*)\\(([^\\)]+)\\)$");
-    if (g_object_regex.Execute (path_with_object, 2))
+    RegularExpression::Match regex_match(2);
+    if (g_object_regex.Execute (path_with_object, &regex_match))
     {
         std::string path;
         std::string obj;
-        if (g_object_regex.GetMatchAtIndex (path_with_object, 1, path) &&
-            g_object_regex.GetMatchAtIndex (path_with_object, 2, obj))
+        if (regex_match.GetMatchAtIndex (path_with_object, 1, path) &&
+            regex_match.GetMatchAtIndex (path_with_object, 2, obj))
         {
             archive_file.SetFile (path.c_str(), false);
             archive_object.SetCString(obj.c_str());
@@ -541,7 +542,7 @@ ObjectFile::ClearSymtab ()
     if (module_sp)
     {
         lldb_private::Mutex::Locker locker(module_sp->GetMutex());
-        LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+        Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
         if (log)
         {
             log->Printf ("%p ObjectFile::ClearSymtab () symtab = %p",

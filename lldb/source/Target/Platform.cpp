@@ -95,6 +95,37 @@ Platform::LocateExecutableScriptingResources (Target *target, Module &module)
     return FileSpecList();
 }
 
+Platform*
+Platform::FindPlugin (Process *process, const char *plugin_name)
+{
+    PlatformCreateInstance create_callback = NULL;
+    if (plugin_name)
+    {
+        create_callback  = PluginManager::GetPlatformCreateCallbackForPluginName (plugin_name);
+        if (create_callback)
+        {
+            ArchSpec arch;
+            if (process)
+            {
+                arch = process->GetTarget().GetArchitecture();
+            }
+            std::unique_ptr<Platform> instance_ap(create_callback(process, &arch));
+            if (instance_ap.get())
+                return instance_ap.release();
+        }
+    }
+    else
+    {
+        for (uint32_t idx = 0; (create_callback = PluginManager::GetPlatformCreateCallbackAtIndex(idx)) != NULL; ++idx)
+        {
+            std::unique_ptr<Platform> instance_ap(create_callback(process, false));
+            if (instance_ap.get())
+                return instance_ap.release();
+        }
+    }
+    return NULL;
+}
+
 Error
 Platform::GetSharedModule (const ModuleSpec &module_spec,
                            ModuleSP &module_sp,
@@ -217,7 +248,7 @@ Platform::Platform (bool is_host) :
     m_max_uid_name_len (0),
     m_max_gid_name_len (0)
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf ("%p Platform::Platform()", this);
 }
@@ -230,7 +261,7 @@ Platform::Platform (bool is_host) :
 //------------------------------------------------------------------
 Platform::~Platform()
 {
-    LogSP log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
         log->Printf ("%p Platform::~Platform()", this);
 }

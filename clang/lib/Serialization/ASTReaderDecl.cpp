@@ -244,6 +244,7 @@ namespace clang {
     void VisitCXXDestructorDecl(CXXDestructorDecl *D);
     void VisitCXXConversionDecl(CXXConversionDecl *D);
     void VisitFieldDecl(FieldDecl *FD);
+    void VisitMSPropertyDecl(MSPropertyDecl *FD);
     void VisitIndirectFieldDecl(IndirectFieldDecl *FD);
     void VisitVarDecl(VarDecl *VD);
     void VisitImplicitParamDecl(ImplicitParamDecl *PD);
@@ -265,6 +266,7 @@ namespace clang {
     void VisitFriendTemplateDecl(FriendTemplateDecl *D);
     void VisitStaticAssertDecl(StaticAssertDecl *D);
     void VisitBlockDecl(BlockDecl *BD);
+    void VisitCapturedDecl(CapturedDecl *CD);
     void VisitEmptyDecl(EmptyDecl *D);
 
     std::pair<uint64_t, uint64_t> VisitDeclContext(DeclContext *DC);
@@ -504,9 +506,8 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
   
   // FunctionDecl's body is handled last at ASTDeclReader::Visit,
   // after everything else is read.
-  
+
   FD->SClass = (StorageClass)Record[Idx++];
-  FD->SClassAsWritten = (StorageClass)Record[Idx++];
   FD->IsInline = Record[Idx++];
   FD->IsInlineSpecified = Record[Idx++];
   FD->IsVirtualAsWritten = Record[Idx++];
@@ -880,6 +881,12 @@ void ASTDeclReader::VisitFieldDecl(FieldDecl *FD) {
   }
 }
 
+void ASTDeclReader::VisitMSPropertyDecl(MSPropertyDecl *PD) {
+  VisitDeclaratorDecl(PD);
+  PD->GetterId = Reader.GetIdentifierInfo(F, Record, Idx);
+  PD->SetterId = Reader.GetIdentifierInfo(F, Record, Idx);
+}
+
 void ASTDeclReader::VisitIndirectFieldDecl(IndirectFieldDecl *FD) {
   VisitValueDecl(FD);
 
@@ -894,10 +901,9 @@ void ASTDeclReader::VisitIndirectFieldDecl(IndirectFieldDecl *FD) {
 void ASTDeclReader::VisitVarDecl(VarDecl *VD) {
   RedeclarableResult Redecl = VisitRedeclarable(VD);
   VisitDeclaratorDecl(VD);
-  
+
   VD->VarDeclBits.SClass = (StorageClass)Record[Idx++];
-  VD->VarDeclBits.SClassAsWritten = (StorageClass)Record[Idx++];
-  VD->VarDeclBits.ThreadSpecified = Record[Idx++];
+  VD->VarDeclBits.TLSKind = Record[Idx++];
   VD->VarDeclBits.InitStyle = Record[Idx++];
   VD->VarDeclBits.ExceptionVar = Record[Idx++];
   VD->VarDeclBits.NRVOVariable = Record[Idx++];
@@ -987,6 +993,10 @@ void ASTDeclReader::VisitBlockDecl(BlockDecl *BD) {
   }
   BD->setCaptures(Reader.getContext(), captures.begin(),
                   captures.end(), capturesCXXThis);
+}
+
+void ASTDeclReader::VisitCapturedDecl(CapturedDecl *) {
+  llvm_unreachable("not implemented yet");
 }
 
 void ASTDeclReader::VisitLinkageSpecDecl(LinkageSpecDecl *D) {
@@ -2138,6 +2148,12 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   case DECL_BLOCK:
     D = BlockDecl::CreateDeserialized(Context, ID);
     break;
+  case DECL_MS_PROPERTY:
+    D = MSPropertyDecl::CreateDeserialized(Context, ID);
+    break;
+  case DECL_CAPTURED:
+    llvm_unreachable("not implemented yet");
+    break;
   case DECL_CXX_BASE_SPECIFIERS:
     Error("attempt to read a C++ base-specifier record as a declaration");
     return 0;
@@ -2198,10 +2214,6 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
       }
       PendingVisibleUpdates.erase(I);
     }
-
-    if (!LookupDC->hasExternalVisibleStorage() &&
-        DC->hasExternalLexicalStorage())
-      LookupDC->setMustBuildLookupTable();
   }
   assert(Idx == Record.size());
 

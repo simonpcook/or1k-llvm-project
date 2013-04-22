@@ -9,6 +9,7 @@
 
 #include "Metric.h"
 #include "MemoryGauge.h"
+#include <cmath>
 
 using namespace lldb_perf;
 
@@ -54,6 +55,30 @@ T
 Metric<T>::GetAverage () const
 {
     return GetSum()/GetCount();
+}
+
+
+// Knuth's algorithm for stddev - massive cancellation resistant
+template <class T>
+T
+Metric<T>::GetStandardDeviation (StandardDeviationMode mode) const
+{
+    size_t n = 0;
+    T mean = 0;
+    T M2 = 0;
+    for (auto x : m_dataset)
+    {
+        n = n + 1;
+        T delta = x - mean;
+        mean = mean + delta/n;
+        M2 = M2+delta*(x-mean);
+    }
+    T variance;
+    if (mode == StandardDeviationMode::ePopulation || n == 1)
+        variance = M2 / n;
+    else
+        variance = M2 / (n - 1);
+    return sqrt(variance);
 }
 
 template class lldb_perf::Metric<double>;

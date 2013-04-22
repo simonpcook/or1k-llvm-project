@@ -158,6 +158,10 @@ TargetList::CreateTarget (Debugger &debugger,
         arch = specified_arch;
 
     FileSpec file (user_exe_path, false);
+    if (!file.Exists() && user_exe_path && user_exe_path[0] == '~')
+    {
+        file = FileSpec(user_exe_path, true);
+    }
     bool user_exe_path_is_bundle = false;
     char resolved_bundle_exe_path[PATH_MAX];
     resolved_bundle_exe_path[0] = '\0';
@@ -178,7 +182,9 @@ TargetList::CreateTarget (Debugger &debugger,
                     std::string cwd_user_exe_path (cwd);
                     cwd_user_exe_path += '/';
                     cwd_user_exe_path += user_exe_path;
-                    file.SetFile(cwd_user_exe_path.c_str(), false);
+                    FileSpec cwd_file (cwd_user_exe_path.c_str(), false);
+                    if (cwd_file.Exists())
+                        file = cwd_file;
                 }
             }
         }

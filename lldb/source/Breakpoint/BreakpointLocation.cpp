@@ -46,7 +46,8 @@ BreakpointLocation::BreakpointLocation
     m_address (addr),
     m_owner (owner),
     m_options_ap (),
-    m_bp_site_sp ()
+    m_bp_site_sp (),
+    m_condition_mutex ()
 {
     SetThreadID (tid);
     m_being_created = false;
@@ -249,12 +250,17 @@ bool
 BreakpointLocation::ConditionSaysStop (ExecutionContext &exe_ctx, Error &error)
 {
     Log *log = lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_BREAKPOINTS);
+ 
+    Mutex::Locker evaluation_locker(m_condition_mutex);
     
     size_t condition_hash;
     const char *condition_text = GetConditionText(&condition_hash);
     
     if (!condition_text)
+    {
+        m_user_expression_sp.reset();
         return false;
+    }
     
     if (condition_hash != m_condition_hash ||
         !m_user_expression_sp ||
@@ -309,6 +315,13 @@ BreakpointLocation::ConditionSaysStop (ExecutionContext &exe_ctx, Error &error)
     
     if (result_code == eExecutionCompleted)
     {
+        if (!result_variable_sp)
+        {
+            ret = false;
+            error.SetErrorString("Expression did not return a result");
+            return false;
+        }
+        
         result_value_sp = result_variable_sp->GetValueObject();
 
         if (result_value_sp)
@@ -469,9 +482,6 @@ BreakpointLocation::ResolveBreakpointSite ()
 
     Process *process = m_owner.GetTarget().GetProcessSP().get();
     if (process == NULL)
-        return false;
-
-    if (m_owner.GetTarget().GetSectionLoadList().IsEmpty())
         return false;
 
     lldb::break_id_t new_id = process->CreateBreakpointSite (shared_from_this(), false);

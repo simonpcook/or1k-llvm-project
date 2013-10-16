@@ -81,6 +81,8 @@ namespace lldb_private {
         bool
         ObjCClassSummaryProvider (ValueObject& valobj, Stream& stream);
         
+        SyntheticChildrenFrontEnd* ObjCClassSyntheticFrontEndCreator (CXXSyntheticChildren*, lldb::ValueObjectSP);
+        
         template<bool name_entries>
         bool
         NSDictionarySummaryProvider (ValueObject& valobj, Stream& stream);
@@ -462,6 +464,35 @@ namespace lldb_private {
             std::vector<SetItemDescriptor> m_children;
         };
         
+        class NSOrderedSetSyntheticFrontEnd : public SyntheticChildrenFrontEnd
+        {
+        private:
+            
+        public:
+            NSOrderedSetSyntheticFrontEnd (lldb::ValueObjectSP valobj_sp);
+            
+            virtual size_t
+            CalculateNumChildren ();
+            
+            virtual lldb::ValueObjectSP
+            GetChildAtIndex (size_t idx);
+            
+            virtual bool
+            Update();
+            
+            virtual bool
+            MightHaveChildren ();
+            
+            virtual size_t
+            GetIndexOfChildWithName (const ConstString &name);
+            
+            virtual
+            ~NSOrderedSetSyntheticFrontEnd ();
+        private:
+            uint32_t m_count;
+            std::map<uint32_t,lldb::ValueObjectSP> m_children;
+        };
+        
         class NSSetMSyntheticFrontEnd : public SyntheticChildrenFrontEnd
         {
         private:
@@ -511,7 +542,7 @@ namespace lldb_private {
             DataDescriptor_64 *m_data_64;
             std::vector<SetItemDescriptor> m_children;
         };
-        
+                
         class NSSetCodeRunningSyntheticFrontEnd : public SyntheticChildrenFrontEnd
         {
         public:
@@ -568,6 +599,9 @@ namespace lldb_private {
         };
         
         SyntheticChildrenFrontEnd* LibcxxVectorBoolSyntheticFrontEndCreator (CXXSyntheticChildren*, lldb::ValueObjectSP);
+        
+        bool
+        LibcxxContainerSummaryProvider (ValueObject& valobj, Stream& stream);
         
         class LibstdcppVectorBoolSyntheticFrontEnd : public SyntheticChildrenFrontEnd
         {
@@ -833,6 +867,39 @@ namespace lldb_private {
         };
         
         SyntheticChildrenFrontEnd* LibcxxStdMapSyntheticFrontEndCreator (CXXSyntheticChildren*, lldb::ValueObjectSP);
+        
+        class LibcxxStdUnorderedMapSyntheticFrontEnd : public SyntheticChildrenFrontEnd
+        {
+        public:
+            LibcxxStdUnorderedMapSyntheticFrontEnd (lldb::ValueObjectSP valobj_sp);
+            
+            virtual size_t
+            CalculateNumChildren ();
+            
+            virtual lldb::ValueObjectSP
+            GetChildAtIndex (size_t idx);
+            
+            virtual bool
+            Update();
+            
+            virtual bool
+            MightHaveChildren ();
+            
+            virtual size_t
+            GetIndexOfChildWithName (const ConstString &name);
+            
+            virtual
+            ~LibcxxStdUnorderedMapSyntheticFrontEnd ();
+        private:
+            
+            ValueObject* m_tree;
+            size_t m_num_elements;
+            ValueObject* m_next_element;
+            std::map<size_t,lldb::ValueObjectSP> m_children;
+            std::vector<std::pair<ValueObject*, uint64_t> > m_elements_cache;
+        };
+        
+        SyntheticChildrenFrontEnd* LibcxxStdUnorderedMapSyntheticFrontEndCreator (CXXSyntheticChildren*, lldb::ValueObjectSP);
         
     } // namespace formatters
 } // namespace lldb_private

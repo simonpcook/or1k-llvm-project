@@ -142,6 +142,8 @@ public:
                                            ///< global module index if available.
   unsigned GenerateGlobalModuleIndex : 1;  ///< Whether we can generate the
                                            ///< global module index if needed.
+  unsigned ASTDumpLookups : 1;             ///< Whether we include lookup table
+                                           ///< dumps in AST dumps.
 
   CodeCompleteOptions CodeCompleteOpts;
 
@@ -157,7 +159,28 @@ public:
     /// \brief Enable migration to modern ObjC literals.
     ObjCMT_Literals = 0x1,
     /// \brief Enable migration to modern ObjC subscripting.
-    ObjCMT_Subscripting = 0x2
+    ObjCMT_Subscripting = 0x2,
+    /// \brief Enable migration to modern ObjC readonly property.
+    ObjCMT_ReadonlyProperty = 0x4,
+    /// \brief Enable migration to modern ObjC readwrite property.
+    ObjCMT_ReadwriteProperty = 0x8,
+    /// \brief Enable migration to modern ObjC property.
+    ObjCMT_Property = (ObjCMT_ReadonlyProperty | ObjCMT_ReadwriteProperty),
+    /// \brief Enable annotation of ObjCMethods of all kinds.
+    ObjCMT_Annotation = 0x10,
+    /// \brief Enable migration of ObjC methods to 'instancetype'.
+    ObjCMT_Instancetype = 0x20,
+    /// \brief Enable migration to NS_ENUM/NS_OPTIONS macros.
+    ObjCMT_NsMacros = 0x40,
+    /// \brief Enable migration to add conforming protocols.
+    ObjCMT_ProtocolConformance = 0x80,
+    ObjCMT_MigrateDecls = (ObjCMT_ReadonlyProperty | ObjCMT_ReadwriteProperty |
+                           ObjCMT_Annotation | ObjCMT_Instancetype |
+                           ObjCMT_NsMacros | ObjCMT_ProtocolConformance),
+    ObjCMT_MigrateAll = (ObjCMT_Literals | ObjCMT_Subscripting |
+                         ObjCMT_ReadonlyProperty | ObjCMT_ReadwriteProperty |
+                         ObjCMT_Annotation | ObjCMT_Instancetype |
+                         ObjCMT_NsMacros | ObjCMT_ProtocolConformance)
   };
   unsigned ObjCMTAction;
 
@@ -215,7 +238,7 @@ public:
     FixWhatYouCan(false), FixOnlyWarnings(false), FixAndRecompile(false),
     FixToTemporaries(false), ARCMTMigrateEmitARCErrors(false),
     SkipFunctionBodies(false), UseGlobalModuleIndex(true),
-    GenerateGlobalModuleIndex(true),
+    GenerateGlobalModuleIndex(true), ASTDumpLookups(false),
     ARCMTAction(ARCMT_None), ObjCMTAction(ObjCMT_None),
     ProgramAction(frontend::ParseSyntaxOnly)
   {}

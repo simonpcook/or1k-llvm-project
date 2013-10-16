@@ -32,16 +32,18 @@
 #include "ThreadMachCore.h"
 #include "StopInfoMachException.h"
 
+// Needed for the plug-in names for the dynamic loaders.
 #include "Plugins/DynamicLoader/MacOSX-DYLD/DynamicLoaderMacOSXDYLD.h"
 #include "Plugins/DynamicLoader/Darwin-Kernel/DynamicLoaderDarwinKernel.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-const char *
+ConstString
 ProcessMachCore::GetPluginNameStatic()
 {
-    return "mach-o-core";
+    static ConstString g_name("mach-o-core");
+    return g_name;
 }
 
 const char *
@@ -105,6 +107,7 @@ ProcessMachCore::ProcessMachCore(Target& target, Listener &listener, const FileS
     m_core_module_sp (),
     m_core_file (core_file),
     m_dyld_addr (LLDB_INVALID_ADDRESS),
+    m_mach_kernel_addr (LLDB_INVALID_ADDRESS),
     m_dyld_plugin_name ()
 {
 }
@@ -125,14 +128,8 @@ ProcessMachCore::~ProcessMachCore()
 //----------------------------------------------------------------------
 // PluginInterface
 //----------------------------------------------------------------------
-const char *
+ConstString
 ProcessMachCore::GetPluginName()
-{
-    return "Process debugging plug-in that loads mach-o core files.";
-}
-
-const char *
-ProcessMachCore::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }
@@ -150,8 +147,8 @@ ProcessMachCore::GetDynamicLoaderAddress (lldb::addr_t addr)
     Error error;
     if (DoReadMemory (addr, &header, sizeof(header), error) != sizeof(header))
         return false;
-    if (header.magic == llvm::MachO::HeaderMagic32Swapped ||
-        header.magic == llvm::MachO::HeaderMagic64Swapped)
+    if (header.magic == llvm::MachO::MH_CIGAM ||
+        header.magic == llvm::MachO::MH_CIGAM_64)
     {
         header.magic        = llvm::ByteSwap_32(header.magic);
         header.cputype      = llvm::ByteSwap_32(header.cputype);
@@ -164,8 +161,8 @@ ProcessMachCore::GetDynamicLoaderAddress (lldb::addr_t addr)
 
     // TODO: swap header if needed...
     //printf("0x%16.16" PRIx64 ": magic = 0x%8.8x, file_type= %u\n", vaddr, header.magic, header.filetype);
-    if (header.magic == llvm::MachO::HeaderMagic32 ||
-        header.magic == llvm::MachO::HeaderMagic64)
+    if (header.magic == llvm::MachO::MH_MAGIC ||
+        header.magic == llvm::MachO::MH_MAGIC_64)
     {
         // Check MH_EXECUTABLE to see if we can find the mach image
         // that contains the shared library list. The dynamic loader 
@@ -174,22 +171,20 @@ ProcessMachCore::GetDynamicLoaderAddress (lldb::addr_t addr)
         // of kexts to load
         switch (header.filetype)
         {
-        case llvm::MachO::HeaderFileTypeDynamicLinkEditor:
+        case llvm::MachO::MH_DYLINKER:
             //printf("0x%16.16" PRIx64 ": file_type = MH_DYLINKER\n", vaddr);
             // Address of dyld "struct mach_header" in the core file
-            m_dyld_plugin_name = DynamicLoaderMacOSXDYLD::GetPluginNameStatic();
             m_dyld_addr = addr;
             return true;
 
-        case llvm::MachO::HeaderFileTypeExecutable:
+        case llvm::MachO::MH_EXECUTE:
             //printf("0x%16.16" PRIx64 ": file_type = MH_EXECUTE\n", vaddr);
             // Check MH_EXECUTABLE file types to see if the dynamic link object flag
             // is NOT set. If it isn't, then we have a mach_kernel.
-            if ((header.flags & llvm::MachO::HeaderFlagBitIsDynamicLinkObject) == 0)
+            if ((header.flags & llvm::MachO::MH_DYLDLINK) == 0)
             {
-                m_dyld_plugin_name = DynamicLoaderDarwinKernel::GetPluginNameStatic();
                 // Address of the mach kernel "struct mach_header" in the core file.
-                m_dyld_addr = addr;    
+                m_mach_kernel_addr = addr;
                 return true;
             }
             break;
@@ -217,6 +212,13 @@ ProcessMachCore::DoLoadCore ()
         error.SetErrorString ("invalid core object file");   
         return error;
     }
+    
+    if (core_objfile->GetNumThreadContexts() == 0)
+    {
+        error.SetErrorString ("core file doesn't contain any LC_THREAD load commands, or the LC_THREAD architecture is not supported in this lldb");
+        return error;
+    }
+
     SectionList *section_list = core_objfile->GetSectionList();
     if (section_list == NULL)
     {
@@ -275,18 +277,45 @@ ProcessMachCore::DoLoadCore ()
             {
                 m_core_aranges.Append(range_entry);
             }
-            
-            // After we have added this section to our m_core_aranges map,
-            // we can check the start of the section to see if it might
-            // contain dyld for user space apps, or the mach kernel file 
-            // for kernel cores.
-            if (m_dyld_addr == LLDB_INVALID_ADDRESS)
-                GetDynamicLoaderAddress (section_vm_addr);
         }
     }
     if (!ranges_are_sorted)
     {
         m_core_aranges.Sort();
+    }
+
+    if (m_dyld_addr == LLDB_INVALID_ADDRESS || m_mach_kernel_addr == LLDB_INVALID_ADDRESS)
+    {
+        // We need to locate the main executable in the memory ranges
+        // we have in the core file.  We need to search for both a user-process dyld binary
+        // and a kernel binary in memory; we must look at all the pages in the binary so
+        // we don't miss one or the other.  If we find a user-process dyld binary, stop
+        // searching -- that's the one we'll prefer over the mach kernel.
+        const size_t num_core_aranges = m_core_aranges.GetSize();
+        for (size_t i=0; i<num_core_aranges && m_dyld_addr == LLDB_INVALID_ADDRESS; ++i)
+        {
+            const VMRangeToFileOffset::Entry *entry = m_core_aranges.GetEntryAtIndex(i);
+            lldb::addr_t section_vm_addr_start = entry->GetRangeBase();
+            lldb::addr_t section_vm_addr_end = entry->GetRangeEnd();
+            for (lldb::addr_t section_vm_addr = section_vm_addr_start;
+                 section_vm_addr < section_vm_addr_end;
+                 section_vm_addr += 0x1000)
+            {
+                GetDynamicLoaderAddress (section_vm_addr);
+            }
+        }
+    }
+
+    // If we find both a user process dyld and a mach kernel, prefer the
+    // user process dyld.  We may be looking at an lldb debug session were they were debugging
+    // a mach kernel when lldb coredumped.
+    if (m_dyld_addr != LLDB_INVALID_ADDRESS)
+    {
+        m_dyld_plugin_name = DynamicLoaderMacOSXDYLD::GetPluginNameStatic();
+    }
+    else if (m_mach_kernel_addr != LLDB_INVALID_ADDRESS)
+    {
+        m_dyld_plugin_name = DynamicLoaderDarwinKernel::GetPluginNameStatic();
     }
 
     // Even if the architecture is set in the target, we need to override
@@ -299,14 +328,6 @@ ProcessMachCore::DoLoadCore ()
     if (arch.IsValid())
         m_target.SetArchitecture(arch);            
 
-    if (m_dyld_addr == LLDB_INVALID_ADDRESS)
-    {
-        addr_t kernel_load_address = DynamicLoaderDarwinKernel::SearchForDarwinKernel (this);
-        if (kernel_load_address != LLDB_INVALID_ADDRESS)
-        {
-            GetDynamicLoaderAddress (kernel_load_address);
-        }
-    }
     return error;
 }
 
@@ -314,7 +335,7 @@ lldb_private::DynamicLoader *
 ProcessMachCore::GetDynamicLoader ()
 {
     if (m_dyld_ap.get() == NULL)
-        m_dyld_ap.reset (DynamicLoader::FindPlugin(this, m_dyld_plugin_name.empty() ? NULL : m_dyld_plugin_name.c_str()));
+        m_dyld_ap.reset (DynamicLoader::FindPlugin(this, m_dyld_plugin_name.IsEmpty() ? NULL : m_dyld_plugin_name.GetCString()));
     return m_dyld_ap.get();
 }
 
@@ -369,6 +390,12 @@ bool
 ProcessMachCore::IsAlive ()
 {
     return true;
+}
+
+bool
+ProcessMachCore::WarnBeforeDetach () const
+{
+    return false;
 }
 
 //------------------------------------------------------------------
@@ -430,7 +457,9 @@ ProcessMachCore::Initialize()
 addr_t
 ProcessMachCore::GetImageInfoAddress()
 {
-    return m_dyld_addr;
+    if (m_dyld_addr != LLDB_INVALID_ADDRESS)
+        return m_dyld_addr;
+    return m_mach_kernel_addr;
 }
 
 

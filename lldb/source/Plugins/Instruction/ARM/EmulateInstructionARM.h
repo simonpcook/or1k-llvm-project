@@ -11,6 +11,7 @@
 #define lldb_EmulateInstructionARM_h_
 
 #include "lldb/Core/EmulateInstruction.h"
+#include "lldb/Core/ConstString.h"
 #include "lldb/Core/Error.h"
 #include "Plugins/Process/Utility/ARMDefines.h"
 
@@ -67,7 +68,7 @@ public:
     static void
     Terminate ();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic ();
     
     static const char *
@@ -78,7 +79,7 @@ public:
                     InstructionType inst_type);
     
     static bool
-    SupportsEmulatingIntructionsOfTypeStatic (InstructionType inst_type)
+    SupportsEmulatingInstructionsOfTypeStatic (InstructionType inst_type)
     {
         switch (inst_type)
         {
@@ -93,14 +94,8 @@ public:
         return false;
     }
 
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName()
-    {
-        return "EmulateInstructionARM";
-    }
-
-    virtual const char *
-    GetShortPluginName()
     {
         return GetPluginNameStatic();
     }
@@ -154,9 +149,9 @@ public:
 //    }
     
     virtual bool
-    SupportsEmulatingIntructionsOfType (InstructionType inst_type)
+    SupportsEmulatingInstructionsOfType (InstructionType inst_type)
     {
-        return SupportsEmulatingIntructionsOfTypeStatic (inst_type);
+        return SupportsEmulatingInstructionsOfTypeStatic (inst_type);
     }
 
     virtual bool

@@ -238,12 +238,12 @@ ClangASTSource::CompleteType (TagDecl *tag_decl)
                     if (!type)
                         continue;
                     
-                    lldb::clang_type_t opaque_type = type->GetClangFullType();
+                    ClangASTType clang_type (type->GetClangFullType());
                     
-                    if (!opaque_type)
+                    if (!clang_type)
                         continue;
                     
-                    const TagType *tag_type = QualType::getFromOpaquePtr(opaque_type)->getAs<TagType>();
+                    const TagType *tag_type = clang_type.GetQualType()->getAs<TagType>();
                     
                     if (!tag_type)
                         continue;
@@ -277,12 +277,12 @@ ClangASTSource::CompleteType (TagDecl *tag_decl)
                 if (!type)
                     continue;
                 
-                lldb::clang_type_t opaque_type = type->GetClangFullType();
+                ClangASTType clang_type (type->GetClangFullType());
                 
-                if (!opaque_type)
+                if (!clang_type)
                     continue;
                 
-                const TagType *tag_type = QualType::getFromOpaquePtr(opaque_type)->getAs<TagType>();
+                const TagType *tag_type = clang_type.GetQualType()->getAs<TagType>();
                 
                 if (!tag_type)
                     continue;
@@ -346,7 +346,7 @@ ClangASTSource::GetCompleteObjCInterface (clang::ObjCInterfaceDecl *interface_de
     if (!complete_type_sp)
         return NULL;
     
-    TypeFromUser complete_type = TypeFromUser(complete_type_sp->GetClangFullType(), complete_type_sp->GetClangAST());
+    TypeFromUser complete_type = TypeFromUser(complete_type_sp->GetClangFullType());
     lldb::clang_type_t complete_opaque_type = complete_type.GetOpaqueQualType();
     
     if (!complete_opaque_type)
@@ -472,6 +472,18 @@ ClangASTSource::FindExternalLexicalDecls (const DeclContext *decl_context,
             }
             
             decls.push_back(copied_decl);
+            
+            DeclContext *decl_context_non_const = const_cast<DeclContext *>(decl_context);
+            
+            if (copied_decl->getDeclContext() != decl_context)
+            {
+                if (copied_decl->getDeclContext()->containsDecl(copied_decl))
+                    copied_decl->getDeclContext()->removeDecl(copied_decl);
+                copied_decl->setDeclContext(decl_context_non_const);
+            }
+            
+            if (!decl_context_non_const->containsDecl(copied_decl))
+                decl_context_non_const->addDeclInternal(copied_decl);
         }
     }
     
@@ -684,12 +696,11 @@ ClangASTSource::FindExternalVisibleDecls (NameSearchContext &context,
                             (name_string ? name_string : "<anonymous>"));
             }
                         
-            clang::ASTContext *type_ast = type_sp->GetClangAST();
-            lldb::clang_type_t full_type = type_sp->GetClangFullType();
+            ClangASTType full_type = type_sp->GetClangFullType();
 
-            void *copied_type = GuardedCopyType(m_ast_context, type_ast, full_type);
+            ClangASTType copied_clang_type (GuardedCopyType(full_type));
                 
-            if (!copied_type)
+            if (!copied_clang_type)
             {                
                 if (log)
                     log->Printf("  CAS::FEVD[%u] - Couldn't export a type",
@@ -698,7 +709,7 @@ ClangASTSource::FindExternalVisibleDecls (NameSearchContext &context,
                 break;
             }
                 
-            context.AddTypeDecl(copied_type);
+            context.AddTypeDecl(copied_clang_type);
         }
         else
         {
@@ -738,13 +749,9 @@ ClangASTSource::FindExternalVisibleDecls (NameSearchContext &context,
                                 name.GetCString());
                 }
                 
-                const clang::Type *runtime_clang_type = QualType::getFromOpaquePtr(types[0].GetOpaqueQualType()).getTypePtr();
+                ClangASTType copied_clang_type (GuardedCopyType(types[0]));
                 
-                clang::QualType runtime_qual_type(runtime_clang_type, 0);
-                
-                void *copied_type = GuardedCopyType(m_ast_context, type_vendor->GetClangASTContext(), runtime_qual_type.getAsOpaquePtr());
-                
-                if (!copied_type)
+                if (!copied_clang_type)
                 {
                     if (log)
                         log->Printf("  CAS::FEVD[%u] - Couldn't export a type from the runtime",
@@ -753,7 +760,7 @@ ClangASTSource::FindExternalVisibleDecls (NameSearchContext &context,
                     break;
                 }
                 
-                context.AddTypeDecl(copied_type);
+                context.AddTypeDecl(copied_clang_type);
             }
             while(0);
         }
@@ -849,7 +856,7 @@ FindObjCMethodDeclsWithOrigin (unsigned int current_id,
         
         clang::Selector sel = decl_name.getObjCSelector();
         
-        int num_args = sel.getNumArgs();
+        unsigned num_args = sel.getNumArgs();
         
         for (unsigned i = 0;
              i != num_args;
@@ -871,30 +878,33 @@ FindObjCMethodDeclsWithOrigin (unsigned int current_id,
     if (!result[0])
         return false;
     
-    ObjCMethodDecl *result_method = dyn_cast<ObjCMethodDecl>(result[0]);
-    
-    if (!result_method)
-        return false;
-    
-    Decl *copied_decl = ast_importer->CopyDecl(ast_context, &result_method->getASTContext(), result_method);
-    
-    if (!copied_decl)
-        return false;
-    
-    ObjCMethodDecl *copied_method_decl = dyn_cast<ObjCMethodDecl>(copied_decl);
-    
-    if (!copied_method_decl)
-        return false;
-    
-    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
-    
-    if (log)
+    for (NamedDecl *named_decl : result)
     {
-        ASTDumper dumper((Decl*)copied_method_decl);
-        log->Printf("  CAS::FOMD[%d] found (%s) %s", current_id, log_info, dumper.GetCString());
+        ObjCMethodDecl *result_method = dyn_cast<ObjCMethodDecl>(named_decl);
+        
+        if (!result_method)
+            return false;
+        
+        Decl *copied_decl = ast_importer->CopyDecl(ast_context, &result_method->getASTContext(), result_method);
+        
+        if (!copied_decl)
+            return false;
+        
+        ObjCMethodDecl *copied_method_decl = dyn_cast<ObjCMethodDecl>(copied_decl);
+        
+        if (!copied_method_decl)
+            return false;
+        
+        Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+        
+        if (log)
+        {
+            ASTDumper dumper((Decl*)copied_method_decl);
+            log->Printf("  CAS::FOMD[%d] found (%s) %s", current_id, log_info, dumper.GetCString());
+        }
+        
+        context.AddNamedDecl(copied_method_decl);
     }
-    
-    context.AddNamedDecl(copied_method_decl);
     
     return true;
 }
@@ -1676,42 +1686,43 @@ ClangASTSource::AddNamespace (NameSearchContext &context, ClangASTImporter::Name
     return dyn_cast<NamespaceDecl>(copied_decl);
 }
 
-void * 
-ClangASTSource::GuardedCopyType (ASTContext *dest_context, 
-                                 ASTContext *source_context,
-                                 void *clang_type)
+ClangASTType
+ClangASTSource::GuardedCopyType (const ClangASTType &src_type)
 {
     ClangASTMetrics::RegisterLLDBImport();
     
     SetImportInProgress(true);
     
-    QualType ret_qual_type = m_ast_importer->CopyType (m_ast_context, source_context, QualType::getFromOpaquePtr(clang_type));
-    
-    void *ret = ret_qual_type.getAsOpaquePtr();
+    QualType copied_qual_type = m_ast_importer->CopyType (m_ast_context, src_type.GetASTContext(), src_type.GetQualType());
     
     SetImportInProgress(false);
     
-    if (ret && ret_qual_type->getCanonicalTypeInternal().isNull())
+    if (copied_qual_type.getAsOpaquePtr() && copied_qual_type->getCanonicalTypeInternal().isNull())
         // this shouldn't happen, but we're hardening because the AST importer seems to be generating bad types
         // on occasion.
-        return NULL;
+        return ClangASTType();
     
-    return ret;
+    return ClangASTType(m_ast_context, copied_qual_type);
 }
 
 clang::NamedDecl *
-NameSearchContext::AddVarDecl(void *type) 
+NameSearchContext::AddVarDecl(const ClangASTType &type)
 {
+    assert (type && "Type for variable must be valid!");
+
+    if (!type.IsValid())
+        return NULL;
+    
     IdentifierInfo *ii = m_decl_name.getAsIdentifierInfo();
     
-    assert (type && "Type for variable must be non-NULL!");
-        
-    clang::NamedDecl *Decl = VarDecl::Create(*m_ast_source.m_ast_context, 
+    clang::ASTContext *ast = type.GetASTContext();
+
+    clang::NamedDecl *Decl = VarDecl::Create(*ast,
                                              const_cast<DeclContext*>(m_decl_context), 
                                              SourceLocation(), 
                                              SourceLocation(),
                                              ii, 
-                                             QualType::getFromOpaquePtr(type), 
+                                             type.GetQualType(),
                                              0, 
                                              SC_Static);
     m_decls.push_back(Decl);
@@ -1720,27 +1731,42 @@ NameSearchContext::AddVarDecl(void *type)
 }
 
 clang::NamedDecl *
-NameSearchContext::AddFunDecl (void *type) 
+NameSearchContext::AddFunDecl (const ClangASTType &type) 
 {
-    assert (type && "Type for variable must be non-NULL!");
+    assert (type && "Type for variable must be valid!");
     
-    clang::FunctionDecl *func_decl = FunctionDecl::Create (*m_ast_source.m_ast_context,
+    if (!type.IsValid())
+        return NULL;
+
+    if (m_function_types.count(type))
+        return NULL;
+    
+    m_function_types.insert(type);
+    
+    QualType qual_type (type.GetQualType());
+    
+    clang::ASTContext *ast = type.GetASTContext();
+
+    const bool isInlineSpecified = false;
+    const bool hasWrittenPrototype = true;
+    const bool isConstexprSpecified = false;
+
+    clang::FunctionDecl *func_decl = FunctionDecl::Create (*ast,
                                                            const_cast<DeclContext*>(m_decl_context),
                                                            SourceLocation(),
                                                            SourceLocation(),
                                                            m_decl_name.getAsIdentifierInfo(),
-                                                           QualType::getFromOpaquePtr(type),
+                                                           qual_type,
                                                            NULL,
                                                            SC_Static,
-                                                           SC_Static,
-                                                           false,
-                                                           true);
-    
+                                                           isInlineSpecified,
+                                                           hasWrittenPrototype,
+                                                           isConstexprSpecified);
+
     // We have to do more than just synthesize the FunctionDecl.  We have to
     // synthesize ParmVarDecls for all of the FunctionDecl's arguments.  To do
     // this, we raid the function's FunctionProtoType for types.
     
-    QualType qual_type (QualType::getFromOpaquePtr(type));
     const FunctionProtoType *func_proto_type = qual_type.getTypePtr()->getAs<FunctionProtoType>();
     
     if (func_proto_type)
@@ -1754,7 +1780,7 @@ NameSearchContext::AddFunDecl (void *type)
         {
             QualType arg_qual_type (func_proto_type->getArgType(ArgIndex));
             
-            parm_var_decls.push_back(ParmVarDecl::Create (*m_ast_source.m_ast_context,
+            parm_var_decls.push_back(ParmVarDecl::Create (*ast,
                                                           const_cast<DeclContext*>(m_decl_context),
                                                           SourceLocation(),
                                                           SourceLocation(),
@@ -1771,7 +1797,8 @@ NameSearchContext::AddFunDecl (void *type)
     {
         Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
-        log->Printf("Function type wasn't a FunctionProtoType");
+        if (log)
+            log->Printf("Function type wasn't a FunctionProtoType");
     }
     
     m_decls.push_back(func_decl);
@@ -1790,17 +1817,25 @@ NameSearchContext::AddGenericFunDecl()
                                                                                 ArrayRef<QualType>(),                                        // argument types
                                                                                 proto_info));
     
-    return AddFunDecl(generic_function_type.getAsOpaquePtr());
+    return AddFunDecl(ClangASTType (m_ast_source.m_ast_context, generic_function_type));
 }
 
 clang::NamedDecl *
-NameSearchContext::AddTypeDecl(void *type)
+NameSearchContext::AddTypeDecl(const ClangASTType &clang_type)
 {
-    if (type)
+    if (clang_type)
     {
-        QualType qual_type = QualType::getFromOpaquePtr(type);
+        QualType qual_type = clang_type.GetQualType();
 
-        if (const TagType *tag_type = qual_type->getAs<TagType>())
+        if (const TypedefType *typedef_type = llvm::dyn_cast<TypedefType>(qual_type))
+        {
+            TypedefNameDecl *typedef_name_decl = typedef_type->getDecl();
+            
+            m_decls.push_back(typedef_name_decl);
+            
+            return (NamedDecl*)typedef_name_decl;
+        }
+        else if (const TagType *tag_type = qual_type->getAs<TagType>())
         {
             TagDecl *tag_decl = tag_type->getDecl();
             
@@ -1815,14 +1850,6 @@ NameSearchContext::AddTypeDecl(void *type)
             m_decls.push_back((NamedDecl*)interface_decl);
             
             return (NamedDecl*)interface_decl;
-        }
-        else if (const TypedefType *typedef_type = qual_type->getAs<TypedefType>())
-        {
-            TypedefNameDecl *typedef_name_decl = typedef_type->getDecl();
-            
-            m_decls.push_back(typedef_name_decl);
-            
-            return (NamedDecl*)typedef_name_decl;
         }
     }
     return NULL;

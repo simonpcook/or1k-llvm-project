@@ -15,6 +15,10 @@
 #ifndef LLD_CORE_INSTRUMENTATION_H
 #define LLD_CORE_INSTRUMENTATION_H
 
+#include "llvm/Support/Compiler.h"
+
+#include <utility>
+
 #ifdef LLD_HAS_VTUNE
 # include <ittnotify.h>
 #endif
@@ -29,7 +33,7 @@ class Domain {
   __itt_domain *_domain;
 
 public:
-  Domain(const char *name) : _domain(__itt_domain_createA(name)) {}
+  explicit Domain(const char *name) : _domain(__itt_domain_createA(name)) {}
 
   operator __itt_domain *() const { return _domain; }
   __itt_domain *operator->() const { return _domain; }

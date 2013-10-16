@@ -83,8 +83,7 @@ Target::Target(Debugger &debugger, const ArchSpec &target_arch, const lldb::Plat
     m_source_manager_ap(),
     m_stop_hooks (),
     m_stop_hook_next_id (0),
-    m_suppress_stop_hooks (false),
-    m_suppress_synthetic_value(false)
+    m_suppress_stop_hooks (false)
 {
     SetEventName (eBroadcastBitBreakpointChanged, "breakpoint-changed");
     SetEventName (eBroadcastBitModulesLoaded, "modules-loaded");
@@ -208,7 +207,6 @@ Target::Destroy()
     m_stop_hooks.clear();
     m_stop_hook_next_id = 0;
     m_suppress_stop_hooks = false;
-    m_suppress_synthetic_value = false;
 }
 
 
@@ -564,6 +562,7 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
         error.SetErrorString("process is not alive");
         return wp_sp;
     }
+    
     if (addr == LLDB_INVALID_ADDRESS || size == 0)
     {
         if (size == 0)
@@ -571,6 +570,11 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
         else
             error.SetErrorStringWithFormat("invalid watch address: %" PRIu64, addr);
         return wp_sp;
+    }
+    
+    if (!LLDB_WATCH_TYPE_IS_VALID(kind))
+    {
+        error.SetErrorStringWithFormat ("invalid watchpoint type: %d", kind);
     }
 
     // Currently we only support one watchpoint per address, with total number
@@ -588,10 +592,13 @@ Target::CreateWatchpoint(lldb::addr_t addr, size_t size, const ClangASTType *typ
             (matched_sp->WatchpointRead() ? LLDB_WATCH_TYPE_READ : 0) |
             (matched_sp->WatchpointWrite() ? LLDB_WATCH_TYPE_WRITE : 0);
         // Return the existing watchpoint if both size and type match.
-        if (size == old_size && kind == old_type) {
+        if (size == old_size && kind == old_type)
+        {
             wp_sp = matched_sp;
             wp_sp->SetEnabled(false, notify);
-        } else {
+        }
+        else
+        {
             // Nil the matched watchpoint; we will be creating a new one.
             m_process_sp->DisableWatchpoint(matched_sp.get(), notify);
             m_watchpoint_list.Remove(matched_sp->GetID(), true);
@@ -773,6 +780,7 @@ Target::RemoveAllWatchpoints (bool end_to_end)
             return false;
     }
     m_watchpoint_list.RemoveAll (true);
+    m_last_created_watchpoint.reset();
     return true; // Success!
 }
 
@@ -940,6 +948,10 @@ Target::RemoveWatchpointByID (lldb::watch_id_t watch_id)
     if (log)
         log->Printf ("Target::%s (watch_id = %i)\n", __FUNCTION__, watch_id);
 
+    WatchpointSP watch_to_remove_sp = m_watchpoint_list.FindByID(watch_id);
+    if (watch_to_remove_sp == m_last_created_watchpoint)
+        m_last_created_watchpoint.reset();
+        
     if (DisableWatchpointByID (watch_id))
     {
         m_watchpoint_list.Remove(watch_id, true);
@@ -984,11 +996,16 @@ static void
 LoadScriptingResourceForModule (const ModuleSP &module_sp, Target *target)
 {
     Error error;
-    if (module_sp && !module_sp->LoadScriptingResourceInTarget(target, error))
+    StreamString feedback_stream;
+    if (module_sp && !module_sp->LoadScriptingResourceInTarget(target, error, &feedback_stream))
     {
-        target->GetDebugger().GetOutputStream().Printf("unable to load scripting data for module %s - error reported was %s\n",
-                                                       module_sp->GetFileSpec().GetFileNameStrippingExtension().GetCString(),
-                                                       error.AsCString());
+        if (error.AsCString())
+            target->GetDebugger().GetErrorStream().Printf("unable to load scripting data for module %s - error reported was %s\n",
+                                                           module_sp->GetFileSpec().GetFileNameStrippingExtension().GetCString(),
+                                                           error.AsCString());
+        if (feedback_stream.GetSize())
+            target->GetDebugger().GetOutputStream().Printf("%s\n",
+                                                           feedback_stream.GetData());
     }
 }
 
@@ -1004,9 +1021,8 @@ Target::SetExecutableModule (ModuleSP& executable_sp, bool get_dependent_files)
     if (executable_sp.get())
     {
         Timer scoped_timer (__PRETTY_FUNCTION__,
-                            "Target::SetExecutableModule (executable = '%s/%s')",
-                            executable_sp->GetFileSpec().GetDirectory().AsCString(),
-                            executable_sp->GetFileSpec().GetFilename().AsCString());
+                            "Target::SetExecutableModule (executable = '%s')",
+                            executable_sp->GetFileSpec().GetPath().c_str());
 
         m_images.Append(executable_sp); // The first image is our exectuable file
 
@@ -1141,18 +1157,21 @@ Target::ModulesDidLoad (ModuleList &module_list)
 void
 Target::SymbolsDidLoad (ModuleList &module_list)
 {
-    if (module_list.GetSize() == 0)
-        return;
-    if (m_process_sp)
+    if (module_list.GetSize())
     {
-        LanguageRuntime* runtime = m_process_sp->GetLanguageRuntime(lldb::eLanguageTypeObjC);
-        if (runtime)
+        if (m_process_sp)
         {
-            ObjCLanguageRuntime *objc_runtime = (ObjCLanguageRuntime*)runtime;
-            objc_runtime->SymbolsDidLoad(module_list);
+            LanguageRuntime* runtime = m_process_sp->GetLanguageRuntime(lldb::eLanguageTypeObjC);
+            if (runtime)
+            {
+                ObjCLanguageRuntime *objc_runtime = (ObjCLanguageRuntime*)runtime;
+                objc_runtime->SymbolsDidLoad(module_list);
+            }
         }
+        
+        m_breakpoint_list.UpdateBreakpoints (module_list, true);
+        BroadcastEvent(eBroadcastBitSymbolsLoaded, NULL);
     }
-    BroadcastEvent(eBroadcastBitSymbolsLoaded, NULL);
 }
 
 void
@@ -1179,7 +1198,7 @@ Target::ModuleIsExcludedForNonModuleSpecificSearches (const FileSpec &module_fil
         // black list.
         if (num_modules > 0)
         {
-            for (int i  = 0; i < num_modules; i++)
+            for (size_t i  = 0; i < num_modules; i++)
             {
                 if (!ModuleIsExcludedForNonModuleSpecificSearches (matchingModules.GetModuleAtIndex(i)))
                     return false;
@@ -1759,6 +1778,15 @@ Target::GetDefaultExecutableSearchPaths ()
     return FileSpecList();
 }
 
+FileSpecList
+Target::GetDefaultDebugFileSearchPaths ()
+{
+    TargetPropertiesSP properties_sp(Target::GetGlobalProperties());
+    if (properties_sp)
+        return properties_sp->GetDebugFileSearchPaths();
+    return FileSpecList();
+}
+
 ArchSpec
 Target::GetDefaultArchitecture ()
 {
@@ -2266,6 +2294,33 @@ g_x86_dis_flavor_value_types[] =
     { 0, NULL, NULL }
 };
 
+static OptionEnumValueElement
+g_hex_immediate_style_values[] =
+{
+    { Disassembler::eHexStyleC,        "c",      "C-style (0xffff)."},
+    { Disassembler::eHexStyleAsm,      "asm",    "Asm-style (0ffffh)."},
+    { 0, NULL, NULL }
+};
+
+static OptionEnumValueElement
+g_load_script_from_sym_file_values[] =
+{
+    { eLoadScriptFromSymFileTrue,    "true",    "Load debug scripts inside symbol files"},
+    { eLoadScriptFromSymFileFalse,   "false",   "Do not load debug scripts inside symbol files."},
+    { eLoadScriptFromSymFileWarn,    "warn",    "Warn about debug scripts inside symbol files but do not load them."},
+    { 0, NULL, NULL }
+};
+
+
+static OptionEnumValueElement
+g_memory_module_load_level_values[] =
+{
+    { eMemoryModuleLoadLevelMinimal,  "minimal" , "Load minimal information when loading modules from memory. Currently this setting loads sections only."},
+    { eMemoryModuleLoadLevelPartial,  "partial" , "Load partial information when loading modules from memory. Currently this setting loads sections and function bounds."},
+    { eMemoryModuleLoadLevelComplete, "complete", "Load complete information when loading modules from memory. Currently this setting loads sections and all symbols."},
+    { 0, NULL, NULL }
+};
+
 static PropertyDefinition
 g_properties[] =
 {
@@ -2280,8 +2335,10 @@ g_properties[] =
       "and the second is where the remainder of the original build hierarchy is rooted on the local system.  "
       "Each element of the array is checked in order and the first one that results in a match wins." },
     { "exec-search-paths"                  , OptionValue::eTypeFileSpecList, false, 0                       , NULL, NULL, "Executable search paths to use when locating executable files whose paths don't match the local file system." },
+    { "debug-file-search-paths"            , OptionValue::eTypeFileSpecList, false, 0                       , NULL, NULL, "List of directories to be searched when locating debug symbol files." },
     { "max-children-count"                 , OptionValue::eTypeSInt64    , false, 256                       , NULL, NULL, "Maximum number of children to expand in any level of depth." },
     { "max-string-summary-length"          , OptionValue::eTypeSInt64    , false, 1024                      , NULL, NULL, "Maximum number of characters to show when using %s in summary strings." },
+    { "max-memory-read-size"               , OptionValue::eTypeSInt64    , false, 1024                      , NULL, NULL, "Maximum number of bytes that 'memory read' will fetch before --force must be specified." },
     { "breakpoints-use-platform-avoid-list", OptionValue::eTypeBoolean   , false, true                      , NULL, NULL, "Consult the platform module avoid list when setting non-module specific breakpoints." },
     { "arg0"                               , OptionValue::eTypeString    , false, 0                         , NULL, NULL, "The first argument passed to the program in the argument array which can be different from the executable itself." },
     { "run-args"                           , OptionValue::eTypeArgs      , false, 0                         , NULL, NULL, "A list containing all the arguments to be passed to the executable when it is run. Note that this does NOT include the argv[0] which is in target.arg0." },
@@ -2301,7 +2358,16 @@ g_properties[] =
         "file and line breakpoints." },
     // FIXME: This is the wrong way to do per-architecture settings, but we don't have a general per architecture settings system in place yet.
     { "x86-disassembly-flavor"             , OptionValue::eTypeEnum      , false, eX86DisFlavorDefault,       NULL, g_x86_dis_flavor_value_types, "The default disassembly flavor to use for x86 or x86-64 targets." },
+    { "use-hex-immediates"                 , OptionValue::eTypeBoolean   , false, true,                       NULL, NULL, "Show immediates in disassembly as hexadecimal." },
+    { "hex-immediate-style"                , OptionValue::eTypeEnum   ,    false, Disassembler::eHexStyleC,   NULL, g_hex_immediate_style_values, "Which style to use for printing hexadecimal disassembly values." },
     { "use-fast-stepping"                  , OptionValue::eTypeBoolean   , false, true,                       NULL, NULL, "Use a fast stepping algorithm based on running from branch to branch rather than instruction single-stepping." },
+    { "load-script-from-symbol-file"       , OptionValue::eTypeEnum   ,    false, eLoadScriptFromSymFileWarn, NULL, g_load_script_from_sym_file_values, "Allow LLDB to load scripting resources embedded in symbol files when available." },
+    { "memory-module-load-level"           , OptionValue::eTypeEnum   ,    false, eMemoryModuleLoadLevelComplete, NULL, g_memory_module_load_level_values,
+        "Loading modules from memory can be slow as reading the symbol tables and other data can take a long time depending on your connection to the debug target. "
+        "This setting helps users control how much information gets loaded when loading modules from memory."
+        "'complete' is the default value for this setting which will load all sections and symbols by reading them from memory (slowest, most accurate). "
+        "'partial' will load sections and attempt to find function bounds without downloading the symbol table (faster, still accurate, missing symbol names). "
+        "'minimal' is the fastest setting and will load section data with no symbols, but should rarely be used as stack frames in these memory regions will be inaccurate and not provide any context (fastest). " },
     { NULL                                 , OptionValue::eTypeInvalid   , false, 0                         , NULL, NULL, NULL }
 };
 enum
@@ -2313,8 +2379,10 @@ enum
     ePropertySkipPrologue,
     ePropertySourceMap,
     ePropertyExecutableSearchPaths,
+    ePropertyDebugFileSearchPaths,
     ePropertyMaxChildrenCount,
     ePropertyMaxSummaryLength,
+    ePropertyMaxMemReadSize,
     ePropertyBreakpointUseAvoidList,
     ePropertyArg0,
     ePropertyRunArgs,
@@ -2327,7 +2395,11 @@ enum
     ePropertyDisableSTDIO,
     ePropertyInlineStrategy,
     ePropertyDisassemblyFlavor,
-    ePropertyUseFastStepping
+    ePropertyUseHexImmediates,
+    ePropertyHexImmediateStyle,
+    ePropertyUseFastStepping,
+    ePropertyLoadScriptFromSymbolFile,
+    ePropertyMemoryModuleLoadLevel
 };
 
 
@@ -2372,6 +2444,13 @@ public:
         }
         return ProtectedGetPropertyAtIndex (idx);
     }
+    
+    lldb::TargetSP
+    GetTargetSP ()
+    {
+        return m_target->shared_from_this();
+    }
+    
 protected:
     
     void
@@ -2581,6 +2660,15 @@ TargetProperties::GetExecutableSearchPaths ()
     return option_value->GetCurrentValue();
 }
 
+FileSpecList &
+TargetProperties::GetDebugFileSearchPaths ()
+{
+    const uint32_t idx = ePropertyDebugFileSearchPaths;
+    OptionValueFileSpecList *option_value = m_collection_sp->GetPropertyAtIndexAsOptionValueFileSpecList (NULL, false, idx);
+    assert(option_value);
+    return option_value->GetCurrentValue();
+}
+
 bool
 TargetProperties::GetEnableSyntheticValue () const
 {
@@ -2599,6 +2687,13 @@ uint32_t
 TargetProperties::GetMaximumSizeOfStringSummary() const
 {
     const uint32_t idx = ePropertyMaxSummaryLength;
+    return m_collection_sp->GetPropertyAtIndexAsSInt64 (NULL, idx, g_properties[idx].default_uint_value);
+}
+
+uint32_t
+TargetProperties::GetMaximumMemReadSize () const
+{
+    const uint32_t idx = ePropertyMaxMemReadSize;
     return m_collection_sp->GetPropertyAtIndexAsSInt64 (NULL, idx, g_properties[idx].default_uint_value);
 }
 
@@ -2667,11 +2762,40 @@ TargetProperties::GetBreakpointsConsultPlatformAvoidList ()
 }
 
 bool
+TargetProperties::GetUseHexImmediates () const
+{
+    const uint32_t idx = ePropertyUseHexImmediates;
+    return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
+}
+
+bool
 TargetProperties::GetUseFastStepping () const
 {
     const uint32_t idx = ePropertyUseFastStepping;
     return m_collection_sp->GetPropertyAtIndexAsBoolean (NULL, idx, g_properties[idx].default_uint_value != 0);
 }
+
+LoadScriptFromSymFile
+TargetProperties::GetLoadScriptFromSymbolFile () const
+{
+    const uint32_t idx = ePropertyLoadScriptFromSymbolFile;
+    return (LoadScriptFromSymFile)m_collection_sp->GetPropertyAtIndexAsEnumeration(NULL, idx, g_properties[idx].default_uint_value);
+}
+
+Disassembler::HexImmediateStyle
+TargetProperties::GetHexImmediateStyle () const
+{
+    const uint32_t idx = ePropertyHexImmediateStyle;
+    return (Disassembler::HexImmediateStyle)m_collection_sp->GetPropertyAtIndexAsEnumeration(NULL, idx, g_properties[idx].default_uint_value);
+}
+
+MemoryModuleLoadLevel
+TargetProperties::GetMemoryModuleLoadLevel() const
+{
+    const uint32_t idx = ePropertyMemoryModuleLoadLevel;
+    return (MemoryModuleLoadLevel)m_collection_sp->GetPropertyAtIndexAsEnumeration(NULL, idx, g_properties[idx].default_uint_value);
+}
+
 
 const TargetPropertiesSP &
 Target::GetGlobalProperties()

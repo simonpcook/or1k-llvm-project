@@ -30,6 +30,7 @@
 #include "Plugins/Disassembler/llvm/DisassemblerLLVMC.h"
 #include "Plugins/Instruction/ARM/EmulateInstructionARM.h"
 #include "Plugins/SymbolVendor/MacOSX/SymbolVendorMacOSX.h"
+#include "Plugins/SymbolVendor/ELF/SymbolVendorELF.h"
 #include "Plugins/ObjectContainer/BSD-Archive/ObjectContainerBSDArchive.h"
 #include "Plugins/ObjectFile/ELF/ObjectFileELF.h"
 #include "Plugins/SymbolFile/DWARF/SymbolFileDWARF.h"
@@ -41,6 +42,7 @@
 #include "Plugins/DynamicLoader/POSIX-DYLD/DynamicLoaderPOSIXDYLD.h"
 #include "Plugins/Platform/FreeBSD/PlatformFreeBSD.h"
 #include "Plugins/Platform/Linux/PlatformLinux.h"
+#include "Plugins/Platform/POSIX/PlatformPOSIX.h"
 #include "Plugins/LanguageRuntime/CPlusPlus/ItaniumABI/ItaniumABILanguageRuntime.h"
 #ifndef LLDB_DISABLE_PYTHON
 #include "Plugins/OperatingSystem/Python/OperatingSystemPython.h"
@@ -48,7 +50,6 @@
 #if defined (__APPLE__)
 #include "Plugins/DynamicLoader/MacOSX-DYLD/DynamicLoaderMacOSXDYLD.h"
 #include "Plugins/DynamicLoader/Darwin-Kernel/DynamicLoaderDarwinKernel.h"
-#include "Plugins/OperatingSystem/Darwin-Kernel/OperatingSystemDarwinKernel.h"
 #include "Plugins/LanguageRuntime/ObjC/AppleObjCRuntime/AppleObjCRuntimeV1.h"
 #include "Plugins/LanguageRuntime/ObjC/AppleObjCRuntime/AppleObjCRuntimeV2.h"
 #include "Plugins/ObjectContainer/Universal-Mach-O/ObjectContainerUniversalMachO.h"
@@ -61,6 +62,10 @@
 #endif
 
 #include "Plugins/Process/mach-core/ProcessMachCore.h"
+
+#if defined(__linux__) or defined(__FreeBSD__)
+#include "Plugins/Process/elf-core/ProcessElfCore.h"
+#endif
 
 #if defined (__linux__)
 #include "Plugins/Process/Linux/ProcessLinux.h"
@@ -99,6 +104,7 @@ lldb_private::Initialize ()
         DisassemblerLLVMC::Initialize();
         ObjectContainerBSDArchive::Initialize();
         ObjectFileELF::Initialize();
+        SymbolVendorELF::Initialize();
         SymbolFileDWARF::Initialize();
         SymbolFileSymtab::Initialize();
         UnwindAssemblyInstEmulation::Initialize();
@@ -120,7 +126,6 @@ lldb_private::Initialize ()
         //----------------------------------------------------------------------
         DynamicLoaderMacOSXDYLD::Initialize();
         DynamicLoaderDarwinKernel::Initialize();
-        OperatingSystemDarwinKernel::Initialize();
         AppleObjCRuntimeV2::Initialize();
         AppleObjCRuntimeV1::Initialize();
         ObjectContainerUniversalMachO::Initialize();
@@ -141,6 +146,10 @@ lldb_private::Initialize ()
 #endif
 #if defined (__FreeBSD__)
         ProcessFreeBSD::Initialize();
+#endif
+
+#if defined(__linux__) or defined(__FreeBSD__)
+        ProcessElfCore::Initialize();
 #endif
         //----------------------------------------------------------------------
         // Platform agnostic plugins
@@ -179,6 +188,7 @@ lldb_private::Terminate ()
     DisassemblerLLVMC::Terminate();
     ObjectContainerBSDArchive::Terminate();
     ObjectFileELF::Terminate();
+    SymbolVendorELF::Terminate();
     SymbolFileDWARF::Terminate();
     SymbolFileSymtab::Terminate();
     UnwindAssembly_x86::Terminate();
@@ -197,7 +207,6 @@ lldb_private::Terminate ()
 #if defined (__APPLE__)
     DynamicLoaderMacOSXDYLD::Terminate();
     DynamicLoaderDarwinKernel::Terminate();
-    OperatingSystemDarwinKernel::Terminate();
     AppleObjCRuntimeV2::Terminate();
     AppleObjCRuntimeV1::Terminate();
     ObjectContainerUniversalMachO::Terminate();
@@ -220,7 +229,10 @@ lldb_private::Terminate ()
 #if defined (__FreeBSD__)
     ProcessFreeBSD::Terminate();
 #endif
-    
+
+#if defined(__linux__) or defined(__FreeBSD__)
+    ProcessElfCore::Terminate();
+#endif
     ProcessGDBRemote::Terminate();
     DynamicLoaderStatic::Terminate();
 
@@ -364,6 +376,10 @@ lldb_private::GetSectionTypeAsCString (SectionType sect_type)
     case eSectionTypeDWARFDebugPubTypes: return "dwarf-pubtypes";
     case eSectionTypeDWARFDebugRanges: return "dwarf-ranges";
     case eSectionTypeDWARFDebugStr: return "dwarf-str";
+    case eSectionTypeELFSymbolTable: return "elf-symbol-table";
+    case eSectionTypeELFDynamicSymbols: return "elf-dynamic-symbols";
+    case eSectionTypeELFRelocationEntries: return "elf-relocation-entries";
+    case eSectionTypeELFDynamicLinkInfo: return "elf-dynamic-link-info";
     case eSectionTypeDWARFAppleNames: return "apple-names";
     case eSectionTypeDWARFAppleTypes: return "apple-types";
     case eSectionTypeDWARFAppleNamespaces: return "apple-namespaces";
@@ -392,8 +408,6 @@ lldb_private::NameMatches (const char *name,
         llvm::StringRef match_sref(match);
         switch (match_type)
         {
-        case eNameMatchIgnore:
-            return true;
         case eNameMatchEquals:      return name_sref == match_sref;
         case eNameMatchContains:    return name_sref.find (match_sref) != llvm::StringRef::npos;
         case eNameMatchStartsWith:  return name_sref.startswith (match_sref);

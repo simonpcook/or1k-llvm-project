@@ -30,7 +30,8 @@ class SetWatchlocationAPITestCase(TestBase):
         self.buildDsym()
         self.do_set_watchlocation()
 
-    @expectedFailureLinux # bugzilla 14416
+    @expectedFailureFreeBSD('llvm.org/pr16706') # Watchpoints fail on FreeBSD
+    @skipIfLinux # Sometimes passes, sometimes not.
     @python_api_test
     @dwarf_test
     def test_watch_location_with_dwarf(self):

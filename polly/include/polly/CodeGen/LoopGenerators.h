@@ -36,10 +36,11 @@ using namespace llvm;
 /// @param Builder    The builder used to create the loop.
 /// @param P          A pointer to the pass that uses this function. It is used
 ///                   to update analysis information.
+/// @param ExitBlock  The block the loop will exit to.
 /// @param Predicate  The predicate used to generate the upper loop bound.
 /// @return Value*    The newly created induction variable for this loop.
 Value *createLoop(Value *LowerBound, Value *UpperBound, Value *Stride,
-                  IRBuilder<> &Builder, Pass *P, BasicBlock *&AfterBlock,
+                  IRBuilder<> &Builder, Pass *P, BasicBlock *&ExitBlock,
                   ICmpInst::Predicate Predicate);
 
 class OMPGenerator {
@@ -66,10 +67,10 @@ public:
   ///                    instructions that form the actual loop body.
   ///
   /// @return Value*     The newly created induction variable for this loop.
-  Value *
-  createParallelLoop(Value *LowerBound, Value *UpperBound, Value *Stride,
-                     SetVector<Value *> &UsedValues, ValueToValueMapTy &VMap,
-                     BasicBlock::iterator *LoopBody);
+  Value *createParallelLoop(Value *LowerBound, Value *UpperBound, Value *Stride,
+                            SetVector<Value *> &UsedValues,
+                            ValueToValueMapTy &VMap,
+                            BasicBlock::iterator *LoopBody);
 
 private:
   IRBuilder<> &Builder;
@@ -103,9 +104,9 @@ private:
   /// @param SubFunction  The newly created SubFunction is returned here.
   ///
   /// @return Value*      The newly created induction variable.
-  Value *
-  createSubfunction(Value *Stride, Value *Struct, SetVector<Value *> UsedValues,
-                    ValueToValueMapTy &VMap, Function **SubFunction);
+  Value *createSubfunction(Value *Stride, Value *Struct,
+                           SetVector<Value *> UsedValues,
+                           ValueToValueMapTy &VMap, Function **SubFunction);
 
   /// @brief Create the definition of the OpenMP subfunction.
   Function *createSubfunctionDefinition();

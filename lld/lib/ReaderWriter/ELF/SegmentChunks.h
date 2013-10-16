@@ -30,6 +30,9 @@
 
 namespace lld {
 namespace elf {
+
+template <typename ELFT> class DefaultLayout;
+
 /// \brief A segment can be divided into segment slices
 ///        depending on how the segments can be split
 template<class ELFT>
@@ -108,9 +111,10 @@ public:
   typedef typename std::vector<SegmentSlice<ELFT> *>::iterator SliceIter;
   typedef typename std::vector<Chunk<ELFT> *>::iterator SectionIter;
 
-  Segment(const ELFTargetInfo &ti, StringRef name,
+  Segment(const ELFLinkingContext &context, StringRef name,
           const Layout::SegmentType type);
 
+  /// \brief the Order of segments that appear in the output file
   enum SegmentOrder {
     permUnknown,
     permRWX,
@@ -188,7 +192,7 @@ public:
 
   // For LLVM RTTI
   static inline bool classof(const Chunk<ELFT> *c) {
-    return c->kind() == Chunk<ELFT>::K_ELFSegment;
+    return c->kind() == Chunk<ELFT>::Kind::ELFSegment;
   }
 
   // Getters
@@ -196,9 +200,32 @@ public:
     return _sections.size();
   }
 
+  /// \brief, this function returns the type of segment (PT_*)
   inline Layout::SegmentType segmentType() { return _segmentType; }
 
-  inline int pageSize() const { return this->_targetInfo.getPageSize(); }
+  /// \brief return the segment type depending on the content,
+  /// If the content corresponds to Code, this will return Segment::Code
+  /// If the content corresponds to Data, this will return Segment::Data
+  /// If the content corresponds to TLS, this will return Segment::TLS
+  virtual int getContentType() const {
+    int64_t fl = flags();
+    switch (_segmentType) {
+    case llvm::ELF::PT_LOAD: {
+      if (fl && llvm::ELF::PF_X)
+        return Chunk<ELFT>::ContentType::Code;
+      if (fl && llvm::ELF::PF_W)
+        return Chunk<ELFT>::ContentType::Data;
+    }
+    case llvm::ELF::PT_TLS:
+      return Chunk<ELFT>::ContentType::TLS;
+    case llvm::ELF::PT_NOTE:
+      return Chunk<ELFT>::ContentType::Note;
+    default:
+      return Chunk<ELFT>::ContentType::Unknown;
+    }
+  }
+
+  inline int pageSize() const { return this->_context.getPageSize(); }
 
   inline int rawflags() const { return _atomflags; }
 
@@ -243,6 +270,21 @@ public:
     return _segmentSlices.end();
   }
 
+  Chunk<ELFT> *firstSection() { return _sections[0]; }
+
+private:
+
+  /// \brief Check if the chunk needs to be aligned
+  bool needAlign(Chunk<ELFT> *chunk) const {
+    if (chunk->getContentType() == Chunk<ELFT>::ContentType::Data &&
+        _outputMagic == ELFLinkingContext::OutputMagic::NMAGIC)
+      return true;
+    return false;
+  }
+
+  // Cached value of outputMagic
+  ELFLinkingContext::OutputMagic _outputMagic;
+
 protected:
   /// \brief Section or some other chunk type.
   std::vector<Chunk<ELFT> *> _sections;
@@ -257,8 +299,8 @@ protected:
 /// The segment doesnot contain any slice
 template <class ELFT> class ProgramHeaderSegment : public Segment<ELFT> {
 public:
-  ProgramHeaderSegment(const ELFTargetInfo &ti)
-      : Segment<ELFT>(ti, "PHDR", llvm::ELF::PT_PHDR) {
+  ProgramHeaderSegment(const ELFLinkingContext &context)
+      : Segment<ELFT>(context, "PHDR", llvm::ELF::PT_PHDR) {
     this->_align2 = 8;
     this->_flags = (llvm::ELF::SHF_ALLOC | llvm::ELF::SHF_EXECINSTR);
   }
@@ -285,12 +327,13 @@ protected:
 };
 
 template <class ELFT>
-Segment<ELFT>::Segment(const ELFTargetInfo &ti, StringRef name,
+Segment<ELFT>::Segment(const ELFLinkingContext &context, StringRef name,
                        const Layout::SegmentType type)
-    : Chunk<ELFT>(name, Chunk<ELFT>::K_ELFSegment, ti), _segmentType(type),
-      _flags(0), _atomflags(0) {
+    : Chunk<ELFT>(name, Chunk<ELFT>::Kind::ELFSegment, context),
+      _segmentType(type), _flags(0), _atomflags(0) {
   this->_align2 = 0;
   this->_fsize = 0;
+  _outputMagic = context.getOutputMagic();
 }
 
 // This function actually is used, but not in all instantiations of Segment.
@@ -313,7 +356,7 @@ static DefinedAtom::ContentPermissions toAtomPerms(uint64_t flags) {
 template <class ELFT> void Segment<ELFT>::append(Section<ELFT> *section) {
   _sections.push_back(section);
   if (_flags < section->getFlags())
-    _flags = section->getFlags();
+    _flags |= section->getFlags();
   if (_atomflags < toAtomPerms(_flags))
     _atomflags = toAtomPerms(_flags);
   if (this->_align2 < section->align2())
@@ -382,8 +425,16 @@ template <class ELFT> void Segment<ELFT>::assignOffsets(uint64_t startOffset) {
   endSectionIter = _sections.end();
   startSection = 0;
   bool isFirstSection = true;
+  bool isDataPageAlignedForNMagic = false;
   for (auto si = _sections.begin(); si != _sections.end(); ++si) {
     if (isFirstSection) {
+      // If the linker outputmagic is set to OutputMagic::NMAGIC, align the Data
+      // to a page boundary
+      if (!isDataPageAlignedForNMagic && needAlign(*si)) {
+        startOffset =
+            llvm::RoundUpToAlignment(startOffset, this->_context.getPageSize());
+        isDataPageAlignedForNMagic = true;
+      }
       // align the startOffset to the section alignment
       uint64_t newOffset =
         llvm::RoundUpToAlignment(startOffset, (*si)->align2());
@@ -395,12 +446,21 @@ template <class ELFT> void Segment<ELFT>::assignOffsets(uint64_t startOffset) {
       isFirstSection = false;
     } else {
       uint64_t curOffset = curSliceFileOffset + curSliceSize;
-      uint64_t newOffset =
-        llvm::RoundUpToAlignment(curOffset, (*si)->align2());
+      // If the linker outputmagic is set to OutputMagic::NMAGIC, align the Data
+      // to a page boundary
+      if (!isDataPageAlignedForNMagic && needAlign(*si)) {
+        curOffset =
+            llvm::RoundUpToAlignment(curOffset, this->_context.getPageSize());
+        isDataPageAlignedForNMagic = true;
+      }
+      uint64_t newOffset = llvm::RoundUpToAlignment(curOffset, (*si)->align2());
       SegmentSlice<ELFT> *slice = nullptr;
       // If the newOffset computed is more than a page away, lets create
       // a seperate segment, so that memory is not used up while running
-      if ((newOffset - curOffset) > this->_targetInfo.getPageSize()) {
+      if (((newOffset - curOffset) > this->_context.getPageSize()) &&
+          (_outputMagic != ELFLinkingContext::OutputMagic::NMAGIC &&
+           _outputMagic != ELFLinkingContext::OutputMagic::OMAGIC)) {
+
         // TODO: use std::find here
         for (auto s : slices()) {
           if (s->startSection() == startSection) {
@@ -417,8 +477,8 @@ template <class ELFT> void Segment<ELFT>::assignOffsets(uint64_t startOffset) {
         slice->setSections(make_range(startSectionIter, endSectionIter));
         slice->setSize(curSliceSize);
         slice->setAlign(sliceAlign);
-        uint64_t newPageOffset = llvm::RoundUpToAlignment(
-            curOffset, this->_targetInfo.getPageSize());
+        uint64_t newPageOffset =
+            llvm::RoundUpToAlignment(curOffset, this->_context.getPageSize());
         newOffset = llvm::RoundUpToAlignment(newPageOffset, (*si)->align2());
         curSliceFileOffset = newOffset;
         startSectionIter = endSectionIter;
@@ -461,16 +521,27 @@ template <class ELFT> void Segment<ELFT>::assignOffsets(uint64_t startOffset) {
 /// \brief Assign virtual addresses to the slices
 template <class ELFT> void Segment<ELFT>::assignVirtualAddress(uint64_t &addr) {
   bool isTLSSegment = false;
+  bool isDataPageAlignedForNMagic = false;
   uint64_t tlsStartAddr = 0;
 
   for (auto slice : slices()) {
-    // Align to a page
-    addr = llvm::RoundUpToAlignment(addr, this->_targetInfo.getPageSize());
+    // Align to a page only if the output is not
+    // OutputMagic::NMAGIC/OutputMagic::OMAGIC
+    if (_outputMagic != ELFLinkingContext::OutputMagic::NMAGIC &&
+        _outputMagic != ELFLinkingContext::OutputMagic::OMAGIC)
+      addr = llvm::RoundUpToAlignment(addr, this->_context.getPageSize());
+
     // Align to the slice alignment
     addr = llvm::RoundUpToAlignment(addr, slice->align2());
 
     bool virtualAddressSet = false;
     for (auto section : slice->sections()) {
+      // If the linker outputmagic is set to OutputMagic::NMAGIC, align the Data
+      // to a page boundary
+      if (!isDataPageAlignedForNMagic && needAlign(section)) {
+        addr = llvm::RoundUpToAlignment(addr, this->_context.getPageSize());
+        isDataPageAlignedForNMagic = true;
+      }
       // Align the section address
       addr = llvm::RoundUpToAlignment(addr, section->align2());
       // Check if the segment is of type TLS
@@ -496,8 +567,13 @@ template <class ELFT> void Segment<ELFT>::assignVirtualAddress(uint64_t &addr) {
       }
       if (isTLSSegment)
         tlsStartAddr += section->memSize();
-      addr += section->memSize();
-      section->setMemSize(addr - section->virtualAddr());
+      section->setMemSize(addr + section->memSize() - section->virtualAddr());
+      // TBSS section is special that it doesnot contribute to memory of any
+      // segment, If we see a tbss section, dont add memory size to addr
+      // The fileOffset is automatically taken care of since TBSS section does
+      // not endup using file size
+      if (section->order() != DefaultLayout<ELFT>::ORDER_TBSS)
+        addr += section->memSize();
     }
     slice->setMemSize(addr - slice->virtualAddr());
   }

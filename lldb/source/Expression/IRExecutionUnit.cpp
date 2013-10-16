@@ -171,9 +171,9 @@ IRExecutionUnit::DisassembleFunction (Stream &stream,
     
     const char *plugin_name = NULL;
     const char *flavor_string = NULL;
-    lldb::DisassemblerSP disassembler = Disassembler::FindPlugin(arch, flavor_string, plugin_name);
+    lldb::DisassemblerSP disassembler_sp = Disassembler::FindPlugin(arch, flavor_string, plugin_name);
     
-    if (!disassembler)
+    if (!disassembler_sp)
     {
         ret.SetErrorToGenericError();
         ret.SetErrorStringWithFormat("Unable to find disassembler plug-in for %s architecture.", arch.GetArchitectureName());
@@ -202,9 +202,9 @@ IRExecutionUnit::DisassembleFunction (Stream &stream,
                             DataExtractor::TypeUInt8);
     }
     
-    disassembler->DecodeInstructions (Address (func_remote_addr), extractor, 0, UINT32_MAX, false, false);
+    disassembler_sp->DecodeInstructions (Address (func_remote_addr), extractor, 0, UINT32_MAX, false, false);
     
-    InstructionList &instruction_list = disassembler->GetInstructionList();
+    InstructionList &instruction_list = disassembler_sp->GetInstructionList();
     const uint32_t max_opcode_byte_size = instruction_list.GetMaxOpcocdeByteSize();
     
     for (size_t instruction_index = 0, num_instructions = instruction_list.GetSize();
@@ -219,7 +219,9 @@ IRExecutionUnit::DisassembleFunction (Stream &stream,
                            &exe_ctx);
         stream.PutChar('\n');
     }
-    
+    // FIXME: The DisassemblerLLVMC has a reference cycle and won't go away if it has any active instructions.
+    // I'll fix that but for now, just clear the list and it will go away nicely.
+    disassembler_sp->GetInstructionList().Clear();
     return ret;
 }
 
@@ -488,11 +490,12 @@ IRExecutionUnit::MemoryManager::allocateSpace(intptr_t Size, unsigned Alignment)
 uint8_t *
 IRExecutionUnit::MemoryManager::allocateCodeSection(uintptr_t Size,
                                                     unsigned Alignment,
-                                                    unsigned SectionID)
+                                                    unsigned SectionID,
+                                                    llvm::StringRef SectionName)
 {
     Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
-    uint8_t *return_value = m_default_mm_ap->allocateCodeSection(Size, Alignment, SectionID);
+    uint8_t *return_value = m_default_mm_ap->allocateCodeSection(Size, Alignment, SectionID, SectionName);
     
     m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
                                                   lldb::ePermissionsReadable | lldb::ePermissionsExecutable,
@@ -513,11 +516,12 @@ uint8_t *
 IRExecutionUnit::MemoryManager::allocateDataSection(uintptr_t Size,
                                                     unsigned Alignment,
                                                     unsigned SectionID,
+                                                    llvm::StringRef SectionName,
                                                     bool IsReadOnly)
 {
     Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
 
-    uint8_t *return_value = m_default_mm_ap->allocateDataSection(Size, Alignment, SectionID, IsReadOnly);
+    uint8_t *return_value = m_default_mm_ap->allocateDataSection(Size, Alignment, SectionID, SectionName, IsReadOnly);
     
     m_parent.m_records.push_back(AllocationRecord((uintptr_t)return_value,
                                                   lldb::ePermissionsReadable | lldb::ePermissionsWritable,
@@ -561,31 +565,11 @@ IRExecutionUnit::MemoryManager::deallocateFunctionBody(void *Body)
     m_default_mm_ap->deallocateFunctionBody(Body);
 }
 
-uint8_t*
-IRExecutionUnit::MemoryManager::startExceptionTable(const llvm::Function* F,
-                                                    uintptr_t &ActualSize)
-{
-    return m_default_mm_ap->startExceptionTable(F, ActualSize);
-}
-
-void
-IRExecutionUnit::MemoryManager::endExceptionTable(const llvm::Function *F,
-                                                  uint8_t *TableStart,
-                                                  uint8_t *TableEnd,
-                                                  uint8_t* FrameRegister)
-{
-    m_default_mm_ap->endExceptionTable(F, TableStart, TableEnd, FrameRegister);
-}
-
-void
-IRExecutionUnit::MemoryManager::deallocateExceptionTable(void *ET)
-{
-    m_default_mm_ap->deallocateExceptionTable (ET);
-}
-
 lldb::addr_t
 IRExecutionUnit::GetRemoteAddressForLocal (lldb::addr_t local_address)
 {
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+
     for (AllocationRecord &record : m_records)
     {
         if (local_address >= record.m_host_address &&
@@ -593,9 +577,22 @@ IRExecutionUnit::GetRemoteAddressForLocal (lldb::addr_t local_address)
         {
             if (record.m_process_address == LLDB_INVALID_ADDRESS)
                 return LLDB_INVALID_ADDRESS;
+            
+            lldb::addr_t ret = record.m_process_address + (local_address - record.m_host_address);
+            
+            if (log)
+            {
+                log->Printf("IRExecutionUnit::GetRemoteAddressForLocal() found 0x%" PRIx64 " in [0x%" PRIx64 "..0x%" PRIx64 "], and returned 0x%" PRIx64 " from [0x%" PRIx64 "..0x%" PRIx64 "].",
+                            local_address,
+                            (uint64_t)record.m_host_address,
+                            (uint64_t)record.m_host_address + (uint64_t)record.m_size,
+                            ret,
+                            record.m_process_address,
+                            record.m_process_address + record.m_size);
+            }
+            
+            return ret;
         }
-        
-        return record.m_process_address + (local_address - record.m_host_address);
     }
 
     return LLDB_INVALID_ADDRESS;

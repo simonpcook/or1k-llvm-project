@@ -33,14 +33,11 @@ public:
     static void
     Terminate ();
 
-    static const char *
-    GetPluginNameStatic();
+    static lldb_private::ConstString
+    GetPluginNameStatic (bool is_host);
 
     static const char *
-    GetShortPluginNameStatic(bool is_host);
-
-    static const char *
-    GetDescriptionStatic(bool is_host);
+    GetDescriptionStatic (bool is_host);
 
     //------------------------------------------------------------
     // Class Methods
@@ -53,16 +50,10 @@ public:
     //------------------------------------------------------------
     // lldb_private::PluginInterface functions
     //------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName()
     {
-        return GetPluginNameStatic();
-    }
-
-    virtual const char *
-    GetShortPluginName()
-    {
-        return GetShortPluginNameStatic (IsHost());
+        return GetPluginNameStatic (IsHost());
     }
 
     virtual uint32_t
@@ -80,6 +71,14 @@ public:
     //------------------------------------------------------------
     // lldb_private::Platform functions
     //------------------------------------------------------------
+    virtual lldb_private::Error
+    RunShellCommand (const char *command,
+                     const char *working_dir,
+                     int *status_ptr,
+                     int *signo_ptr,
+                     std::string *command_output,
+                     uint32_t timeout_sec);
+
     virtual lldb_private::Error
     ResolveExecutable (const lldb_private::FileSpec &exe_file,
                        const lldb_private::ArchSpec &arch,

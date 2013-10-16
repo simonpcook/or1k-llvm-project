@@ -51,7 +51,7 @@ LogChannelDWARF::CreateInstance ()
     return new LogChannelDWARF ();
 }
 
-const char *
+lldb_private::ConstString
 LogChannelDWARF::GetPluginNameStatic()
 {
     return SymbolFileDWARF::GetPluginNameStatic();
@@ -63,14 +63,8 @@ LogChannelDWARF::GetPluginDescriptionStatic()
     return "DWARF log channel for debugging plug-in issues.";
 }
 
-const char *
+lldb_private::ConstString
 LogChannelDWARF::GetPluginName()
-{
-    return GetPluginDescriptionStatic();
-}
-
-const char *
-LogChannelDWARF::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }
@@ -180,14 +174,15 @@ LogChannelDWARF::ListCategories (Stream *strm)
 {
     strm->Printf ("Logging categories for '%s':\n"
                   "  all - turn on all available logging categories\n"
-                  "  info - log the parsing if .debug_info\n"
-                  "  line - log the parsing if .debug_line\n"
-                  "  pubnames - log the parsing if .debug_pubnames\n"
-                  "  pubtypes - log the parsing if .debug_pubtypes\n"
+                  "  info - log the parsing of .debug_info\n"
+                  "  line - log the parsing of .debug_line\n"
+                  "  pubnames - log the parsing of .debug_pubnames\n"
+                  "  pubtypes - log the parsing of .debug_pubtypes\n"
+                  "  aranges - log the parsing of .debug_aranges\n"
                   "  lookups - log any lookups that happen by name, regex, or address\n"
                   "  completion - log struct/unions/class type completions\n"
                   "  map - log insertions of object files into DWARF debug maps\n",
-                  SymbolFileDWARF::GetPluginNameStatic());
+                  SymbolFileDWARF::GetPluginNameStatic().GetCString());
 }
 
 Log *

@@ -380,6 +380,7 @@ namespace lldb {
         eArgTypeClassName,
         eArgTypeCommandName,
         eArgTypeCount,
+        eArgTypeDescriptionVerbosity,
         eArgTypeDirectoryName,
         eArgTypeDisassemblyFlavor,
         eArgTypeEndAddress,
@@ -406,6 +407,9 @@ namespace lldb {
         eArgTypeOffset,
         eArgTypeOldPathPrefix,
         eArgTypeOneLiner,
+        eArgTypePath,
+        eArgTypePermissionsNumber,
+        eArgTypePermissionsString,
         eArgTypePid,
         eArgTypePlugin,
         eArgTypeProcessName,
@@ -515,6 +519,10 @@ namespace lldb {
         eSectionTypeDWARFAppleTypes,
         eSectionTypeDWARFAppleNamespaces,
         eSectionTypeDWARFAppleObjC,
+        eSectionTypeELFSymbolTable,       // Elf SHT_SYMTAB section
+        eSectionTypeELFDynamicSymbols,    // Elf SHT_DYNSYM section
+        eSectionTypeELFRelocationEntries, // Elf SHT_REL or SHT_REL section
+        eSectionTypeELFDynamicLinkInfo,   // Elf SHT_DYNAMIC section
         eSectionTypeEHFrame,
         eSectionTypeOther
         
@@ -541,10 +549,7 @@ namespace lldb {
                                                     // methods or selectors will be searched.
         eFunctionNameTypeMethod     = (1u << 4),    // Find function by method name (C++) with no namespace or arguments
         eFunctionNameTypeSelector   = (1u << 5),    // Find function by selector name (ObjC) names
-        eFunctionNameTypeAny        = (eFunctionNameTypeFull     |
-                                       eFunctionNameTypeBase     |
-                                       eFunctionNameTypeMethod   |
-                                       eFunctionNameTypeSelector )
+        eFunctionNameTypeAny        = eFunctionNameTypeAuto // DEPRECATED: use eFunctionNameTypeAuto
     } FunctionNameType;
     
     
@@ -613,7 +618,7 @@ namespace lldb {
         eTypeClassOther             = (1u << 31),
         // Define a mask that can be used for any type when finding types
         eTypeClassAny               = (0xffffffffu)
-    }TypeClass;
+    } TypeClass;
 
     typedef enum TemplateArgumentKind
     {

@@ -7,27 +7,107 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "HexagonDynamicAtoms.h"
 #include "HexagonTargetHandler.h"
-#include "HexagonTargetInfo.h"
+#include "HexagonLinkingContext.h"
 
 using namespace lld;
 using namespace elf;
 
 using namespace llvm::ELF;
 
-HexagonTargetHandler::HexagonTargetHandler(HexagonTargetInfo &targetInfo)
-    : DefaultTargetHandler(targetInfo), _targetLayout(targetInfo),
-      _relocationHandler(targetInfo, *this, _targetLayout),
-      _hexagonRuntimeFile(targetInfo) {}
+HexagonTargetHandler::HexagonTargetHandler(HexagonLinkingContext &context)
+    : DefaultTargetHandler(context), _targetLayout(context),
+      _relocationHandler(context, *this, _targetLayout),
+      _hexagonRuntimeFile(context) {}
 
 namespace {
 
 using namespace llvm::ELF;
 
+// .got atom
+const uint8_t hexagonGotAtomContent[4] = { 0 };
+// .got.plt atom (entry 0)
+const uint8_t hexagonGotPlt0AtomContent[16] = { 0 };
+// .got.plt atom (all other entries)
+const uint8_t hexagonGotPltAtomContent[4] = { 0 };
+// .plt (entry 0)
+const uint8_t hexagonPlt0AtomContent[28] = {
+  0x00, 0x40, 0x00, 0x00, // { immext (#0)
+  0x1c, 0xc0, 0x49, 0x6a, //   r28 = add (pc, ##GOT0@PCREL) } # address of GOT0
+  0x0e, 0x42, 0x9c, 0xe2, // { r14 -= add (r28, #16)  # offset of GOTn from GOTa
+  0x4f, 0x40, 0x9c, 0x91, //   r15 = memw (r28 + #8)  # object ID at GOT2
+  0x3c, 0xc0, 0x9c, 0x91, //   r28 = memw (r28 + #4) }# dynamic link at GOT1
+  0x0e, 0x42, 0x0e, 0x8c, // { r14 = asr (r14, #2)    # index of PLTn
+  0x00, 0xc0, 0x9c, 0x52, //   jumpr r28 }            # call dynamic linker
+};
+
+// .plt (other entries)
+const uint8_t hexagonPltAtomContent[16] = {
+  0x00, 0x40, 0x00, 0x00, // { immext (#0)
+  0x0e, 0xc0, 0x49, 0x6a, //   r14 = add (pc, ##GOTn@PCREL) } # address of GOTn
+  0x1c, 0xc0, 0x8e, 0x91, // r28 = memw (r14)                 # contents of GOTn
+  0x00, 0xc0, 0x9c, 0x52, // jumpr r28                        # call it
+};
+
+class HexagonGOTAtom : public GOTAtom {
+public:
+  HexagonGOTAtom(const File &f) : GOTAtom(f, ".got") {}
+
+  virtual ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>(hexagonGotAtomContent, 4);
+  }
+
+  virtual Alignment alignment() const { return Alignment(2); }
+};
+
+class HexagonGOTPLTAtom : public GOTAtom {
+public:
+  HexagonGOTPLTAtom(const File &f) : GOTAtom(f, ".got.plt") {}
+
+  virtual ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>(hexagonGotPltAtomContent, 4);
+  }
+
+  virtual Alignment alignment() const { return Alignment(2); }
+};
+
+class HexagonGOTPLT0Atom : public GOTAtom {
+public:
+  HexagonGOTPLT0Atom(const File &f) : GOTAtom(f, ".got.plt") {}
+
+  virtual ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>(hexagonGotPlt0AtomContent, 16);
+  }
+
+  virtual Alignment alignment() const { return Alignment(3); }
+};
+
+class HexagonPLT0Atom : public PLT0Atom {
+public:
+  HexagonPLT0Atom(const File &f) : PLT0Atom(f) {
+#ifndef NDEBUG
+    _name = ".PLT0";
+#endif
+  }
+
+  virtual ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>(hexagonPlt0AtomContent, 28);
+  }
+};
+
+class HexagonPLTAtom : public PLTAtom {
+
+public:
+  HexagonPLTAtom(const File &f, StringRef secName) : PLTAtom(f, secName) {}
+
+  virtual ArrayRef<uint8_t> rawContent() const {
+    return ArrayRef<uint8_t>(hexagonPltAtomContent, 16);
+  }
+};
+
 class ELFPassFile : public SimpleFile {
 public:
-  ELFPassFile(const ELFTargetInfo &eti) : SimpleFile(eti, "ELFPassFile") {}
+  ELFPassFile(const ELFLinkingContext &eti) : SimpleFile(eti, "ELFPassFile") {}
 
   llvm::BumpPtrAllocator _alloc;
 };
@@ -64,8 +144,8 @@ protected:
   }
 
 public:
-  GOTPLTPass(const ELFTargetInfo &ti)
-      : _file(ti), _null(nullptr), _PLT0(nullptr), _got0(nullptr) {}
+  GOTPLTPass(const ELFLinkingContext &ctx)
+      : _file(ctx), _null(nullptr), _PLT0(nullptr), _got0(nullptr) {}
 
   /// \brief Do the pass.
   ///
@@ -132,7 +212,7 @@ protected:
 
 class DynamicGOTPLTPass LLVM_FINAL : public GOTPLTPass<DynamicGOTPLTPass> {
 public:
-  DynamicGOTPLTPass(const elf::HexagonTargetInfo &ti) : GOTPLTPass(ti) {
+  DynamicGOTPLTPass(const elf::HexagonLinkingContext &ctx) : GOTPLTPass(ctx) {
     _got0 = new (_file._alloc) HexagonGOTPLT0Atom(_file);
 #ifndef NDEBUG
     _got0->_name = "__got0";
@@ -211,8 +291,8 @@ public:
 };
 } // end anonymous namespace
 
-void elf::HexagonTargetInfo::addPasses(PassManager &pm) const {
+void elf::HexagonLinkingContext::addPasses(PassManager &pm) const {
   if (isDynamic())
     pm.add(std::unique_ptr<Pass>(new DynamicGOTPLTPass(*this)));
-  ELFTargetInfo::addPasses(pm);
+  ELFLinkingContext::addPasses(pm);
 }

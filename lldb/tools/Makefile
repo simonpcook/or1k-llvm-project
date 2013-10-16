@@ -8,6 +8,10 @@
 ##===----------------------------------------------------------------------===##
 
 LLDB_LEVEL := ..
+include $(LLDB_LEVEL)/../../Makefile.config
+
+ifneq ($(HOST_OS),MingW)
 DIRS := driver lldb-platform
+endif
 
 include $(LLDB_LEVEL)/Makefile

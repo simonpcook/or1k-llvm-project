@@ -12,6 +12,7 @@
 #include "lldb/DataFormatters/CXXFormatterFunctions.h"
 
 #include "lldb/Core/DataBufferHeap.h"
+#include "lldb/Core/Debugger.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Stream.h"
 #include "lldb/Core/ValueObject.h"
@@ -329,7 +330,7 @@ lldb_private::formatters::LibcxxSharedPtrSyntheticFrontEnd::GetChildAtIndex (siz
                 return lldb::ValueObjectSP();
             uint64_t count = 1 + shared_owners_sp->GetValueAsUnsigned(0);
             DataExtractor data(&count, 8, m_byte_order, m_ptr_size);
-            m_count_sp = ValueObject::CreateValueObjectFromData("count", data, valobj_sp->GetExecutionContextRef(), ClangASTType(shared_owners_sp->GetClangAST(), shared_owners_sp->GetClangType()));
+            m_count_sp = ValueObject::CreateValueObjectFromData("count", data, valobj_sp->GetExecutionContextRef(), shared_owners_sp->GetClangType());
         }
         return m_count_sp;
     }
@@ -342,7 +343,7 @@ lldb_private::formatters::LibcxxSharedPtrSyntheticFrontEnd::GetChildAtIndex (siz
                 return lldb::ValueObjectSP();
             uint64_t count = 1 + shared_weak_owners_sp->GetValueAsUnsigned(0);
             DataExtractor data(&count, 8, m_byte_order, m_ptr_size);
-            m_weak_count_sp = ValueObject::CreateValueObjectFromData("count", data, valobj_sp->GetExecutionContextRef(), ClangASTType(shared_weak_owners_sp->GetClangAST(), shared_weak_owners_sp->GetClangType()));
+            m_weak_count_sp = ValueObject::CreateValueObjectFromData("count", data, valobj_sp->GetExecutionContextRef(), shared_weak_owners_sp->GetClangType());
         }
         return m_weak_count_sp;
     }
@@ -463,9 +464,8 @@ lldb_private::formatters::LibcxxStdVectorSyntheticFrontEnd::Update()
     data_type_finder_sp = data_type_finder_sp->GetChildMemberWithName(ConstString("__first_"),true);
     if (!data_type_finder_sp)
         return false;
-    m_element_type = ClangASTType(data_type_finder_sp->GetClangAST(),data_type_finder_sp->GetClangType());
-    m_element_type.SetClangType(m_element_type.GetASTContext(), m_element_type.GetPointeeType());
-    m_element_size = m_element_type.GetTypeByteSize();
+    m_element_type = data_type_finder_sp->GetClangType().GetPointeeType();
+    m_element_size = m_element_type.GetByteSize();
     
     if (m_element_size > 0)
     {
@@ -503,4 +503,17 @@ lldb_private::formatters::LibcxxStdVectorSyntheticFrontEndCreator (CXXSyntheticC
     if (!valobj_sp)
         return NULL;
     return (new LibcxxStdVectorSyntheticFrontEnd(valobj_sp));
+}
+
+bool
+lldb_private::formatters::LibcxxContainerSummaryProvider (ValueObject& valobj, Stream& stream)
+{
+    if (valobj.IsPointerType())
+    {
+        uint64_t value = valobj.GetValueAsUnsigned(0);
+        if (!value)
+            return false;
+        stream.Printf("0x%016" PRIx64 " ", value);
+    }
+    return Debugger::FormatPrompt("size=${svar%#}", NULL, NULL, NULL, stream, &valobj);
 }

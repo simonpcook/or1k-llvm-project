@@ -23,7 +23,7 @@
 #include "ProcessPOSIXLog.h"
 #include "Plugins/Process/Utility/InferiorCallPOSIX.h"
 #include "ProcessMonitor.h"
-#include "POSIXThread.h"
+#include "LinuxThread.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -32,9 +32,9 @@ using namespace lldb_private;
 // Static functions.
 
 ProcessSP
-ProcessLinux::CreateInstance(Target &target, Listener &listener, const FileSpec *)
+ProcessLinux::CreateInstance(Target &target, Listener &listener, const FileSpec *core_file)
 {
-    return ProcessSP(new ProcessLinux(target, listener));
+    return ProcessSP(new ProcessLinux(target, listener, (FileSpec *)core_file));
 }
 
 void
@@ -63,8 +63,8 @@ ProcessLinux::Initialize()
 //------------------------------------------------------------------------------
 // Constructors and destructors.
 
-ProcessLinux::ProcessLinux(Target& target, Listener &listener)
-    : ProcessPOSIX(target, listener)
+ProcessLinux::ProcessLinux(Target& target, Listener &listener, FileSpec *core_file)
+    : ProcessPOSIX(target, listener), m_core_file(core_file), m_stopping_threads(false)
 {
 #if 0
     // FIXME: Putting this code in the ctor and saving the byte order in a
@@ -81,10 +81,12 @@ void
 ProcessLinux::Terminate()
 {
 }
-const char *
+
+lldb_private::ConstString
 ProcessLinux::GetPluginNameStatic()
 {
-    return "linux";
+    static ConstString g_name("linux");
+    return g_name;
 }
 
 const char *
@@ -105,16 +107,10 @@ ProcessLinux::UpdateThreadList(ThreadList &old_thread_list, ThreadList &new_thre
 //------------------------------------------------------------------------------
 // ProcessInterface protocol.
 
-const char *
+lldb_private::ConstString
 ProcessLinux::GetPluginName()
 {
-    return "process.linux";
-}
-
-const char *
-ProcessLinux::GetShortPluginName()
-{
-    return "process.linux";
+    return GetPluginNameStatic();
 }
 
 uint32_t
@@ -139,3 +135,89 @@ ProcessLinux::EnablePluginLogging(Stream *strm, Args &command)
 {
     return NULL;
 }
+
+Error
+ProcessLinux::DoDetach(bool keep_stopped)
+{
+    Error error;
+    if (keep_stopped)
+    {
+        // FIXME: If you want to implement keep_stopped,
+        // this would be the place to do it.
+        error.SetErrorString("Detaching with keep_stopped true is not currently supported on Linux.");
+        return error;
+    }
+
+    Mutex::Locker lock(m_thread_list.GetMutex());
+
+    uint32_t thread_count = m_thread_list.GetSize(false);
+    for (uint32_t i = 0; i < thread_count; ++i)
+    {
+        POSIXThread *thread = static_cast<POSIXThread*>(
+            m_thread_list.GetThreadAtIndex(i, false).get());
+        error = m_monitor->Detach(thread->GetID());
+    }
+
+    if (error.Success())
+        SetPrivateState(eStateDetached);
+
+    return error;
+}
+
+
+// ProcessPOSIX override
+void
+ProcessLinux::StopAllThreads(lldb::tid_t stop_tid)
+{
+    // If a breakpoint occurs while we're stopping threads, we'll get back
+    // here, but we don't want to do it again.  Only the MonitorChildProcess
+    // thread calls this function, so we don't need to protect this flag.
+    if (m_stopping_threads)
+      return;
+    m_stopping_threads = true;
+
+    Log *log (ProcessPOSIXLog::GetLogIfAllCategoriesSet (POSIX_LOG_PROCESS));
+    if (log)
+        log->Printf ("ProcessLinux::%s() stopping all threads", __FUNCTION__);
+
+    // Walk the thread list and stop the other threads.  The thread that caused
+    // the stop should already be marked as stopped before we get here.
+    Mutex::Locker thread_list_lock(m_thread_list.GetMutex());
+
+    uint32_t thread_count = m_thread_list.GetSize(false);
+    for (uint32_t i = 0; i < thread_count; ++i)
+    {
+        POSIXThread *thread = static_cast<POSIXThread*>(
+            m_thread_list.GetThreadAtIndex(i, false).get());
+        assert(thread);
+        lldb::tid_t tid = thread->GetID();
+        if (!StateIsStoppedState(thread->GetState(), false))
+            m_monitor->StopThread(tid);
+    }
+
+    m_stopping_threads = false;
+
+    if (log)
+        log->Printf ("ProcessLinux::%s() finished", __FUNCTION__);
+}
+
+// ProcessPOSIX override
+POSIXThread *
+ProcessLinux::CreateNewPOSIXThread(lldb_private::Process &process, lldb::tid_t tid)
+{
+    return new LinuxThread(process, tid);
+}
+
+bool
+ProcessLinux::CanDebug(Target &target, bool plugin_specified_by_name)
+{
+    if (plugin_specified_by_name)
+        return true;
+
+    /* If core file is specified then let elf-core plugin handle it */
+    if (m_core_file)
+        return false;
+
+    return ProcessPOSIX::CanDebug(target, plugin_specified_by_name);
+}
+

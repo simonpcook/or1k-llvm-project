@@ -30,7 +30,7 @@ public:
     static void
     Terminate();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
 
     static const char *
@@ -64,11 +64,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -94,6 +91,9 @@ protected:
 
     /// Auxiliary vector of the inferior process.
     std::unique_ptr<AuxVector> m_auxv;
+
+    /// Rendezvous breakpoint.
+    lldb::break_id_t m_dyld_bid;
 
     /// Enables a breakpoint on a function called by the runtime
     /// linker each time a module is loaded or unloaded.
@@ -121,6 +121,12 @@ protected:
     void
     UpdateLoadedSections(lldb::ModuleSP module, 
                          lldb::addr_t base_addr = 0);
+
+    /// Removes the loaded sections from the target in @p module.
+    ///
+    /// @param module The module to traverse.
+    void
+    UnloadSections(const lldb::ModuleSP module);
 
     /// Locates or creates a module given by @p file and updates/loads the
     /// resulting module at the virtual base address @p base_addr.
@@ -165,6 +171,9 @@ protected:
 
 private:
     DISALLOW_COPY_AND_ASSIGN(DynamicLoaderPOSIXDYLD);
+
+    const lldb_private::SectionList *
+    GetSectionListFromModule(const lldb::ModuleSP module) const;
 };
 
 #endif  // liblldb_DynamicLoaderPOSIXDYLD_H_

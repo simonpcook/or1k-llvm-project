@@ -144,16 +144,25 @@ public:
     typeTLVInitialData,     // initial data for a TLV [Darwin]
     typeTLVInitialZeroFill, // TLV initial zero fill data [Darwin]
     typeTLVInitializerPtr,  // pointer to thread local initializer [Darwin]
+    typeDataDirectoryEntry, // linker created for data directory header [PECOFF]
+    typeThreadZeroFill,     // Uninitialized thread local data(TBSS) [ELF]
+    typeThreadData,         // Initialized thread local data(TDATA) [ELF]
+    typeRONote,             // Identifies readonly note sections [ELF]
+    typeRWNote,             // Identifies readwrite note sections [ELF]
+    typeNoAlloc,            // Identifies non allocatable sections [ELF]
   };
 
+  // Permission bits for atoms and segments. The order of these values are
+  // important, because the layout pass may sort atoms by permission if other
+  // attributes are the same.
   enum ContentPermissions {
     perm___  = 0,           // mapped as unaccessible
     permR__  = 8,           // mapped read-only
     permRW_  = 8 + 2,       // mapped readable and writable
-    permR_X  = 8 + 4,       // mapped readable and executable
-    permRWX  = 8 + 4 + 2,   // mapped readable and writable and executable
-    permRW_L = 8 + 4 + 1,   // initially mapped r/w, then made read-only
+    permRW_L = 8 + 2 + 1,   // initially mapped r/w, then made read-only
                             // loader writable
+    permR_X  = 8 + 4,       // mapped readable and executable
+    permRWX  = 8 + 2 + 4,   // mapped readable and writable and executable
     permUnknown = 16        // unknown or invalid permissions
   };
 
@@ -193,6 +202,11 @@ public:
   ///
   /// This is used by the linker to order the layout of Atoms so that the
   /// resulting image is stable and reproducible.
+  ///
+  /// Note that this should not be confused with ordinals of exported symbols in
+  /// Windows DLLs. In Windows terminology, ordinals are symbols' export table
+  /// indices (small integers) which can be used instead of symbol names to
+  /// refer items in a DLL.
   virtual uint64_t ordinal() const = 0;
 
   /// \brief the number of bytes of space this atom's content will occupy in the
@@ -245,11 +259,6 @@ public:
   /// is R__.
   virtual ContentPermissions permissions() const;
 
-  /// \brief only applicable to ARM code. Tells the linker if the code uses
-  /// thumb or arm instructions.  The linker needs to know this to set the low
-  /// bit of pointers to thumb functions.
-  virtual bool isThumb() const = 0;
-
   /// \brief means this is a zero size atom that exists to provide an alternate
   /// name for another atom.  Alias atoms must have a special Reference to the
   /// atom they alias which the layout engine recognizes and forces the alias
@@ -301,6 +310,15 @@ public:
 
   /// Utility for deriving permissions from content type
   static ContentPermissions permissions(ContentType type);
+
+  /// Utility function to check if the atom occupies file space
+  virtual bool occupiesDiskSpace() const {
+    ContentType atomContentType = contentType();
+    return !(atomContentType == DefinedAtom::typeZeroFill ||
+             atomContentType == DefinedAtom::typeZeroFillFast ||
+             atomContentType == DefinedAtom::typeTLVInitialZeroFill ||
+             atomContentType == DefinedAtom::typeThreadZeroFill);
+  }
 
 protected:
   // DefinedAtom is an abstract base class. Only subclasses can access

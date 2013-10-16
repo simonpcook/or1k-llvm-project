@@ -72,15 +72,15 @@ class Value;
 namespace polly {
 typedef std::set<const SCEV *> ParamSetType;
 
+extern bool PollyTrackFailures;
+
 //===----------------------------------------------------------------------===//
 /// @brief Pass to detect the maximal static control parts (Scops) of a
 /// function.
 class ScopDetection : public FunctionPass {
   //===--------------------------------------------------------------------===//
-  // DO NOT IMPLEMENT
-  ScopDetection(const ScopDetection &);
-  // DO NOT IMPLEMENT
-  const ScopDetection &operator=(const ScopDetection &);
+  ScopDetection(const ScopDetection &) LLVM_DELETED_FUNCTION;
+  const ScopDetection &operator=(const ScopDetection &) LLVM_DELETED_FUNCTION;
 
   /// @brief Analysis passes used.
   //@{
@@ -145,6 +145,13 @@ class ScopDetection : public FunctionPass {
   /// @return True if the call instruction is valid, false otherwise.
   static bool isValidCallInst(CallInst &CI);
 
+  /// @brief Format the invalid alias message.
+  ///
+  /// @param AS The alias set.
+  ///
+  /// @return The failure message why the alias is invalid.
+  std::string formatInvalidAlias(AliasSet &AS) const;
+
   /// @brief Check if a memory access can be part of a Scop.
   ///
   /// @param Inst The instruction accessing the memory.
@@ -170,14 +177,6 @@ class ScopDetection : public FunctionPass {
   ///
   /// @return True if the instruction is valid, false otherwise.
   bool isValidInstruction(Instruction &Inst, DetectionContext &Context) const;
-
-  /// @brief Check if the BB can be part of a Scop.
-  ///
-  /// @param BB The basic block to check.
-  /// @param Context The context of scop detection.
-  ///
-  /// @return True if the basic block is valid, false otherwise.
-  bool isValidBasicBlock(BasicBlock &BB, DetectionContext &Context) const;
 
   /// @brief Check if the control flow in a basic block is valid.
   ///
@@ -279,7 +278,7 @@ public:
   //@}
 };
 
-} //end namespace polly
+} // end namespace polly
 
 namespace llvm {
 class PassRegistry;

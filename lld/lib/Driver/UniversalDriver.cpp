@@ -9,7 +9,8 @@
 ///
 /// \file
 ///
-/// Concrete instance of the Driver for darwin's ld.
+/// Driver for "universal" lld tool which can mimic any linker command line
+/// parsing once it figures out which command line flavor to use.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -101,7 +102,8 @@ Flavor selectFlavor(std::vector<const char *> &args, raw_ostream &diag) {
   // If flavor still undetermined, then error out.
   if (flavor == Flavor::invalid)
     diag << "error: failed to determine driver flavor from program name"
-            " '" << args[0] << "'.\n";
+         << " '" << args[0] << "'.\n"
+         << "select a flavor with -flavor [gnu|darwin|link|core].\n";
   return flavor;
 }
 }
@@ -122,12 +124,12 @@ bool UniversalDriver::link(int argc, const char *argv[],
     return GnuLdDriver::linkELF(args.size(), args.data(), diagnostics);
   case Flavor::darwin_ld:
     return DarwinLdDriver::linkMachO(args.size(), args.data(), diagnostics);
+  case Flavor::win_link:
+    return WinLinkDriver::linkPECOFF(args.size(), args.data(), diagnostics);
   case Flavor::core:
     return CoreDriver::link(args.size(), args.data(), diagnostics);
-  case Flavor::win_link:
-    llvm_unreachable("Unsupported flavor");
   case Flavor::invalid:
-    return true;
+    return false;
   }
   llvm_unreachable("Unrecognised flavor");
 }

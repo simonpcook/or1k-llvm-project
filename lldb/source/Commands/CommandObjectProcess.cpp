@@ -75,7 +75,8 @@ protected:
                 {
                     if (process->GetShouldDetach())
                     {
-                        Error detach_error (process->Detach());
+                        bool keep_stopped = false;
+                        Error detach_error (process->Detach(keep_stopped));
                         if (detach_error.Success())
                         {
                             result.SetStatus (eReturnStatusSuccessFinishResult);
@@ -358,14 +359,14 @@ protected:
 //OptionDefinition
 //CommandObjectProcessLaunch::CommandOptions::g_option_table[] =
 //{
-//{ SET1 | SET2 | SET3, false, "stop-at-entry", 's', no_argument,       NULL, 0, eArgTypeNone,    "Stop at the entry point of the program when launching a process."},
-//{ SET1              , false, "stdin",         'i', required_argument, NULL, 0, eArgTypeDirectoryName,    "Redirect stdin for the process to <path>."},
-//{ SET1              , false, "stdout",        'o', required_argument, NULL, 0, eArgTypeDirectoryName,    "Redirect stdout for the process to <path>."},
-//{ SET1              , false, "stderr",        'e', required_argument, NULL, 0, eArgTypeDirectoryName,    "Redirect stderr for the process to <path>."},
-//{ SET1 | SET2 | SET3, false, "plugin",        'p', required_argument, NULL, 0, eArgTypePlugin,  "Name of the process plugin you want to use."},
-//{        SET2       , false, "tty",           't', optional_argument, NULL, 0, eArgTypeDirectoryName,    "Start the process in a terminal. If <path> is specified, look for a terminal whose name contains <path>, else start the process in a new terminal."},
-//{               SET3, false, "no-stdio",      'n', no_argument,       NULL, 0, eArgTypeNone,    "Do not set up for terminal I/O to go to running process."},
-//{ SET1 | SET2 | SET3, false, "working-dir",   'w', required_argument, NULL, 0, eArgTypeDirectoryName,    "Set the current working directory to <path> when running the inferior."},
+//{ SET1 | SET2 | SET3, false, "stop-at-entry", 's', OptionParser::eNoArgument,       NULL, 0, eArgTypeNone,    "Stop at the entry point of the program when launching a process."},
+//{ SET1              , false, "stdin",         'i', OptionParser::eRequiredArgument, NULL, 0, eArgTypeDirectoryName,    "Redirect stdin for the process to <path>."},
+//{ SET1              , false, "stdout",        'o', OptionParser::eRequiredArgument, NULL, 0, eArgTypeDirectoryName,    "Redirect stdout for the process to <path>."},
+//{ SET1              , false, "stderr",        'e', OptionParser::eRequiredArgument, NULL, 0, eArgTypeDirectoryName,    "Redirect stderr for the process to <path>."},
+//{ SET1 | SET2 | SET3, false, "plugin",        'p', OptionParser::eRequiredArgument, NULL, 0, eArgTypePlugin,  "Name of the process plugin you want to use."},
+//{        SET2       , false, "tty",           't', OptionParser::eOptionalArgument, NULL, 0, eArgTypeDirectoryName,    "Start the process in a terminal. If <path> is specified, look for a terminal whose name contains <path>, else start the process in a new terminal."},
+//{               SET3, false, "no-stdio",      'n', OptionParser::eNoArgument,       NULL, 0, eArgTypeNone,    "Do not set up for terminal I/O to go to running process."},
+//{ SET1 | SET2 | SET3, false, "working-dir",   'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeDirectoryName,    "Set the current working directory to <path> when running the inferior."},
 //{ 0,                  false, NULL,             0,  0,                 NULL, 0, eArgTypeNone,    NULL }
 //};
 //
@@ -700,12 +701,12 @@ protected:
 OptionDefinition
 CommandObjectProcessAttach::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_ALL, false, "continue",'c', no_argument,         NULL, 0, eArgTypeNone,         "Immediately continue the process once attached."},
-{ LLDB_OPT_SET_ALL, false, "plugin",  'P', required_argument,   NULL, 0, eArgTypePlugin,       "Name of the process plugin you want to use."},
-{ LLDB_OPT_SET_1,   false, "pid",     'p', required_argument,   NULL, 0, eArgTypePid,          "The process ID of an existing process to attach to."},
-{ LLDB_OPT_SET_2,   false, "name",    'n', required_argument,   NULL, 0, eArgTypeProcessName,  "The name of the process to attach to."},
-{ LLDB_OPT_SET_2,   false, "include-existing", 'i', no_argument, NULL, 0, eArgTypeNone,         "Include existing processes when doing attach -w."},
-{ LLDB_OPT_SET_2,   false, "waitfor", 'w', no_argument,         NULL, 0, eArgTypeNone,         "Wait for the process with <process-name> to launch."},
+{ LLDB_OPT_SET_ALL, false, "continue",'c', OptionParser::eNoArgument,         NULL, 0, eArgTypeNone,         "Immediately continue the process once attached."},
+{ LLDB_OPT_SET_ALL, false, "plugin",  'P', OptionParser::eRequiredArgument,   NULL, 0, eArgTypePlugin,       "Name of the process plugin you want to use."},
+{ LLDB_OPT_SET_1,   false, "pid",     'p', OptionParser::eRequiredArgument,   NULL, 0, eArgTypePid,          "The process ID of an existing process to attach to."},
+{ LLDB_OPT_SET_2,   false, "name",    'n', OptionParser::eRequiredArgument,   NULL, 0, eArgTypeProcessName,  "The name of the process to attach to."},
+{ LLDB_OPT_SET_2,   false, "include-existing", 'i', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Include existing processes when doing attach -w."},
+{ LLDB_OPT_SET_2,   false, "waitfor", 'w', OptionParser::eNoArgument,         NULL, 0, eArgTypeNone,         "Wait for the process with <process-name> to launch."},
 { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -890,7 +891,7 @@ protected:
 OptionDefinition
 CommandObjectProcessContinue::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_ALL, false, "ignore-count",'i', required_argument,         NULL, 0, eArgTypeUnsignedInteger,
+{ LLDB_OPT_SET_ALL, false, "ignore-count",'i', OptionParser::eRequiredArgument,         NULL, 0, eArgTypeUnsignedInteger,
                            "Ignore <N> crossings of the breakpoint (if it exists) for the currently selected thread."},
 { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
@@ -903,6 +904,68 @@ CommandObjectProcessContinue::CommandOptions::g_option_table[] =
 class CommandObjectProcessDetach : public CommandObjectParsed
 {
 public:
+    class CommandOptions : public Options
+    {
+    public:
+        
+        CommandOptions (CommandInterpreter &interpreter) :
+            Options (interpreter)
+        {
+            OptionParsingStarting ();
+        }
+
+        ~CommandOptions ()
+        {
+        }
+
+        Error
+        SetOptionValue (uint32_t option_idx, const char *option_arg)
+        {
+            Error error;
+            const int short_option = m_getopt_table[option_idx].val;
+            
+            switch (short_option)
+            {
+                case 's':
+                    bool tmp_result;
+                    bool success;
+                    tmp_result = Args::StringToBoolean(option_arg, false, &success);
+                    if (!success)
+                        error.SetErrorStringWithFormat("invalid boolean option: \"%s\"", option_arg);
+                    else
+                    {
+                        if (tmp_result)
+                            m_keep_stopped = eLazyBoolYes;
+                        else
+                            m_keep_stopped = eLazyBoolNo;
+                    }
+                    break;
+                default:
+                    error.SetErrorStringWithFormat("invalid short option character '%c'", short_option);
+                    break;
+            }
+            return error;
+        }
+
+        void
+        OptionParsingStarting ()
+        {
+            m_keep_stopped = eLazyBoolCalculate;
+        }
+
+        const OptionDefinition*
+        GetDefinitions ()
+        {
+            return g_option_table;
+        }
+
+        // Options table: Required for subclasses of Options.
+
+        static OptionDefinition g_option_table[];
+
+        // Instance variables to hold the values for command options.
+        LazyBool m_keep_stopped;
+    };
 
     CommandObjectProcessDetach (CommandInterpreter &interpreter) :
         CommandObjectParsed (interpreter,
@@ -911,7 +974,8 @@ public:
                              "process detach",
                              eFlagRequiresProcess      |
                              eFlagTryTargetAPILock     |
-                             eFlagProcessMustBeLaunched)
+                             eFlagProcessMustBeLaunched),
+        m_options(interpreter)
     {
     }
 
@@ -919,13 +983,35 @@ public:
     {
     }
 
+    Options *
+    GetOptions ()
+    {
+        return &m_options;
+    }
+
+
 protected:
     bool
     DoExecute (Args& command, CommandReturnObject &result)
     {
         Process *process = m_exe_ctx.GetProcessPtr();
         result.AppendMessageWithFormat ("Detaching from process %" PRIu64 "\n", process->GetID());
-        Error error (process->Detach());
+        // FIXME: This will be a Command Option:
+        bool keep_stopped;
+        if (m_options.m_keep_stopped == eLazyBoolCalculate)
+        {
+            // Check the process default:
+            if (process->GetDetachKeepsStopped())
+                keep_stopped = true;
+            else
+                keep_stopped = false;
+        }
+        else if (m_options.m_keep_stopped == eLazyBoolYes)
+            keep_stopped = true;
+        else
+            keep_stopped = false;
+        
+        Error error (process->Detach(keep_stopped));
         if (error.Success())
         {
             result.SetStatus (eReturnStatusSuccessFinishResult);
@@ -938,6 +1024,15 @@ protected:
         }
         return result.Succeeded();
     }
+
+    CommandOptions m_options;
+};
+
+OptionDefinition
+CommandObjectProcessDetach::CommandOptions::g_option_table[] =
+{
+{ LLDB_OPT_SET_1, false, "keep-stopped",   's', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean, "Whether or not the process should be kept stopped on detach (if possible)." },
+{ 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
 //-------------------------------------------------------------------------
@@ -1108,7 +1203,7 @@ protected:
 OptionDefinition
 CommandObjectProcessConnect::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "plugin", 'p', required_argument, NULL, 0, eArgTypePlugin, "Name of the process plugin you want to use."},
+    { LLDB_OPT_SET_ALL, false, "plugin", 'p', OptionParser::eRequiredArgument, NULL, 0, eArgTypePlugin, "Name of the process plugin you want to use."},
     { 0,                false, NULL,      0 , 0,                 NULL, 0, eArgTypeNone,   NULL }
 };
 
@@ -1375,7 +1470,7 @@ public:
 protected:
     bool
     DoExecute (Args& command,
-             CommandReturnObject &result)
+               CommandReturnObject &result)
     {
         Process *process = m_exe_ctx.GetProcessPtr();
         if (process == NULL)
@@ -1387,14 +1482,11 @@ protected:
 
         if (command.GetArgumentCount() == 0)
         {
-            Error error(process->Halt ());
+            bool clear_thread_plans = true;
+            Error error(process->Halt (clear_thread_plans));
             if (error.Success())
             {
                 result.SetStatus (eReturnStatusSuccessFinishResult);
-                
-                // Maybe we should add a "SuspendThreadPlans so we
-                // can halt, and keep in place all the current thread plans.
-                process->GetThreadList().DiscardThreadPlans();
             }
             else
             {
@@ -1816,9 +1908,9 @@ protected:
 OptionDefinition
 CommandObjectProcessHandle::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_1, false, "stop",   's', required_argument, NULL, 0, eArgTypeBoolean, "Whether or not the process should be stopped if the signal is received." },
-{ LLDB_OPT_SET_1, false, "notify", 'n', required_argument, NULL, 0, eArgTypeBoolean, "Whether or not the debugger should notify the user if the signal is received." },
-{ LLDB_OPT_SET_1, false, "pass",  'p', required_argument, NULL, 0, eArgTypeBoolean, "Whether or not the signal should be passed to the process." },
+{ LLDB_OPT_SET_1, false, "stop",   's', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean, "Whether or not the process should be stopped if the signal is received." },
+{ LLDB_OPT_SET_1, false, "notify", 'n', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean, "Whether or not the debugger should notify the user if the signal is received." },
+{ LLDB_OPT_SET_1, false, "pass",  'p', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean, "Whether or not the signal should be passed to the process." },
 { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 

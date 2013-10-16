@@ -13,7 +13,7 @@
 // C++ Includes
 // Other libraries and framework includes
 #include "lldb/Core/PluginManager.h"
-
+#include "lldb/Target/Thread.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -25,7 +25,8 @@ OperatingSystem::FindPlugin (Process *process, const char *plugin_name)
     OperatingSystemCreateInstance create_callback = NULL;
     if (plugin_name)
     {
-        create_callback  = PluginManager::GetOperatingSystemCreateCallbackForPluginName (plugin_name);
+        ConstString const_plugin_name(plugin_name);
+        create_callback  = PluginManager::GetOperatingSystemCreateCallbackForPluginName (const_plugin_name);
         if (create_callback)
         {
             std::unique_ptr<OperatingSystem> instance_ap(create_callback(process, true));
@@ -54,3 +55,13 @@ OperatingSystem::OperatingSystem (Process *process) :
 OperatingSystem::~OperatingSystem()
 {
 }
+
+
+bool
+OperatingSystem::IsOperatingSystemPluginThread (const lldb::ThreadSP &thread_sp)
+{
+    if (thread_sp)
+        return thread_sp->IsOperatingSystemPluginThread();
+    return false;
+}
+

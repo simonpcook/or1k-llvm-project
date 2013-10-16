@@ -247,6 +247,11 @@ then
     ${SRC_ROOT}/examples/darwin/heap_find/heap.py"
     create_python_package "/macosx" "${package_files}"
 
+    # lldb/diagnose
+    package_files="${SRC_ROOT}/examples/python/diagnose_unwind.py
+    ${SRC_ROOT}/examples/python/diagnose_nsstring.py"
+    create_python_package "/diagnose" "${package_files}"
+
     # Copy files needed by lldb/macosx/heap.py to build libheap.dylib
     heap_dir="${framework_python_dir}/macosx/heap"
     if [ ! -d "${heap_dir}" ]

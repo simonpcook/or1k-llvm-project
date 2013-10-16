@@ -248,6 +248,8 @@ public:
 
     SBTarget (const lldb::SBTarget& rhs);
 
+    SBTarget (const lldb::TargetSP& target_sp);
+    
     const lldb::SBTarget&
     operator = (const lldb::SBTarget& rhs);
 
@@ -475,6 +477,10 @@ public:
                const char *triple,
                const char *uuid_cstr,
                const char *symfile);
+    
+    lldb::SBModule
+    AddModule (const SBModuleSpec &module_spec);
+
     uint32_t
     GetNumModules () const;
 
@@ -801,8 +807,6 @@ protected:
     // Constructors are private, use static Target::Create function to
     // create an instance of this class.
     //------------------------------------------------------------------
-
-    SBTarget (const lldb::TargetSP& target_sp);
 
     lldb::TargetSP
     GetSP () const;

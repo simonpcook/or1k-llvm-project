@@ -35,6 +35,7 @@ public:
     identifier,
     l_paren,
     r_paren,
+    kw_entry,
     kw_group,
     kw_output_format,
     kw_as_needed
@@ -51,7 +52,8 @@ public:
 
 class Lexer {
 public:
-  Lexer(std::unique_ptr<llvm::MemoryBuffer> mb) : _buffer(mb->getBuffer()) {
+  explicit Lexer(std::unique_ptr<llvm::MemoryBuffer> mb)
+      : _buffer(mb->getBuffer()) {
     _sourceManager.AddNewSourceBuffer(mb.release(), llvm::SMLoc());
   }
 
@@ -74,6 +76,7 @@ private:
 class Command {
 public:
   enum class Kind {
+    Entry,
     OutputFormat,
     Group,
   };
@@ -85,7 +88,7 @@ public:
   virtual ~Command() {}
 
 protected:
-  Command(Kind k) : _kind(k) {}
+  explicit Command(Kind k) : _kind(k) {}
 
 private:
   Kind _kind;
@@ -93,7 +96,7 @@ private:
 
 class OutputFormat : public Command {
 public:
-  OutputFormat(StringRef format)
+  explicit OutputFormat(StringRef format)
       : Command(Kind::OutputFormat), _format(format) {}
 
   static bool classof(const Command *c) {
@@ -115,13 +118,14 @@ struct Path {
   bool _asNeeded;
 
   Path() : _asNeeded(false) {}
-  Path(StringRef path, bool asNeeded = false)
+  explicit Path(StringRef path, bool asNeeded = false)
       : _path(path), _asNeeded(asNeeded) {}
 };
 
 class Group : public Command {
 public:
-  template <class RangeT> Group(RangeT range) : Command(Kind::Group) {
+  template <class RangeT>
+  explicit Group(RangeT range) : Command(Kind::Group) {
     using std::begin;
     using std::end;
     std::copy(begin(range), end(range), std::back_inserter(_paths));
@@ -152,6 +156,27 @@ private:
   std::vector<Path> _paths;
 };
 
+class Entry : public Command {
+public:
+  explicit Entry(StringRef entryName) :
+      Command(Kind::Entry), _entryName(entryName) { }
+
+  static bool classof(const Command *c) {
+    return c->getKind() == Kind::Entry;
+  }
+
+  virtual void dump(llvm::raw_ostream &os) const {
+    os << "ENTRY(" << _entryName << ")\n";
+  }
+
+  const StringRef getEntryName() const {
+    return _entryName;
+  }
+
+private:
+  StringRef _entryName;
+};
+
 class LinkerScript {
 public:
   void dump(llvm::raw_ostream &os) const {
@@ -164,7 +189,7 @@ public:
 
 class Parser {
 public:
-  Parser(Lexer &lex) : _lex(lex) {}
+  explicit Parser(Lexer &lex) : _lex(lex) {}
 
   LinkerScript *parse();
 
@@ -187,10 +212,9 @@ private:
   }
 
   OutputFormat *parseOutputFormat();
-
   Group *parseGroup();
-
   bool parseAsNeeded(std::vector<Path> &paths);
+  Entry *parseEntry();
 
 private:
   llvm::BumpPtrAllocator _alloc;

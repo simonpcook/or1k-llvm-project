@@ -51,6 +51,7 @@ typedef enum ArchitectureType
     eArchTypeInvalid,
     eArchTypeMachO,
     eArchTypeELF,
+    eArchTypeCOFF,
     kNumArchTypes
 } ArchitectureType;
 
@@ -227,7 +228,26 @@ typedef enum ScriptedCommandSynchronicity
     eScriptedCommandSynchronicityAsynchronous,
     eScriptedCommandSynchronicityCurrentValue // use whatever the current synchronicity is
 } ScriptedCommandSynchronicity;
-        
+
+//----------------------------------------------------------------------
+// Verbosity mode of "po" output
+//----------------------------------------------------------------------
+typedef enum LanguageRuntimeDescriptionDisplayVerbosity
+{
+    eLanguageRuntimeDescriptionDisplayVerbosityCompact, // only print the description string, if any
+    eLanguageRuntimeDescriptionDisplayVerbosityFull,    // print the full-blown output
+} LanguageRuntimeDescriptionDisplayVerbosity;
+
+//----------------------------------------------------------------------
+// Loading modules from memory
+//----------------------------------------------------------------------
+typedef enum MemoryModuleLoadLevel {
+    eMemoryModuleLoadLevelMinimal,  // Load sections only
+    eMemoryModuleLoadLevelPartial,  // Load function bounds but no symbols
+    eMemoryModuleLoadLevelComplete, // Load sections and all symbols
+} MemoryModuleLoadLevel;
+    
+
 } // namespace lldb_private
 
 

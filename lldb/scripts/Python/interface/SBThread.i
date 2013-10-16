@@ -41,11 +41,27 @@ See also SBProcess and SBFrame."
 class SBThread
 {
 public:
+    //------------------------------------------------------------------
+    // Broadcaster bits.
+    //------------------------------------------------------------------
+    enum
+    {
+        eBroadcastBitStackChanged           = (1 << 0),
+        eBroadcastBitThreadSuspended        = (1 << 1),
+        eBroadcastBitThreadResumed          = (1 << 2),
+        eBroadcastBitSelectedFrameChanged   = (1 << 3),
+        eBroadcastBitThreadSelected         = (1 << 4)
+    };
+
+
     SBThread ();
 
     SBThread (const lldb::SBThread &thread);
 
    ~SBThread();
+
+    static const char *
+    GetBroadcasterClassName ();
     
     static bool
     EventIsThreadEvent (const SBEvent &event);
@@ -136,9 +152,12 @@ public:
     StepInstruction(bool step_over);
 
     SBError
-    StepOverUntil (lldb::SBFrame &frame, 
-                   lldb::SBFileSpec &file_spec, 
+    StepOverUntil (lldb::SBFrame &frame,
+                   lldb::SBFileSpec &file_spec,
                    uint32_t line);
+
+    SBError
+    JumpToLine (lldb::SBFileSpec &file_spec, uint32_t line);
 
     void
     RunToAddress (lldb::addr_t addr);
@@ -202,6 +221,12 @@ public:
     bool
     GetStatus (lldb::SBStream &status) const;
     
+    bool
+    operator == (const lldb::SBThread &rhs) const;
+
+    bool
+    operator != (const lldb::SBThread &rhs) const;
+             
     %pythoncode %{
         class frames_access(object):
             '''A helper object that will lazily hand out frames for a thread when supplied an index.'''

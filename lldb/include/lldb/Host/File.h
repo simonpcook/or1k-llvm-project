@@ -11,7 +11,9 @@
 #define liblldb_File_h_
 #if defined(__cplusplus)
 
+#include <stdarg.h>
 #include <stdio.h>
+#include <sys/types.h>
 
 #include "lldb/lldb-private.h"
 
@@ -41,17 +43,20 @@ public:
         eOpenOptionCanCreateNewOnly     = (1u << 6)     // Can create file only if it doesn't already exist
     };
     
+    static mode_t
+    ConvertOpenOptionsForPOSIXOpen (uint32_t open_options);
+    
     enum Permissions
     {
-        ePermissionsUserRead        = (1u << 0),
-        ePermissionsUserWrite       = (1u << 1),
-        ePermissionsUserExecute     = (1u << 2),
-        ePermissionsGroupRead       = (1u << 3),
+        ePermissionsUserRead        = (1u << 8),
+        ePermissionsUserWrite       = (1u << 7),
+        ePermissionsUserExecute     = (1u << 6),
+        ePermissionsGroupRead       = (1u << 5),
         ePermissionsGroupWrite      = (1u << 4),
-        ePermissionsGroupExecute    = (1u << 5),
-        ePermissionsWorldRead       = (1u << 6),
-        ePermissionsWorldWrite      = (1u << 7),
-        ePermissionsWorldExecute    = (1u << 8),
+        ePermissionsGroupExecute    = (1u << 3),
+        ePermissionsWorldRead       = (1u << 2),
+        ePermissionsWorldWrite      = (1u << 1),
+        ePermissionsWorldExecute    = (1u << 0),
 
         ePermissionsUserRW      = (ePermissionsUserRead    | ePermissionsUserWrite    | 0                        ),
         ePermissionsUserRX      = (ePermissionsUserRead    | 0                        | ePermissionsUserExecute  ),
@@ -117,6 +122,27 @@ public:
           uint32_t options,
           uint32_t permissions = ePermissionsDefault);
 
+    //------------------------------------------------------------------
+    /// Constructor with FileSpec.
+    ///
+    /// Takes a FileSpec pointing to a file which can be just a filename, or a full
+    /// path. If \a path is not NULL or empty, this function will call
+    /// File::Open (const char *path, uint32_t options, uint32_t permissions).
+    ///
+    /// @param[in] path
+    ///     The FileSpec for this file.
+    ///
+    /// @param[in] options
+    ///     Options to use when opening (see File::OpenOptions)
+    ///
+    /// @param[in] permissions
+    ///     Options to use when opening (see File::Permissions)
+    ///
+    /// @see File::Open (const char *path, uint32_t options, uint32_t permissions)
+    //------------------------------------------------------------------
+    File (const FileSpec& filespec,
+          uint32_t options,
+          uint32_t permissions = ePermissionsDefault);
     
     File (int fd, bool tranfer_ownership) : 
         m_descriptor (fd),
@@ -282,17 +308,19 @@ public:
     /// @see File::Read (void *, size_t, off_t &)
     /// @see File::Write (const void *, size_t, off_t &)
     ///
-    /// @param[in/out] offset
+    /// @param[in] offset
     ///     The offset to seek to within the file relative to the 
-    ///     beginning of the file which gets filled in the the resulting
-    ///     absolute file offset.
+    ///     beginning of the file.
+    ///
+    /// @param[in] error_ptr
+    ///     A pointer to a lldb_private::Error object that will be
+    ///     filled in if non-NULL.
     ///
     /// @return
-    ///     An error object that indicates success or the reason for 
-    ///     failure.
+    ///     The resulting seek offset, or -1 on error.
     //------------------------------------------------------------------
-    Error
-    SeekFromStart (off_t& offset);
+    off_t
+    SeekFromStart (off_t offset, Error *error_ptr = NULL);
     
     //------------------------------------------------------------------
     /// Seek to an offset relative to the current file position.
@@ -303,17 +331,19 @@ public:
     /// @see File::Read (void *, size_t, off_t &)
     /// @see File::Write (const void *, size_t, off_t &)
     ///
-    /// @param[in/out] offset
+    /// @param[in] offset
     ///     The offset to seek to within the file relative to the 
-    ///     current file position. On return this parameter gets filled 
-    ///     in the the resulting absolute file offset.
+    ///     current file position.
+    ///
+    /// @param[in] error_ptr
+    ///     A pointer to a lldb_private::Error object that will be
+    ///     filled in if non-NULL.
     ///
     /// @return
-    ///     An error object that indicates success or the reason for 
-    ///     failure.
+    ///     The resulting seek offset, or -1 on error.
     //------------------------------------------------------------------
-    Error
-    SeekFromCurrent (off_t& offset);
+    off_t
+    SeekFromCurrent (off_t offset, Error *error_ptr = NULL);
     
     //------------------------------------------------------------------
     /// Seek to an offset relative to the end of the file.
@@ -329,12 +359,15 @@ public:
     ///     end of the file which gets filled in the the resulting
     ///     absolute file offset.
     ///
+    /// @param[in] error_ptr
+    ///     A pointer to a lldb_private::Error object that will be
+    ///     filled in if non-NULL.
+    ///
     /// @return
-    ///     An error object that indicates success or the reason for 
-    ///     failure.
+    ///     The resulting seek offset, or -1 on error.
     //------------------------------------------------------------------
-    Error
-    SeekFromEnd (off_t& offset);
+    off_t
+    SeekFromEnd (off_t offset, Error *error_ptr = NULL);
 
     //------------------------------------------------------------------
     /// Read bytes from a file from the specified file offset.
@@ -444,6 +477,19 @@ public:
     //------------------------------------------------------------------
     Error
     Sync ();
+    
+    //------------------------------------------------------------------
+    /// Get the permissions for a this file.
+    ///
+    /// @return
+    ///     Bits logical OR'ed together from the permission bits defined
+    ///     in lldb_private::File::Permissions.
+    //------------------------------------------------------------------
+    uint32_t
+    GetPermissions(Error &error) const;
+    
+    static uint32_t
+    GetPermissions (const char *path, Error &error);
 
     //------------------------------------------------------------------
     /// Output printf formatted output to the stream.

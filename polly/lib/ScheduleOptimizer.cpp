@@ -18,12 +18,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/ScheduleOptimizer.h"
-
-#include "polly/CodeGen/CodeGeneration.h"
-#include "polly/Dependences.h"
-#include "polly/LinkAllPasses.h"
-#include "polly/ScopInfo.h"
-
 #include "isl/aff.h"
 #include "isl/band.h"
 #include "isl/constraint.h"
@@ -31,46 +25,55 @@
 #include "isl/options.h"
 #include "isl/schedule.h"
 #include "isl/space.h"
+#include "polly/CodeGen/CodeGeneration.h"
+#include "polly/Dependences.h"
+#include "polly/LinkAllPasses.h"
+#include "polly/Options.h"
+#include "polly/ScopInfo.h"
 
 #define DEBUG_TYPE "polly-opt-isl"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
 using namespace polly;
 
-namespace polly { bool DisablePollyTiling; }
-static cl::opt<bool, true> DisableTiling(
-    "polly-no-tiling", cl::desc("Disable tiling in the scheduler"), cl::Hidden,
-    cl::location(polly::DisablePollyTiling), cl::init(false));
+namespace polly {
+bool DisablePollyTiling;
+}
+static cl::opt<bool, true>
+DisableTiling("polly-no-tiling", cl::desc("Disable tiling in the scheduler"),
+              cl::location(polly::DisablePollyTiling), cl::init(false),
+              cl::cat(PollyCategory));
 
 static cl::opt<std::string>
 OptimizeDeps("polly-opt-optimize-only",
              cl::desc("Only a certain kind of dependences (all/raw)"),
-             cl::Hidden, cl::init("all"));
+             cl::Hidden, cl::init("all"), cl::cat(PollyCategory));
 
 static cl::opt<std::string>
 SimplifyDeps("polly-opt-simplify-deps",
              cl::desc("Dependences should be simplified (yes/no)"), cl::Hidden,
-             cl::init("yes"));
+             cl::init("yes"), cl::cat(PollyCategory));
 
 static cl::opt<int>
 MaxConstantTerm("polly-opt-max-constant-term",
                 cl::desc("The maximal constant term allowed (-1 is unlimited)"),
-                cl::Hidden, cl::init(20));
+                cl::Hidden, cl::init(20), cl::cat(PollyCategory));
 
 static cl::opt<int>
 MaxCoefficient("polly-opt-max-coefficient",
                cl::desc("The maximal coefficient allowed (-1 is unlimited)"),
-               cl::Hidden, cl::init(20));
+               cl::Hidden, cl::init(20), cl::cat(PollyCategory));
 
-static cl::opt<std::string> FusionStrategy(
-    "polly-opt-fusion", cl::desc("The fusion strategy to choose (min/max)"),
-    cl::Hidden, cl::init("min"));
+static cl::opt<std::string>
+FusionStrategy("polly-opt-fusion",
+               cl::desc("The fusion strategy to choose (min/max)"), cl::Hidden,
+               cl::init("min"), cl::cat(PollyCategory));
 
-static cl::opt<std::string> MaximizeBandDepth(
-    "polly-opt-maximize-bands", cl::desc("Maximize the band depth (yes/no)"),
-    cl::Hidden, cl::init("yes"));
+static cl::opt<std::string>
+MaximizeBandDepth("polly-opt-maximize-bands",
+                  cl::desc("Maximize the band depth (yes/no)"), cl::Hidden,
+                  cl::init("yes"), cl::cat(PollyCategory));
 
 namespace {
 
@@ -184,7 +187,6 @@ private:
     return true;
   }
 };
-
 }
 
 char IslScheduleOptimizer::ID = 0;
@@ -211,8 +213,10 @@ void IslScheduleOptimizer::extendScattering(Scop &S, unsigned NewDimensions) {
   }
 }
 
-isl_basic_map *IslScheduleOptimizer::getTileMap(
-    isl_ctx *ctx, int scheduleDimensions, isl_space *SpaceModel, int tileSize) {
+isl_basic_map *IslScheduleOptimizer::getTileMap(isl_ctx *ctx,
+                                                int scheduleDimensions,
+                                                isl_space *SpaceModel,
+                                                int tileSize) {
   // We construct
   //
   // tileMap := [p0] -> {[s0, s1] -> [t0, t1, p0, p1, a0, a1]:
@@ -271,8 +275,8 @@ isl_basic_map *IslScheduleOptimizer::getTileMap(
   return tileMap;
 }
 
-isl_union_map *
-IslScheduleOptimizer::getScheduleForBand(isl_band *Band, int *Dimensions) {
+isl_union_map *IslScheduleOptimizer::getScheduleForBand(isl_band *Band,
+                                                        int *Dimensions) {
   isl_union_map *PartialSchedule;
   isl_ctx *ctx;
   isl_space *Space;
@@ -300,8 +304,9 @@ IslScheduleOptimizer::getScheduleForBand(isl_band *Band, int *Dimensions) {
   return isl_union_map_apply_range(PartialSchedule, TileUMap);
 }
 
-isl_map *IslScheduleOptimizer::getPrevectorMap(
-    isl_ctx *ctx, int DimToVectorize, int ScheduleDimensions, int VectorWidth) {
+isl_map *IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
+                                               int ScheduleDimensions,
+                                               int VectorWidth) {
   isl_space *Space;
   isl_local_space *LocalSpace, *LocalSpaceRange;
   isl_set *Modulo;
@@ -310,7 +315,7 @@ isl_map *IslScheduleOptimizer::getPrevectorMap(
   isl_aff *Aff;
   int PointDimension; /* ip */
   int TileDimension;  /* it */
-  isl_int VectorWidthMP;
+  isl_val *VectorWidthMP;
 
   assert(0 <= DimToVectorize && DimToVectorize < ScheduleDimensions);
 
@@ -339,10 +344,8 @@ isl_map *IslScheduleOptimizer::getPrevectorMap(
   Aff = isl_aff_zero_on_domain(LocalSpaceRange);
   Aff = isl_aff_set_constant_si(Aff, VectorWidth);
   Aff = isl_aff_set_coefficient_si(Aff, isl_dim_in, TileDimension, 1);
-  isl_int_init(VectorWidthMP);
-  isl_int_set_si(VectorWidthMP, VectorWidth);
-  Aff = isl_aff_mod(Aff, VectorWidthMP);
-  isl_int_clear(VectorWidthMP);
+  VectorWidthMP = isl_val_int_from_si(ctx, VectorWidth);
+  Aff = isl_aff_mod_val(Aff, VectorWidthMP);
   Modulo = isl_pw_aff_zero_set(isl_pw_aff_from_aff(Aff));
   TilingMap = isl_map_intersect_range(TilingMap, Modulo);
 

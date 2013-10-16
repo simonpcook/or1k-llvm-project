@@ -17,7 +17,9 @@ NO_BUILD_ARCHIVE = 1
 LINK_LIBS_IN_SHARED = 1
 SHARED_LIBRARY = 1
 
+ifeq (,$(findstring -DLLDB_DISABLE_PYTHON,$(CXXFLAGS)))
 PYTHON_BUILD_FLAGS = $(shell python-config --ldflags)
+endif
 
 # Include all archives in liblldb.so file
 USEDLIBS = lldbAPI.a \
@@ -40,6 +42,7 @@ USEDLIBS = lldbAPI.a \
 	lldbPluginLanguageRuntimeObjCAppleObjCRuntime.a \
 	lldbPluginObjectContainerBSDArchive.a \
 	lldbPluginObjectFileELF.a \
+	lldbPluginSymbolVendorELF.a \
 	lldbPluginObjectFilePECOFF.a \
 	lldbPluginOperatingSystemPython.a \
 	lldbPluginPlatformGDBServer.a \
@@ -66,12 +69,13 @@ USEDLIBS = lldbAPI.a \
 	LLVMMCDisassembler.a \
 	lldbPluginPlatformMacOSX.a \
 	lldbPluginPlatformLinux.a \
-	lldbPluginPlatformFreeBSD.a
+	lldbPluginPlatformFreeBSD.a \
+	lldbPluginPlatformPOSIX.a
 
 # Because GCC requires RTTI enabled for lldbCore (see source/Core/Makefile) it is
 # necessary to also link the clang rewriter libraries so vtable references can
 # be resolved correctly, if we are building with GCC.
-ifeq (g++,$(shell basename $(CXX)))
+ifeq (g++,$(shell basename $(CXX) | cut -c 1-4))
   USEDLIBS += clangRewriteCore.a \
               clangRewriteFrontend.a
 endif
@@ -79,7 +83,8 @@ endif
 include $(LLDB_LEVEL)/../../Makefile.config
 
 LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader bitwriter codegen \
-                   instrumentation ipo irreader selectiondag jit mc mcjit linker
+                   instrumentation ipo irreader selectiondag jit mc mcjit \
+                   linker option
 
 ifeq ($(HOST_OS),Darwin)
   USEDLIBS += lldbHostMacOSX.a \
@@ -87,7 +92,6 @@ ifeq ($(HOST_OS),Darwin)
               lldbPluginDynamicLoaderDarwinKernel.a \
               lldbPluginObjectContainerUniversalMachO.a \
               lldbPluginObjectFileMachO.a \
-              lldbPluginOperatingSystemDarwinKernel.a \
               lldbPluginSymbolVendorMacOSX.a \
               lldbPluginProcessDarwin.a \
               lldbPluginProcessMachCore.a
@@ -98,15 +102,14 @@ ifeq ($(HOST_OS),Linux)
               lldbPluginProcessLinux.a \
               lldbPluginProcessPOSIX.a \
               lldbPluginDynamicLoaderMacOSX.a \
-              lldbPluginDynamicLoaderDarwinKernel.a \
-              lldbPluginOperatingSystemDarwinKernel.a
-
+              lldbPluginProcessElfCore.a
 endif
 
-ifeq ($(HOST_OS),FreeBSD)
+ifneq (,$(filter $(HOST_OS), FreeBSD GNU/kFreeBSD))
   USEDLIBS += lldbHostFreeBSD.a \
               lldbPluginProcessPOSIX.a \
-              lldbPluginProcessFreeBSD.a
+              lldbPluginProcessFreeBSD.a \
+              lldbPluginProcessElfCore.a
 endif
 
 include $(LEVEL)/Makefile.common
@@ -136,7 +139,7 @@ ifeq ($(HOST_OS),Darwin)
     endif
 endif
 
-ifeq ($(HOST_OS), $(filter $(HOST_OS), Linux GNU))
+ifeq ($(HOST_OS), $(filter $(HOST_OS), Linux GNU GNU/kFreeBSD))
     # Include everything from the .a's into the shared library.
     ProjLibsOptions := -Wl,--whole-archive $(ProjLibsOptions) \
                        -Wl,--no-whole-archive

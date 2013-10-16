@@ -16,6 +16,7 @@
 #define LLVM_CLANG_SEMA_SCOPE_INFO_H
 
 #include "clang/AST/Type.h"
+#include "clang/Basic/CapturedStmt.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -26,12 +27,16 @@ class Decl;
 class BlockDecl;
 class CapturedDecl;
 class CXXMethodDecl;
+class FieldDecl;
 class ObjCPropertyDecl;
 class IdentifierInfo;
+class ImplicitParamDecl;
 class LabelDecl;
 class ReturnStmt;
 class Scope;
 class SwitchStmt;
+class TemplateTypeParmDecl;
+class TemplateParameterList;
 class VarDecl;
 class DeclRefExpr;
 class ObjCIvarRefExpr;
@@ -328,60 +333,78 @@ public:
   ImplicitCaptureStyle ImpCaptureStyle;
 
   class Capture {
-    // There are two categories of capture: capturing 'this', and capturing
-    // local variables.  There are three ways to capture a local variable:
-    // capture by copy in the C++11 sense, capture by reference
-    // in the C++11 sense, and __block capture.  Lambdas explicitly specify
-    // capture by copy or capture by reference.  For blocks, __block capture
-    // applies to variables with that annotation, variables of reference type
-    // are captured by reference, and other variables are captured by copy.
+    // There are three categories of capture: capturing 'this', capturing
+    // local variables, and C++1y initialized captures (which can have an
+    // arbitrary initializer, and don't really capture in the traditional
+    // sense at all).
+    //
+    // There are three ways to capture a local variable:
+    //  - capture by copy in the C++11 sense,
+    //  - capture by reference in the C++11 sense, and
+    //  - __block capture.
+    // Lambdas explicitly specify capture by copy or capture by reference.
+    // For blocks, __block capture applies to variables with that annotation,
+    // variables of reference type are captured by reference, and other
+    // variables are captured by copy.
     enum CaptureKind {
-      Cap_This, Cap_ByCopy, Cap_ByRef, Cap_Block
+      Cap_ByCopy, Cap_ByRef, Cap_Block, Cap_This
     };
 
-    // The variable being captured (if we are not capturing 'this'),
-    // and misc bits descibing the capture.
-    llvm::PointerIntPair<VarDecl*, 2, CaptureKind> VarAndKind;
+    /// The variable being captured (if we are not capturing 'this') and whether
+    /// this is a nested capture.
+    llvm::PointerIntPair<VarDecl*, 1, bool> VarAndNested;
 
-    // Expression to initialize a field of the given type, and whether this
-    // is a nested capture; the expression is only required if we are
-    // capturing ByVal and the variable's type has a non-trivial
-    // copy constructor.
-    llvm::PointerIntPair<Expr*, 1, bool> CopyExprAndNested;
+    /// Expression to initialize a field of the given type, and the kind of
+    /// capture (if this is a capture and not an init-capture). The expression
+    /// is only required if we are capturing ByVal and the variable's type has
+    /// a non-trivial copy constructor.
+    llvm::PointerIntPair<Expr*, 2, CaptureKind> InitExprAndCaptureKind;
 
-    /// \brief The source location at which the first capture occurred..
+    /// \brief The source location at which the first capture occurred.
     SourceLocation Loc;
-    
+
     /// \brief The location of the ellipsis that expands a parameter pack.
     SourceLocation EllipsisLoc;
-    
+
     /// \brief The type as it was captured, which is in effect the type of the
     /// non-static data member that would hold the capture.
     QualType CaptureType;
-    
+
   public:
-    Capture(VarDecl *Var, bool block, bool byRef, bool isNested, 
-            SourceLocation Loc, SourceLocation EllipsisLoc, 
+    Capture(VarDecl *Var, bool Block, bool ByRef, bool IsNested,
+            SourceLocation Loc, SourceLocation EllipsisLoc,
             QualType CaptureType, Expr *Cpy)
-      : VarAndKind(Var, block ? Cap_Block : byRef ? Cap_ByRef : Cap_ByCopy),
-        CopyExprAndNested(Cpy, isNested), Loc(Loc), EllipsisLoc(EllipsisLoc),
-        CaptureType(CaptureType){}
+        : VarAndNested(Var, IsNested),
+          InitExprAndCaptureKind(Cpy, Block ? Cap_Block :
+                                      ByRef ? Cap_ByRef : Cap_ByCopy),
+          Loc(Loc), EllipsisLoc(EllipsisLoc), CaptureType(CaptureType) {}
 
     enum IsThisCapture { ThisCapture };
-    Capture(IsThisCapture, bool isNested, SourceLocation Loc, 
+    Capture(IsThisCapture, bool IsNested, SourceLocation Loc,
             QualType CaptureType, Expr *Cpy)
-      : VarAndKind(0, Cap_This), CopyExprAndNested(Cpy, isNested), Loc(Loc),
-        EllipsisLoc(), CaptureType(CaptureType) { }
+        : VarAndNested(0, IsNested),
+          InitExprAndCaptureKind(Cpy, Cap_This),
+          Loc(Loc), EllipsisLoc(), CaptureType(CaptureType) {}
 
-    bool isThisCapture() const { return VarAndKind.getInt() == Cap_This; }
-    bool isVariableCapture() const { return !isThisCapture(); }
-    bool isCopyCapture() const { return VarAndKind.getInt() == Cap_ByCopy; }
-    bool isReferenceCapture() const { return VarAndKind.getInt() == Cap_ByRef; }
-    bool isBlockCapture() const { return VarAndKind.getInt() == Cap_Block; }
-    bool isNested() { return CopyExprAndNested.getInt(); }
+    bool isThisCapture() const {
+      return InitExprAndCaptureKind.getInt() == Cap_This;
+    }
+    bool isVariableCapture() const {
+      return InitExprAndCaptureKind.getInt() != Cap_This;
+    }
+    bool isCopyCapture() const {
+      return InitExprAndCaptureKind.getInt() == Cap_ByCopy;
+    }
+    bool isReferenceCapture() const {
+      return InitExprAndCaptureKind.getInt() == Cap_ByRef;
+    }
+    bool isBlockCapture() const {
+      return InitExprAndCaptureKind.getInt() == Cap_Block;
+    }
+    bool isNested() { return VarAndNested.getInt(); }
 
     VarDecl *getVariable() const {
-      return VarAndKind.getPointer();
+      return VarAndNested.getPointer();
     }
     
     /// \brief Retrieve the location at which this variable was captured.
@@ -396,8 +419,8 @@ public:
     /// that would store this capture.
     QualType getCaptureType() const { return CaptureType; }
     
-    Expr *getCopyExpr() const {
-      return CopyExprAndNested.getPointer();
+    Expr *getInitExpr() const {
+      return InitExprAndCaptureKind.getPointer();
     }
   };
 
@@ -499,24 +522,23 @@ public:
 /// \brief Retains information about a captured region.
 class CapturedRegionScopeInfo: public CapturingScopeInfo {
 public:
-
-  enum CapturedRegionKind {
-    CR_Default
-  };
-
   /// \brief The CapturedDecl for this statement.
   CapturedDecl *TheCapturedDecl;
   /// \brief The captured record type.
   RecordDecl *TheRecordDecl;
   /// \brief This is the enclosing scope of the captured region.
   Scope *TheScope;
+  /// \brief The implicit parameter for the captured variables.
+  ImplicitParamDecl *ContextParam;
   /// \brief The kind of captured region.
   CapturedRegionKind CapRegionKind;
 
   CapturedRegionScopeInfo(DiagnosticsEngine &Diag, Scope *S, CapturedDecl *CD,
-                          RecordDecl *RD, CapturedRegionKind K)
+                          RecordDecl *RD, ImplicitParamDecl *Context,
+                          CapturedRegionKind K)
     : CapturingScopeInfo(Diag, ImpCap_CapturedRegion),
-      TheCapturedDecl(CD), TheRecordDecl(RD), TheScope(S), CapRegionKind(K)
+      TheCapturedDecl(CD), TheRecordDecl(RD), TheScope(S),
+      ContextParam(Context), CapRegionKind(K)
   {
     Kind = SK_CapturedRegion;
   }
@@ -528,6 +550,8 @@ public:
     switch (CapRegionKind) {
     case CR_Default:
       return "default captured statement";
+    case CR_OpenMP:
+      return "OpenMP region";
     }
     llvm_unreachable("Invalid captured region kind!");
   }
@@ -542,19 +566,23 @@ public:
   /// \brief The class that describes the lambda.
   CXXRecordDecl *Lambda;
 
-  /// \brief The class that describes the lambda.
+  /// \brief The lambda's compiler-generated \c operator().
   CXXMethodDecl *CallOperator;
 
   /// \brief Source range covering the lambda introducer [...].
   SourceRange IntroducerRange;
 
-  /// \brief The number of captures in the \c Captures list that are 
+  /// \brief Source location of the '&' or '=' specifying the default capture
+  /// type, if any.
+  SourceLocation CaptureDefaultLoc;
+
+  /// \brief The number of captures in the \c Captures list that are
   /// explicit captures.
   unsigned NumExplicitCaptures;
 
   /// \brief Whether this is a mutable lambda.
   bool Mutable;
-  
+
   /// \brief Whether the (empty) parameter list is explicit.
   bool ExplicitParams;
 
@@ -571,24 +599,41 @@ public:
   /// its list of array index variables.
   SmallVector<unsigned, 4> ArrayIndexStarts;
   
-  LambdaScopeInfo(DiagnosticsEngine &Diag, CXXRecordDecl *Lambda,
-                  CXXMethodDecl *CallOperator)
-    : CapturingScopeInfo(Diag, ImpCap_None), Lambda(Lambda),
-      CallOperator(CallOperator), NumExplicitCaptures(0), Mutable(false),
-      ExprNeedsCleanups(false), ContainsUnexpandedParameterPack(false)
+  /// \brief If this is a generic lambda, use this as the depth of 
+  /// each 'auto' parameter, during initial AST construction.
+  unsigned AutoTemplateParameterDepth;
+
+  /// \brief Store the list of the auto parameters for a generic lambda.
+  /// If this is a generic lambda, store the list of the auto 
+  /// parameters converted into TemplateTypeParmDecls into a vector
+  /// that can be used to construct the generic lambda's template
+  /// parameter list, during initial AST construction.
+  SmallVector<TemplateTypeParmDecl*, 4> AutoTemplateParams;
+
+  /// If this is a generic lambda, and the template parameter
+  /// list has been created (from the AutoTemplateParams) then
+  /// store a reference to it (cache it to avoid reconstructing it).
+  TemplateParameterList *GLTemplateParameterList;
+
+  LambdaScopeInfo(DiagnosticsEngine &Diag)
+    : CapturingScopeInfo(Diag, ImpCap_None), Lambda(0),
+      CallOperator(0), NumExplicitCaptures(0), Mutable(false),
+      ExprNeedsCleanups(false), ContainsUnexpandedParameterPack(false),
+      AutoTemplateParameterDepth(0),
+      GLTemplateParameterList(0)
   {
     Kind = SK_Lambda;
   }
 
   virtual ~LambdaScopeInfo();
 
-  /// \brief Note when 
+  /// \brief Note when all explicit captures have been added.
   void finishedExplicitCaptures() {
     NumExplicitCaptures = Captures.size();
   }
 
   static bool classof(const FunctionScopeInfo *FSI) {
-    return FSI->Kind == SK_Lambda; 
+    return FSI->Kind == SK_Lambda;
   }
 };
 

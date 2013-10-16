@@ -7,20 +7,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "lldb/Core/DataEncoder.h"
+#include "lldb/Core/DataExtractor.h"
+#include "lldb/Core/Error.h"
 #include "lldb/Core/Log.h"
-#include "lldb/Core/ValueObjectConstResult.h"
-#include "lldb/Expression/ClangExpressionDeclMap.h"
-#include "lldb/Expression/ClangExpressionVariable.h"
-#include "lldb/Expression/IRForTarget.h"
+#include "lldb/Core/Scalar.h"
+#include "lldb/Core/StreamString.h"
+#include "lldb/Expression/IRMemoryMap.h"
 #include "lldb/Expression/IRInterpreter.h"
+#include "lldb/Host/Endian.h"
 
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/IR/DataLayout.h"
 
 #include <map>
 
@@ -62,26 +63,7 @@ class InterpreterStackFrame
 public:
     typedef std::map <const Value*, lldb::addr_t> ValueMap;
     
-    struct PlacedValue
-    {
-        lldb_private::Value     lldb_value;
-        lldb::addr_t            process_address;
-        size_t                  size;
-        
-        PlacedValue (lldb_private::Value &_lldb_value,
-                     lldb::addr_t _process_address,
-                     size_t _size) :
-            lldb_value(_lldb_value),
-            process_address(_process_address),
-            size(_size)
-        {
-        }
-    };
-    
-    typedef std::vector <PlacedValue> PlacedValueVector;
-
     ValueMap                                m_values;
-    PlacedValueVector                       m_placed_values;
     DataLayout                             &m_target_data;
     lldb_private::IRMemoryMap              &m_memory_map;
     const BasicBlock                       *m_bb;
@@ -96,42 +78,22 @@ public:
     size_t                                  m_addr_byte_size;
     
     InterpreterStackFrame (DataLayout &target_data,
-                           lldb_private::IRMemoryMap &memory_map) :
+                           lldb_private::IRMemoryMap &memory_map,
+                           lldb::addr_t stack_frame_bottom,
+                           lldb::addr_t stack_frame_top) :
         m_target_data (target_data),
         m_memory_map (memory_map)
     {
         m_byte_order = (target_data.isLittleEndian() ? lldb::eByteOrderLittle : lldb::eByteOrderBig);
         m_addr_byte_size = (target_data.getPointerSize(0));
-        
-        m_frame_size = 512 * 1024;
-        
-        lldb_private::Error alloc_error;
-        
-        m_frame_process_address = memory_map.Malloc(m_frame_size,
-                                                    m_addr_byte_size,
-                                                    lldb::ePermissionsReadable | lldb::ePermissionsWritable,
-                                                    lldb_private::IRMemoryMap::eAllocationPolicyMirror,
-                                                    alloc_error);
-        
-        if (alloc_error.Success())
-        {
-            m_stack_pointer = m_frame_process_address + m_frame_size;
-        }
-        else
-        {
-            m_frame_process_address = LLDB_INVALID_ADDRESS;
-            m_stack_pointer = LLDB_INVALID_ADDRESS;
-        }    
+                        
+        m_frame_process_address = stack_frame_bottom;
+        m_frame_size = stack_frame_top - stack_frame_bottom;
+        m_stack_pointer = stack_frame_top;
     }
     
     ~InterpreterStackFrame ()
     {
-        if (m_frame_process_address != LLDB_INVALID_ADDRESS)
-        {
-            lldb_private::Error free_error;
-            m_memory_map.Free(m_frame_process_address, free_error);
-            m_frame_process_address = LLDB_INVALID_ADDRESS;
-        }
     }
     
     void Jump (const BasicBlock *bb)
@@ -190,10 +152,12 @@ public:
         
         if (constant)
         {
-            if (const ConstantInt *constant_int = dyn_cast<ConstantInt>(constant))
-            {                
-                return AssignToMatchType(scalar, constant_int->getLimitedValue(), value->getType());
-            }
+            APInt value_apint;
+            
+            if (!ResolveConstantValue(value_apint, constant))
+                return false;
+            
+            return AssignToMatchType(scalar, value_apint.getLimitedValue(), value->getType());
         }
         else
         {
@@ -209,9 +173,11 @@ public:
                 return false;
             
             lldb::offset_t offset = 0;
-            uint64_t u64value = value_extractor.GetMaxU64(&offset, value_size);
-                    
-            return AssignToMatchType(scalar, u64value, value->getType());
+            if (value_size == 1 || value_size == 2 || value_size == 4 || value_size == 8)
+            {
+                uint64_t u64value = value_extractor.GetMaxU64(&offset, value_size);
+                return AssignToMatchType(scalar, u64value, value->getType());
+            }
         }
         
         return false;
@@ -356,13 +322,19 @@ public:
         if (!ResolveConstantValue(resolved_value, constant))
             return false;
         
-        const uint64_t *raw_data = resolved_value.getRawData();
-            
+        lldb_private::StreamString buffer (lldb_private::Stream::eBinary,
+                                           m_memory_map.GetAddressByteSize(),
+                                           m_memory_map.GetByteOrder());
+        
         size_t constant_size = m_target_data.getTypeStoreSize(constant->getType());
+        
+        const uint64_t *raw_data = resolved_value.getRawData();
+        
+        buffer.PutRawBytes(raw_data, constant_size, lldb::endian::InlHostByteOrder());
         
         lldb_private::Error write_error;
         
-        m_memory_map.WriteMemory(process_address, (uint8_t*)raw_data, constant_size, write_error);
+        m_memory_map.WriteMemory(process_address, (const uint8_t*)buffer.GetData(), constant_size, write_error);
         
         return write_error.Success();
     }
@@ -446,6 +418,7 @@ public:
 };
 
 static const char *unsupported_opcode_error         = "Interpreter doesn't handle one of the expression's opcodes";
+static const char *unsupported_operand_error        = "Interpreter doesn't handle one of the expression's operands";
 //static const char *interpreter_initialization_error = "Interpreter couldn't be initialized";
 static const char *interpreter_internal_error       = "Interpreter encountered an internal error";
 static const char *bad_value_error                  = "Interpreter couldn't resolve a value during execution";
@@ -461,6 +434,20 @@ IRInterpreter::CanInterpret (llvm::Module &module,
                              lldb_private::Error &error)
 {
     lldb_private::Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
+    
+    bool saw_function_with_body = false;
+    
+    for (Module::iterator fi = module.begin(), fe = module.end();
+         fi != fe;
+         ++fi)
+    {
+        if (fi->begin() != fi->end())
+        {
+            if (saw_function_with_body)
+                return false;
+            saw_function_with_body = true;
+        }
+    }
     
     for (Function::iterator bbi = function.begin(), bbe = function.end();
          bbi != bbe;
@@ -532,6 +519,7 @@ IRInterpreter::CanInterpret (llvm::Module &module,
             case Instruction::Or:
             case Instruction::Ret:
             case Instruction::SDiv:
+            case Instruction::SExt:
             case Instruction::Shl:
             case Instruction::SRem:
             case Instruction::Store:
@@ -542,7 +530,29 @@ IRInterpreter::CanInterpret (llvm::Module &module,
             case Instruction::ZExt:
                 break;
             }
+            
+            for (int oi = 0, oe = ii->getNumOperands();
+                 oi != oe;
+                 ++oi)
+            {
+                Value *operand = ii->getOperand(oi);
+                Type *operand_type = operand->getType();
+                
+                switch (operand_type->getTypeID())
+                {
+                default:
+                    break;
+                case Type::VectorTyID:
+                    {
+                        if (log)
+                            log->Printf("Unsupported operand type: %s", PrintType(operand_type).c_str());
+                        error.SetErrorString(unsupported_operand_error);
+                        return false;
+                    }
+                }
+            }
         }
+        
     }
     
     return true;}
@@ -552,7 +562,9 @@ IRInterpreter::Interpret (llvm::Module &module,
                           llvm::Function &function,
                           llvm::ArrayRef<lldb::addr_t> args,
                           lldb_private::IRMemoryMap &memory_map,
-                          lldb_private::Error &error)
+                          lldb_private::Error &error,
+                          lldb::addr_t stack_frame_bottom,
+                          lldb::addr_t stack_frame_top)
 {
     lldb_private::Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
@@ -570,7 +582,7 @@ IRInterpreter::Interpret (llvm::Module &module,
     
     DataLayout data_layout(&module);
     
-    InterpreterStackFrame frame(data_layout, memory_map);
+    InterpreterStackFrame frame(data_layout, memory_map, stack_frame_bottom, stack_frame_top);
     
     if (frame.m_frame_process_address == LLDB_INVALID_ADDRESS)
     {
@@ -674,12 +686,16 @@ IRInterpreter::Interpret (llvm::Module &module,
                         result = L - R;
                         break;
                     case Instruction::SDiv:
+                        L.MakeSigned();
+                        R.MakeSigned();
                         result = L / R;
                         break;
                     case Instruction::UDiv:
                         result = L.GetRawBits64(0) / R.GetRawBits64(1);
                         break;
                     case Instruction::SRem:
+                        L.MakeSigned();
+                        R.MakeSigned();
                         result = L % R;
                         break;
                     case Instruction::URem:
@@ -790,8 +806,8 @@ IRInterpreter::Interpret (llvm::Module &module,
                 if (log)
                 {
                     log->Printf("Interpreted an AllocaInst");
-                    log->Printf("  R : 0x%llx", R);
-                    log->Printf("  P : 0x%llx", P);
+                    log->Printf("  R : 0x%" PRIx64, R);
+                    log->Printf("  P : 0x%" PRIx64, P);
                 }
             }
                 break;
@@ -823,6 +839,39 @@ IRInterpreter::Interpret (llvm::Module &module,
                 }
                 
                 frame.AssignValue(inst, S, module);
+            }
+                break;
+            case Instruction::SExt:
+            {
+                const CastInst *cast_inst = dyn_cast<CastInst>(inst);
+                
+                if (!cast_inst)
+                {
+                    if (log)
+                        log->Printf("getOpcode() returns %s, but instruction is not a BitCastInst", cast_inst->getOpcodeName());
+                    error.SetErrorToGenericError();
+                    error.SetErrorString(interpreter_internal_error);
+                    return false;
+                }
+                
+                Value *source = cast_inst->getOperand(0);
+                
+                lldb_private::Scalar S;
+                
+                if (!frame.EvaluateValue(S, source, module))
+                {
+                    if (log)
+                        log->Printf("Couldn't evaluate %s", PrintValue(source).c_str());
+                    error.SetErrorToGenericError();
+                    error.SetErrorString(bad_value_error);
+                    return false;
+                }
+                
+                S.MakeSigned();
+                
+                lldb_private::Scalar S_signextend(S.SLongLong());
+                
+                frame.AssignValue(inst, S_signextend, module);
             }
                 break;
             case Instruction::Br:
@@ -1016,15 +1065,23 @@ IRInterpreter::Interpret (llvm::Module &module,
                         result = (L.GetRawBits64(0) <= R.GetRawBits64(0));
                         break;
                     case CmpInst::ICMP_SGT:
+                        L.MakeSigned();
+                        R.MakeSigned();
                         result = (L > R);
                         break;
                     case CmpInst::ICMP_SGE:
+                        L.MakeSigned();
+                        R.MakeSigned();
                         result = (L >= R);
                         break;
                     case CmpInst::ICMP_SLT:
+                        L.MakeSigned();
+                        R.MakeSigned();
                         result = (L < R);
                         break;
                     case CmpInst::ICMP_SLE:
+                        L.MakeSigned();
+                        R.MakeSigned();
                         result = (L <= R);
                         break;
                 }
@@ -1207,9 +1264,9 @@ IRInterpreter::Interpret (llvm::Module &module,
                 if (log)
                 {
                     log->Printf("Interpreted a LoadInst");
-                    log->Printf("  P : 0x%llx", P);
-                    log->Printf("  R : 0x%llx", R);
-                    log->Printf("  D : 0x%llx", D);
+                    log->Printf("  P : 0x%" PRIx64, P);
+                    log->Printf("  R : 0x%" PRIx64, R);
+                    log->Printf("  D : 0x%" PRIx64, D);
                 }
             }
                 break;
@@ -1307,9 +1364,9 @@ IRInterpreter::Interpret (llvm::Module &module,
                 if (log)
                 {
                     log->Printf("Interpreted a StoreInst");
-                    log->Printf("  D : 0x%llx", D);
-                    log->Printf("  P : 0x%llx", P);
-                    log->Printf("  R : 0x%llx", R);
+                    log->Printf("  D : 0x%" PRIx64, D);
+                    log->Printf("  P : 0x%" PRIx64, P);
+                    log->Printf("  R : 0x%" PRIx64, R);
                 }
             }
                 break;

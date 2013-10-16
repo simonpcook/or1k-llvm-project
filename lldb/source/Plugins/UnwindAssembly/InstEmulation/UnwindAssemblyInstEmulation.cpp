@@ -53,11 +53,13 @@ UnwindAssemblyInstEmulation::GetNonCallSiteUnwindPlanFromAssembly (AddressRange&
         
         ExecutionContext exe_ctx;
         thread.CalculateExecutionContext(exe_ctx);
+        const bool prefer_file_cache = true;
         DisassemblerSP disasm_sp (Disassembler::DisassembleRange (m_arch,
                                                                   NULL,
                                                                   NULL,
                                                                   exe_ctx,
-                                                                  range));
+                                                                  range,
+                                                                  prefer_file_cache));
         
         Log *log(GetLogIfAllCategoriesSet (LIBLLDB_LOG_UNWIND));
 
@@ -264,6 +266,9 @@ UnwindAssemblyInstEmulation::GetNonCallSiteUnwindPlanFromAssembly (AddressRange&
                     }
                 }
             }
+            // FIXME: The DisassemblerLLVMC has a reference cycle and won't go away if it has any active instructions.
+            // I'll fix that but for now, just clear the list and it will go away nicely.
+            disasm_sp->GetInstructionList().Clear();
         }
         
         if (log && log->GetVerbose ())
@@ -309,19 +314,11 @@ UnwindAssemblyInstEmulation::CreateInstance (const ArchSpec &arch)
 //------------------------------------------------------------------
 // PluginInterface protocol in UnwindAssemblyParser_x86
 //------------------------------------------------------------------
-
-const char *
+ConstString
 UnwindAssemblyInstEmulation::GetPluginName()
 {
-    return "UnwindAssemblyInstEmulation";
+    return GetPluginNameStatic();
 }
-
-const char *
-UnwindAssemblyInstEmulation::GetShortPluginName()
-{
-    return "unwindassembly.inst-emulation";
-}
-
 
 uint32_t
 UnwindAssemblyInstEmulation::GetPluginVersion()
@@ -344,10 +341,11 @@ UnwindAssemblyInstEmulation::Terminate()
 }
 
 
-const char *
+ConstString
 UnwindAssemblyInstEmulation::GetPluginNameStatic()
 {
-    return "UnwindAssemblyInstEmulation";
+    static ConstString g_name("inst-emulation");
+    return g_name;
 }
 
 const char *

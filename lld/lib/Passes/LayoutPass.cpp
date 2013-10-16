@@ -10,48 +10,29 @@
 
 #define DEBUG_TYPE "LayoutPass"
 
-#include "lld/Passes/LayoutPass.h"
+#include <set>
 
+#include "lld/Passes/LayoutPass.h"
 #include "lld/Core/Instrumentation.h"
 
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 
 using namespace lld;
 
 /// The function compares atoms by sorting atoms in the following order
-/// a) Sorts atoms with the same permissions
-/// b) Sorts atoms with the same content Type
-/// c) Sorts atoms by Section position preference
-/// d) Sorts atoms by how they follow / precede each atom
+/// a) Sorts atoms by Section position preference
+/// b) Sorts atoms by their ordinal overrides
+///    (layout-after/layout-before/ingroup)
+/// c) Sorts atoms by their permissions
+/// d) Sorts atoms by their content
 /// e) Sorts atoms on how they appear using File Ordinality
 /// f) Sorts atoms on how they appear within the File
 bool LayoutPass::CompareAtoms::operator()(const DefinedAtom *left,
-                                          const DefinedAtom *right) {
+                                          const DefinedAtom *right) const {
   DEBUG(llvm::dbgs() << "Sorting " << left->name() << " " << right->name() << "\n");
   if (left == right)
     return false;
-
-  // Sort same permissions together.
-  DefinedAtom::ContentPermissions leftPerms = left->permissions();
-  DefinedAtom::ContentPermissions rightPerms = right->permissions();
-
-  DEBUG(llvm::dbgs() << "Sorting by contentPerms"
-                     << "(" << leftPerms << "," << rightPerms << ")\n");
-
-  if (leftPerms != rightPerms)
-    return leftPerms < rightPerms;
-
-  // Sort same content types together.
-  DefinedAtom::ContentType leftType = left->contentType();
-  DefinedAtom::ContentType rightType = right->contentType();
-
-  DEBUG(llvm::dbgs() << "Sorting by contentType"
-                     << "(" << leftType << "," << rightType << ")\n");
-
-  if (leftType != rightType)
-    return leftType < rightType;
-
-  // TO DO: Sort atoms in customs sections together.
 
   // Sort by section position preference.
   DefinedAtom::SectionPosition leftPos = left->sectionPosition();
@@ -72,24 +53,39 @@ bool LayoutPass::CompareAtoms::operator()(const DefinedAtom *left,
   AtomToOrdinalT::const_iterator lPos = _layout._ordinalOverrideMap.find(left);
   AtomToOrdinalT::const_iterator rPos = _layout._ordinalOverrideMap.find(right);
   AtomToOrdinalT::const_iterator end = _layout._ordinalOverrideMap.end();
-  if (lPos != end) {
-    if (rPos != end) {
-      // both left and right are overridden, so compare overridden ordinals
-      if (lPos->second != rPos->second)
-        return lPos->second < rPos->second;
-    } else {
-      // left is overridden and right is not, so left < right
-      return true;
-    }
-  } else {
-    if (rPos != end) {
-      // right is overridden and left is not, so right < left
-      return false;
-    } else {
-      // neither are overridden,
-      // fall into default sorting below
+
+  // Sort atoms by their ordinal overrides only if they fall in the same
+  // chain.
+  auto leftAtom = _layout._followOnRoots.find(left);
+  auto rightAtom = _layout._followOnRoots.find(right);
+
+  if (leftAtom != _layout._followOnRoots.end() &&
+      rightAtom != _layout._followOnRoots.end() &&
+      leftAtom->second == rightAtom->second) {
+    if ((lPos != end) && (rPos != end)) {
+      return lPos->second < rPos->second;
     }
   }
+
+  // Sort same permissions together.
+  DefinedAtom::ContentPermissions leftPerms = left->permissions();
+  DefinedAtom::ContentPermissions rightPerms = right->permissions();
+
+  DEBUG(llvm::dbgs() << "Sorting by contentPerms"
+                     << "(" << leftPerms << "," << rightPerms << ")\n");
+
+  if (leftPerms != rightPerms)
+    return leftPerms < rightPerms;
+
+  // Sort same content types together.
+  DefinedAtom::ContentType leftType = left->contentType();
+  DefinedAtom::ContentType rightType = right->contentType();
+
+  DEBUG(llvm::dbgs() << "Sorting by contentType"
+                     << "(" << leftType << "," << rightType << ")\n");
+
+  if (leftType != rightType)
+    return leftType < rightType;
 
   // Sort by .o order.
   const File *leftFile = &left->file();
@@ -118,6 +114,59 @@ bool LayoutPass::CompareAtoms::operator()(const DefinedAtom *left,
   return false;
 }
 
+// Returns the atom immediately followed by the given atom in the followon
+// chain.
+const DefinedAtom *LayoutPass::findAtomFollowedBy(
+    const DefinedAtom *targetAtom) {
+  // Start from the beginning of the chain and follow the chain until
+  // we find the targetChain.
+  const DefinedAtom *atom = _followOnRoots[targetAtom];
+  while (true) {
+    const DefinedAtom *prevAtom = atom;
+    AtomToAtomT::iterator targetFollowOnAtomsIter = _followOnNexts.find(atom);
+    // The target atom must be in the chain of its root.
+    assert(targetFollowOnAtomsIter != _followOnNexts.end());
+    atom = targetFollowOnAtomsIter->second;
+    if (atom == targetAtom)
+      return prevAtom;
+  }
+}
+
+// Check if all the atoms followed by the given target atom are of size zero.
+// When this method is called, an atom being added is not of size zero and
+// will be added to the head of the followon chain. All the atoms between the
+// atom and the targetAtom (specified by layout-after) need to be of size zero
+// in this case. Otherwise the desired layout is impossible.
+bool LayoutPass::checkAllPrevAtomsZeroSize(const DefinedAtom *targetAtom) {
+  const DefinedAtom *atom = _followOnRoots[targetAtom];
+  while (true) {
+    if (atom == targetAtom)
+      return true;
+    if (atom->size() != 0)
+      // TODO: print warning that an impossible layout is being desired by the
+      // user.
+      return false;
+    AtomToAtomT::iterator targetFollowOnAtomsIter = _followOnNexts.find(atom);
+    // The target atom must be in the chain of its root.
+    assert(targetFollowOnAtomsIter != _followOnNexts.end());
+    atom = targetFollowOnAtomsIter->second;
+  }
+}
+
+// Set the root of all atoms in targetAtom's chain to the given root.
+void LayoutPass::setChainRoot(const DefinedAtom *targetAtom,
+                              const DefinedAtom *root) {
+  // Walk through the followon chain and override each node's root.
+  while (true) {
+    _followOnRoots[targetAtom] = root;
+    AtomToAtomT::iterator targetFollowOnAtomsIter =
+        _followOnNexts.find(targetAtom);
+    if (targetFollowOnAtomsIter == _followOnNexts.end())
+      return;
+    targetAtom = targetFollowOnAtomsIter->second;
+  }
+}
+
 /// This pass builds the followon tables described by two DenseMaps
 /// followOnRoots and followonNexts.
 /// The followOnRoots map contains a mapping of a DefinedAtom to its root
@@ -135,109 +184,54 @@ bool LayoutPass::CompareAtoms::operator()(const DefinedAtom *left,
 ///    targetAtoms and its tree to the current chain
 void LayoutPass::buildFollowOnTable(MutableFile::DefinedAtomRange &range) {
   ScopedTask task(getDefaultDomain(), "LayoutPass::buildFollowOnTable");
-  for (auto ai : range) {
+  // Set the initial size of the followon and the followonNext hash to the
+  // number of atoms that we have.
+  _followOnRoots.resize(range.size());
+  _followOnNexts.resize(range.size());
+  for (const DefinedAtom *ai : range) {
     for (const Reference *r : *ai) {
-      if (r->kind() == lld::Reference::kindLayoutAfter) {
-        const DefinedAtom *targetAtom = llvm::dyn_cast<DefinedAtom>(r->target());
-        _followOnNexts[ai] = targetAtom;
-        // If we find a followon for the first time, lets make that
-        // atom as the root atom
-        if (_followOnRoots.count(ai) == 0) {
-          _followOnRoots[ai] = ai;
-        }
-        // If the targetAtom is not a root of any chain, lets make
-        // the root of the targetAtom to the root of the current chain
-        auto iter = _followOnRoots.find(targetAtom);
-        if (iter == _followOnRoots.end()) {
-          auto tmp = _followOnRoots[ai];
-          _followOnRoots[targetAtom] = tmp;
+      if (r->kind() != lld::Reference::kindLayoutAfter)
+        continue;
+      const DefinedAtom *targetAtom = llvm::dyn_cast<DefinedAtom>(r->target());
+      _followOnNexts[ai] = targetAtom;
+
+      // If we find a followon for the first time, lets make that atom as the
+      // root atom.
+      if (_followOnRoots.count(ai) == 0)
+        _followOnRoots[ai] = ai;
+
+      auto iter = _followOnRoots.find(targetAtom);
+      if (iter == _followOnRoots.end()) {
+        // If the targetAtom is not a root of any chain, lets make the root of
+        // the targetAtom to the root of the current chain.
+        _followOnRoots[targetAtom] = _followOnRoots[ai];
+      } else if (iter->second == targetAtom) {
+        // If the targetAtom is the root of a chain, the chain becomes part of
+        // the current chain. Rewrite the subchain's root to the current
+        // chain's root.
+        setChainRoot(targetAtom, _followOnRoots[ai]);
+      } else {
+        // The targetAtom is already a part of a chain. If the current atom is
+        // of size zero, we can insert it in the middle of the chain just
+        // before the target atom, while not breaking other atom's followon
+        // relationships. If it's not, we can only insert the current atom at
+        // the beginning of the chain. All the atoms followed by the target
+        // atom must be of size zero in that case to satisfy the followon
+        // relationships.
+        size_t currentAtomSize = ai->size();
+        if (currentAtomSize == 0) {
+          const DefinedAtom *targetPrevAtom = findAtomFollowedBy(targetAtom);
+          _followOnNexts[targetPrevAtom] = ai;
+          _followOnRoots[ai] = _followOnRoots[targetPrevAtom];
         } else {
-          // The followon is part of another chain
-          if (iter->second == targetAtom) {
-            const DefinedAtom *a = targetAtom;
-            while (true) {
-              _followOnRoots[a] = _followOnRoots[ai];
-              // Set all the follow on's for the targetAtom to be
-              // the current root
-              AtomToAtomT::iterator targetFollowOnAtomsIter =
-                  _followOnNexts.find(a);
-
-              if (targetFollowOnAtomsIter != _followOnNexts.end())
-                a = targetFollowOnAtomsIter->second;
-              else
-                break;
-            }      // while true
-          } else { // the atom could be part of chain already
-                   // Get to the root of the chain
-            const DefinedAtom *a = _followOnRoots[targetAtom];
-            const DefinedAtom *targetPrevAtom = nullptr;
-
-            // If the size of the atom is 0, and the target
-            // is already part of a chain, lets bring the current
-            // atom into the chain
-            size_t currentAtomSize = (*ai).size();
-
-            // Lets add to the chain only if the atoms that
-            // appear before the targetAtom in the chain
-            // are of size 0
-            bool foundNonZeroSizeAtom = false;
-            while (true) {
-              targetPrevAtom = a;
-
-              // Set all the follow on's for the targetAtom to be
-              // the current root
-              AtomToAtomT::iterator targetFollowOnAtomsIter =
-                  _followOnNexts.find(a);
-
-              if (targetFollowOnAtomsIter != _followOnNexts.end())
-                a = targetFollowOnAtomsIter->second;
-              else
-                break;
-
-              if ((a->size() != 0) && (currentAtomSize != 0)) {
-                foundNonZeroSizeAtom = true;
-                break;
-              }
-
-              if (a == targetAtom)
-                break;
-
-            } // while true
-            if (foundNonZeroSizeAtom) {
-              // TODO: print warning that an impossible layout
-              // is being desired by the user
-              // Continue to the next atom
-              break;
-            }
-
-            // If the atom is a zero sized atom, then make the target
-            // follow the zero sized atom, as the zero sized atom may be
-            // a weak symbol
-            if ((currentAtomSize == 0) && (targetPrevAtom)) {
-              _followOnNexts[targetPrevAtom] = ai;
-              _followOnRoots[ai] = _followOnRoots[targetPrevAtom];
-              _followOnNexts[ai] = targetAtom;
-            } else {
-              _followOnNexts[ai] = _followOnRoots[targetAtom];
-              // Set the root of all atoms in the
-              a = _followOnRoots[targetAtom];
-              while (true) {
-                _followOnRoots[a] = _followOnRoots[ai];
-                // Set all the follow on's for the targetAtom to be
-                // the current root
-                AtomToAtomT::iterator targetFollowOnAtomsIter =
-                    _followOnNexts.find(a);
-                if (targetFollowOnAtomsIter != _followOnNexts.end())
-                  a = targetFollowOnAtomsIter->second;
-                else
-                  break;
-              } // while true
-            } // end else (currentAtomSize != 0)
-          }   // end else
-        }     // else
-      }       // kindLayoutAfter
-    }         // Reference
-  }           // range
+          if (!checkAllPrevAtomsZeroSize(targetAtom))
+            break;
+          _followOnNexts[ai] = _followOnRoots[targetAtom];
+          setChainRoot(_followOnRoots[targetAtom], _followOnRoots[ai]);
+        }
+      }
+    }
+  }
 }
 
 /// This pass builds the followon tables using InGroup relationships
@@ -255,7 +249,7 @@ void LayoutPass::buildInGroupTable(MutableFile::DefinedAtomRange &range) {
   ScopedTask task(getDefaultDomain(), "LayoutPass::buildInGroupTable");
   // This table would convert precededby references to follow on
   // references so that we have only one table
-  for (auto ai : range) {
+  for (const DefinedAtom *ai : range) {
     for (const Reference *r : *ai) {
       if (r->kind() == lld::Reference::kindInGroup) {
         const DefinedAtom *rootAtom = llvm::dyn_cast<DefinedAtom>(r->target());
@@ -270,25 +264,10 @@ void LayoutPass::buildInGroupTable(MutableFile::DefinedAtomRange &range) {
         auto iter = _followOnRoots.find(ai);
         if (iter == _followOnRoots.end()) {
           _followOnRoots[ai] = rootAtom;
-        }
-        else if (iter->second == ai) {
-          if (iter->second != rootAtom) {
-            const DefinedAtom *a = iter->second;
-            // Change all the followon next references to the ingroup reference root
-            while (true) {
-              _followOnRoots[a] = rootAtom;
-              // Set all the follow on's for the targetAtom to be
-              // the current root
-              AtomToAtomT::iterator targetFollowOnAtomsIter =
-                  _followOnNexts.find(a);
-              if (targetFollowOnAtomsIter != _followOnNexts.end())
-                a = targetFollowOnAtomsIter->second;
-              else
-                break;
-            } // while true
-          }
-        }
-        else {
+        } else if (iter->second == ai) {
+          if (iter->second != rootAtom)
+            setChainRoot(iter->second, rootAtom);
+        } else {
           // TODO : Flag an error that the root of the tree
           // is different, Here is an example
           // Say there are atoms
@@ -342,7 +321,7 @@ void LayoutPass::buildPrecededByTable(MutableFile::DefinedAtomRange &range) {
   ScopedTask task(getDefaultDomain(), "LayoutPass::buildPrecededByTable");
   // This table would convert precededby references to follow on
   // references so that we have only one table
-  for (auto ai : range) {
+  for (const DefinedAtom *ai : range) {
     for (const Reference *r : *ai) {
       if (r->kind() == lld::Reference::kindLayoutBefore) {
         const DefinedAtom *targetAtom = llvm::dyn_cast<DefinedAtom>(r->target());
@@ -379,22 +358,11 @@ void LayoutPass::buildPrecededByTable(MutableFile::DefinedAtomRange &range) {
           // Change the roots of the targetAtom and its chain to
           // the current atoms root
           if (changeRoots) {
-            const DefinedAtom *a = _followOnRoots[targetAtom];
-            while (true) {
-              _followOnRoots[a] = _followOnRoots[ai];
-              // Set all the follow on's for the targetAtom to be
-              // the current root
-              AtomToAtomT::iterator targetFollowOnAtomsIter =
-                  _followOnNexts.find(a);
-              if (targetFollowOnAtomsIter != _followOnNexts.end())
-                a = targetFollowOnAtomsIter->second;
-              else
-                break;
-            }
-          } // changeRoots
+            setChainRoot(_followOnRoots[targetAtom], _followOnRoots[ai]);
+          }
         }   // Is targetAtom root
       }     // kindLayoutBefore
-    }       //  Reference
+    }       // Reference
   }         // atom iteration
 }           // end function
 
@@ -406,7 +374,7 @@ void LayoutPass::buildPrecededByTable(MutableFile::DefinedAtomRange &range) {
 void LayoutPass::buildOrdinalOverrideMap(MutableFile::DefinedAtomRange &range) {
   ScopedTask task(getDefaultDomain(), "LayoutPass::buildOrdinalOverrideMap");
   uint64_t index = 0;
-  for (auto ai : range) {
+  for (const DefinedAtom *ai : range) {
     const DefinedAtom *atom = ai;
     if (_ordinalOverrideMap.find(atom) != _ordinalOverrideMap.end())
       continue;
@@ -419,14 +387,123 @@ void LayoutPass::buildOrdinalOverrideMap(MutableFile::DefinedAtomRange &range) {
           _ordinalOverrideMap[nextAtom] = index++;
         }
       }
-    } else {
-      _ordinalOverrideMap[atom] = index;
     }
   }
 }
 
+// Helper functions to check follow-on graph.
+#ifndef NDEBUG
+namespace {
+typedef llvm::DenseMap<const DefinedAtom *, const DefinedAtom *> AtomToAtomT;
+
+std::string atomToDebugString(const Atom *atom) {
+  const DefinedAtom *definedAtom = llvm::dyn_cast<DefinedAtom>(atom);
+  std::string str;
+  llvm::raw_string_ostream s(str);
+  if (definedAtom->name().empty())
+    s << "<anonymous " << definedAtom << ">";
+  else
+    s << definedAtom->name();
+  s << " in ";
+  if (definedAtom->customSectionName().empty())
+    s << "<anonymous>";
+  else
+    s << definedAtom->customSectionName();
+  s.flush();
+  return str;
+}
+
+void showCycleDetectedError(AtomToAtomT &followOnNexts,
+                            const DefinedAtom *atom) {
+  const DefinedAtom *start = atom;
+  llvm::dbgs() << "There's a cycle in a follow-on chain!\n";
+  do {
+    llvm::dbgs() << "  " << atomToDebugString(atom) << "\n";
+    for (const Reference *ref : *atom) {
+      llvm::dbgs() << "    " << ref->kindToString()
+                   << ": " << atomToDebugString(ref->target()) << "\n";
+    }
+    atom = followOnNexts[atom];
+  } while (atom != start);
+  llvm::report_fatal_error("Cycle detected");
+}
+
+/// Exit if there's a cycle in a followon chain reachable from the
+/// given root atom. Uses the tortoise and hare algorithm to detect a
+/// cycle.
+void checkNoCycleInFollowonChain(AtomToAtomT &followOnNexts,
+                                 const DefinedAtom *root) {
+  const DefinedAtom *tortoise = root;
+  const DefinedAtom *hare = followOnNexts[root];
+  while (true) {
+    if (!tortoise || !hare)
+      return;
+    if (tortoise == hare)
+      showCycleDetectedError(followOnNexts, tortoise);
+    tortoise = followOnNexts[tortoise];
+    hare = followOnNexts[followOnNexts[hare]];
+  }
+}
+
+void checkReachabilityFromRoot(AtomToAtomT &followOnRoots,
+                               const DefinedAtom *atom) {
+  if (!atom) return;
+  auto i = followOnRoots.find(atom);
+  if (i == followOnRoots.end()) {
+    Twine msg(Twine("Atom <") + atomToDebugString(atom)
+              + "> has no follow-on root!");
+    llvm_unreachable(msg.str().c_str());
+  }
+  const DefinedAtom *ap = i->second;
+  while (true) {
+    const DefinedAtom *next = followOnRoots[ap];
+    if (!next) {
+      Twine msg(Twine("Atom <" + atomToDebugString(atom)
+                      + "> is not reachable from its root!"));
+      llvm_unreachable(msg.str().c_str());
+    }
+    if (next == ap)
+      return;
+    ap = next;
+  }
+}
+
+void printDefinedAtoms(const MutableFile::DefinedAtomRange &atomRange) {
+  for (const DefinedAtom *atom : atomRange) {
+    llvm::dbgs() << "  file=" << atom->file().path()
+                 << ", name=" << atom->name()
+                 << ", size=" << atom->size()
+                 << ", type=" << atom->contentType()
+                 << ", ordinal=" << atom->ordinal()
+                 << "\n";
+  }
+}
+} // end anonymous namespace
+
+/// Verify that the followon chain is sane. Should not be called in
+/// release binary.
+void LayoutPass::checkFollowonChain(MutableFile::DefinedAtomRange &range) {
+  ScopedTask task(getDefaultDomain(), "LayoutPass::checkFollowonChain");
+
+  // Verify that there's no cycle in follow-on chain.
+  std::set<const DefinedAtom *> roots;
+  for (const auto &ai : _followOnRoots)
+    roots.insert(ai.second);
+  for (const DefinedAtom *root : roots)
+    checkNoCycleInFollowonChain(_followOnNexts, root);
+
+  // Verify that all the atoms in followOnNexts have references to
+  // their roots.
+  for (const auto &ai : _followOnNexts) {
+    checkReachabilityFromRoot(_followOnRoots, ai.first);
+    checkReachabilityFromRoot(_followOnRoots, ai.second);
+  }
+}
+#endif  // #ifndef NDEBUG
+
 /// Perform the actual pass
 void LayoutPass::perform(MutableFile &mergedFile) {
+  ScopedTask task(getDefaultDomain(), "LayoutPass");
   MutableFile::DefinedAtomRange atomRange = mergedFile.definedAtoms();
 
   // Build follow on tables
@@ -438,35 +515,22 @@ void LayoutPass::perform(MutableFile &mergedFile) {
   // Build preceded by tables
   buildPrecededByTable(atomRange);
 
+  // Check the structure of followon graph if running in debug mode.
+  DEBUG(checkFollowonChain(atomRange));
+
   // Build override maps
   buildOrdinalOverrideMap(atomRange);
 
-  DEBUG_WITH_TYPE("layout", { 
+  DEBUG({
     llvm::dbgs() << "unsorted atoms:\n";
-    for (const DefinedAtom *atom : atomRange) {
-      llvm::dbgs()  << "  file=" << atom->file().path()
-                    << ", name=" << atom->name()
-                    << ", size=" << atom->size()
-                    << ", type=" << atom->contentType()
-                    << ", ordinal=" << atom->ordinal()
-                    << "\n";
-    }
+    printDefinedAtoms(atomRange);
   });
-  
-  // sort the atoms
-  std::sort(atomRange.begin(), atomRange.end(), _compareAtoms);
-  
-  DEBUG_WITH_TYPE("layout", { 
-    llvm::dbgs() << "sorted atoms:\n";
-    for (const DefinedAtom *atom : atomRange) {
-      llvm::dbgs()  << "  file=" << atom->file().path()
-                    << ", name=" << atom->name()
-                    << ", size=" << atom->size()
-                    << ", type=" << atom->contentType()
-                    << ", ordinal=" << atom->ordinal()
-                    << "\n";
-    }
-  });
-  
 
+  // sort the atoms
+  std::stable_sort(atomRange.begin(), atomRange.end(), _compareAtoms);
+
+  DEBUG({
+    llvm::dbgs() << "sorted atoms:\n";
+    printDefinedAtoms(atomRange);
+  });
 }

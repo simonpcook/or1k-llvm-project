@@ -53,7 +53,7 @@ public:
 
 
   /// file - returns the File that produced/owns this Atom
-  virtual const class File& file() const = 0;
+  virtual const File& file() const = 0;
 
   /// name - The name of the atom. For a function atom, it is the (mangled)
   /// name of the function.
@@ -67,7 +67,7 @@ public:
 
 protected:
   /// Atom is an abstract base class.  Only subclasses can access constructor.
-  Atom(Definition def) : _definition(def) {}
+  explicit Atom(Definition def) : _definition(def) {}
 
   /// The memory for Atom objects is always managed by the owning File
   /// object.  Therefore, no one but the owning File object should call

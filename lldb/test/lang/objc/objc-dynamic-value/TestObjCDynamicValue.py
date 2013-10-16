@@ -129,6 +129,7 @@ class ObjCDynamicValueTestCase(TestBase):
         threads = lldbutil.get_stopped_threads (process, lldb.eStopReasonPlanComplete)
         self.assertTrue (len(threads) == 1)
         line_entry = threads[0].GetFrameAtIndex(0).GetLineEntry()
+
         self.assertTrue (line_entry.GetLine() == self.set_property_line)
         self.assertTrue (line_entry.GetFileSpec().GetFilename() == self.source_name) 
 

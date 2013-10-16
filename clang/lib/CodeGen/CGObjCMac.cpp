@@ -2393,7 +2393,7 @@ llvm::Constant *CGObjCCommonMac::getBitmapBlockLayout(bool ComputeByrefLayout) {
         printf("\n Inline instruction for BYREF variable layout: ");
       else
         printf("\n Inline instruction for block variable layout: ");
-      printf("0x0%llx\n", (unsigned long long)Result);
+      printf("0x0%" PRIx64 "\n", Result);
     }
     if (WordSizeInBytes == 8) {
       const llvm::APInt Instruction(64, Result);
@@ -4348,7 +4348,7 @@ void CGObjCCommonMac::EmitImageInfo() {
 
   // Indicate whether we're compiling this to run on a simulator.
   const llvm::Triple &Triple = CGM.getTarget().getTriple();
-  if (Triple.getOS() == llvm::Triple::IOS &&
+  if (Triple.isiOS() &&
       (Triple.getArch() == llvm::Triple::x86 ||
        Triple.getArch() == llvm::Triple::x86_64))
     Mod.addModuleFlag(llvm::Module::Error, "Objective-C Is Simulated",

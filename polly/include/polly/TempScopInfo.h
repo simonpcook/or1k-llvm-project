@@ -22,7 +22,9 @@
 #include "llvm/Analysis/RegionPass.h"
 #include "llvm/IR/Instructions.h"
 
-namespace llvm { class DataLayout; }
+namespace llvm {
+class DataLayout;
+}
 
 using namespace llvm;
 
@@ -39,8 +41,11 @@ public:
 
   // The type of the scev affine function
   enum TypeKind {
-    READ,
-    WRITE
+    READ = 0x1,
+    WRITE = 0x2,
+    SCALAR = 0x4,
+    SCALARREAD = SCALAR | READ,
+    SCALARWRITE = SCALAR | WRITE
   };
 
 private:
@@ -64,9 +69,13 @@ public:
 
   bool isAffine() const { return IsAffine; }
 
-  bool isRead() const { return Type == READ; }
+  bool isRead() const { return Type & READ; }
 
-  bool isWrite() const { return Type == WRITE; }
+  bool isWrite() const { return Type & WRITE; }
+
+  bool isScalar() const { return Type & SCALAR; }
+
+  void print(raw_ostream &OS) const;
 };
 
 class Comparison {
@@ -207,10 +216,8 @@ typedef std::map<const Region *, TempScop *> TempScopMapType;
 ///
 class TempScopInfo : public FunctionPass {
   //===-------------------------------------------------------------------===//
-  // DO NOT IMPLEMENT
-  TempScopInfo(const TempScopInfo &);
-  // DO NOT IMPLEMENT
-  const TempScopInfo &operator=(const TempScopInfo &);
+  TempScopInfo(const TempScopInfo &) LLVM_DELETED_FUNCTION;
+  const TempScopInfo &operator=(const TempScopInfo &) LLVM_DELETED_FUNCTION;
 
   // The ScalarEvolution to help building Scop.
   ScalarEvolution *SE;
@@ -237,8 +244,12 @@ class TempScopInfo : public FunctionPass {
   // And also Remember the constrains for BBs
   BBCondMapType BBConds;
 
-  // Access function of bbs.
+  // Access function of statements (currently BasicBlocks) .
   AccFuncMapType AccFuncMap;
+
+  // Pre-created zero for the scalar accesses, with it we do not need create a
+  // zero scev every time when we need it.
+  const SCEV *ZeroOffset;
 
   // Mapping regions to the corresponding Scop in current function.
   TempScopMapType TempScops;
@@ -263,6 +274,26 @@ class TempScopInfo : public FunctionPass {
   // Build the temprory information of Region R, where R must be a valid part
   // of Scop.
   TempScop *buildTempScop(Region &R);
+
+  /// @brief Build an instance of IRAccess from the Load/Store instruction.
+  ///
+  /// @param Inst The Load/Store instruction that access the memory
+  /// @param L    The parent loop of the instruction
+  /// @param R    The region on which we are going to build a TempScop
+  ///
+  /// @return     The IRAccess to describe the access function of the
+  ///             instruction.
+  IRAccess buildIRAccess(Instruction *Inst, Loop *L, Region *R);
+
+  /// @brief Analyze and extract the cross-BB scalar dependences (or,
+  ///        dataflow dependencies) of an instruction.
+  ///
+  /// @param Inst The instruction to be analyzed
+  /// @param R    The SCoP region
+  ///
+  /// @return     True if the Instruction is used in other BB and a scalar write
+  ///             Access is required.
+  bool buildScalarDependences(Instruction *Inst, Region *R);
 
   void buildAccessFunctions(Region &RefRegion, BasicBlock &BB);
 

@@ -13,6 +13,7 @@
 // C Includes
 // C++ Includes
 #include <memory>
+#include <string>
 
 // Other libraries and framework includes
 #include "lldb/Target/Thread.h"
@@ -20,11 +21,11 @@
 
 class ProcessMessage;
 class ProcessMonitor;
-class RegisterContextPOSIX;
+class POSIXBreakpointProtocol;
 
 //------------------------------------------------------------------------------
 // @class POSIXThread
-// @brief Abstraction of a linux process (thread).
+// @brief Abstraction of a POSIX thread.
 class POSIXThread
     : public lldb_private::Thread
 {
@@ -36,11 +37,21 @@ public:
     void
     RefreshStateAfterStop();
 
-    bool
+    virtual void
     WillResume(lldb::StateType resume_state);
+
+    // This notifies the thread when a private stop occurs.
+    virtual void
+    DidStop ();
 
     const char *
     GetInfo();
+
+    void
+    SetName (const char *name);
+
+    const char *
+    GetName ();
 
     virtual lldb::RegisterContextSP
     GetRegisterContext();
@@ -49,56 +60,69 @@ public:
     CreateRegisterContextForFrame (lldb_private::StackFrame *frame);
 
     //--------------------------------------------------------------------------
-    // These static functions provide a mapping from the register offset
+    // These functions provide a mapping from the register offset
     // back to the register index or name for use in debugging or log
     // output.
 
-    static unsigned
+    unsigned
     GetRegisterIndexFromOffset(unsigned offset);
 
-    static const char *
+    const char *
     GetRegisterName(unsigned reg);
 
-    static const char *
+    const char *
     GetRegisterNameFromOffset(unsigned offset);
 
     //--------------------------------------------------------------------------
-    // These methods form a specialized interface to linux threads.
+    // These methods form a specialized interface to POSIX threads.
     //
     bool Resume();
 
     void Notify(const ProcessMessage &message);
 
-private:
-    RegisterContextPOSIX *
-    GetRegisterContextPOSIX ()
+    //--------------------------------------------------------------------------
+    // These methods provide an interface to watchpoints
+    //
+    bool EnableHardwareWatchpoint(lldb_private::Watchpoint *wp);
+
+    bool DisableHardwareWatchpoint(lldb_private::Watchpoint *wp);
+
+    uint32_t NumSupportedHardwareWatchpoints();
+
+    uint32_t FindVacantWatchpointIndex();
+
+protected:
+    POSIXBreakpointProtocol *
+    GetPOSIXBreakpointProtocol ()
     {
         if (!m_reg_context_sp)
             m_reg_context_sp = GetRegisterContext();
-#if 0
-        return dynamic_cast<RegisterContextPOSIX*>(m_reg_context_sp.get());
-#endif
-        return (RegisterContextPOSIX *)m_reg_context_sp.get();
+        return m_posix_thread;
     }
     
     std::unique_ptr<lldb_private::StackFrame> m_frame_ap;
 
     lldb::BreakpointSiteSP m_breakpoint;
-    lldb::StopInfoSP m_stop_info;
+
+    bool m_thread_name_valid;
+    std::string m_thread_name;
+    POSIXBreakpointProtocol *m_posix_thread;
 
     ProcessMonitor &
     GetMonitor();
 
-    lldb::StopInfoSP
-    GetPrivateStopReason();
+    virtual bool
+    CalculateStopInfo();
 
     void BreakNotify(const ProcessMessage &message);
-    void TraceNotify(const ProcessMessage &message);
+    void WatchNotify(const ProcessMessage &message);
+    virtual void TraceNotify(const ProcessMessage &message);
     void LimboNotify(const ProcessMessage &message);
     void SignalNotify(const ProcessMessage &message);
     void SignalDeliveredNotify(const ProcessMessage &message);
     void CrashNotify(const ProcessMessage &message);
     void ThreadNotify(const ProcessMessage &message);
+    void ExitNotify(const ProcessMessage &message);
 
     lldb_private::Unwind *
     GetUnwinder();

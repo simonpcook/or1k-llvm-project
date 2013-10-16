@@ -50,7 +50,7 @@ FileLineResolver::SearchCallback
 {
     CompileUnit *cu = context.comp_unit;
 
-    if (m_inlines || m_file_spec.Compare(*cu, m_file_spec, m_file_spec.GetDirectory()))
+    if (m_inlines || m_file_spec.Compare(*cu, m_file_spec, (bool)m_file_spec.GetDirectory()))
     {
         uint32_t start_file_idx = 0;
         uint32_t file_idx = cu->GetSupportFiles().FindFileIndex(start_file_idx, m_file_spec, false);
@@ -90,10 +90,8 @@ FileLineResolver::GetDepth()
 void
 FileLineResolver::GetDescription (Stream *s)
 {
-    s->Printf ("File and line resolver for file: \"%s%s%s\" line: %u", 
-               m_file_spec.GetDirectory().GetCString(),
-               m_file_spec.GetDirectory() ? "/" : "",
-               m_file_spec.GetFilename().GetCString(),
+    s->Printf ("File and line resolver for file: \"%s\" line: %u", 
+               m_file_spec.GetPath().c_str(),
                m_line_number);
 }
 

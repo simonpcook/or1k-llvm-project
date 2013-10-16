@@ -33,7 +33,7 @@ class BasicExprCommandsTestCase(TestBase):
         self.addTearDownHook(lambda: self.runCmd("settings clear auto-confirm"))
 
 
-    def test_many_expr_commands(self):
+    def build_and_run(self):
         """These basic expression commands should work as expected."""
         self.buildDefault()
 
@@ -43,6 +43,17 @@ class BasicExprCommandsTestCase(TestBase):
 
         self.runCmd("run", RUN_SUCCEEDED)
 
+    @unittest2.expectedFailure # llvm.org/pr17135: APFloat::toString does not identify the correct (i.e. least) precision.
+    def test_floating_point_expr_commands(self):
+        self.build_and_run()
+
+        self.expect("expression 2.234f",
+            patterns = ["\(float\) \$.* = 2\.234"])
+        # (float) $2 = 2.234
+
+    def test_many_expr_commands(self):
+        self.build_and_run()
+
         self.expect("expression 2",
             patterns = ["\(int\) \$.* = 2"])
         # (int) $0 = 1
@@ -51,9 +62,9 @@ class BasicExprCommandsTestCase(TestBase):
             patterns = ["\(unsigned long long\) \$.* = 2"])
         # (unsigned long long) $1 = 2
 
-        self.expect("expression 2.234f",
-            patterns = ["\(float\) \$.* = 2\.234"])
-        # (float) $2 = 2.234
+        self.expect("expression 0.5f",
+            patterns = ["\(float\) \$.* = 0\.5"])
+        # (float) $2 = 0.5
 
         self.expect("expression 2.234",
             patterns = ["\(double\) \$.* = 2\.234"])

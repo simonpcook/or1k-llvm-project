@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "HexagonTargetHandler.h"
-#include "HexagonTargetInfo.h"
+#include "HexagonLinkingContext.h"
 #include "HexagonRelocationHandler.h"
 #include "HexagonRelocationFunctions.h"
 
@@ -62,7 +62,7 @@ int reloc32(uint8_t *location, uint64_t P, uint64_t S, uint64_t A) {
 
 int reloc32_6_X(uint8_t *location, uint64_t P, uint64_t S, uint64_t A) {
   int64_t result = ((S + A) >> 6);
-  int64_t range = 1L << 32;
+  int64_t range = ((int64_t)1) << 32;
   if (result > range)
     return 1;
   result = lld::scatterBits<int32_t>(result, 0xfff3fff);
@@ -214,7 +214,7 @@ int relocHexGOTREL_32(uint8_t *location, uint64_t P, uint64_t S, uint64_t A,
 } // end anon namespace
 
 ErrorOr<void> HexagonTargetRelocationHandler::applyRelocation(
-    ELFWriter &writer, llvm::FileOutputBuffer &buf, const AtomLayout &atom,
+    ELFWriter &writer, llvm::FileOutputBuffer &buf, const lld::AtomLayout &atom,
     const Reference &ref) const {
   uint8_t *atomContent = buf.getBufferStart() + atom._fileOffset;
   uint8_t *location = atomContent + ref.offsetInAtom();
@@ -343,9 +343,9 @@ ErrorOr<void> HexagonTargetRelocationHandler::applyRelocation(
   default : {
     std::string str;
     llvm::raw_string_ostream s(str);
-    auto name = _targetInfo.stringFromRelocKind(ref.kind());
-    s << "Unhandled relocation: "
-      << (name ? *name : "<unknown>" ) << " (" << ref.kind() << ")";
+    auto name = _context.stringFromRelocKind(ref.kind());
+    s << "Unhandled relocation: " << (name ? *name : "<unknown>") << " ("
+      << ref.kind() << ")";
     s.flush();
     llvm_unreachable(str.c_str());
   }

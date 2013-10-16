@@ -29,7 +29,7 @@ class FunctionTypesTestCase(TestBase):
         """Test that a function pointer to 'printf' works and can be called."""
         self.buildDsym()
         self.function_pointers()
-    
+
     @dwarf_test
     def test_pointers_with_dwarf(self):
         """Test that a function pointer to 'printf' works and can be called."""

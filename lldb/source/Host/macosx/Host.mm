@@ -21,6 +21,8 @@
 #include "launcherXPCService/LauncherXPCService.h"
 #endif
 
+#include "llvm/Support/Host.h"
+
 #include <asl.h>
 #include <crt_externs.h>
 #include <execinfo.h>
@@ -54,9 +56,6 @@
 #include "cfcpp/CFCMutableDictionary.h"
 #include "cfcpp/CFCReleaser.h"
 #include "cfcpp/CFCString.h"
-
-#include "llvm/Support/Host.h"
-#include "llvm/Support/MachO.h"
 
 #include <objc/objc-auto.h>
 
@@ -146,6 +145,39 @@ Host::ThreadCreated (const char *thread_name)
     {
         ::pthread_setspecific (g_thread_create_key, new MacOSXDarwinThread(thread_name));
     }
+}
+
+std::string
+Host::GetThreadName (lldb::pid_t pid, lldb::tid_t tid)
+{
+    std::string thread_name;
+#if MAC_OS_X_VERSION_MAX_ALLOWED > MAC_OS_X_VERSION_10_5
+    // We currently can only get the name of a thread in the current process.
+    if (pid == Host::GetCurrentProcessID())
+    {
+        char pthread_name[1024];
+        if (::pthread_getname_np (::pthread_from_mach_thread_np (tid), pthread_name, sizeof(pthread_name)) == 0)
+        {
+            if (pthread_name[0])
+            {
+                thread_name = pthread_name;
+            }
+        }
+        else
+        {
+            dispatch_queue_t current_queue = ::dispatch_get_current_queue ();
+            if (current_queue != NULL)
+            {
+                const char *queue_name = dispatch_queue_get_label (current_queue);
+                if (queue_name && queue_name[0])
+                {
+                    thread_name = queue_name;
+                }
+            }
+        }
+    }
+#endif
+    return thread_name;
 }
 
 bool
@@ -502,9 +534,8 @@ LaunchInNewTerminalWithAppleScript (const char *exe_path, ProcessLaunchInfo &lau
         
     if (!darwin_debug_file_spec.Exists())
     {
-        error.SetErrorStringWithFormat ("the 'darwin-debug' executable doesn't exists at %s/%s", 
-                                        darwin_debug_file_spec.GetDirectory().GetCString(),
-                                        darwin_debug_file_spec.GetFilename().GetCString());
+        error.SetErrorStringWithFormat ("the 'darwin-debug' executable doesn't exists at '%s'", 
+                                        darwin_debug_file_spec.GetPath().c_str());
         return error;
     }
     
@@ -523,10 +554,42 @@ LaunchInNewTerminalWithAppleScript (const char *exe_path, ProcessLaunchInfo &lau
     const char *working_dir = launch_info.GetWorkingDirectory();
     if (working_dir)
         command.Printf(" --working-dir '%s'", working_dir);
+    else
+    {
+        char cwd[PATH_MAX];
+        if (getcwd(cwd, PATH_MAX))
+            command.Printf(" --working-dir '%s'", cwd);
+    }
     
     if (launch_info.GetFlags().Test (eLaunchFlagDisableASLR))
         command.PutCString(" --disable-aslr");
     
+    // We are launching on this host in a terminal. So compare the environemnt on the host
+    // to what is supplied in the launch_info. Any items that aren't in the host environemnt
+    // need to be sent to darwin-debug. If we send all environment entries, we might blow the
+    // max command line length, so we only send user modified entries.
+    const char **envp = launch_info.GetEnvironmentEntries().GetConstArgumentVector ();
+    StringList host_env;
+    const size_t host_env_count = Host::GetEnvironment (host_env);
+    const char *env_entry;
+    for (size_t env_idx = 0; (env_entry = envp[env_idx]) != NULL; ++env_idx)
+    {
+        bool add_entry = true;
+        for (size_t i=0; i<host_env_count; ++i)
+        {
+            const char *host_env_entry = host_env.GetStringAtIndex(i);
+            if (strcmp(env_entry, host_env_entry) == 0)
+            {
+                add_entry = false;
+                break;
+            }
+        }
+        if (add_entry)
+        {
+            command.Printf(" --env='%s'", env_entry);
+        }
+    }
+
     command.PutCString(" -- ");
 
     const char **argv = launch_info.GetArguments().GetConstArgumentVector ();
@@ -980,7 +1043,7 @@ Host::GetOSVersion
                 {
                     CFStringRef product_version_cfstr = (CFStringRef) product_version_value;
                     product_version_str = CFStringGetCStringPtr(product_version_cfstr, kCFStringEncodingUTF8);
-                    if (product_version_str == NULL) {
+                    if (product_version_str != NULL) {
                         if (CFStringGetCString(product_version_cfstr, buffer, 256, kCFStringEncodingUTF8))
                             product_version_str = buffer;
                     }
@@ -1044,9 +1107,9 @@ GetMacOSXProcessCPUType (ProcessInstanceInfo &process_info)
         {
             switch (cpu)
             {
-                case llvm::MachO::CPUTypeI386:      sub = llvm::MachO::CPUSubType_I386_ALL;     break;
-                case llvm::MachO::CPUTypeX86_64:    sub = llvm::MachO::CPUSubType_X86_64_ALL;   break;
-                case llvm::MachO::CPUTypeARM:
+                case CPU_TYPE_I386:      sub = CPU_SUBTYPE_I386_ALL;     break;
+                case CPU_TYPE_X86_64:    sub = CPU_SUBTYPE_X86_64_ALL;   break;
+                case CPU_TYPE_ARM:
                     {
                         uint32_t cpusubtype = 0;
                         len = sizeof(cpusubtype);
@@ -1682,11 +1745,12 @@ ShouldLaunchUsingXPC(const char *exe_path, ProcessLaunchInfo &launch_info)
         if (strcmp(part, debugserver) == 0)
         {
             // We are dealing with debugserver.
-            uid_t requested_uid = launch_info.GetUserID();
-            if (requested_uid == 0)
+            bool launchingAsRoot = launch_info.GetUserID() == 0;
+            bool currentUserIsRoot = Host::GetEffectiveUserID() == 0;
+            
+            if (launchingAsRoot && !currentUserIsRoot)
             {
-                // Launching XPC works for root. It also works for the non-attaching case for current login
-                // but unfortunately, we can't detect it here.
+                // If current user is already root, we don't need XPC's help.
                 result = true;
             }
         }
@@ -1920,3 +1984,10 @@ Host::GetAuxvData(lldb_private::Process *process)
 {
     return lldb::DataBufferSP();
 }
+
+uint32_t
+Host::MakeDirectory (const char* path, mode_t mode)
+{
+    return ::mkdir(path,mode);
+}
+

@@ -255,22 +255,31 @@ public:
         m_resume_state = state;
     }
 
-    // This function is called on all the threads before "WillResume" in case
-    // a thread needs to change its state before the ThreadList polls all the
-    // threads to figure out which ones actually will get to run and how.
+    // This function is called on all the threads before "ShouldResume" and
+    // "WillResume" in case a thread needs to change its state before the
+    // ThreadList polls all the threads to figure out which ones actually
+    // will get to run and how.
     void
     SetupForResume ();
     
-    // Override this to do platform specific tasks before resume, but always
-    // call the Thread::WillResume at the end of your work.
+    // Do not override this function, it is for thread plan logic only
+    bool
+    ShouldResume (lldb::StateType resume_state);
 
-    virtual bool
-    WillResume (lldb::StateType resume_state);
+    // Override this to do platform specific tasks before resume.
+    virtual void
+    WillResume (lldb::StateType resume_state)
+    {
+    }
 
     // This clears generic thread state after a resume.  If you subclass this,
     // be sure to call it.
     virtual void
     DidResume ();
+
+    // This notifies the thread when a private stop occurs.
+    virtual void
+    DidStop ();
 
     virtual void
     RefreshStateAfterStop() = 0;
@@ -283,7 +292,7 @@ public:
 
     Vote
     ShouldReportStop (Event *event_ptr);
-
+    
     Vote
     ShouldReportRun (Event *event_ptr);
     
@@ -368,11 +377,16 @@ public:
     
     Error
     ReturnFromFrame (lldb::StackFrameSP frame_sp, lldb::ValueObjectSP return_value_sp, bool broadcast = false);
-    
+
+    Error
+    JumpToLine (const FileSpec &file, uint32_t line, bool can_leave_function, std::string *warnings = NULL);
+
     virtual lldb::StackFrameSP
     GetFrameWithStackID (const StackID &stack_id)
     {
-        return GetStackFrameList()->GetFrameWithStackID (stack_id);
+        if (stack_id.IsValid())
+            return GetStackFrameList()->GetFrameWithStackID (stack_id);
+        return lldb::StackFrameSP();
     }
 
     uint32_t
@@ -449,6 +463,19 @@ public:
     // The idea is that particular Platform plugins can override these methods to
     // provide the implementation of these basic operations appropriate to their
     // environment.
+    //
+    // NB: All the QueueThreadPlanXXX providers return Shared Pointers to
+    // Thread plans.  This is useful so that you can modify the plans after
+    // creation in ways specific to that plan type.  Also, it is often necessary for
+    // ThreadPlans that utilize other ThreadPlans to implement their task to keep a shared
+    // pointer to the sub-plan.
+    // But besides that, the shared pointers should only be held onto by entities who live no longer
+    // than the thread containing the ThreadPlan.
+    // FIXME: If this becomes a problem, we can make a version that just returns a pointer,
+    // which it is clearly unsafe to hold onto, and a shared pointer version, and only allow
+    // ThreadPlan and Co. to use the latter.  That is made more annoying to do because there's
+    // no elegant way to friend a method to all sub-classes of a given class.
+    //
     //------------------------------------------------------------------
 
     //------------------------------------------------------------------
@@ -463,9 +490,9 @@ public:
     ///    Otherwise this plan will go on the end of the plan stack.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueFundamentalPlan (bool abort_other_plans);
 
     //------------------------------------------------------------------
@@ -478,9 +505,9 @@ public:
     ///    Otherwise this plan will go on the end of the plan stack.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepOverBreakpointPlan (bool abort_other_plans);
 
     //------------------------------------------------------------------
@@ -497,9 +524,9 @@ public:
     ///    \b true if we will stop other threads while we single step this one.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepSingleInstruction (bool step_over,
                                              bool abort_other_plans,
                                              bool stop_other_threads);
@@ -529,9 +556,9 @@ public:
     ///    \b true if we will stop other threads while we single step this one.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepOverRange (bool abort_other_plans,
                                  const AddressRange &range,
                                  const SymbolContext &addr_context,
@@ -567,9 +594,9 @@ public:
     ///    If \b true we will step out if we step into code with no debug info.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepInRange (bool abort_other_plans,
                                  const AddressRange &range,
                                  const SymbolContext &addr_context,
@@ -603,9 +630,9 @@ public:
     ///    See standard meanings for the stop & run votes in ThreadPlan.h.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepOut (bool abort_other_plans,
                                SymbolContext *addr_context,
                                bool first_insn,
@@ -631,9 +658,9 @@ public:
     ///    \b true if we will stop other threads while we single step this one.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepThrough (StackID &return_stack_id,
                                    bool abort_other_plans,
                                    bool stop_other_threads);
@@ -654,21 +681,21 @@ public:
     ///    \b true if we will stop other threads while we single step this one.
     ///
     /// @return
-    ///     A pointer to the newly queued thread plan, or NULL if the plan could not be queued.
+    ///     A shared pointer to the newly queued thread plan, or NULL if the plan could not be queued.
     //------------------------------------------------------------------
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForRunToAddress (bool abort_other_plans,
                                     Address &target_addr,
                                     bool stop_other_threads);
 
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForStepUntil (bool abort_other_plans,
                                  lldb::addr_t *address_list,
                                  size_t num_addresses,
                                  bool stop_others,
                                  uint32_t frame_idx);
 
-    virtual ThreadPlan *
+    virtual lldb::ThreadPlanSP
     QueueThreadPlanForCallFunction (bool abort_other_plans,
                                     Address& function,
                                     lldb::addr_t arg,
@@ -820,13 +847,28 @@ public:
     void
     SetTracer (lldb::ThreadPlanTracerSP &tracer_sp);
     
-    // Get the thread index ID. The index ID that is guaranteed to not be
-    // re-used by a process. They start at 1 and increase with each new thread.
-    // This allows easy command line access by a unique ID that is easier to
-    // type than the actual system thread ID.
+    //------------------------------------------------------------------
+    // Get the thread index ID. The index ID that is guaranteed to not
+    // be re-used by a process. They start at 1 and increase with each
+    // new thread. This allows easy command line access by a unique ID
+    // that is easier to type than the actual system thread ID.
+    //------------------------------------------------------------------
     uint32_t
     GetIndexID () const;
     
+    
+    //------------------------------------------------------------------
+    // The API ID is often the same as the Thread::GetID(), but not in
+    // all cases. Thread::GetID() is the user visible thread ID that
+    // clients would want to see. The API thread ID is the thread ID
+    // that is used when sending data to/from the debugging protocol.
+    //------------------------------------------------------------------
+    virtual lldb::user_id_t
+    GetProtocolID () const
+    {
+        return GetID();
+    }
+
     //------------------------------------------------------------------
     // lldb::ExecutionContextScope pure virtual functions
     //------------------------------------------------------------------
@@ -871,17 +913,39 @@ public:
         return !m_destroy_called;
     }
 
-    // When you implement this method, make sure you don't overwrite the m_actual_stop_info if it claims to be
-    // valid.  The stop info may be a "checkpointed and restored" stop info, so if it is still around it is right
-    // even if you have not calculated this yourself, or if it disagrees with what you might have calculated.
+    // Sets and returns a valid stop info based on the process stop ID and the
+    // current thread plan. If the thread stop ID does not match the process'
+    // stop ID, the private stop reason is not set and an invalid StopInfoSP may
+    // be returned.
+    //
+    // NOTE: This function must be called before the current thread plan is
+    // moved to the completed plan stack (in Thread::ShouldStop()).
+    //
+    // NOTE: If subclasses override this function, ensure they do not overwrite
+    // the m_actual_stop_info if it is valid.  The stop info may be a
+    // "checkpointed and restored" stop info, so if it is still around it is
+    // right even if you have not calculated this yourself, or if it disagrees
+    // with what you might have calculated.
     virtual lldb::StopInfoSP
-    GetPrivateStopReason () = 0;
+    GetPrivateStopInfo ();
+
+    //----------------------------------------------------------------------
+    // Ask the thread subclass to set its stop info.
+    //
+    // Thread subclasses should call Thread::SetStopInfo(...) with the
+    // reason the thread stopped.
+    //
+    // @return
+    //      True if Thread::SetStopInfo(...) was called, false otherwise.
+    //----------------------------------------------------------------------
+    virtual bool
+    CalculateStopInfo () = 0;
 
     //----------------------------------------------------------------------
     // Gets the temporary resume state for a thread.
     //
     // This value gets set in each thread by complex debugger logic in
-    // Thread::WillResume() and an appropriate thread resume state will get
+    // Thread::ShouldResume() and an appropriate thread resume state will get
     // set in each thread every time the process is resumed prior to calling
     // Process::DoResume(). The lldb_private::Process subclass should adhere
     // to the thread resume state request which will be one of:
@@ -898,6 +962,12 @@ public:
         return m_temporary_resume_state;
     }
 
+    void
+    SetStopInfo (const lldb::StopInfoSP &stop_info_sp);
+
+    void
+    SetShouldReportStop (Vote vote);
+
 protected:
 
     friend class ThreadPlan;
@@ -905,6 +975,7 @@ protected:
     friend class ThreadEventData;
     friend class StackFrameList;
     friend class StackFrame;
+    friend class OperatingSystem;
     
     // This is necessary to make sure thread assets get destroyed while the thread is still in good shape
     // to call virtual thread methods.  This must be called by classes that derive from Thread in their destructor.
@@ -923,9 +994,6 @@ protected:
 
     typedef std::vector<lldb::ThreadPlanSP> plan_stack;
 
-    void
-    SetStopInfo (const lldb::StopInfoSP &stop_info_sp);
-
     virtual bool
     SaveFrameZeroState (RegisterCheckpoint &checkpoint);
 
@@ -943,6 +1011,17 @@ protected:
     virtual bool
     IsStillAtLastBreakpointHit();
 
+    // Some threads are threads that are made up by OperatingSystem plugins that
+    // are threads that exist and are context switched out into memory. The
+    // OperatingSystem plug-in need a ways to know if a thread is "real" or made
+    // up.
+    virtual bool
+    IsOperatingSystemPluginThread () const
+    {
+        return false;
+    }
+    
+
     lldb::StackFrameListSP
     GetStackFrameList ();
     
@@ -957,7 +1036,9 @@ protected:
     // Classes that inherit from Process can see and modify these
     //------------------------------------------------------------------
     lldb::ProcessWP     m_process_wp;           ///< The process that owns this thread.
-    lldb::StopInfoSP    m_actual_stop_info_sp;  ///< The private stop reason for this thread
+    lldb::StopInfoSP    m_stop_info_sp;         ///< The private stop reason for this thread
+    uint32_t            m_stop_info_stop_id;    // This is the stop id for which the StopInfo is valid.  Can use this so you know that
+    // the thread's m_stop_info_sp is current and you don't have to fetch it again
     const uint32_t      m_index_id;             ///< A unique 1 based index assigned to each thread for easy UI/command line access.
     lldb::RegisterContextSP m_reg_context_sp;   ///< The register context for this thread's current register state.
     lldb::StateType     m_state;                ///< The state of our process.
@@ -971,12 +1052,10 @@ protected:
     int                 m_resume_signal;        ///< The signal that should be used when continuing this thread.
     lldb::StateType     m_resume_state;         ///< This state is used to force a thread to be suspended from outside the ThreadPlan logic.
     lldb::StateType     m_temporary_resume_state; ///< This state records what the thread was told to do by the thread plan logic for the current resume.
-                                                  /// It gets set in Thread::WillResume.
+                                                  /// It gets set in Thread::ShoudResume.
     std::unique_ptr<lldb_private::Unwind> m_unwinder_ap;
     bool                m_destroy_called;       // This is used internally to make sure derived Thread classes call DestroyThread.
-    uint32_t m_thread_stop_reason_stop_id;      // This is the stop id for which the StopInfo is valid.  Can use this so you know that
-                                                // the thread's m_actual_stop_info_sp is current and you don't have to fetch it again
-
+    LazyBool            m_override_should_notify;
 private:
     //------------------------------------------------------------------
     // For Thread only

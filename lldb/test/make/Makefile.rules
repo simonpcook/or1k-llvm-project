@@ -16,6 +16,7 @@
 # FRAMEWORK_INCLUDES (Darwin only) :=
 # CFLAGS_EXTRAS :=
 # LD_EXTRAS :=
+# SPLIT_DEBUG_SYMBOLS := YES
 #
 # And test/functionalities/archives/Makefile:
 # MAKE_DSYM := NO
@@ -79,6 +80,10 @@ else
 	ifeq "$(ARCH)" "i386"
 	    override ARCH := $(subst i386,32,$(ARCH))
 	endif
+
+	ifeq "$(SPLIT_DEBUG_SYMBOLS)" "YES"
+		DSYM = $(EXE).debug
+	endif
 endif
 
 CFLAGS ?= -g -O0
@@ -90,12 +95,6 @@ LDFLAGS ?= $(CFLAGS)
 LDFLAGS += $(LD_EXTRAS)
 OBJECTS =
 EXE ?= a.out
-
-ifneq (,$(findstring g++,$(CXX)))
-	# GCC 4.6 cannot handle -std=c++11, so replace it with -std=c++0x
-	# instead. FIXME: remove once GCC version is upgraded.
-	override CXXFLAGS := $(subst -std=c++11,-std=c++0x,$(CXXFLAGS))
-endif
 
 ifneq "$(DYLIB_NAME)" ""
 	ifeq "$(OS)" "Darwin"
@@ -110,6 +109,25 @@ cxx_compiler = $(if $(findstring clang,$(1)), $(subst clang,clang++,$(1)), $(if 
 
 # Function that returns the C++ linker, given $(CC) as arg.
 cxx_linker = $(if $(findstring clang,$(1)), $(subst clang,clang++,$(1)), $(if $(findstring icc,$(1)), $(subst icc,icpc,$(1)), $(if $(findstring llvm-gcc,$(1)), $(subst llvm-gcc,llvm-g++,$(1)), $(subst gcc,g++,$(1)))))
+
+#----------------------------------------------------------------------
+# C++ standard library options
+#----------------------------------------------------------------------
+ifeq (1,$(USE_LIBSTDCPP))
+	# Clang requires an extra flag: -stdlib=libstdc++
+	ifneq (,$(findstring clang,$(CC)))
+		CXXFLAGS += -stdlib=libstdc++
+		LDFLAGS += -stdlib=libstdc++
+	endif
+endif
+
+ifeq (1,$(USE_LIBCPP))
+	# Clang requires an extra flag: -stdlib=libstdc++
+	ifneq (,$(findstring clang,$(CC)))
+		CXXFLAGS += -stdlib=libc++
+		LDFLAGS += -stdlib=libc++
+	endif
+endif
 
 #----------------------------------------------------------------------
 # dylib settings
@@ -200,6 +218,17 @@ ifneq "$(strip $(ARCHIVE_OBJCXX_SOURCES))" ""
 	endif
 endif
 
+#----------------------------------------------------------------------
+# Check if we are compiling with gcc 4.6
+#----------------------------------------------------------------------
+ifneq (,$(filter g++,$(CXX)))
+	CXXVERSION = $(shell g++ -dumpversion | cut -b 1-3)
+	ifeq "$(CXXVERSION)" "4.6"
+                # GCC 4.6 cannot handle -std=c++11, so replace it with -std=c++0x
+                # instead. FIXME: remove once GCC version is upgraded.
+		override CXXFLAGS := $(subst -std=c++11,-std=c++0x,$(CXXFLAGS))
+	endif
+endif
 
 #----------------------------------------------------------------------
 # DYLIB_ONLY variable can be used to skip the building of a.out.
@@ -210,11 +239,16 @@ endif
 #----------------------------------------------------------------------
 # Make the dSYM file from the executable if $(MAKE_DSYM) != "NO"
 #----------------------------------------------------------------------
+ifneq "$(DYLIB_ONLY)" "YES"
+$(DSYM) : $(EXE)
 ifeq "$(OS)" "Darwin"
 ifneq "$(MAKE_DSYM)" "NO"
-ifeq "$(DYLIB_ONLY)" ""
-$(DSYM) : $(EXE)
 	$(DS) $(DSFLAGS) -o "$(DSYM)" "$(EXE)"
+endif
+else
+ifeq "$(SPLIT_DEBUG_SYMBOLS)" "YES"
+	objcopy --only-keep-debug "$(EXE)" "$(DSYM)"
+	objcopy --strip-debug --add-gnu-debuglink="$(DSYM)" "$(EXE)" "$(EXE)"
 endif
 endif
 endif
@@ -260,6 +294,10 @@ endif
 endif
 else
 	$(LD) $(LDFLAGS) $(DYLIB_OBJECTS) -shared -o "$(DYLIB_FILENAME)"
+ifeq "$(SPLIT_DEBUG_SYMBOLS)" "YES"
+	objcopy --only-keep-debug "$(DYLIB_FILENAME)" "$(DYLIB_FILENAME).debug"
+	objcopy --strip-debug --add-gnu-debuglink="$(DYLIB_FILENAME).debug" "$(DYLIB_FILENAME)" "$(DYLIB_FILENAME)"
+endif
 endif
 
 #----------------------------------------------------------------------
@@ -286,7 +324,7 @@ endif
 
 %.d: %.cpp
 	@set -e; rm -f $@; \
-	$(CC) -M $(CXXFLAGS) $< > $@.$$$$; \
+	$(CXX) -M $(CXXFLAGS) $< > $@.$$$$; \
 	sed 's,\($*\)\.o[ :]*,\1.o $@ : ,g' < $@.$$$$ > $@; \
 	rm -f $@.$$$$
 
@@ -298,7 +336,7 @@ endif
 
 %.d: %.mm
 	@set -e; rm -f $@; \
-	$(CC) -M $(CXXFLAGS) $< > $@.$$$$; \
+	$(CXX) -M $(CXXFLAGS) $< > $@.$$$$; \
 	sed 's,\($*\)\.o[ :]*,\1.o $@ : ,g' < $@.$$$$ > $@; \
 	rm -f $@.$$$$
 
@@ -321,9 +359,9 @@ dsym:	$(DSYM)
 all:	$(EXE) $(DSYM)
 clean::
 ifeq "$(DYLIB_NAME)" ""
-	rm -rf "$(EXE)" "$(DSYM)" $(OBJECTS) $(PREREQS) $(ARCHIVE_NAME) $(ARCHIVE_OBJECTS)
+	rm -rf "$(EXE)" "$(DSYM)" $(OBJECTS) $(PREREQS) $(ARCHIVE_NAME) $(ARCHIVE_OBJECTS) *.d.[0-9] *.d.[0-9][0-9] *.d.[0-9][0-9][0-9] *.d.[0-9][0-9][0-9][0-9] *.d.[0-9][0-9][0-9][0-9][0-9]
 else
-	rm -rf "$(EXE)" "$(DSYM)" $(OBJECTS) $(PREREQS) $(ARCHIVE_NAME) $(ARCHIVE_OBJECTS) $(DYLIB_OBJECTS) $(DYLIB_PREREQS) $(DYLIB_FILENAME) $(DYLIB_FILENAME).dSYM
+	rm -rf "$(EXE)" "$(DSYM)" $(OBJECTS) $(PREREQS) $(ARCHIVE_NAME) $(ARCHIVE_OBJECTS) $(DYLIB_OBJECTS) $(DYLIB_PREREQS) $(DYLIB_FILENAME) $(DYLIB_FILENAME).dSYM $(DYLIB_FILENAME).debug *.d.[0-9] *.d.[0-9][0-9] *.d.[0-9][0-9][0-9] *.d.[0-9][0-9][0-9][0-9] *.d.[0-9][0-9][0-9][0-9][0-9]
 endif
 
 #----------------------------------------------------------------------

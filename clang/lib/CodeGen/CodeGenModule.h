@@ -31,7 +31,7 @@
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ValueHandle.h"
-#include "llvm/Transforms/Utils/BlackList.h"
+#include "llvm/Transforms/Utils/SpecialCaseList.h"
 
 namespace llvm {
   class Module;
@@ -250,7 +250,6 @@ class CodeGenModule : public CodeGenTypeCache {
  
   /// VTables - Holds information about C++ vtables.
   CodeGenVTables VTables;
-  friend class CodeGenVTables;
 
   CGObjCRuntime* ObjCRuntime;
   CGOpenCLRuntime* OpenCLRuntime;
@@ -307,7 +306,8 @@ class CodeGenModule : public CodeGenTypeCache {
   llvm::StringMap<llvm::GlobalVariable*> ConstantStringMap;
   llvm::DenseMap<const Decl*, llvm::Constant *> StaticLocalDeclMap;
   llvm::DenseMap<const Decl*, llvm::GlobalVariable*> StaticLocalDeclGuardMap;
-  
+  llvm::DenseMap<const Expr*, llvm::Constant *> MaterializedGlobalTemporaryMap;
+
   llvm::DenseMap<QualType, llvm::Constant *> AtomicSetterHelperFnMap;
   llvm::DenseMap<QualType, llvm::Constant *> AtomicGetterHelperFnMap;
 
@@ -355,6 +355,9 @@ class CodeGenModule : public CodeGenTypeCache {
   /// \brief The complete set of modules that has been imported.
   llvm::SetVector<clang::Module *> ImportedModules;
 
+  /// \brief A vector of metadata strings.
+  SmallVector<llvm::Value *, 16> LinkerOptionsMetadata;
+
   /// @name Cache for Objective-C runtime types
   /// @{
 
@@ -382,7 +385,7 @@ class CodeGenModule : public CodeGenTypeCache {
   void createCUDARuntime();
 
   bool isTriviallyRecursive(const FunctionDecl *F);
-  bool shouldEmitFunction(const FunctionDecl *F);
+  bool shouldEmitFunction(GlobalDecl GD);
 
   /// @name Cache for Blocks Runtime Globals
   /// @{
@@ -408,7 +411,7 @@ class CodeGenModule : public CodeGenTypeCache {
 
   GlobalDecl initializedGlobalDecl;
 
-  llvm::BlackList SanitizerBlacklist;
+  llvm::OwningPtr<llvm::SpecialCaseList> SanitizerBlacklist;
 
   const SanitizerOptions &SanOpts;
 
@@ -515,7 +518,12 @@ public:
   CodeGenTypes &getTypes() { return Types; }
  
   CodeGenVTables &getVTables() { return VTables; }
+
   VTableContext &getVTableContext() { return VTables.getVTableContext(); }
+
+  MicrosoftVFTableContext &getVFTableContext() {
+    return VTables.getVFTableContext();
+  }
 
   llvm::MDNode *getTBAAInfo(QualType QTy);
   llvm::MDNode *getTBAAInfoForVTablePtr();
@@ -713,7 +721,7 @@ public:
   /// (if one is created).
   llvm::Constant *GetAddrOfConstantString(StringRef Str,
                                           const char *GlobalName=0,
-                                          unsigned Alignment=1);
+                                          unsigned Alignment=0);
 
   /// GetAddrOfConstantCString - Returns a pointer to a character array
   /// containing the literal and a terminating '\0' character. The result has
@@ -723,12 +731,17 @@ public:
   /// created).
   llvm::Constant *GetAddrOfConstantCString(const std::string &str,
                                            const char *GlobalName=0,
-                                           unsigned Alignment=1);
+                                           unsigned Alignment=0);
 
   /// GetAddrOfConstantCompoundLiteral - Returns a pointer to a constant global
   /// variable for the given file-scope compound literal expression.
   llvm::Constant *GetAddrOfConstantCompoundLiteral(const CompoundLiteralExpr*E);
-  
+
+  /// \brief Returns a pointer to a global variable representing a temporary
+  /// with static or thread storage duration.
+  llvm::Constant *GetAddrOfGlobalTemporary(const MaterializeTemporaryExpr *E,
+                                           const Expr *Inner);
+
   /// \brief Retrieve the record type that describes the state of an
   /// Objective-C fast enumeration loop (for..in).
   QualType getObjCFastEnumerationStateType();
@@ -743,15 +756,15 @@ public:
   /// given type.
   llvm::GlobalValue *GetAddrOfCXXDestructor(const CXXDestructorDecl *dtor,
                                             CXXDtorType dtorType,
-                                            const CGFunctionInfo *fnInfo = 0);
+                                            const CGFunctionInfo *fnInfo = 0,
+                                            llvm::FunctionType *fnType = 0);
 
   /// getBuiltinLibFunction - Given a builtin id for a function like
   /// "__builtin_fabsf", return a Function* for "fabsf".
   llvm::Value *getBuiltinLibFunction(const FunctionDecl *FD,
                                      unsigned BuiltinID);
 
-  llvm::Function *getIntrinsic(unsigned IID, ArrayRef<llvm::Type*> Tys =
-                                                 ArrayRef<llvm::Type*>());
+  llvm::Function *getIntrinsic(unsigned IID, ArrayRef<llvm::Type*> Tys = None);
 
   /// EmitTopLevelDecl - Emit code for a single top level declaration.
   void EmitTopLevelDecl(Decl *D);
@@ -843,17 +856,11 @@ public:
 
   /// ErrorUnsupported - Print out an error that codegen doesn't support the
   /// specified stmt yet.
-  /// \param OmitOnError - If true, then this error should only be emitted if no
-  /// other errors have been reported.
-  void ErrorUnsupported(const Stmt *S, const char *Type,
-                        bool OmitOnError=false);
+  void ErrorUnsupported(const Stmt *S, const char *Type);
 
   /// ErrorUnsupported - Print out an error that codegen doesn't support the
   /// specified decl yet.
-  /// \param OmitOnError - If true, then this error should only be emitted if no
-  /// other errors have been reported.
-  void ErrorUnsupported(const Decl *D, const char *Type,
-                        bool OmitOnError=false);
+  void ErrorUnsupported(const Decl *D, const char *Type);
 
   /// SetInternalFunctionAttributes - Set the attributes on the LLVM
   /// function for the given decl and function info. This applies
@@ -907,11 +914,23 @@ public:
 
   void EmitVTable(CXXRecordDecl *Class, bool DefinitionRequired);
 
-  llvm::GlobalVariable::LinkageTypes
-  getFunctionLinkage(const FunctionDecl *FD);
+  /// EmitFundamentalRTTIDescriptors - Emit the RTTI descriptors for the
+  /// builtin types.
+  void EmitFundamentalRTTIDescriptors();
 
-  void setFunctionLinkage(const FunctionDecl *FD, llvm::GlobalValue *V) {
-    V->setLinkage(getFunctionLinkage(FD));
+  /// \brief Appends Opts to the "Linker Options" metadata value.
+  void AppendLinkerOptions(StringRef Opts);
+
+  /// \brief Appends a detect mismatch command to the linker options.
+  void AddDetectMismatch(StringRef Name, StringRef Value);
+
+  /// \brief Appends a dependent lib to the "Linker Options" metadata value.
+  void AddDependentLib(StringRef Lib);
+
+  llvm::GlobalVariable::LinkageTypes getFunctionLinkage(GlobalDecl GD);
+
+  void setFunctionLinkage(GlobalDecl GD, llvm::GlobalValue *V) {
+    V->setLinkage(getFunctionLinkage(GD));
   }
 
   /// getVTableLinkage - Return the appropriate linkage for the vtable, VTT,
@@ -925,8 +944,7 @@ public:
   /// GetLLVMLinkageVarDefinition - Returns LLVM linkage for a global 
   /// variable.
   llvm::GlobalValue::LinkageTypes 
-  GetLLVMLinkageVarDefinition(const VarDecl *D,
-                              llvm::GlobalVariable *GV);
+  GetLLVMLinkageVarDefinition(const VarDecl *D, bool isConstant);
   
   /// Emit all the global annotations.
   void EmitGlobalAnnotations();
@@ -955,8 +973,8 @@ public:
   /// annotations are emitted during finalization of the LLVM code.
   void AddGlobalAnnotations(const ValueDecl *D, llvm::GlobalValue *GV);
 
-  const llvm::BlackList &getSanitizerBlacklist() const {
-    return SanitizerBlacklist;
+  const llvm::SpecialCaseList &getSanitizerBlacklist() const {
+    return *SanitizerBlacklist;
   }
 
   const SanitizerOptions &getSanOpts() const { return SanOpts; }
@@ -964,6 +982,10 @@ public:
   void addDeferredVTable(const CXXRecordDecl *RD) {
     DeferredVTables.push_back(RD);
   }
+
+  /// EmitGlobal - Emit code for a singal global function or var decl. Forward
+  /// declarations are emitted lazily.
+  void EmitGlobal(GlobalDecl D);
 
 private:
   llvm::GlobalValue *GetGlobalValue(StringRef Ref);
@@ -996,16 +1018,10 @@ private:
                              llvm::Function *F,
                              bool IsIncompleteFunction);
 
-  /// EmitGlobal - Emit code for a singal global function or var decl. Forward
-  /// declarations are emitted lazily.
-  void EmitGlobal(GlobalDecl D);
-
   void EmitGlobalDefinition(GlobalDecl D);
 
   void EmitGlobalFunctionDefinition(GlobalDecl GD);
   void EmitGlobalVarDefinition(const VarDecl *D);
-  llvm::Constant *MaybeEmitGlobalStdInitializerListInitializer(const VarDecl *D,
-                                                              const Expr *init);
   void EmitAliasDefinition(GlobalDecl GD);
   void EmitObjCPropertyImplementations(const ObjCImplementationDecl *D);
   void EmitObjCIvarInitializations(ObjCImplementationDecl *D);
@@ -1017,18 +1033,11 @@ private:
 
   void EmitNamespace(const NamespaceDecl *D);
   void EmitLinkageSpec(const LinkageSpecDecl *D);
-
-  /// EmitCXXConstructors - Emit constructors (base, complete) from a
-  /// C++ constructor Decl.
-  void EmitCXXConstructors(const CXXConstructorDecl *D);
+  void CompleteDIClassType(const CXXMethodDecl* D);
 
   /// EmitCXXConstructor - Emit a single constructor with the given type from
   /// a C++ constructor Decl.
   void EmitCXXConstructor(const CXXConstructorDecl *D, CXXCtorType Type);
-
-  /// EmitCXXDestructors - Emit destructors (base, complete) from a
-  /// C++ destructor Decl.
-  void EmitCXXDestructors(const CXXDestructorDecl *D);
 
   /// EmitCXXDestructor - Emit a single destructor with the given type from
   /// a C++ destructor Decl.
@@ -1061,10 +1070,6 @@ private:
   /// EmitFundamentalRTTIDescriptor - Emit the RTTI descriptors for the
   /// given type.
   void EmitFundamentalRTTIDescriptor(QualType Type);
-
-  /// EmitFundamentalRTTIDescriptors - Emit the RTTI descriptors for the
-  /// builtin types.
-  void EmitFundamentalRTTIDescriptors();
 
   /// EmitDeferred - Emit any needed decls for which code generation
   /// was deferred.

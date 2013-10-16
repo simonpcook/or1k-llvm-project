@@ -15,15 +15,15 @@ namespace lld {
 namespace elf {
 typedef llvm::object::ELFType<llvm::support::little, 4, false> HexagonELFType;
 template <typename ELFT> class HexagonTargetLayout;
-class HexagonTargetInfo;
+class HexagonLinkingContext;
 
 /// \brief Handle Hexagon SData section
 template <class HexagonELFType>
 class SDataSection : public AtomSection<HexagonELFType> {
 public:
-  SDataSection(const HexagonTargetInfo &hti)
+  SDataSection(const HexagonLinkingContext &context)
       : AtomSection<HexagonELFType>(
-            hti, ".sdata", DefinedAtom::typeDataFast, 0,
+            context, ".sdata", DefinedAtom::typeDataFast, 0,
             HexagonTargetLayout<HexagonELFType>::ORDER_SDATA) {
     this->_type = SHT_PROGBITS;
     this->_flags = SHF_ALLOC | SHF_WRITE;
@@ -36,11 +36,11 @@ public:
   /// \brief Does this section have an output segment.
   virtual bool hasOutputSegment() { return true; }
 
-  const AtomLayout &appendAtom(const Atom *atom) {
+  const lld::AtomLayout &appendAtom(const Atom *atom) {
     const DefinedAtom *definedAtom = cast<DefinedAtom>(atom);
     DefinedAtom::Alignment atomAlign = definedAtom->alignment();
     uint64_t align2 = 1u << atomAlign.powerOf2;
-    this->_atoms.push_back(new (this->_alloc) AtomLayout(atom, 0, 0));
+    this->_atoms.push_back(new (this->_alloc) lld::AtomLayout(atom, 0, 0));
     // Set the section alignment to the largest alignment
     // std::max doesnot support uint64_t
     if (this->_align2 < align2)
@@ -54,11 +54,18 @@ template <class HexagonELFType>
 void SDataSection<HexagonELFType>::doPreFlight() {
   // sort the atoms on the alignments they have been set
   std::stable_sort(this->_atoms.begin(), this->_atoms.end(),
-                   [](const AtomLayout * A, const AtomLayout * B) {
+                                             [](const lld::AtomLayout * A,
+                                                const lld::AtomLayout * B) {
     const DefinedAtom *definedAtomA = cast<DefinedAtom>(A->_atom);
     const DefinedAtom *definedAtomB = cast<DefinedAtom>(B->_atom);
     int64_t align2A = 1 << definedAtomA->alignment().powerOf2;
     int64_t align2B = 1 << definedAtomB->alignment().powerOf2;
+    if (align2A == align2B) {
+      if (definedAtomA->merge() == DefinedAtom::mergeAsTentative)
+        return false;
+      if (definedAtomB->merge() == DefinedAtom::mergeAsTentative)
+        return true;
+    }
     return align2A < align2B;
   });
 

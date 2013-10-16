@@ -418,6 +418,35 @@ void FindLastStoreBRVisitor ::Profile(llvm::FoldingSetNodeID &ID) const {
   ID.AddBoolean(EnableNullFPSuppression);
 }
 
+/// Returns true if \p N represents the DeclStmt declaring and initializing
+/// \p VR.
+static bool isInitializationOfVar(const ExplodedNode *N, const VarRegion *VR) {
+  Optional<PostStmt> P = N->getLocationAs<PostStmt>();
+  if (!P)
+    return false;
+
+  const DeclStmt *DS = P->getStmtAs<DeclStmt>();
+  if (!DS)
+    return false;
+
+  if (DS->getSingleDecl() != VR->getDecl())
+    return false;
+
+  const MemSpaceRegion *VarSpace = VR->getMemorySpace();
+  const StackSpaceRegion *FrameSpace = dyn_cast<StackSpaceRegion>(VarSpace);
+  if (!FrameSpace) {
+    // If we ever directly evaluate global DeclStmts, this assertion will be
+    // invalid, but this still seems preferable to silently accepting an
+    // initialization that may be for a path-sensitive variable.
+    assert(VR->getDecl()->isStaticLocal() && "non-static stackless VarRegion");
+    return true;
+  }
+
+  assert(VR->getDecl()->hasLocalStorage());
+  const LocationContext *LCtx = N->getLocationContext();
+  return FrameSpace->getStackFrame() == LCtx->getCurrentStackFrame();
+}
+
 PathDiagnosticPiece *FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
                                                        const ExplodedNode *Pred,
                                                        BugReporterContext &BRC,
@@ -432,13 +461,9 @@ PathDiagnosticPiece *FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
 
   // First see if we reached the declaration of the region.
   if (const VarRegion *VR = dyn_cast<VarRegion>(R)) {
-    if (Optional<PostStmt> P = Pred->getLocationAs<PostStmt>()) {
-      if (const DeclStmt *DS = P->getStmtAs<DeclStmt>()) {
-        if (DS->getSingleDecl() == VR->getDecl()) {
-          StoreSite = Pred;
-          InitE = VR->getDecl()->getInit();
-        }
-      }
+    if (isInitializationOfVar(Pred, VR)) {
+      StoreSite = Pred;
+      InitE = VR->getDecl()->getInit();
     }
   }
 
@@ -507,7 +532,8 @@ PathDiagnosticPiece *FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
   // If we have an expression that provided the value, try to track where it
   // came from.
   if (InitE) {
-    if (V.isUndef() || V.getAs<loc::ConcreteInt>()) {
+    if (V.isUndef() ||
+        V.getAs<loc::ConcreteInt>() || V.getAs<nonloc::ConcreteInt>()) {
       if (!IsParam)
         InitE = InitE->IgnoreParenCasts();
       bugreporter::trackNullOrUndefValue(StoreSite, InitE, BR, IsParam,
@@ -672,10 +698,13 @@ PathDiagnosticPiece *FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
   if (P.getAs<CallEnter>() && InitE)
     L = PathDiagnosticLocation(InitE, BRC.getSourceManager(),
                                P.getLocationContext());
-  else
+
+  if (!L.isValid() || !L.asLocation().isValid())
     L = PathDiagnosticLocation::create(P, BRC.getSourceManager());
-  if (!L.isValid())
+
+  if (!L.isValid() || !L.asLocation().isValid())
     return NULL;
+
   return new PathDiagnosticEventPiece(L, os.str());
 }
 
@@ -884,7 +913,7 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
       Inner = Ex;
   }
 
-  if (IsArg) {
+  if (IsArg && !Inner) {
     assert(N->getLocation().getAs<CallEnter>() && "Tracking arg but not at call");
   } else {
     // Walk through nodes until we get one that matches the statement exactly.
@@ -913,7 +942,7 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
   // At this point in the path, the receiver should be live since we are at the
   // message send expr. If it is nil, start tracking it.
   if (const Expr *Receiver = NilReceiverBRVisitor::getNilReceiver(S, N))
-    trackNullOrUndefValue(N, Receiver, report, IsArg, EnableNullFPSuppression);
+    trackNullOrUndefValue(N, Receiver, report, false, EnableNullFPSuppression);
 
 
   // See if the expression we're interested refers to a variable.
@@ -968,12 +997,15 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
         BugReporterVisitor *ConstraintTracker =
           new TrackConstraintBRVisitor(V.castAs<DefinedSVal>(), false);
         report.addVisitor(ConstraintTracker);
+      }
 
-        // Add visitor, which will suppress inline defensive checks.
-        if (LVState->isNull(V).isConstrainedTrue() &&
-            EnableNullFPSuppression) {
+      // Add visitor, which will suppress inline defensive checks.
+      if (Optional<DefinedSVal> DV = V.getAs<DefinedSVal>()) {
+        if (!DV->isZeroConstant() &&
+          LVState->isNull(*DV).isConstrainedTrue() &&
+          EnableNullFPSuppression) {
           BugReporterVisitor *IDCSuppressor =
-            new SuppressInlineDefensiveChecksVisitor(V.castAs<DefinedSVal>(),
+            new SuppressInlineDefensiveChecksVisitor(*DV,
                                                      LVNode);
           report.addVisitor(IDCSuppressor);
         }
@@ -1437,9 +1469,7 @@ ConditionBRVisitor::VisitTrueTest(const Expr *Cond,
   SmallString<256> Buf;
   llvm::raw_svector_ostream Out(Buf);
     
-  Out << "Assuming '";
-  VD->getDeclName().printName(Out);
-  Out << "' is ";
+  Out << "Assuming '" << VD->getDeclName() << "' is ";
     
   QualType VDTy = VD->getType();
   
@@ -1491,18 +1521,33 @@ LikelyFalsePositiveSuppressionBRVisitor::getEndPath(BugReporterContext &BRC,
                                                     BugReport &BR) {
   // Here we suppress false positives coming from system headers. This list is
   // based on known issues.
-
-  // Skip reports within the 'std' namespace. Although these can sometimes be
-  // the user's fault, we currently don't report them very well, and
-  // Note that this will not help for any other data structure libraries, like
-  // TR1, Boost, or llvm/ADT.
   ExprEngine &Eng = BRC.getBugReporter().getEngine();
   AnalyzerOptions &Options = Eng.getAnalysisManager().options;
-  if (Options.shouldSuppressFromCXXStandardLibrary()) {
-    const LocationContext *LCtx = N->getLocationContext();
-    if (isInStdNamespace(LCtx->getDecl())) {
+  const Decl *D = N->getLocationContext()->getDecl();
+
+  if (isInStdNamespace(D)) {
+    // Skip reports within the 'std' namespace. Although these can sometimes be
+    // the user's fault, we currently don't report them very well, and
+    // Note that this will not help for any other data structure libraries, like
+    // TR1, Boost, or llvm/ADT.
+    if (Options.shouldSuppressFromCXXStandardLibrary()) {
       BR.markInvalid(getTag(), 0);
       return 0;
+
+    } else {
+      // If the the complete 'std' suppression is not enabled, suppress reports
+      // from the 'std' namespace that are known to produce false positives.
+
+      // The analyzer issues a false use-after-free when std::list::pop_front
+      // or std::list::pop_back are called multiple times because we cannot
+      // reason about the internal invariants of the datastructure.
+      if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(D)) {
+        const CXXRecordDecl *CD = MD->getParent();
+        if (CD->getName() == "list") {
+          BR.markInvalid(getTag(), 0);
+          return 0;
+        }
+      }
     }
   }
 
@@ -1511,12 +1556,11 @@ LikelyFalsePositiveSuppressionBRVisitor::getEndPath(BugReporterContext &BRC,
   SourceManager &SM = BRC.getSourceManager();
   FullSourceLoc Loc = BR.getLocation(SM).asLocation();
   while (Loc.isMacroID()) {
-    if (SM.isInSystemMacro(Loc) &&
-       (SM.getFilename(SM.getSpellingLoc(Loc)).endswith("sys/queue.h"))) {
+    Loc = Loc.getSpellingLoc();
+    if (SM.getFilename(Loc).endswith("sys/queue.h")) {
       BR.markInvalid(getTag(), 0);
       return 0;
     }
-    Loc = Loc.getSpellingLoc();
   }
 
   return 0;

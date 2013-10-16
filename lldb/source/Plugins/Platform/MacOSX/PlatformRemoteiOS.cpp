@@ -65,7 +65,7 @@ PlatformRemoteiOS::Initialize ()
 {
     if (g_initialize_count++ == 0)
     {
-        PluginManager::RegisterPlugin (PlatformRemoteiOS::GetShortPluginNameStatic(),
+        PluginManager::RegisterPlugin (PlatformRemoteiOS::GetPluginNameStatic(),
                                        PlatformRemoteiOS::GetDescriptionStatic(),
                                        PlatformRemoteiOS::CreateInstance);
     }
@@ -148,16 +148,11 @@ PlatformRemoteiOS::CreateInstance (bool force, const ArchSpec *arch)
 }
 
 
-const char *
+lldb_private::ConstString
 PlatformRemoteiOS::GetPluginNameStatic ()
 {
-    return "PlatformRemoteiOS";
-}
-
-const char *
-PlatformRemoteiOS::GetShortPluginNameStatic()
-{
-    return "remote-ios";
+    static ConstString g_name("remote-ios");
+    return g_name;
 }
 
 const char *
@@ -205,10 +200,9 @@ PlatformRemoteiOS::GetStatus (Stream &strm)
     for (uint32_t i=0; i<num_sdk_infos; ++i)
     {
         const SDKDirectoryInfo &sdk_dir_info = m_sdk_directory_infos[i];
-        strm.Printf (" SDK Roots: [%2u] \"%s/%s\"\n",
+        strm.Printf (" SDK Roots: [%2u] \"%s\"\n",
                      i,
-                     sdk_dir_info.directory.GetDirectory().GetCString(),
-                     sdk_dir_info.directory.GetFilename().GetCString());
+                     sdk_dir_info.directory.GetPath().c_str());
     }
 }
 
@@ -278,20 +272,16 @@ PlatformRemoteiOS::ResolveExecutable (const FileSpec &exe_file,
         
         if (error.Fail() || !exe_module_sp)
         {
-            error.SetErrorStringWithFormat ("'%s%s%s' doesn't contain any '%s' platform architectures: %s",
-                                            exe_file.GetDirectory().AsCString(""),
-                                            exe_file.GetDirectory() ? "/" : "",
-                                            exe_file.GetFilename().AsCString(""),
-                                            GetShortPluginName(),
+            error.SetErrorStringWithFormat ("'%s' doesn't contain any '%s' platform architectures: %s",
+                                            exe_file.GetPath().c_str(),
+                                            GetPluginName().GetCString(),
                                             arch_names.GetString().c_str());
         }
     }
     else
     {
-        error.SetErrorStringWithFormat ("'%s%s%s' does not exist",
-                                        exe_file.GetDirectory().AsCString(""),
-                                        exe_file.GetDirectory() ? "/" : "",
-                                        exe_file.GetFilename().AsCString(""));
+        error.SetErrorStringWithFormat ("'%s' does not exist",
+                                        exe_file.GetPath().c_str());
     }
 
     return error;
@@ -666,7 +656,7 @@ PlatformRemoteiOS::GetSymbolFile (const FileSpec &platform_file,
 
         error.SetErrorStringWithFormat ("unable to locate a platform file for '%s' in platform '%s'", 
                                         platform_file_path,
-                                        GetPluginName());
+                                        GetPluginName().GetCString());
     }
     else
     {
@@ -712,7 +702,7 @@ PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
             {
                 if (GetFileInSDK (platform_file_path, m_last_module_sdk_idx, local_file))
                 {
-                    //printf ("sdk[%u] last: '%s/%s'\n", m_last_module_sdk_idx, local_file.GetDirectory().GetCString(), local_file.GetFilename().GetCString());
+                    //printf ("sdk[%u] last: '%s'\n", m_last_module_sdk_idx, local_file.GetPath().c_str());
                     module_sp.reset();
                     error = ResolveExecutable (local_file,
                                                module_spec.GetArchitecture(),
@@ -738,7 +728,7 @@ PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
                 }
                 if (GetFileInSDK (platform_file_path, sdk_idx, local_file))
                 {
-                    //printf ("sdk[%u]: '%s/%s'\n", sdk_idx, local_file.GetDirectory().GetCString(), local_file.GetFilename().GetCString());
+                    //printf ("sdk[%u]: '%s'\n", sdk_idx, local_file.GetPath().c_str());
                     
                     error = ResolveExecutable (local_file,
                                                module_spec.GetArchitecture(),
@@ -759,6 +749,15 @@ PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
         // Not the module we are looking for... Nothing to see here...
         module_sp.reset();
     }
+    else
+    {
+        // This may not be an SDK-related module.  Try whether we can bring in the thing to our local cache.
+        error = GetSharedModuleWithLocalCache(module_spec, module_sp, module_search_paths_ptr, old_module_sp_ptr, did_create_ptr);
+        if (error.Success())
+            return error;
+        else
+            error.Clear(); // Clear the error and fall-through.
+    }
 
     const bool always_create = false;
     error = ModuleList::GetSharedModule (module_spec, 
@@ -772,24 +771,6 @@ PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
         module_sp->SetPlatformFileSpec(platform_file);
 
     return error;
-}
-
-
-uint32_t
-PlatformRemoteiOS::FindProcesses (const ProcessInstanceInfoMatch &match_info,
-                                  ProcessInstanceInfoList &process_infos)
-{
-    // TODO: if connected, send a packet to get the remote process infos by name
-    process_infos.Clear();
-    return 0;
-}
-
-bool
-PlatformRemoteiOS::GetProcessInfo (lldb::pid_t pid, ProcessInstanceInfo &process_info)
-{
-    // TODO: if connected, send a packet to get the remote process info
-    process_info.Clear();
-    return false;
 }
 
 bool

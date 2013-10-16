@@ -10,6 +10,7 @@
 #include "DisassemblerLLVMC.h"
 
 #include "llvm-c/Disassembler.h"
+#include "llvm/ADT/OwningPtr.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDisassembler.h"
@@ -17,6 +18,7 @@
 #include "llvm/MC/MCInstPrinter.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCRelocationInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryObject.h"
@@ -36,7 +38,7 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/StackFrame.h"
 
-#include <regex.h>
+#include "lldb/Core/RegularExpression.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -121,7 +123,7 @@ public:
             lldb::offset_t data_offset)
     {
         // All we have to do is read the opcode which can be easy for some
-        // architetures
+        // architectures
         bool got_op = false;
         DisassemblerLLVMC &llvm_disasm = GetDisassemblerLLVMC();
         const ArchSpec &arch = llvm_disasm.GetArchitecture();
@@ -254,12 +256,18 @@ public:
             m_using_file_addr = true;
             
             const bool data_from_file = GetDisassemblerLLVMC().m_data_from_file;
-            if (!data_from_file)
+            bool use_hex_immediates = true;
+            Disassembler::HexImmediateStyle hex_style = Disassembler::eHexStyleC;
+
+            if (exe_ctx)
             {
-                if (exe_ctx)
+                Target *target = exe_ctx->GetTargetPtr();
+                if (target)
                 {
-                    Target *target = exe_ctx->GetTargetPtr();
-                    if (target)
+                    use_hex_immediates = target->GetUseHexImmediates();
+                    hex_style = target->GetHexImmediateStyle();
+
+                    if (!data_from_file)
                     {
                         const lldb::addr_t load_addr = m_address.GetLoadAddress(target);
                         if (load_addr != LLDB_INVALID_ADDRESS)
@@ -280,10 +288,13 @@ public:
                                                          opcode_data_len,
                                                          pc,
                                                          inst);
-                
+
             if (inst_size > 0)
+            {
+                mc_disasm_ptr->SetStyle(use_hex_immediates, hex_style);
                 mc_disasm_ptr->PrintMCInst(inst, out_string, sizeof(out_string));
-            
+            }
+
             llvm_disasm.Unlock();
             
             if (inst_size == 0)
@@ -358,20 +369,14 @@ public:
                 }
             }
             
-            if (!s_regex_compiled)
-            {
-                ::regcomp(&s_regex, "[ \t]*([^ ^\t]+)[ \t]*([^ ^\t].*)?", REG_EXTENDED);
-                s_regex_compiled = true;
-            }
+            static RegularExpression s_regex("[ \t]*([^ ^\t]+)[ \t]*([^ ^\t].*)?", REG_EXTENDED);
             
-            ::regmatch_t matches[3];
+            RegularExpression::Match matches(3);
             
-            if (!::regexec(&s_regex, out_string, sizeof(matches) / sizeof(::regmatch_t), matches, 0))
+            if (s_regex.Execute(out_string, &matches))
             {
-                if (matches[1].rm_so != -1)
-                    m_opcode_name.assign(out_string + matches[1].rm_so, matches[1].rm_eo - matches[1].rm_so);
-                if (matches[2].rm_so != -1)
-                    m_mnemonics.assign(out_string + matches[2].rm_so, matches[2].rm_eo - matches[2].rm_so);
+                matches.GetMatchAtIndex(out_string, 1, m_opcode_name);
+                matches.GetMatchAtIndex(out_string, 2, m_mnemonics);
             }
         }
     }
@@ -404,13 +409,9 @@ protected:
     LazyBool                m_does_branch;
     bool                    m_is_valid;
     bool                    m_using_file_addr;
-    
-    static bool             s_regex_compiled;
-    static ::regex_t        s_regex;
 };
 
-bool InstructionLLVMC::s_regex_compiled = false;
-::regex_t InstructionLLVMC::s_regex;
+
 
 DisassemblerLLVMC::LLVMCDisassembler::LLVMCDisassembler (const char *triple, unsigned flavor, DisassemblerLLVMC &owner):
     m_is_valid(true)
@@ -431,23 +432,30 @@ DisassemblerLLVMC::LLVMCDisassembler::LLVMCDisassembler (const char *triple, uns
     m_subtarget_info_ap.reset(curr_target->createMCSubtargetInfo(triple, "",
                                                                 features_str));
     
-    m_asm_info_ap.reset(curr_target->createMCAsmInfo(triple));
-    
+    m_asm_info_ap.reset(curr_target->createMCAsmInfo(*curr_target->createMCRegInfo(triple), triple));
+
     if (m_instr_info_ap.get() == NULL || m_reg_info_ap.get() == NULL || m_subtarget_info_ap.get() == NULL || m_asm_info_ap.get() == NULL)
     {
         m_is_valid = false;
         return;
     }
     
-    m_context_ap.reset(new llvm::MCContext(*m_asm_info_ap.get(), *(m_reg_info_ap.get()), 0));
+    m_context_ap.reset(new llvm::MCContext(m_asm_info_ap.get(), m_reg_info_ap.get(), 0));
     
     m_disasm_ap.reset(curr_target->createMCDisassembler(*m_subtarget_info_ap.get()));
-    if (m_disasm_ap.get())
+    if (m_disasm_ap.get() && m_context_ap.get())
     {
+        llvm::OwningPtr<llvm::MCRelocationInfo> RelInfo(curr_target->createMCRelocationInfo(triple, *m_context_ap.get()));
+        if (!RelInfo)
+        {
+            m_is_valid = false;
+            return;
+        }
         m_disasm_ap->setupForSymbolicDisassembly(NULL,
-                                                  DisassemblerLLVMC::SymbolLookupCallback,
-                                                  (void *) &owner,
-                                                  m_context_ap.get());
+                                                 DisassemblerLLVMC::SymbolLookupCallback,
+                                                 (void *) &owner,
+                                                 m_context_ap.get(),
+                                                 RelInfo);
         
         unsigned asm_printer_variant;
         if (flavor == ~0U)
@@ -537,6 +545,17 @@ DisassemblerLLVMC::LLVMCDisassembler::PrintMCInst (llvm::MCInst &mc_inst,
     return output_size;
 }
 
+void
+DisassemblerLLVMC::LLVMCDisassembler::SetStyle (bool use_hex_immed, HexImmediateStyle hex_style)
+{
+    m_instr_printer_ap->setPrintImmHex(use_hex_immed);
+    switch(hex_style)
+    {
+    case eHexStyleC:      m_instr_printer_ap->setPrintImmHex(llvm::HexStyle::C); break;
+    case eHexStyleAsm:    m_instr_printer_ap->setPrintImmHex(llvm::HexStyle::Asm); break;
+    }
+}
+
 bool
 DisassemblerLLVMC::LLVMCDisassembler::CanBranch (llvm::MCInst &mc_inst)
 {
@@ -604,6 +623,37 @@ DisassemblerLLVMC::DisassemblerLLVMC (const ArchSpec &arch, const char *flavor_s
         }
     }
     
+    ArchSpec thumb_arch(arch);
+    if (arch.GetTriple().getArch() == llvm::Triple::arm)
+    {
+        std::string thumb_arch_name (thumb_arch.GetTriple().getArchName().str());
+        // Replace "arm" with "thumb" so we get all thumb variants correct
+        if (thumb_arch_name.size() > 3)
+        {
+            thumb_arch_name.erase(0,3);
+            thumb_arch_name.insert(0, "thumb");
+        }
+        else
+        {
+            thumb_arch_name = "thumbv7";
+        }
+        thumb_arch.GetTriple().setArchName(llvm::StringRef(thumb_arch_name.c_str()));
+    }
+    
+    // Cortex-M3 devices (e.g. armv7m) can only execute thumb (T2) instructions, 
+    // so hardcode the primary disassembler to thumb mode.  Same for Cortex-M4 (armv7em).
+    //
+    // Handle the Cortex-M0 (armv6m) the same; the ISA is a subset of the T and T32
+    // instructions defined in ARMv7-A.  
+
+    if (arch.GetTriple().getArch() == llvm::Triple::arm
+        && (arch.GetCore() == ArchSpec::Core::eCore_arm_armv7m 
+            || arch.GetCore() == ArchSpec::Core::eCore_arm_armv7em
+            || arch.GetCore() == ArchSpec::Core::eCore_arm_armv6m))
+    {
+        triple = thumb_arch.GetTriple().getTriple().c_str();
+    }
+
     m_disasm_ap.reset (new LLVMCDisassembler(triple, flavor, *this));
     if (!m_disasm_ap->IsValid())
     {
@@ -611,13 +661,11 @@ DisassemblerLLVMC::DisassemblerLLVMC (const ArchSpec &arch, const char *flavor_s
         // we reset it, and then we won't be valid and FindPlugin will fail and we won't get used.
         m_disasm_ap.reset();
     }
-    
+
+    // For arm CPUs that can execute arm or thumb instructions, also create a thumb instruction disassembler.
     if (arch.GetTriple().getArch() == llvm::Triple::arm)
     {
-        ArchSpec thumb_arch(arch);
-        thumb_arch.GetTriple().setArchName(llvm::StringRef("thumbv7"));
         std::string thumb_triple(thumb_arch.GetTriple().getTriple());
-
         m_alternate_disasm_ap.reset(new LLVMCDisassembler(thumb_triple.c_str(), flavor, *this));
         if (!m_alternate_disasm_ap->IsValid())
         {
@@ -684,7 +732,7 @@ void
 DisassemblerLLVMC::Initialize()
 {
     PluginManager::RegisterPlugin (GetPluginNameStatic(),
-                                   GetPluginDescriptionStatic(),
+                                   "Disassembler that uses LLVM MC to disassemble i386, x86_64 and ARM.",
                                    CreateInstance);
     
     llvm::InitializeAllTargetInfos();
@@ -700,16 +748,11 @@ DisassemblerLLVMC::Terminate()
 }
 
 
-const char *
+ConstString
 DisassemblerLLVMC::GetPluginNameStatic()
 {
-    return "llvm-mc";
-}
-
-const char *
-DisassemblerLLVMC::GetPluginDescriptionStatic()
-{
-    return "Disassembler that uses LLVM MC to disassemble i386, x86_64 and ARM.";
+    static ConstString g_name("llvm-mc");
+    return g_name;
 }
 
 int DisassemblerLLVMC::OpInfoCallback (void *disassembler,
@@ -749,7 +792,7 @@ int DisassemblerLLVMC::OpInfo (uint64_t PC,
     default:
         break;
     case 1:
-        bzero (tag_bug, sizeof(::LLVMOpInfo1));
+        memset (tag_bug, 0, sizeof(::LLVMOpInfo1));
         break;
     }
     return 0;
@@ -803,14 +846,8 @@ const char *DisassemblerLLVMC::SymbolLookup (uint64_t value,
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+ConstString
 DisassemblerLLVMC::GetPluginName()
-{
-    return "DisassemblerLLVMC";
-}
-
-const char *
-DisassemblerLLVMC::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }

@@ -42,7 +42,7 @@ PlatformiOSSimulator::Initialize ()
 {
     if (g_initialize_count++ == 0)
     {
-        PluginManager::RegisterPlugin (PlatformiOSSimulator::GetShortPluginNameStatic(),
+        PluginManager::RegisterPlugin (PlatformiOSSimulator::GetPluginNameStatic(),
                                        PlatformiOSSimulator::GetDescriptionStatic(),
                                        PlatformiOSSimulator::CreateInstance);
     }
@@ -124,16 +124,11 @@ PlatformiOSSimulator::CreateInstance (bool force, const ArchSpec *arch)
 }
 
 
-const char *
+lldb_private::ConstString
 PlatformiOSSimulator::GetPluginNameStatic ()
 {
-    return "PlatformiOSSimulator";
-}
-
-const char *
-PlatformiOSSimulator::GetShortPluginNameStatic()
-{
-    return "ios-simulator";
+    static ConstString g_name("ios-simulator");
+    return g_name;
 }
 
 const char *
@@ -240,20 +235,16 @@ PlatformiOSSimulator::ResolveExecutable (const FileSpec &exe_file,
         
         if (error.Fail() || !exe_module_sp)
         {
-            error.SetErrorStringWithFormat ("'%s%s%s' doesn't contain any '%s' platform architectures: %s",
-                                            exe_file.GetDirectory().AsCString(""),
-                                            exe_file.GetDirectory() ? "/" : "",
-                                            exe_file.GetFilename().AsCString(""),
-                                            GetShortPluginName(),
+            error.SetErrorStringWithFormat ("'%s' doesn't contain any '%s' platform architectures: %s",
+                                            exe_file.GetPath().c_str(),
+                                            GetPluginName().GetCString(),
                                             arch_names.GetString().c_str());
         }
     }
     else
     {
-        error.SetErrorStringWithFormat ("'%s%s%s' does not exist",
-                                        exe_file.GetDirectory().AsCString(""),
-                                        exe_file.GetDirectory() ? "/" : "",
-                                        exe_file.GetFilename().AsCString(""));
+        error.SetErrorStringWithFormat ("'%s' does not exist",
+                                        exe_file.GetPath().c_str());
     }
 
     return error;
@@ -324,9 +315,9 @@ PlatformiOSSimulator::GetSDKDirectory()
 }
 
 Error
-PlatformiOSSimulator::GetFile (const FileSpec &platform_file, 
-                               const UUID *uuid_ptr,
-                               FileSpec &local_file)
+PlatformiOSSimulator::GetSymbolFile (const FileSpec &platform_file, 
+                                     const UUID *uuid_ptr,
+                                     FileSpec &local_file)
 {
     Error error;
     char platform_file_path[PATH_MAX];
@@ -356,7 +347,7 @@ PlatformiOSSimulator::GetFile (const FileSpec &platform_file,
         }
         error.SetErrorStringWithFormat ("unable to locate a platform file for '%s' in platform '%s'", 
                                         platform_file_path,
-                                        GetPluginName());
+                                        GetPluginName().GetCString());
     }
     else
     {
@@ -379,7 +370,7 @@ PlatformiOSSimulator::GetSharedModule (const ModuleSpec &module_spec,
     Error error;
     FileSpec local_file;
     const FileSpec &platform_file = module_spec.GetFileSpec();
-    error = GetFile (platform_file, module_spec.GetUUIDPtr(), local_file);
+    error = GetSymbolFile (platform_file, module_spec.GetUUIDPtr(), local_file);
     if (error.Success())
     {
         error = ResolveExecutable (local_file, module_spec.GetArchitecture(), module_sp, module_search_paths_ptr);

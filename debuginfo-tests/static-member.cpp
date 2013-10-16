@@ -1,12 +1,13 @@
 // RUN: %clangxx -O0 -g %s -o %t -c
 // RUN: %clangxx %t -o %t.out
 // RUN: %test_debuginfo %s %t.out
+// XFAIL: darwin
 
 // DEBUGGER: delete breakpoints
 // DEBUGGER: break static-member.cpp:33
 // DEBUGGER: r
 // DEBUGGER: ptype C
-// CHECK:      type = {{struct|class}} C {
+// CHECK:      {{struct|class}} C {
 // CHECK:      static const int a;
 // CHECK-NEXT: static int b;
 // CHECK-NEXT: static int c;

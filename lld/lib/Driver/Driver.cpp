@@ -8,10 +8,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/Driver/Driver.h"
+
 #include "lld/Core/LLVM.h"
 #include "lld/Core/InputFiles.h"
-#include "lld/Core/Resolver.h"
+#include "lld/Core/Instrumentation.h"
 #include "lld/Core/PassManager.h"
+#include "lld/Core/Parallel.h"
+#include "lld/Core/Resolver.h"
 #include "lld/ReaderWriter/Reader.h"
 #include "lld/ReaderWriter/Writer.h"
 
@@ -26,63 +29,103 @@
 namespace lld {
 
 /// This is where the link is actually performed.
-bool Driver::link(const TargetInfo &targetInfo, raw_ostream &diagnostics) {
+bool Driver::link(const LinkingContext &context, raw_ostream &diagnostics) {
   // Honor -mllvm
-  if (!targetInfo.llvmOptions().empty()) {
-    unsigned numArgs = targetInfo.llvmOptions().size();
-    const char **args = new const char*[numArgs + 2];
+  if (!context.llvmOptions().empty()) {
+    unsigned numArgs = context.llvmOptions().size();
+    const char **args = new const char *[numArgs + 2];
     args[0] = "lld (LLVM option parsing)";
     for (unsigned i = 0; i != numArgs; ++i)
-      args[i + 1] = targetInfo.llvmOptions()[i];
+      args[i + 1] = context.llvmOptions()[i];
     args[numArgs + 1] = 0;
     llvm::cl::ParseCommandLineOptions(numArgs + 1, args);
   }
+  InputGraph &inputGraph = context.inputGraph();
+  if (!inputGraph.numFiles())
+    return false;
 
   // Read inputs
-  InputFiles inputs;
-  for (const auto &input : targetInfo.inputFiles()) {
-    std::vector<std::unique_ptr<File>> files;
-    if (targetInfo.logInputFiles())
-      llvm::outs() << input.getPath() << "\n";
-      
-    error_code ec = targetInfo.readFile(input.getPath(), files);
-    if (ec) {
-      diagnostics   << "Failed to read file: " << input.getPath() << ": "
-                    << ec.message() << "\n";
-      return true;
+  ScopedTask readTask(getDefaultDomain(), "Read Args");
+  std::vector<std::vector<std::unique_ptr<File> > > files(
+      inputGraph.numFiles());
+  size_t index = 0;
+  std::atomic<bool> fail(false);
+  TaskGroup tg;
+  std::vector<std::unique_ptr<LinkerInput> > linkerInputs;
+  for (auto &ie : inputGraph.inputElements()) {
+    if (ie->kind() == InputElement::Kind::File) {
+      FileNode *fileNode = (llvm::dyn_cast<FileNode>)(ie.get());
+      auto linkerInput = fileNode->createLinkerInput(context);
+      if (!linkerInput) {
+        llvm::outs() << fileNode->errStr(error_code(linkerInput)) << "\n";
+        return false;
+      }
+      linkerInputs.push_back(std::move(*linkerInput));
     }
-    inputs.appendFiles(files);
+    else {
+      llvm_unreachable("Not handling other types of InputElements");
+    }
   }
+  for (const auto &input : linkerInputs) {
+    if (context.logInputFiles())
+      llvm::outs() << input->getUserPath() << "\n";
+
+    tg.spawn([ &, index]{
+      if (error_code ec = context.parseFile(*input, files[index])) {
+        diagnostics << "Failed to read file: " << input->getUserPath() << ": "
+                    << ec.message() << "\n";
+        fail = true;
+        return;
+      }
+    });
+    ++index;
+  }
+  tg.sync();
+  readTask.end();
+
+  if (fail)
+    return false;
+
+  InputFiles inputs;
+
+  for (auto &f : inputGraph.internalFiles())
+    inputs.appendFile(*f.get());
+
+  for (auto &f : files)
+    inputs.appendFiles(f);
 
   // Give target a chance to add files.
-  targetInfo.addImplicitFiles(inputs);
+  context.addImplicitFiles(inputs);
 
   // assign an ordinal to each file so sort() can preserve command line order
   inputs.assignFileOrdinals();
 
   // Do core linking.
-  Resolver resolver(targetInfo, inputs);
+  ScopedTask resolveTask(getDefaultDomain(), "Resolve");
+  Resolver resolver(context, inputs);
   if (resolver.resolve()) {
-    if (!targetInfo.allowRemainingUndefines())
-      return true;
+    if (!context.allowRemainingUndefines())
+      return false;
   }
   MutableFile &merged = resolver.resultFile();
+  resolveTask.end();
 
   // Run passes on linked atoms.
+  ScopedTask passTask(getDefaultDomain(), "Passes");
   PassManager pm;
-  targetInfo.addPasses(pm);
+  context.addPasses(pm);
   pm.runOnFile(merged);
+  passTask.end();
 
   // Give linked atoms to Writer to generate output file.
-  if (error_code ec = targetInfo.writeFile(merged)) {
-    diagnostics << "Failed to write file '" << targetInfo.outputPath() 
+  ScopedTask writeTask(getDefaultDomain(), "Write");
+  if (error_code ec = context.writeFile(merged)) {
+    diagnostics << "Failed to write file '" << context.outputPath()
                 << "': " << ec.message() << "\n";
-    return true;
+    return false;
   }
 
-  return false;
+  return true;
 }
 
-
 } // namespace
-

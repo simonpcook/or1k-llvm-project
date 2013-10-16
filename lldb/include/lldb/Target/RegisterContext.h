@@ -111,10 +111,10 @@ public:
     //------------------------------------------------------------------
     // Subclasses should not override these
     //------------------------------------------------------------------
-    lldb::tid_t
+    virtual lldb::tid_t
     GetThreadID() const;
 
-    Thread &
+    virtual Thread &
     GetThread ()
     {
         return m_thread;
@@ -128,6 +128,8 @@ public:
 
     bool
     SetPC (uint64_t pc);
+
+    bool SetPC (Address addr);
 
     uint64_t
     GetSP (uint64_t fail_value = LLDB_INVALID_ADDRESS);

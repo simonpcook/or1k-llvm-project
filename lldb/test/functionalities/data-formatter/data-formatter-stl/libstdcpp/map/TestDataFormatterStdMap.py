@@ -23,6 +23,8 @@ class StdMapDataFormatterTestCase(TestBase):
                           # libstdc++ containers
     @skipIfGcc # llvm.org/pr15036: When built with GCC, this test causes lldb to crash with
                # assert DeclCXX.h:554 queried property of class with no definition
+    @expectedFailureIcc   # llvm.org/pr15301: LLDB prints incorrect size of
+                          # libstdc++ containers
     @dwarf_test
     def test_with_dwarf_and_run_command(self):
         """Test data formatter commands."""
@@ -39,7 +41,7 @@ class StdMapDataFormatterTestCase(TestBase):
         """Test that that file and class static variables display correctly."""
         self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
 
-        lldbutil.run_break_set_by_file_and_line (self, "main.cpp", self.line, num_expected_locations=-1)
+        lldbutil.run_break_set_by_source_regexp (self, "Set break point at this line.")
 
         self.runCmd("run", RUN_SUCCEEDED)
 
@@ -68,7 +70,7 @@ class StdMapDataFormatterTestCase(TestBase):
             substrs = ['map has 0 items',
                        '{}'])
 
-        self.runCmd("n");self.runCmd("n");
+        self.runCmd("c");
 
         self.expect('frame variable ii',
                     substrs = ['map has 2 items',
@@ -79,7 +81,7 @@ class StdMapDataFormatterTestCase(TestBase):
                                'first = 1',
                                'second = 1'])
 
-        self.runCmd("n");self.runCmd("n");
+        self.runCmd("c");
 
         self.expect('frame variable ii',
                     substrs = ['map has 4 items',
@@ -90,8 +92,7 @@ class StdMapDataFormatterTestCase(TestBase):
                                'first = 3',
                                'second = 1'])
 
-        self.runCmd("n");self.runCmd("n");
-        self.runCmd("n");self.runCmd("n");self.runCmd("n");
+        self.runCmd("c");
 
         self.expect("frame variable ii",
                     substrs = ['map has 9 items',
@@ -133,20 +134,19 @@ class StdMapDataFormatterTestCase(TestBase):
         #self.expect("expression ii[8]", matching=False, error=True,
         #            substrs = ['1234567'])
 
-        self.runCmd("n")
+        self.runCmd("c")
         
         self.expect('frame variable ii',
                     substrs = ['map has 0 items',
                                '{}'])
         
-        self.runCmd("n")
         self.runCmd("frame variable si --show-types")
 
         self.expect('frame variable si',
                     substrs = ['map has 0 items',
                                '{}'])
 
-        self.runCmd("n")
+        self.runCmd("c")
 
         self.expect('frame variable si',
                     substrs = ['map has 1 items',
@@ -154,7 +154,7 @@ class StdMapDataFormatterTestCase(TestBase):
                                'first = \"zero\"',
                                'second = 0'])
 
-        self.runCmd("n");self.runCmd("n");self.runCmd("n");self.runCmd("n");
+        self.runCmd("c");
 
         self.expect("frame variable si",
                     substrs = ['map has 5 items',
@@ -208,20 +208,19 @@ class StdMapDataFormatterTestCase(TestBase):
         #self.expect("expression si[0]", matching=False, error=True,
         #            substrs = ['first = ', 'zero'])
 
-        self.runCmd("n")
+        self.runCmd("c")
         
         self.expect('frame variable si',
                     substrs = ['map has 0 items',
                                '{}'])
 
-        self.runCmd("n")
         self.runCmd("frame variable is --show-types")
         
         self.expect('frame variable is',
                     substrs = ['map has 0 items',
                                '{}'])
 
-        self.runCmd("n");self.runCmd("n");self.runCmd("n");self.runCmd("n");
+        self.runCmd("c");
 
         self.expect("frame variable is",
                     substrs = ['map has 4 items',
@@ -269,20 +268,19 @@ class StdMapDataFormatterTestCase(TestBase):
         #self.expect("expression is[0]", matching=False, error=True,
         #            substrs = ['first = ', 'goofy'])
 
-        self.runCmd("n")
+        self.runCmd("c")
         
         self.expect('frame variable is',
                     substrs = ['map has 0 items',
                                '{}'])
 
-        self.runCmd("n")
         self.runCmd("frame variable ss --show-types")
         
         self.expect('frame variable ss',
                     substrs = ['map has 0 items',
                                '{}'])
 
-        self.runCmd("n");self.runCmd("n");self.runCmd("n");self.runCmd("n");
+        self.runCmd("c");
 
         self.expect("frame variable ss",
                     substrs = ['map has 4 items',
@@ -329,7 +327,7 @@ class StdMapDataFormatterTestCase(TestBase):
         #self.expect("expression ss[3]", matching=False, error=True,
         #            substrs = ['gatto'])
 
-        self.runCmd("n")
+        self.runCmd("c")
         
         self.expect('frame variable ss',
                     substrs = ['map has 0 items',

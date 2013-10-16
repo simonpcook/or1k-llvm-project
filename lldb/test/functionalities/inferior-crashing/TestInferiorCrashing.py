@@ -2,7 +2,7 @@
 
 import os, time
 import unittest2
-import lldb
+import lldb, lldbutil
 from lldbtest import *
 
 class CrashingInferiorTestCase(TestBase):
@@ -26,6 +26,7 @@ class CrashingInferiorTestCase(TestBase):
         self.buildDsym()
         self.inferior_crashing_registers()
 
+    @expectedFailureFreeBSD('llvm.org/pr17184')
     def test_inferior_crashing_register_dwarf(self):
         """Test that lldb reliably reads registers from the inferior after crashing (command)."""
         self.buildDwarf()
@@ -38,17 +39,70 @@ class CrashingInferiorTestCase(TestBase):
         self.inferior_crashing_python()
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
-    @unittest2.expectedFailure # bugzilla 15784?
-    def test_inferior_crashing_expr(self):
+    def test_inferior_crashing_expr_dsym(self):
         """Test that the lldb expression interpreter can read from the inferior after crashing (command)."""
         self.buildDsym()
         self.inferior_crashing_expr()
 
-    @unittest2.expectedFailure # bugzilla 15784
-    def test_inferior_crashing_expr(self):
+    @expectedFailureFreeBSD('llvm.org/pr17184')
+    def test_inferior_crashing_expr_dwarf(self):
         """Test that the lldb expression interpreter can read from the inferior after crashing (command)."""
         self.buildDwarf()
         self.inferior_crashing_expr()
+
+    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    def test_inferior_crashing_step_dsym(self):
+        """Test that lldb functions correctly after stepping through a crash."""
+        self.buildDsym()
+        self.inferior_crashing_step()
+
+    @expectedFailureFreeBSD('llvm.org/pr17184')
+    def test_inferior_crashing_step_dwarf(self):
+        """Test that stepping after a crash behaves correctly."""
+        self.buildDwarf()
+        self.inferior_crashing_step()
+
+    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    def test_inferior_crashing_step_after_break_dsym(self):
+        """Test that stepping after a crash behaves correctly."""
+        self.buildDsym()
+        self.inferior_crashing_step_after_break()
+
+    @skipIfFreeBSD # llvm.org/pr16684
+    @expectedFailureLinux # due to llvm.org/pr15988 -- step over misbehaves after crash
+    def test_inferior_crashing_step_after_break_dwarf(self):
+        """Test that lldb functions correctly after stepping through a crash."""
+        self.buildDwarf()
+        self.inferior_crashing_step_after_break()
+
+    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    def test_inferior_crashing_expr_step_and_expr_dsym(self):
+        """Test that lldb expressions work before and after stepping after a crash."""
+        self.buildDsym()
+        self.inferior_crashing_expr_step_expr()
+
+    @expectedFailureFreeBSD('llvm.org/pr17184')
+    @expectedFailureLinux # due to llvm.org/pr15989 -- expression fails after crash and step
+    def test_inferior_crashing_expr_step_and_expr_dwarf(self):
+        """Test that lldb expressions work before and after stepping after a crash."""
+        self.buildDwarf()
+        self.inferior_crashing_expr_step_expr()
+
+    def set_breakpoint(self, line):
+        lldbutil.run_break_set_by_file_and_line (self, "main.c", line, num_expected_locations=1, loc_exact=True)
+
+    def check_stop_reason(self):
+        if sys.platform.startswith("darwin"):
+            stop_reason = 'stop reason = EXC_BAD_ACCESS'
+        else:
+            stop_reason = 'stop reason = invalid address'
+
+        # The stop reason of the thread should be a bad access exception.
+        self.expect("thread list", STOPPED_DUE_TO_EXC_BAD_ACCESS,
+            substrs = ['stopped',
+                       stop_reason])
+
+        return stop_reason
 
     def setUp(self):
         # Call super's setUp().
@@ -62,16 +116,7 @@ class CrashingInferiorTestCase(TestBase):
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
-
-        if sys.platform.startswith("darwin"):
-            stop_reason = 'stop reason = EXC_BAD_ACCESS'
-        else:
-            stop_reason = 'stop reason = invalid address'
-
-        # The stop reason of the thread should be a bad access exception.
-        self.expect("thread list", STOPPED_DUE_TO_EXC_BAD_ACCESS,
-            substrs = ['stopped',
-                       stop_reason])
+        stop_reason = self.check_stop_reason()
 
         # And it should report the correct line number.
         self.expect("thread backtrace all",
@@ -89,7 +134,6 @@ class CrashingInferiorTestCase(TestBase):
         # Both argv and envp are null.
         process = target.LaunchSimple(None, None, os.getcwd())
 
-        import lldbutil
         if process.GetState() != lldb.eStateStopped:
             self.fail("Process should be in the 'stopped' state, "
                       "instead the actual state is: '%s'" %
@@ -108,15 +152,11 @@ class CrashingInferiorTestCase(TestBase):
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
-
-        if sys.platform.startswith("darwin"):
-            stop_reason = 'stop reason = EXC_BAD_ACCESS'
-        else:
-            stop_reason = 'stop reason = invalid address'
+        self.check_stop_reason()
 
         # lldb should be able to read from registers from the inferior after crashing.
-        self.expect("register read rax",
-            substrs = ['rax = 0x'])
+        self.expect("register read eax",
+            substrs = ['eax = 0x'])
 
     def inferior_crashing_expr(self):
         """Test that the lldb expression interpreter can read symbols after crashing."""
@@ -124,15 +164,75 @@ class CrashingInferiorTestCase(TestBase):
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
+        self.check_stop_reason()
 
-        if sys.platform.startswith("darwin"):
-            stop_reason = 'stop reason = EXC_BAD_ACCESS'
-        else:
-            stop_reason = 'stop reason = invalid address'
-
-        # The lldb expression interpreter should be able to read from addresses of the inferior during process exit.
+        # The lldb expression interpreter should be able to read from addresses of the inferior after a crash.
         self.expect("p argc",
-            startstr = ['(int) $0 = 1'])
+            startstr = '(int) $0 = 1')
+
+        self.expect("p hello_world",
+            substrs = ['Hello'])
+
+    def inferior_crashing_step(self):
+        """Test that lldb functions correctly after stepping through a crash."""
+        exe = os.path.join(os.getcwd(), "a.out")
+        self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
+
+        self.set_breakpoint(self.line)
+        self.runCmd("run", RUN_SUCCEEDED)
+
+        self.expect("thread list", STOPPED_DUE_TO_BREAKPOINT,
+            substrs = ['main.c:%d' % self.line,
+                       'stop reason = breakpoint'])
+
+        self.runCmd("next")
+        stop_reason = self.check_stop_reason()
+
+        # The lldb expression interpreter should be able to read from addresses of the inferior after a crash.
+        self.expect("p argv[0]",
+            substrs = ['a.out'])
+        self.expect("p null_ptr",
+            substrs = ['= 0x0'])
+
+        # lldb should be able to read from registers from the inferior after crashing.
+        self.expect("register read eax",
+            substrs = ['eax = 0x'])
+
+        # And it should report the correct line number.
+        self.expect("thread backtrace all",
+            substrs = [stop_reason,
+                       'main.c:%d' % self.line])
+
+    def inferior_crashing_step_after_break(self):
+        """Test that lldb behaves correctly when stepping after a crash."""
+        exe = os.path.join(os.getcwd(), "a.out")
+        self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
+
+        self.runCmd("run", RUN_SUCCEEDED)
+        self.check_stop_reason()
+
+        self.runCmd("next")
+        self.check_stop_reason()
+
+    def inferior_crashing_expr_step_expr(self):
+        """Test that lldb expressions work before and after stepping after a crash."""
+        exe = os.path.join(os.getcwd(), "a.out")
+        self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
+
+        self.runCmd("run", RUN_SUCCEEDED)
+        self.check_stop_reason()
+
+        # The lldb expression interpreter should be able to read from addresses of the inferior after a crash.
+        self.expect("p argv[0]",
+            substrs = ['a.out'])
+
+        self.runCmd("next")
+        self.check_stop_reason()
+
+        # The lldb expression interpreter should be able to read from addresses of the inferior after a crash.
+        self.expect("p argv[0]",
+            substrs = ['a.out'])
+
 
 if __name__ == '__main__':
     import atexit

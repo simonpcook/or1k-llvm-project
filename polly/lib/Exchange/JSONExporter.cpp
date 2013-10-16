@@ -13,16 +13,15 @@
 
 #include "polly/LinkAllPasses.h"
 #include "polly/Dependences.h"
+#include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/ScopPass.h"
-
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/ToolOutputFile.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/system_error.h"
 #include "llvm/ADT/OwningPtr.h"
-#include "llvm/Assembly/Writer.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Assembly/Writer.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/system_error.h"
 
 #define DEBUG_TYPE "polly-import-jscop"
 
@@ -42,15 +41,17 @@ using namespace polly;
 STATISTIC(NewAccessMapFound, "Number of updated access functions");
 
 namespace {
-static cl::opt<std::string> ImportDir(
-    "polly-import-jscop-dir",
-    cl::desc("The directory to import the .jscop files from."), cl::Hidden,
-    cl::value_desc("Directory path"), cl::ValueRequired, cl::init("."));
+static cl::opt<std::string>
+ImportDir("polly-import-jscop-dir",
+          cl::desc("The directory to import the .jscop files from."),
+          cl::Hidden, cl::value_desc("Directory path"), cl::ValueRequired,
+          cl::init("."), cl::cat(PollyCategory));
 
-static cl::opt<std::string> ImportPostfix(
-    "polly-import-jscop-postfix",
-    cl::desc("Postfix to append to the import .jsop files."), cl::Hidden,
-    cl::value_desc("File postfix"), cl::ValueRequired, cl::init(""));
+static cl::opt<std::string>
+ImportPostfix("polly-import-jscop-postfix",
+              cl::desc("Postfix to append to the import .jsop files."),
+              cl::Hidden, cl::value_desc("File postfix"), cl::ValueRequired,
+              cl::init(""), cl::cat(PollyCategory));
 
 struct JSONExporter : public ScopPass {
   static char ID;
@@ -75,7 +76,6 @@ struct JSONImporter : public ScopPass {
   void printScop(raw_ostream &OS) const;
   void getAnalysisUsage(AnalysisUsage &AU) const;
 };
-
 }
 
 char JSONExporter::ID = 0;
@@ -218,7 +218,6 @@ bool JSONImporter::runOnScop(Scop &scop) {
   for (unsigned i = 0; i < isl_set_dim(OldContext, isl_dim_param); i++) {
     isl_id *id = isl_set_get_dim_id(OldContext, isl_dim_param, i);
     NewContext = isl_set_set_dim_id(NewContext, isl_dim_param, i, id);
-
   }
 
   isl_set_free(OldContext);
@@ -245,6 +244,10 @@ bool JSONImporter::runOnScop(Scop &scop) {
   if (!D->isValidScattering(&NewScattering)) {
     errs() << "JScop file contains a scattering that changes the "
            << "dependences. Use -disable-polly-legality to continue anyways\n";
+    for (StatementToIslMapTy::iterator SI = NewScattering.begin(),
+                                       SE = NewScattering.end();
+         SI != SE; ++SI)
+      isl_map_free(SI->second);
     return false;
   }
 
@@ -263,8 +266,8 @@ bool JSONImporter::runOnScop(Scop &scop) {
     for (ScopStmt::memacc_iterator MI = Stmt->memacc_begin(),
                                    ME = Stmt->memacc_end();
          MI != ME; ++MI) {
-      Json::Value accesses = jscop["statements"][statementIdx]["accesses"][
-          memoryAccessIdx]["relation"];
+      Json::Value accesses = jscop["statements"][statementIdx]["accesses"]
+                                  [memoryAccessIdx]["relation"];
       isl_map *newAccessMap =
           isl_map_read_from_str(S->getIslCtx(), accesses.asCString());
       isl_map *currentAccessMap = (*MI)->getAccessRelation();
@@ -275,7 +278,6 @@ bool JSONImporter::runOnScop(Scop &scop) {
         isl_map_free(currentAccessMap);
         isl_map_free(newAccessMap);
         return false;
-
       }
 
       // We need to copy the isl_ids for the parameter dimensions to the new

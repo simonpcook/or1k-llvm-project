@@ -17,6 +17,7 @@
 #include <vector>
 
 // Other libraries and framework includes
+#include "lldb/Core/ConstString.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Target/Process.h"
 
@@ -39,7 +40,7 @@ public:
     static void
     Terminate();
     
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
     
     static const char *
@@ -74,11 +75,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-    
-    virtual const char *
-    GetShortPluginName();
     
     virtual uint32_t
     GetPluginVersion();
@@ -97,7 +95,10 @@ public:
     //------------------------------------------------------------------
     virtual bool
     IsAlive ();
-    
+
+    virtual bool
+    WarnBeforeDetach () const;
+
     //------------------------------------------------------------------
     // Process Memory
     //------------------------------------------------------------------
@@ -136,7 +137,8 @@ private:
     lldb::ModuleSP m_core_module_sp;
     lldb_private::FileSpec m_core_file;
     lldb::addr_t m_dyld_addr;
-    std::string  m_dyld_plugin_name;
+    lldb::addr_t m_mach_kernel_addr;
+    lldb_private::ConstString m_dyld_plugin_name;
     DISALLOW_COPY_AND_ASSIGN (ProcessMachCore);
     
 };

@@ -113,6 +113,19 @@ RegisterContext::SetPC(uint64_t pc)
     return success;
 }
 
+bool
+RegisterContext::SetPC(Address addr)
+{
+    TargetSP target_sp = m_thread.CalculateTarget();
+    Target *target = target_sp.get();
+
+    lldb::addr_t callAddr = addr.GetCallableLoadAddress (target);
+    if (callAddr == LLDB_INVALID_ADDRESS)
+        return false;
+
+    return SetPC (callAddr);
+}
+
 uint64_t
 RegisterContext::GetSP(uint64_t fail_value)
 {
@@ -456,6 +469,15 @@ RegisterContext::CalculateExecutionContext (ExecutionContext &exe_ctx)
 bool
 RegisterContext::ConvertBetweenRegisterKinds (int source_rk, uint32_t source_regnum, int target_rk, uint32_t& target_regnum)
 {
+    // FIXME: This works around a problem with 32-bit register mapping on Linux.
+    // A more general fix is needed.
+    if (target_rk == eRegisterKindLLDB)
+    {
+        target_regnum = ConvertRegisterKindToRegisterNumber(source_rk, source_regnum);
+        if (target_regnum != LLDB_INVALID_REGNUM)
+            return true;
+    }
+
     const uint32_t num_registers = GetRegisterCount();
     for (uint32_t reg = 0; reg < num_registers; ++reg)
     {

@@ -33,6 +33,7 @@
 // LLDB defines
 //----------------------------------------------------------------------
 #define LLDB_GENERIC_ERROR              UINT32_MAX
+#define LLDB_DEFAULT_SHELL              "/bin/sh"
 
 //----------------------------------------------------------------------
 // Breakpoints
@@ -49,6 +50,7 @@
 #define LLDB_WATCH_ID_IS_VALID(uid)     ((uid) != (LLDB_INVALID_WATCH_ID))
 #define LLDB_WATCH_TYPE_READ            (1u << 0)
 #define LLDB_WATCH_TYPE_WRITE           (1u << 1)
+#define LLDB_WATCH_TYPE_IS_VALID(type)  ((type | LLDB_WATCH_TYPE_READ) || (type | LLDB_WATCH_TYPE_WRITE))
 
 //----------------------------------------------------------------------
 // Generic Register Numbers
@@ -80,6 +82,7 @@
 #define LLDB_INVALID_FRAME_ID           UINT32_MAX
 #define LLDB_INVALID_SIGNAL_NUMBER      INT32_MAX
 #define LLDB_INVALID_OFFSET             UINT64_MAX // Must match max of lldb::offset_t
+#define LLDB_INVALID_LINE_NUMBER        UINT32_MAX
 
 //----------------------------------------------------------------------
 /// CPU Type defintions
@@ -107,6 +110,15 @@
 #define LLDB_OPT_SET_9                  (1U << 8)
 #define LLDB_OPT_SET_10                 (1U << 9)
 #define LLDB_OPT_SET_FROM_TO(A, B)      (((1U << (B)) - 1) ^ (((1U << (A))-1) >> 1))
+
+#ifdef _WIN32
+#define MAX_PATH 260
+#endif
+
+#ifdef _MSC_VER
+// ignore GCC function attributes
+#define __attribute__(X)
+#endif
 
 #if defined(__cplusplus)
 

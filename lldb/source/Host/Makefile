@@ -21,8 +21,12 @@ ifeq ($(HOST_OS),Linux)
 DIRS += linux
 endif
 
-ifeq ($(HOST_OS),FreeBSD)
+ifneq (,$(filter $(HOST_OS), FreeBSD GNU/kFreeBSD))
 DIRS += freebsd
+endif
+
+ifeq ($(HOST_OS),MingW)
+DIRS += windows
 endif
 
 include $(LLDB_LEVEL)/Makefile

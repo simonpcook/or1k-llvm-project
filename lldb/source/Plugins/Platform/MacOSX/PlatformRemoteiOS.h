@@ -34,11 +34,8 @@ public:
     static void
     Terminate ();
     
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic ();
-
-    static const char *
-    GetShortPluginNameStatic();
 
     static const char *
     GetDescriptionStatic();
@@ -54,16 +51,10 @@ public:
     //------------------------------------------------------------
     // lldb_private::PluginInterface functions
     //------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName()
     {
         return GetPluginNameStatic();
-    }
-    
-    virtual const char *
-    GetShortPluginName()
-    {
-        return GetShortPluginNameStatic();
     }
     
     virtual uint32_t
@@ -101,14 +92,6 @@ public:
                      const lldb_private::FileSpecList *module_search_paths_ptr,
                      lldb::ModuleSP *old_module_sp_ptr,
                      bool *did_create_ptr);
-
-    virtual uint32_t
-    FindProcesses (const lldb_private::ProcessInstanceInfoMatch &match_info,
-                   lldb_private::ProcessInstanceInfoList &process_infos);
-
-    virtual bool
-    GetProcessInfo (lldb::pid_t pid, 
-                    lldb_private::ProcessInstanceInfo &proc_info);
 
     virtual bool
     GetSupportedArchitectureAtIndex (uint32_t idx, 

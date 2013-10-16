@@ -4,10 +4,9 @@ add_lldb_library(lldbUtility
   ARM_DWARF_Registers.cpp
   KQueue.cpp
   PseudoTerminal.cpp
-  RefCounter.cpp
+  Range.cpp
   SharingPtr.cpp
   StringExtractor.cpp
   StringExtractorGDBRemote.cpp
   TimeSpecTimeout.cpp
   )
-

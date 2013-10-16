@@ -36,18 +36,9 @@ class SymbolVendor :
     public PluginInterface
 {
 public:
-    static bool
-    RegisterPlugin (const char *name,
-                    const char *description,
-                    SymbolVendorCreateInstance create_callback);
-
-    static bool
-    UnregisterPlugin (SymbolVendorCreateInstance create_callback);
-
-
     static SymbolVendor*
     FindPlugin (const lldb::ModuleSP &module_sp,
-                lldb_private::Stream *feedback_strm);
+                Stream *feedback_strm);
 
     //------------------------------------------------------------------
     // Constructors and Destructors
@@ -135,7 +126,7 @@ public:
                size_t max_matches,
                TypeList& types);
 
-    virtual lldb_private::ClangNamespaceDecl
+    virtual ClangNamespaceDecl
     FindNamespace (const SymbolContext& sc, 
                    const ConstString &name,
                    const ClangNamespaceDecl *parent_namespace_decl);
@@ -162,20 +153,30 @@ public:
         return m_type_list;
     }
 
+    virtual size_t
+    GetTypes (SymbolContextScope *sc_scope,
+              uint32_t type_mask,
+              TypeList &type_list);
+
     SymbolFile *
     GetSymbolFile()
     {
         return m_sym_file_ap.get();
     }
 
+    // Get module unified section list symbol table.
+    virtual Symtab *
+    GetSymtab ();
+
+    // Clear module unified section list symbol table.
+    virtual void
+    ClearSymtab ();
+
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -191,7 +192,7 @@ protected:
     TypeList m_type_list; // Uniqued types for all parsers owned by this module
     CompileUnits m_compile_units; // The current compile units
     lldb::ObjectFileSP m_objfile_sp;    // Keep a reference to the object file in case it isn't the same as the module object file (debug symbols in a separate file)
-    std::unique_ptr<SymbolFile> m_sym_file_ap; // A single symbol file. Suclasses can add more of these if needed.
+    std::unique_ptr<SymbolFile> m_sym_file_ap; // A single symbol file. Subclasses can add more of these if needed.
 
 private:
     //------------------------------------------------------------------

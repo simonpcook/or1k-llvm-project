@@ -12,8 +12,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_CORE_SIMPLE_H
-#define LLD_CORE_SIMPLE_H
+#ifndef LLD_READER_WRITER_SIMPLE_H
+#define LLD_READER_WRITER_SIMPLE_H
 
 #include "lld/Core/DefinedAtom.h"
 #include "lld/Core/File.h"
@@ -23,7 +23,8 @@
 namespace lld {
 class SimpleFile : public MutableFile {
 public:
-  SimpleFile(const TargetInfo &ti, StringRef path) : MutableFile(ti, path) {
+  SimpleFile(const LinkingContext &context, StringRef path)
+      : MutableFile(context, path) {
     static uint32_t lastOrdinal = 0;
     _ordinal = lastOrdinal++;
   }
@@ -96,7 +97,7 @@ private:
 
 class SimpleDefinedAtom : public DefinedAtom {
 public:
-  SimpleDefinedAtom(const File &f) : _file(f) {
+  explicit SimpleDefinedAtom(const File &f) : _file(f) {
     static uint32_t lastOrdinal = 0;
     _ordinal = lastOrdinal++;
   }
@@ -127,8 +128,6 @@ public:
   virtual DeadStripKind deadStrip() const {
     return DefinedAtom::deadStripNormal;
   }
-
-  virtual bool isThumb() const { return false; }
 
   virtual bool isAlias() const { return false; }
 
@@ -171,14 +170,12 @@ private:
 
 class SimpleUndefinedAtom : public UndefinedAtom {
 public:
-  SimpleUndefinedAtom(const File &f, StringRef name) 
-    : _file(f)
-    , _name(name) {
+  SimpleUndefinedAtom(const File &f, StringRef name) : _file(f), _name(name) {
     assert(!name.empty() && "UndefinedAtoms must have a name");
   }
 
   /// file - returns the File that produced/owns this Atom
-  virtual const class File &file() const { return _file; }
+  virtual const File &file() const { return _file; }
 
   /// name - The name of the atom. For a function atom, it is the (mangled)
   /// name of the function.

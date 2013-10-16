@@ -96,7 +96,7 @@ class AliasTestCase(TestBase):
                      startstr = "Current breakpoints:",
                      substrs = [ "1: name = 'foo', locations = 1",
                                  "2: name = 'sum', locations = 1",
-                                 "3: file ='main.cpp', line = 32, locations = 1" ])
+                                 "3: file = 'main.cpp', line = 32, locations = 1" ])
 
         self.runCmd ("bpa -s python 1 -o 'print frame; print bp_loc'")
         self.runCmd ("bpa -s command 2 -o 'frame variable b'")
@@ -109,16 +109,16 @@ class AliasTestCase(TestBase):
 
 
         self.expect ("help run",
-                     substrs = [ "'run' is an abbreviation for 'process launch -c /bin/bash --'" ])
+                     substrs = [ "'run' is an abbreviation for 'process launch -c /bin/sh --'" ])
 
         self.expect ("help -a run",
-                     substrs = [ "'run' is an abbreviation for 'process launch -c /bin/bash --'" ])
+                     substrs = [ "'run' is an abbreviation for 'process launch -c /bin/sh --'" ])
 
         self.expect ("help -a",
-                     substrs = [ 'run', 'process launch -c /bin/bash' ])
+                     substrs = [ 'run', 'process launch -c /bin/sh' ])
 
         self.expect ("help", matching=False,
-                     substrs = [ "'run'", 'process launch -c /bin/bash' ])
+                     substrs = [ "'run'", 'process launch -c /bin/sh' ])
 
         self.expect ("run",
                      patterns = [ "Process .* launched: .*a.out" ])

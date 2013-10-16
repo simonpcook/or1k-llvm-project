@@ -38,7 +38,7 @@ public:
     static void
     Terminate();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
 
     static const char *
@@ -51,9 +51,6 @@ public:
     DebuggerInitialize (lldb_private::Debugger &debugger);
 
     DynamicLoaderDarwinKernel (lldb_private::Process *process, lldb::addr_t kernel_addr);
-
-    static lldb::addr_t
-    SearchForDarwinKernel (lldb_private::Process *process);
 
     virtual
     ~DynamicLoaderDarwinKernel ();
@@ -80,11 +77,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -346,6 +340,9 @@ protected:
                        uint32_t image_infos_count,
                        KextImageInfo::collection &image_infos);
 
+    static lldb::addr_t
+    SearchForDarwinKernel (lldb_private::Process *process);
+    
     static lldb::addr_t
     SearchForKernelAtSameLoadAddr (lldb_private::Process *process);
 

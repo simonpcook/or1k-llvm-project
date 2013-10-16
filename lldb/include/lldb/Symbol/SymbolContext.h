@@ -16,7 +16,6 @@
 #include "lldb/lldb-private.h"
 #include "lldb/Core/Address.h"
 #include "lldb/Core/Mangled.h"
-#include "lldb/Symbol/ClangASTType.h"
 #include "lldb/Symbol/LineEntry.h"
 
 namespace lldb_private {
@@ -153,7 +152,7 @@ public:
     /// information in this context. If a module, function, file and
     /// line number are available, they will be dumped. If only a
     /// module and function or symbol name with offset is available,
-    /// that will be ouput. Else just the address at which the target
+    /// that will be output. Else just the address at which the target
     /// was stopped will be displayed.
     ///
     /// @param[in] s
@@ -285,7 +284,31 @@ public:
     ///     The name of the function represented by this symbol context.
     //------------------------------------------------------------------
     ConstString
-    GetFunctionName (Mangled::NamePreference preference = Mangled::ePreferDemangled);
+    GetFunctionName (Mangled::NamePreference preference = Mangled::ePreferDemangled) const;
+
+    
+    //------------------------------------------------------------------
+    /// Get the line entry that corresponds to the function.
+    ///
+    /// If the symbol context contains an inlined block, the line entry
+    /// for the start address of the inlined function will be returned,
+    /// otherwise the line entry for the start address of the function
+    /// will be returned. This can be used after doing a
+    /// Module::FindFunctions(...) or ModuleList::FindFunctions(...)
+    /// call in order to get the correct line table information for
+    /// the symbol context.
+    /// it will return the inlined function name.
+    ///
+    /// @param[in] prefer_mangled
+    ///    if \btrue, then the mangled name will be returned if there
+    ///    is one.  Otherwise the unmangled name will be returned if it
+    ///    is available.
+    ///
+    /// @return
+    ///     The name of the function represented by this symbol context.
+    //------------------------------------------------------------------
+    LineEntry
+    GetFunctionStartLineEntry () const;
 
     //------------------------------------------------------------------
     /// Find the block containing the inlined block that contains this block.
@@ -418,6 +441,11 @@ public:
     AppendIfUnique (const SymbolContext& sc, 
                     bool merge_symbol_into_function);
 
+    bool
+    MergeSymbolContextIntoFunctionContext (const SymbolContext& symbol_sc,
+                                           uint32_t start_idx = 0,
+                                           uint32_t stop_idx = UINT32_MAX);
+
     uint32_t
     AppendIfUnique (const SymbolContextList& sc_list, 
                     bool merge_symbol_into_function);
@@ -460,6 +488,30 @@ public:
     //------------------------------------------------------------------
     bool
     GetContextAtIndex(size_t idx, SymbolContext& sc) const;
+
+    //------------------------------------------------------------------
+    /// Direct reference accessor for a symbol context at index \a idx.
+    ///
+    /// The index \a idx must be a valid index, no error checking will
+    /// be done to ensure that it is valid.
+    ///
+    /// @param[in] idx
+    ///     The zero based index into the symbol context list.
+    ///
+    /// @return
+    ///     A const reference to the symbol context to fill in.
+    //------------------------------------------------------------------
+    SymbolContext&
+    operator [] (size_t idx)
+    {
+        return m_symbol_contexts[idx];
+    }
+    
+    const SymbolContext&
+    operator [] (size_t idx) const
+    {
+        return m_symbol_contexts[idx];
+    }
 
     //------------------------------------------------------------------
     /// Get accessor for the last symbol context in the list.

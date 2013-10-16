@@ -11,11 +11,10 @@
 #define liblldb_Log_h_
 
 // C Includes
-#include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
-#include <unistd.h>
 
 // C++ Includes
 // Other libraries and framework includes
@@ -78,14 +77,14 @@ public:
     // Static accessors for logging channels
     //------------------------------------------------------------------
     static void
-    RegisterLogChannel (const char *channel,
+    RegisterLogChannel (const ConstString &channel,
                         const Log::Callbacks &log_callbacks);
 
     static bool
-    UnregisterLogChannel (const char *channel);
+    UnregisterLogChannel (const ConstString &channel);
 
     static bool
-    GetLogChannelCallbacks (const char *channel,
+    GetLogChannelCallbacks (const ConstString &channel,
                             Log::Callbacks &log_callbacks);
 
 

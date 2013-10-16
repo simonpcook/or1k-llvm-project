@@ -13,6 +13,7 @@
 #include "lldb/lldb-private.h"
 #include "lldb/Core/DataExtractor.h"
 #include "lldb/Host/FileSpec.h"
+#include "lldb/Core/FileSpecList.h"
 #include "lldb/Core/ModuleChild.h"
 #include "lldb/Core/PluginInterface.h"
 #include "lldb/Host/Endian.h"
@@ -78,7 +79,7 @@ public:
         eStrataKernel,
         eStrataRawImage
     } Strata;
-        
+
     //------------------------------------------------------------------
     /// Construct with a parent module, offset, and header data.
     ///
@@ -178,6 +179,19 @@ public:
                 lldb::DataBufferSP &file_data_sp);
 
     
+    static size_t
+    GetModuleSpecifications (const FileSpec &file,
+                             lldb::offset_t file_offset,
+                             lldb::offset_t file_size,
+                             ModuleSpecList &specs);
+    
+    static size_t
+    GetModuleSpecifications (const lldb_private::FileSpec& file,
+                             lldb::DataBufferSP& data_sp,
+                             lldb::offset_t data_offset,
+                             lldb::offset_t file_offset,
+                             lldb::offset_t file_size,
+                             lldb_private::ModuleSpecList &specs);
     //------------------------------------------------------------------
     /// Split a path into a file path with object name.
     ///
@@ -335,7 +349,10 @@ public:
     ///     The list of sections contained in this object file.
     //------------------------------------------------------------------
     virtual SectionList *
-    GetSectionList () = 0;
+    GetSectionList ();
+
+    virtual void
+    CreateSections (SectionList &unified_section_list) = 0;
 
     //------------------------------------------------------------------
     /// Gets the symbol table for the currently selected architecture
@@ -351,9 +368,51 @@ public:
     GetSymtab () = 0;
 
     //------------------------------------------------------------------
+    /// Appends a Symbol for the specified so_addr to the symbol table.
+    ///
+    /// If verify_unique is false, the symbol table is not searched
+    /// to determine if a Symbol found at this address has already been
+    /// added to the symbol table.  When verify_unique is true, this
+    /// method resolves the Symbol as the first match in the SymbolTable
+    /// and appends a Symbol only if required/found.
+    ///
+    /// @return
+    ///     The resolved symbol or nullptr.  Returns nullptr if a
+    ///     a Symbol could not be found for the specified so_addr.
+    //------------------------------------------------------------------
+    virtual Symbol *
+    ResolveSymbolForAddress(const Address &so_addr, bool verify_unique)
+    {
+        // Typically overridden to lazily add stripped symbols recoverable from
+        // the exception handling unwind information (i.e. without parsing
+        // the entire eh_frame section.
+        //
+        // The availability of LC_FUNCTION_STARTS allows ObjectFileMachO
+        // to efficiently add stripped symbols when the symbol table is
+        // first constructed.  Poorer cousins are PECoff and ELF.
+        return nullptr;
+    }
+
+    //------------------------------------------------------------------
+    /// Detect if this object file has been stripped of local symbols.
+    //------------------------------------------------------------------
+    /// Detect if this object file has been stripped of local symbols.
+    ///
+    /// @return
+    ///     Return \b true if the object file has been stripped of local
+    ///     symbols.
+    //------------------------------------------------------------------
+    virtual bool
+    IsStripped () = 0;
+
+    //------------------------------------------------------------------
     /// Frees the symbol table.
     ///
     /// This function should only be used when an object file is
+    ///
+    /// @param[in] flags
+    ///     eSymtabFromUnifiedSectionList: Whether to clear symbol table
+    ///     for unified module section list, or object file.
     ///
     /// @return
     ///     The symbol table for this object file.
@@ -375,6 +434,21 @@ public:
     //------------------------------------------------------------------
     virtual bool
     GetUUID (lldb_private::UUID* uuid) = 0;
+
+    //------------------------------------------------------------------
+    /// Gets the symbol file spec list for this object file.
+    ///
+    /// If the object file format contains a debug symbol file link,
+    /// the values will be return in the FileSpecList.
+    ///
+    /// @return
+    ///     Returns filespeclist.
+    //------------------------------------------------------------------
+    virtual lldb_private::FileSpecList
+    GetDebugSymbolFilePaths()
+    {
+        return FileSpecList();
+    }
 
     //------------------------------------------------------------------
     /// Gets whether endian swapping should occur when extracting data
@@ -473,6 +547,7 @@ public:
     {
         return lldb::RegisterContextSP();
     }
+
     //------------------------------------------------------------------
     /// The object file should be able to calculate its type by looking
     /// at its file header and possibly the sections or other data in
@@ -487,6 +562,17 @@ public:
     //------------------------------------------------------------------
     virtual Type
     CalculateType() = 0;
+
+    //------------------------------------------------------------------
+    /// In cases where the type can't be calculated (elf files), this
+    /// routine allows someone to explicitly set it. As an example,
+    /// SymbolVendorELF uses this routine to set eTypeDebugInfo when
+    /// loading debug link files.
+    virtual void
+    SetType (Type type)
+    {
+        m_type = type;
+    }
 
     //------------------------------------------------------------------
     /// The object file should be able to calculate the strata of the

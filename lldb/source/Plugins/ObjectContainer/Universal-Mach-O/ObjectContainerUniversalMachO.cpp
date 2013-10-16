@@ -11,6 +11,7 @@
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/DataBuffer.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Stream.h"
 #include "lldb/Symbol/ObjectFile.h"
@@ -25,7 +26,8 @@ ObjectContainerUniversalMachO::Initialize()
 {
     PluginManager::RegisterPlugin (GetPluginNameStatic(),
                                    GetPluginDescriptionStatic(),
-                                   CreateInstance);
+                                   CreateInstance,
+                                   GetModuleSpecifications);
 }
 
 void
@@ -35,10 +37,11 @@ ObjectContainerUniversalMachO::Terminate()
 }
 
 
-const char *
+lldb_private::ConstString
 ObjectContainerUniversalMachO::GetPluginNameStatic()
 {
-    return "object-container.mach-o";
+    static ConstString g_name("mach-o");
+    return g_name;
 }
 
 const char *
@@ -82,7 +85,7 @@ ObjectContainerUniversalMachO::MagicBytesMatch (const DataExtractor &data)
 {
     lldb::offset_t offset = 0;
     uint32_t magic = data.GetU32(&offset);
-    return magic == UniversalMagic || magic == UniversalMagicSwapped;
+    return magic == FAT_MAGIC || magic == FAT_CIGAM;
 }
 
 ObjectContainerUniversalMachO::ObjectContainerUniversalMachO
@@ -109,44 +112,52 @@ ObjectContainerUniversalMachO::~ObjectContainerUniversalMachO()
 bool
 ObjectContainerUniversalMachO::ParseHeader ()
 {
+    bool success = ParseHeader (m_data, m_header, m_fat_archs);
+    // We no longer need any data, we parsed all we needed to parse
+    // and cached it in m_header and m_fat_archs
+    m_data.Clear();
+    return success;
+}
+
+bool
+ObjectContainerUniversalMachO::ParseHeader (lldb_private::DataExtractor &data,
+                                            llvm::MachO::fat_header &header,
+                                            std::vector<llvm::MachO::fat_arch> &fat_archs)
+{
     bool success = false;
     // Store the file offset for this universal file as we could have a universal .o file
     // in a BSD archive, or be contained in another kind of object.
-    lldb::offset_t offset = 0;
     // Universal mach-o files always have their headers in big endian.
-    m_data.SetByteOrder (eByteOrderBig);
-    m_header.magic = m_data.GetU32(&offset);
+    lldb::offset_t offset = 0;
+    data.SetByteOrder (eByteOrderBig);
+    header.magic = data.GetU32(&offset);
+    fat_archs.clear();
 
-    if (m_header.magic == UniversalMagic)
+    if (header.magic == FAT_MAGIC)
     {
-        m_data.SetAddressByteSize(4);
 
-        m_header.nfat_arch = m_data.GetU32(&offset);
-
+        data.SetAddressByteSize(4);
+        
+        header.nfat_arch = data.GetU32(&offset);
+        
         // Now we should have enough data for all of the fat headers, so lets index
         // them so we know how many architectures that this universal binary contains.
         uint32_t arch_idx = 0;
-        for (arch_idx = 0; arch_idx < m_header.nfat_arch; ++arch_idx)
+        for (arch_idx = 0; arch_idx < header.nfat_arch; ++arch_idx)
         {
-            if (m_data.ValidOffsetForDataOfSize(offset, sizeof(fat_arch)))
+            if (data.ValidOffsetForDataOfSize(offset, sizeof(fat_arch)))
             {
                 fat_arch arch;
-                if (m_data.GetU32(&offset, &arch, sizeof(fat_arch)/sizeof(uint32_t)))
-                {
-                    m_fat_archs.push_back(arch);
-                }
+                if (data.GetU32(&offset, &arch, sizeof(fat_arch)/sizeof(uint32_t)))
+                    fat_archs.push_back(arch);
             }
         }
         success = true;
     }
     else
     {
-        memset(&m_header, 0, sizeof(m_header));
+        memset(&header, 0, sizeof(header));
     }
-
-    // We no longer need any data, we parsed all we needed to parse
-    // and cached it in m_header and m_fat_archs
-    m_data.Clear();
     return success;
 }
 
@@ -249,14 +260,8 @@ ObjectContainerUniversalMachO::GetObjectFile (const FileSpec *file)
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+lldb_private::ConstString
 ObjectContainerUniversalMachO::GetPluginName()
-{
-    return "ObjectContainerUniversalMachO";
-}
-
-const char *
-ObjectContainerUniversalMachO::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }
@@ -267,4 +272,39 @@ ObjectContainerUniversalMachO::GetPluginVersion()
     return 1;
 }
 
+
+size_t
+ObjectContainerUniversalMachO::GetModuleSpecifications (const lldb_private::FileSpec& file,
+                                                        lldb::DataBufferSP& data_sp,
+                                                        lldb::offset_t data_offset,
+                                                        lldb::offset_t file_offset,
+                                                        lldb::offset_t file_size,
+                                                        lldb_private::ModuleSpecList &specs)
+{
+    const size_t initial_count = specs.GetSize();
+    
+    DataExtractor data;
+    data.SetData (data_sp, data_offset, data_sp->GetByteSize());
+
+    if (ObjectContainerUniversalMachO::MagicBytesMatch(data))
+    {
+        llvm::MachO::fat_header header;
+        std::vector<llvm::MachO::fat_arch> fat_archs;
+        if (ParseHeader (data, header, fat_archs))
+        {
+            for (const llvm::MachO::fat_arch &fat_arch : fat_archs)
+            {
+                const lldb::offset_t slice_file_offset = fat_arch.offset + file_offset;
+                if (fat_arch.offset < file_size && file_size > slice_file_offset)
+                {
+                    ObjectFile::GetModuleSpecifications (file,
+                                                         slice_file_offset,
+                                                         file_size - slice_file_offset,
+                                                         specs);
+                }
+            }
+        }
+    }
+    return specs.GetSize() - initial_count;
+}
 

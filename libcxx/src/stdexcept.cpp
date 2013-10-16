@@ -47,9 +47,9 @@ private:
     count_t& count() const _NOEXCEPT {return (count_t&)(*(str_ - sizeof(count_t)));}
 public:
     explicit __libcpp_nmstr(const char* msg);
-    __libcpp_nmstr(const __libcpp_nmstr& s) _LIBCPP_CANTTHROW;
-    __libcpp_nmstr& operator=(const __libcpp_nmstr& s) _LIBCPP_CANTTHROW;
-    ~__libcpp_nmstr() _LIBCPP_CANTTHROW;
+    __libcpp_nmstr(const __libcpp_nmstr& s) _NOEXCEPT;
+    __libcpp_nmstr& operator=(const __libcpp_nmstr& s) _NOEXCEPT;
+    ~__libcpp_nmstr();
     const char* c_str() const _NOEXCEPT {return str_;}
 };
 
@@ -61,18 +61,18 @@ __libcpp_nmstr::__libcpp_nmstr(const char* msg)
     c[0] = c[1] = len;
     str_ += offset;
     count() = 0;
-    std::strcpy(const_cast<char*>(c_str()), msg);
+    std::memcpy(const_cast<char*>(c_str()), msg, len + 1);
 }
 
 inline
-__libcpp_nmstr::__libcpp_nmstr(const __libcpp_nmstr& s)
+__libcpp_nmstr::__libcpp_nmstr(const __libcpp_nmstr& s) _NOEXCEPT
     : str_(s.str_)
 {
     __sync_add_and_fetch(&count(), 1);
 }
 
 __libcpp_nmstr&
-__libcpp_nmstr::operator=(const __libcpp_nmstr& s)
+__libcpp_nmstr::operator=(const __libcpp_nmstr& s) _NOEXCEPT
 {
     const char* p = str_;
     str_ = s.str_;

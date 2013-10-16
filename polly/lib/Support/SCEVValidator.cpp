@@ -120,8 +120,8 @@ raw_ostream &operator<<(raw_ostream &OS, class ValidatorResult &VR) {
 }
 
 /// Check if a SCEV is valid in a SCoP.
-struct SCEVValidator :
-    public SCEVVisitor<SCEVValidator, class ValidatorResult> {
+struct SCEVValidator
+    : public SCEVVisitor<SCEVValidator, class ValidatorResult> {
 private:
   const Region *R;
   ScalarEvolution &SE;
@@ -211,7 +211,7 @@ public:
         continue;
 
       if (Op.isPARAM() && Return.isPARAM()) {
-        HasMultipleParams  = true;
+        HasMultipleParams = true;
         continue;
       }
 
@@ -278,7 +278,22 @@ public:
 
     assert(Start.isConstant() && Recurrence.isConstant() &&
            "Expected 'Start' and 'Recurrence' to be constant");
-    return ValidatorResult(SCEVType::PARAM, Expr);
+
+    // Directly generate ValidatorResult for Expr if 'start' is zero.
+    if (Expr->getStart()->isZero())
+      return ValidatorResult(SCEVType::PARAM, Expr);
+
+    // Translate AddRecExpr from '{start, +, inc}' into 'start + {0, +, inc}'
+    // if 'start' is not zero.
+    const SCEV *ZeroStartExpr = SE.getAddRecExpr(
+        SE.getConstant(Expr->getStart()->getType(), 0),
+        Expr->getStepRecurrence(SE), Expr->getLoop(), SCEV::FlagAnyWrap);
+
+    ValidatorResult ZeroStartResult =
+        ValidatorResult(SCEVType::PARAM, ZeroStartExpr);
+    ZeroStartResult.addParamsFrom(Start);
+
+    return ZeroStartResult;
   }
 
   class ValidatorResult visitSMaxExpr(const SCEVSMaxExpr *Expr) {
@@ -349,8 +364,8 @@ public:
 
 /// @brief Check whether a SCEV refers to an SSA name defined inside a region.
 ///
-struct SCEVInRegionDependences :
-    public SCEVVisitor<SCEVInRegionDependences, bool> {
+struct SCEVInRegionDependences
+    : public SCEVVisitor<SCEVInRegionDependences, bool> {
 public:
 
   /// Returns true when the SCEV has SSA names defined in region R.
@@ -467,9 +482,10 @@ bool isAffineExpr(const Region *R, const SCEV *Expr, ScalarEvolution &SE,
   return Result.isValid();
 }
 
-std::vector<const SCEV *>
-getParamsInAffineExpr(const Region *R, const SCEV *Expr, ScalarEvolution &SE,
-                      const Value *BaseAddress) {
+std::vector<const SCEV *> getParamsInAffineExpr(const Region *R,
+                                                const SCEV *Expr,
+                                                ScalarEvolution &SE,
+                                                const Value *BaseAddress) {
   if (isa<SCEVCouldNotCompute>(Expr))
     return std::vector<const SCEV *>();
 

@@ -32,17 +32,14 @@
 using namespace lldb;
 using namespace lldb_private;
 
-static const char *pluginName = "ItaniumABILanguageRuntime";
-static const char *pluginDesc = "Itanium ABI for the C++ language";
-static const char *pluginShort = "language.itanium";
 static const char *vtable_demangled_prefix = "vtable for ";
 
 bool
 ItaniumABILanguageRuntime::CouldHaveDynamicValue (ValueObject &in_value)
 {
-    return ClangASTContext::IsPossibleDynamicType(in_value.GetClangAST(), in_value.GetClangType(), NULL,
-                                                  true, // check for C++
-                                                  false); // do not check for ObjC
+    const bool check_cxx = true;
+    const bool check_objc = false;
+    return in_value.GetClangType().IsPossibleDynamicType (NULL, check_cxx, check_objc);
 }
 
 bool
@@ -191,7 +188,7 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                                 type_sp = class_types.GetTypeAtIndex(i);
                                 if (type_sp)
                                 {
-                                    if (ClangASTContext::IsCXXClassType(type_sp->GetClangFullType()))
+                                    if (type_sp->GetClangFullType().IsCXXClassType())
                                     {
                                         if (log)
                                             log->Printf ("0x%16.16" PRIx64 ": static-type = '%s' has multiple matching dynamic types, picking this one: uid={0x%" PRIx64 "}, type-name='%s'\n",
@@ -223,18 +220,12 @@ ItaniumABILanguageRuntime::GetDynamicTypeAndAddress (ValueObject &in_value,
                         // the value we were handed.
                         if (type_sp)
                         {
-                            clang::ASTContext *in_ast_ctx = in_value.GetClangAST ();
-                            clang::ASTContext *this_ast_ctx = type_sp->GetClangAST ();
-                            if (in_ast_ctx == this_ast_ctx)
+                            if (ClangASTContext::AreTypesSame (in_value.GetClangType(),
+                                                               type_sp->GetClangFullType()))
                             {
-                                if (ClangASTContext::AreTypesSame (in_ast_ctx,
-                                                                   in_value.GetClangType(),
-                                                                   type_sp->GetClangFullType()))
-                                {
-                                    // The dynamic type we found was the same type,
-                                    // so we don't have a dynamic type here...
-                                    return false;
-                                }
+                                // The dynamic type we found was the same type,
+                                // so we don't have a dynamic type here...
+                                return false;
                             }
 
                             // The offset_to_top is two pointers above the address.
@@ -306,8 +297,8 @@ ItaniumABILanguageRuntime::CreateInstance (Process *process, lldb::LanguageType 
 void
 ItaniumABILanguageRuntime::Initialize()
 {
-    PluginManager::RegisterPlugin (pluginName,
-                                   pluginDesc,
+    PluginManager::RegisterPlugin (GetPluginNameStatic(),
+                                   "Itanium ABI for the C++ language",
                                    CreateInstance);    
 }
 
@@ -317,19 +308,20 @@ ItaniumABILanguageRuntime::Terminate()
     PluginManager::UnregisterPlugin (CreateInstance);
 }
 
+lldb_private::ConstString
+ItaniumABILanguageRuntime::GetPluginNameStatic()
+{
+    static ConstString g_name("itanium");
+    return g_name;
+}
+
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+lldb_private::ConstString
 ItaniumABILanguageRuntime::GetPluginName()
 {
-    return pluginName;
-}
-
-const char *
-ItaniumABILanguageRuntime::GetShortPluginName()
-{
-    return pluginShort;
+    return GetPluginNameStatic();
 }
 
 uint32_t

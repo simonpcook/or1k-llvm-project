@@ -4,6 +4,10 @@ def c_compiler_rule(b, name, description, compiler, flags):
   command = "%s -MMD -MF $out.d %s -c -o $out $in" % (compiler, flags)
   b.rule(name, command, description + " $out", depfile="$out.d")
 
+version_major = 0;
+version_minor = 0;
+version_patch = 1;
+
 from optparse import OptionParser
 import os
 from subprocess import *
@@ -19,11 +23,33 @@ p.add_option('--with-llvm-config', metavar='PATH',
              help='use given llvm-config script')
 p.add_option('--prefix', metavar='PATH',
              help='install to given prefix')
+p.add_option('--libexecdir', metavar='PATH',
+             help='install *.bc to given dir')
+p.add_option('--includedir', metavar='PATH',
+             help='install include files to given dir')
+p.add_option('--pkgconfigdir', metavar='PATH',
+             help='install clc.pc to given dir')
 p.add_option('-g', metavar='GENERATOR', default='make',
              help='use given generator (default: make)')
 (options, args) = p.parse_args()
 
 llvm_config_exe = options.with_llvm_config or "llvm-config"
+
+prefix = options.prefix
+if not prefix:
+  prefix = '/usr/local'
+
+libexecdir = options.libexecdir
+if not libexecdir:
+  libexecdir = os.path.join(prefix, 'lib/clc')
+
+includedir = options.includedir
+if not includedir:
+  includedir = os.path.join(prefix, 'include')
+
+pkgconfigdir = options.pkgconfigdir
+if not pkgconfigdir:
+  pkgconfigdir = os.path.join(prefix, 'share/pkgconfig')
 
 def llvm_config(args):
   try:
@@ -39,11 +65,23 @@ llvm_core_libs = llvm_config(['--libs', 'core', 'bitreader', 'bitwriter']) + ' '
                  llvm_config(['--ldflags'])
 llvm_cxxflags = llvm_config(['--cxxflags']) + ' -fno-exceptions -fno-rtti'
 
+llvm_clang_cxx = os.path.join(llvm_bindir, 'clang++')
 llvm_clang = os.path.join(llvm_bindir, 'clang')
 llvm_link = os.path.join(llvm_bindir, 'llvm-link')
 llvm_opt = os.path.join(llvm_bindir, 'opt')
 
-default_targets = ['nvptx--nvidiacl', 'nvptx64--nvidiacl']
+available_targets = {
+  'r600--' : { 'devices' :
+               [{'gpu' : 'cedar',   'aliases' : ['palm', 'sumo', 'sumo2', 'redwood', 'juniper']},
+                {'gpu' : 'cypress', 'aliases' : ['hemlock']},
+                {'gpu' : 'barts',   'aliases' : ['turks', 'caicos']},
+                {'gpu' : 'cayman',  'aliases' : ['aruba']},
+                {'gpu' : 'tahiti',  'aliases' : ['pitcairn', 'verde', 'oland']}]},
+  'nvptx--nvidiacl'   : { 'devices' : [{'gpu' : '', 'aliases' : []}] },
+  'nvptx64--nvidiacl' : { 'devices' : [{'gpu' : '', 'aliases' : []}] }
+}
+
+default_targets = ['nvptx--nvidiacl', 'nvptx64--nvidiacl', 'r600--']
 
 targets = args
 if not targets:
@@ -58,8 +96,8 @@ b.rule("LLVM_LINK", command = llvm_link + " -o $out $in",
 b.rule("OPT", command = llvm_opt + " -O3 -o $out $in",
        description = 'OPT $out')
 
-c_compiler_rule(b, "LLVM_TOOL_CXX", 'CXX', 'c++', llvm_cxxflags)
-b.rule("LLVM_TOOL_LINK", "c++ -o $out $in %s" % llvm_core_libs, 'LINK $out')
+c_compiler_rule(b, "LLVM_TOOL_CXX", 'LLVM-CXX', llvm_clang_cxx, llvm_cxxflags)
+b.rule("LLVM_TOOL_LINK", llvm_clang_cxx + " -o $out $in %s" % llvm_core_libs, 'LINK $out')
 
 prepare_builtins = os.path.join('utils', 'prepare-builtins')
 b.build(os.path.join('utils', 'prepare-builtins.o'), "LLVM_TOOL_CXX",
@@ -73,8 +111,14 @@ b.rule("PREPARE_BUILTINS", "%s -o $out $in" % prepare_builtins,
 manifest_deps = set([sys.argv[0], os.path.join(srcdir, 'build', 'metabuild.py'),
                      os.path.join(srcdir, 'build', 'ninja_syntax.py')])
 
-install_files = []
+install_files_bc = []
 install_deps = []
+
+# Create libclc.pc
+clc = open('libclc.pc', 'w')
+clc.write('includedir=%(inc)s\nlibexecdir=%(lib)s\n\nName: libclc\nDescription: Library requirements of the OpenCL C programming language\nVersion: %(maj)s.%(min)s.%(pat)s\nCflags: -I${includedir}\nLibs: -L${libexecdir}' %
+{'inc': includedir, 'lib': libexecdir, 'maj': version_major, 'min': version_minor, 'pat': version_patch})
+clc.close()
 
 for target in targets:
   (t_arch, t_vendor, t_os) = target.split('-')
@@ -95,53 +139,85 @@ for target in targets:
                    [os.path.join(srcdir, subdir, 'lib') for subdir in subdirs])
 
   clang_cl_includes = ' '.join(["-I%s" % incdir for incdir in incdirs])
-  install_files += [(incdir, incdir[len(srcdir)+1:]) for incdir in incdirs]
 
-  # The rule for building a .bc file for the specified architecture using clang.
-  clang_bc_flags = "-target %s -I`dirname $in` %s " \
-                   "-Dcl_clang_storage_class_specifiers " \
-                   "-Dcl_khr_fp64 " \
-                   "-emit-llvm" % (target, clang_cl_includes)
-  clang_bc_rule = "CLANG_CL_BC_" + target
-  c_compiler_rule(b, clang_bc_rule, "LLVM-CC", llvm_clang, clang_bc_flags)
+  for device in available_targets[target]['devices']:
+    # The rule for building a .bc file for the specified architecture using clang.
+    clang_bc_flags = "-target %s -I`dirname $in` %s " \
+                     "-Dcl_clang_storage_class_specifiers " \
+                     "-Dcl_khr_fp64 " \
+                     "-emit-llvm" % (target, clang_cl_includes)
+    if device['gpu'] != '':
+      clang_bc_flags += ' -mcpu=' + device['gpu']
+    clang_bc_rule = "CLANG_CL_BC_" + target
+    c_compiler_rule(b, clang_bc_rule, "LLVM-CC", llvm_clang, clang_bc_flags)
+
+    objects = []
+    sources_seen = set()
+
+    if device['gpu'] == '':
+      full_target_name = target
+      obj_suffix = ''
+    else:
+      full_target_name = device['gpu'] + '-' + target
+      obj_suffix = '.' + device['gpu']
+
+    for libdir in libdirs:
+      subdir_list_file = os.path.join(libdir, 'SOURCES')
+      manifest_deps.add(subdir_list_file)
+      override_list_file = os.path.join(libdir, 'OVERRIDES')
+
+      # Add target overrides
+      if os.path.exists(override_list_file):
+        for override in open(override_list_file).readlines():
+          override = override.rstrip()
+          sources_seen.add(override)
+
+      for src in open(subdir_list_file).readlines():
+        src = src.rstrip()
+        if src not in sources_seen:
+          sources_seen.add(src)
+          obj = os.path.join(target, 'lib', src + obj_suffix + '.bc')
+          objects.append(obj)
+          src_file = os.path.join(libdir, src)
+          ext = os.path.splitext(src)[1]
+          if ext == '.ll':
+            b.build(obj, 'LLVM_AS', src_file)
+          else:
+            b.build(obj, clang_bc_rule, src_file)
+
+    builtins_link_bc = os.path.join(target, 'lib', 'builtins.link' + obj_suffix + '.bc')
+    builtins_opt_bc = os.path.join(target, 'lib', 'builtins.opt' + obj_suffix + '.bc')
+    builtins_bc = os.path.join('built_libs', full_target_name + '.bc')
+    b.build(builtins_link_bc, "LLVM_LINK", objects)
+    b.build(builtins_opt_bc, "OPT", builtins_link_bc)
+    b.build(builtins_bc, "PREPARE_BUILTINS", builtins_opt_bc, prepare_builtins)
+    install_files_bc.append((builtins_bc, builtins_bc))
+    install_deps.append(builtins_bc)
+    for alias in device['aliases']:
+      b.rule("CREATE_ALIAS", "ln -fs %s $out" % os.path.basename(builtins_bc)
+             ,"CREATE-ALIAS $out")
+
+      alias_file = os.path.join('built_libs', alias + '-' + target + '.bc')
+      b.build(alias_file, "CREATE_ALIAS", builtins_bc)
+      install_files_bc.append((alias_file, alias_file))
+      install_deps.append(alias_file)
+    b.default(builtins_bc)
+
+
+install_cmd = ' && '.join(['mkdir -p $(DESTDIR)/%(dst)s && cp -r %(src)s $(DESTDIR)/%(dst)s' % 
+                           {'src': file,
+                            'dst': libexecdir}
+                           for (file, dest) in install_files_bc])
+install_cmd = ' && '.join(['%(old)s && mkdir -p $(DESTDIR)/%(dst)s && cp -r %(srcdir)s/generic/include/clc $(DESTDIR)/%(dst)s' %
+                           {'old': install_cmd,
+                            'dst': includedir,
+                            'srcdir': srcdir}])
+install_cmd = ' && '.join(['%(old)s && mkdir -p $(DESTDIR)/%(dst)s && cp -r libclc.pc $(DESTDIR)/%(dst)s' %
+                           {'old': install_cmd, 
+                            'dst': pkgconfigdir}])
   
-  objects = []
-  sources_seen = set()
-
-  for libdir in libdirs:
-    subdir_list_file = os.path.join(libdir, 'SOURCES')
-    manifest_deps.add(subdir_list_file)
-    for src in open(subdir_list_file).readlines():
-      src = src.rstrip()
-      if src not in sources_seen:
-        sources_seen.add(src)
-        obj = os.path.join(target, 'lib', src + '.bc')
-        objects.append(obj)
-        src_file = os.path.join(libdir, src)
-        ext = os.path.splitext(src)[1]
-        if ext == '.ll':
-          b.build(obj, 'LLVM_AS', src_file)
-        else:
-          b.build(obj, clang_bc_rule, src_file)
-
-  builtins_link_bc = os.path.join(target, 'lib', 'builtins.link.bc')
-  builtins_opt_bc = os.path.join(target, 'lib', 'builtins.opt.bc')
-  builtins_bc = os.path.join(target, 'lib', 'builtins.bc')
-  b.build(builtins_link_bc, "LLVM_LINK", objects)
-  b.build(builtins_opt_bc, "OPT", builtins_link_bc)
-  b.build(builtins_bc, "PREPARE_BUILTINS", builtins_opt_bc, prepare_builtins)
-  install_files.append((builtins_bc, builtins_bc))
-  install_deps.append(builtins_bc)
-  b.default(builtins_bc)
-
-if options.prefix:
-  install_cmd = ' && '.join(['mkdir -p %(dst)s && cp -r %(src)s %(dst)s' % 
-                             {'src': file,
-                              'dst': os.path.join(options.prefix,
-                                                  os.path.dirname(dest))}
-                             for (file, dest) in install_files])
-  b.rule('install', command = install_cmd, description = 'INSTALL')
-  b.build('install', 'install', install_deps)
+b.rule('install', command = install_cmd, description = 'INSTALL')
+b.build('install', 'install', install_deps)
 
 b.rule("configure", command = ' '.join(sys.argv), description = 'CONFIGURE',
        generator = True)

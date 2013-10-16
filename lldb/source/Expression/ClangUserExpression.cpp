@@ -56,6 +56,8 @@ ClangUserExpression::ClangUserExpression (const char *expr,
                                           lldb::LanguageType language,
                                           ResultType desired_type) :
     ClangExpression (),
+    m_stack_frame_bottom (LLDB_INVALID_ADDRESS),
+    m_stack_frame_top (LLDB_INVALID_ADDRESS),
     m_expr_text (expr),
     m_expr_prefix (expr_prefix ? expr_prefix : ""),
     m_language (language),
@@ -68,7 +70,8 @@ ClangUserExpression::ClangUserExpression (const char *expr,
     m_needs_object_ptr (false),
     m_const_object (false),
     m_target (NULL),
-    m_can_interpret (false)
+    m_can_interpret (false),
+    m_materialized_address (LLDB_INVALID_ADDRESS)
 {
     switch (m_language)
     {
@@ -294,21 +297,19 @@ ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Error &err)
                         return;
                     }
                     
-                    lldb::clang_type_t self_opaque_type = self_type->GetClangForwardType();
+                    ClangASTType self_clang_type = self_type->GetClangForwardType();
                     
-                    if (!self_opaque_type)
+                    if (!self_clang_type)
                     {
                         err.SetErrorString(selfErrorString);
                         return;
                     }
-                    
-                    clang::QualType self_qual_type = clang::QualType::getFromOpaquePtr(self_opaque_type);
-                    
-                    if (self_qual_type->isObjCClassType())
+                                        
+                    if (self_clang_type.IsObjCClassType())
                     {
                         return;
                     }
-                    else if (self_qual_type->isObjCObjectPointerType())
+                    else if (self_clang_type.IsObjCObjectPointerType())
                     {
                         m_objectivec = true;
                         m_needs_object_ptr = true;
@@ -484,9 +485,32 @@ ClangUserExpression::Parse (Stream &error_stream,
         
     m_expr_decl_map.reset(new ClangExpressionDeclMap(keep_result_in_memory, exe_ctx));
     
+    class OnExit
+    {
+    public:
+        typedef std::function <void (void)> Callback;
+        
+        OnExit (Callback const &callback) :
+            m_callback(callback)
+        {
+        }
+        
+        ~OnExit ()
+        {
+            m_callback();
+        }
+    private:
+        Callback m_callback;
+    };
+    
+    OnExit on_exit([this]() { m_expr_decl_map.reset(); });
+    
     if (!m_expr_decl_map->WillParse(exe_ctx, m_materializer_ap.get()))
     {
         error_stream.PutCString ("error: current process state is unsuitable for expression parsing\n");
+        
+        m_expr_decl_map.reset(); // We are being careful here in the case of breakpoint conditions.
+        
         return false;
     }
     
@@ -504,7 +528,7 @@ ClangUserExpression::Parse (Stream &error_stream,
     {
         error_stream.Printf ("error: %d errors parsing expression\n", num_errors);
         
-        m_expr_decl_map->DidParse();
+        m_expr_decl_map.reset(); // We are being careful here in the case of breakpoint conditions.
         
         return false;
     }
@@ -519,6 +543,8 @@ ClangUserExpression::Parse (Stream &error_stream,
                                                   exe_ctx,
                                                   m_can_interpret,
                                                   execution_policy);
+    
+    m_expr_decl_map.reset(); // Make this go away since we don't need any of its state after parsing.  This also gets rid of any ClangASTImporter::Minions.
         
     if (jit_error.Success())
     {
@@ -641,22 +667,48 @@ ClangUserExpression::PrepareToExecuteJITExpression (Stream &error_stream,
             }
         }
         
-        Error alloc_error;
-        
-        struct_address = m_execution_unit_ap->Malloc(m_materializer_ap->GetStructByteSize(),
-                                                     m_materializer_ap->GetStructAlignment(),
-                                                     lldb::ePermissionsReadable | lldb::ePermissionsWritable,
-                                                     IRMemoryMap::eAllocationPolicyMirror,
-                                                     alloc_error);
-        
-        if (!alloc_error.Success())
+        if (m_materialized_address == LLDB_INVALID_ADDRESS)
         {
-            error_stream.Printf("Couldn't allocate space for materialized struct: %s\n", alloc_error.AsCString());
-            return false;
+            Error alloc_error;
+            
+            IRMemoryMap::AllocationPolicy policy = m_can_interpret ? IRMemoryMap::eAllocationPolicyHostOnly : IRMemoryMap::eAllocationPolicyMirror;
+            
+            m_materialized_address = m_execution_unit_ap->Malloc(m_materializer_ap->GetStructByteSize(),
+                                                                 m_materializer_ap->GetStructAlignment(),
+                                                                 lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                                                 policy,
+                                                                 alloc_error);
+            
+            if (!alloc_error.Success())
+            {
+                error_stream.Printf("Couldn't allocate space for materialized struct: %s\n", alloc_error.AsCString());
+                return false;
+            }
         }
         
-        m_materialized_address = struct_address;
+        struct_address = m_materialized_address;
         
+        if (m_can_interpret && m_stack_frame_bottom == LLDB_INVALID_ADDRESS)
+        {
+            Error alloc_error;
+
+            const size_t stack_frame_size = 512 * 1024;
+            
+            m_stack_frame_bottom = m_execution_unit_ap->Malloc(stack_frame_size,
+                                                               8,
+                                                               lldb::ePermissionsReadable | lldb::ePermissionsWritable,
+                                                               IRMemoryMap::eAllocationPolicyHostOnly,
+                                                               alloc_error);
+            
+            m_stack_frame_top = m_stack_frame_bottom + stack_frame_size;
+            
+            if (!alloc_error.Success())
+            {
+                error_stream.Printf("Couldn't allocate space for the stack frame: %s\n", alloc_error.AsCString());
+                return false;
+            }
+        }
+                
         Error materialize_error;
         
         m_dematerializer_sp = m_materializer_ap->Materialize(frame, *m_execution_unit_ap, struct_address, materialize_error);
@@ -703,30 +755,27 @@ bool
 ClangUserExpression::FinalizeJITExecution (Stream &error_stream,
                                            ExecutionContext &exe_ctx,
                                            lldb::ClangExpressionVariableSP &result,
-                                           lldb::addr_t function_stack_pointer)
+                                           lldb::addr_t function_stack_bottom,
+                                           lldb::addr_t function_stack_top)
 {
-    Error expr_error;
-    
     Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_EXPRESSIONS));
     
     if (log)
         log->Printf("-- [ClangUserExpression::FinalizeJITExecution] Dematerializing after execution --");
-    
-    lldb::addr_t function_stack_bottom = function_stack_pointer - Host::GetPageSize();
-    
+        
     if (!m_dematerializer_sp)
     {
-        error_stream.Printf ("Couldn't dematerialize struct : no dematerializer is present");
+        error_stream.Printf ("Couldn't apply expression side effects : no dematerializer is present");
         return false;
     }
     
     Error dematerialize_error;
     
-    m_dematerializer_sp->Dematerialize(dematerialize_error, result, function_stack_pointer, function_stack_bottom);
+    m_dematerializer_sp->Dematerialize(dematerialize_error, result, function_stack_bottom, function_stack_top);
 
     if (!dematerialize_error.Success())
     {
-        error_stream.Printf ("Couldn't dematerialize struct : %s\n", expr_error.AsCString("unknown error"));
+        error_stream.Printf ("Couldn't apply expression side effects : %s\n", dematerialize_error.AsCString("unknown error"));
         return false;
     }
         
@@ -765,7 +814,8 @@ ClangUserExpression::Execute (Stream &error_stream,
             return eExecutionSetupError;
         }
         
-        lldb::addr_t function_stack_pointer = 0;
+        lldb::addr_t function_stack_bottom = LLDB_INVALID_ADDRESS;
+        lldb::addr_t function_stack_top = LLDB_INVALID_ADDRESS;
         
         if (m_can_interpret)
         {            
@@ -792,11 +842,16 @@ ClangUserExpression::Execute (Stream &error_stream,
             
             args.push_back(struct_address);
             
+            function_stack_bottom = m_stack_frame_bottom;
+            function_stack_top = m_stack_frame_top;
+            
             IRInterpreter::Interpret (*module,
                                       *function,
                                       args,
                                       *m_execution_unit_ap.get(),
-                                      interpreter_error);
+                                      interpreter_error,
+                                      function_stack_bottom,
+                                      function_stack_top);
             
             if (!interpreter_error.Success())
             {
@@ -823,8 +878,11 @@ ClangUserExpression::Execute (Stream &error_stream,
             if (!call_plan_sp || !call_plan_sp->ValidatePlan (&error_stream))
                 return eExecutionSetupError;
             
-            function_stack_pointer = static_cast<ThreadPlanCallFunction *>(call_plan_sp.get())->GetFunctionStackPointer();
+            lldb::addr_t function_stack_pointer = static_cast<ThreadPlanCallFunction *>(call_plan_sp.get())->GetFunctionStackPointer();
 
+            function_stack_bottom = function_stack_pointer - Host::GetPageSize();
+            function_stack_top = function_stack_pointer;
+            
             if (log)
                 log->Printf("-- [ClangUserExpression::Execute] Execution of expression begins --");
             
@@ -876,11 +934,12 @@ ClangUserExpression::Execute (Stream &error_stream,
             }
         }
         
-        if  (FinalizeJITExecution (error_stream, exe_ctx, result, function_stack_pointer))
+        if  (FinalizeJITExecution (error_stream, exe_ctx, result, function_stack_bottom, function_stack_top))
+        {
             return eExecutionCompleted;
+        }
         else
         {
-            error_stream.Printf("Errored out in %s: Couldn't FinalizeJITExpression", __FUNCTION__);
             return eExecutionSetupError;
         }
     }

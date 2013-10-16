@@ -37,11 +37,6 @@
 using namespace lldb;
 using namespace lldb_private;
 
-static const char *pluginName = "AppleObjCRuntimeV1";
-static const char *pluginDesc = "Apple Objective C Language Runtime - Version 1";
-static const char *pluginShort = "language.apple.objc.v1";
-
-
 AppleObjCRuntimeV1::AppleObjCRuntimeV1(Process *process) :
     AppleObjCRuntime (process),
     m_hash_signature (),
@@ -96,8 +91,8 @@ AppleObjCRuntimeV1::CreateInstance (Process *process, lldb::LanguageType languag
 void
 AppleObjCRuntimeV1::Initialize()
 {
-    PluginManager::RegisterPlugin (pluginName,
-                                   pluginDesc,
+    PluginManager::RegisterPlugin (GetPluginNameStatic(),
+                                   "Apple Objective C Language Runtime - Version 1",
                                    CreateInstance);    
 }
 
@@ -107,19 +102,20 @@ AppleObjCRuntimeV1::Terminate()
     PluginManager::UnregisterPlugin (CreateInstance);
 }
 
+lldb_private::ConstString
+AppleObjCRuntimeV1::GetPluginNameStatic()
+{
+    static ConstString g_name("apple-objc-v1");
+    return g_name;
+}
+
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+ConstString
 AppleObjCRuntimeV1::GetPluginName()
 {
-    return pluginName;
-}
-
-const char *
-AppleObjCRuntimeV1::GetShortPluginName()
-{
-    return pluginShort;
+    return GetPluginNameStatic();
 }
 
 uint32_t
@@ -172,42 +168,10 @@ AppleObjCRuntimeV1::CreateObjectChecker(const char *name)
                     "   struct __objc_object *obj = (struct __objc_object*)$__lldb_arg_obj; \n"
                     "   (int)strlen(obj->isa->name);                                        \n"
                     "}                                                                      \n",
-                    name) < sizeof(buf->contents));
+                    name) < (int)sizeof(buf->contents));
 
     return new ClangUtilityFunction(buf->contents, name);
 }
-
-// this code relies on the assumption that an Objective-C object always starts
-// with an ISA at offset 0.
-//ObjCLanguageRuntime::ObjCISA
-//AppleObjCRuntimeV1::GetISA(ValueObject& valobj)
-//{
-////    if (ClangASTType::GetMinimumLanguage(valobj.GetClangAST(),valobj.GetClangType()) != eLanguageTypeObjC)
-////        return 0;
-//    
-//    // if we get an invalid VO (which might still happen when playing around
-//    // with pointers returned by the expression parser, don't consider this
-//    // a valid ObjC object)
-//    if (valobj.GetValue().GetContextType() == Value::eContextTypeInvalid)
-//        return 0;
-//    
-//    addr_t isa_pointer = valobj.GetPointerValue();
-//    
-//    ExecutionContext exe_ctx (valobj.GetExecutionContextRef());
-//    
-//    Process *process = exe_ctx.GetProcessPtr();
-//    if (process)
-//    {
-//        uint8_t pointer_size = process->GetAddressByteSize();
-//        
-//        Error error;
-//        return process->ReadUnsignedIntegerFromMemory (isa_pointer,
-//                                                       pointer_size,
-//                                                       0,
-//                                                       error);
-//    }
-//    return 0;
-//}
 
 AppleObjCRuntimeV1::ClassDescriptorV1::ClassDescriptorV1 (ValueObject &isa_pointer)
 {

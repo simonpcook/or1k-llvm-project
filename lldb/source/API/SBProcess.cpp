@@ -11,6 +11,9 @@
 
 #include "lldb/API/SBProcess.h"
 
+// C Includes
+#include <inttypes.h>
+
 #include "lldb/lldb-defines.h"
 #include "lldb/lldb-types.h"
 
@@ -89,7 +92,7 @@ SBProcess::GetPluginName ()
     ProcessSP process_sp(GetSP());
     if (process_sp)
     {
-        return process_sp->GetPluginName();
+        return process_sp->GetPluginName().GetCString();
     }
     return "<Unknown>";
 }
@@ -100,7 +103,7 @@ SBProcess::GetShortPluginName ()
     ProcessSP process_sp(GetSP());
     if (process_sp)
     {
-        return process_sp->GetShortPluginName();
+        return process_sp->GetPluginName().GetCString();
     }
     return "<Unknown>";
 }
@@ -173,7 +176,7 @@ SBProcess::RemoteLaunch (char const **argv,
                                            launch_flags);
             Module *exe_module = process_sp->GetTarget().GetExecutableModulePointer();
             if (exe_module)
-                launch_info.SetExecutableFile(exe_module->GetFileSpec(), true);
+                launch_info.SetExecutableFile(exe_module->GetPlatformFileSpec(), true);
             if (argv)
                 launch_info.GetArguments().AppendArguments (argv);
             if (envp)
@@ -786,12 +789,20 @@ SBProcess::Kill ()
 SBError
 SBProcess::Detach ()
 {
+    // FIXME: This should come from a process default.
+    bool keep_stopped = false;
+    return Detach (keep_stopped);
+}
+
+SBError
+SBProcess::Detach (bool keep_stopped)
+{
     SBError sb_error;
     ProcessSP process_sp(GetSP());
     if (process_sp)
     {
         Mutex::Locker api_locker (process_sp->GetTarget().GetAPIMutex());
-        sb_error.SetError (process_sp->Detach());
+        sb_error.SetError (process_sp->Detach(keep_stopped));
     }
     else
         sb_error.SetErrorString ("SBProcess is invalid");    

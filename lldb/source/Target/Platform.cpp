@@ -22,6 +22,7 @@
 #include "lldb/Host/Host.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
+#include "lldb/Utility/Utils.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -96,7 +97,7 @@ Platform::LocateExecutableScriptingResources (Target *target, Module &module)
 }
 
 Platform*
-Platform::FindPlugin (Process *process, const char *plugin_name)
+Platform::FindPlugin (Process *process, const ConstString &plugin_name)
 {
     PlatformCreateInstance create_callback = NULL;
     if (plugin_name)
@@ -118,7 +119,7 @@ Platform::FindPlugin (Process *process, const char *plugin_name)
     {
         for (uint32_t idx = 0; (create_callback = PluginManager::GetPlatformCreateCallbackAtIndex(idx)) != NULL; ++idx)
         {
-            std::unique_ptr<Platform> instance_ap(create_callback(process, false));
+            std::unique_ptr<Platform> instance_ap(create_callback(process, nullptr));
             if (instance_ap.get())
                 return instance_ap.release();
         }
@@ -156,7 +157,8 @@ Platform::Create (const char *platform_name, Error &error)
     lldb::PlatformSP platform_sp;
     if (platform_name && platform_name[0])
     {
-        create_callback = PluginManager::GetPlatformCreateCallbackForPluginName (platform_name);
+        ConstString const_platform_name (platform_name);
+        create_callback = PluginManager::GetPlatformCreateCallbackForPluginName (const_platform_name);
         if (create_callback)
             platform_sp.reset(create_callback(true, NULL));
         else
@@ -246,7 +248,13 @@ Platform::Platform (bool is_host) :
     m_uid_map(),
     m_gid_map(),
     m_max_uid_name_len (0),
-    m_max_gid_name_len (0)
+    m_max_gid_name_len (0),
+    m_supports_rsync (false),
+    m_rsync_opts (),
+    m_rsync_prefix (),
+    m_supports_ssh (false),
+    m_ssh_opts (),
+    m_ignores_remote_hostname (false)
 {
     Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_OBJECT));
     if (log)
@@ -273,7 +281,7 @@ Platform::GetStatus (Stream &strm)
     uint32_t minor = UINT32_MAX;
     uint32_t update = UINT32_MAX;
     std::string s;
-    strm.Printf ("  Platform: %s\n", GetShortPluginName());
+    strm.Printf ("  Platform: %s\n", GetPluginName().GetCString());
 
     ArchSpec arch (GetSystemArchitecture());
     if (arch.IsValid())
@@ -310,6 +318,14 @@ Platform::GetStatus (Stream &strm)
             strm.Printf("  Hostname: %s\n", GetHostname());
         strm.Printf(" Connected: %s\n", is_connected ? "yes" : "no");
     }
+
+    if (!IsConnected())
+        return;
+
+    std::string specific_info(GetPlatformSpecificConnectionInformation());
+    
+    if (specific_info.empty() == false)
+        strm.Printf("Platform-specific connection: %s\n", specific_info.c_str());
 }
 
 
@@ -388,13 +404,13 @@ Platform::GetOSKernelDescription (std::string &s)
         return GetRemoteOSKernelDescription (s);
 }
 
-const char *
+ConstString
 Platform::GetName ()
 {
     const char *name = GetHostname();
     if (name == NULL || name[0] == '\0')
-        name = GetShortPluginName();
-    return name;
+        return GetPluginName();
+    return ConstString (name);
 }
 
 const char *
@@ -510,10 +526,8 @@ Platform::ResolveExecutable (const FileSpec &exe_file,
     }
     else
     {
-        error.SetErrorStringWithFormat ("'%s%s%s' does not exist",
-                                        exe_file.GetDirectory().AsCString(""),
-                                        exe_file.GetDirectory() ? "/" : "",
-                                        exe_file.GetFilename().AsCString(""));
+        error.SetErrorStringWithFormat ("'%s' does not exist",
+                                        exe_file.GetPath().c_str());
     }
     return error;
 }
@@ -594,9 +608,9 @@ Platform::ConnectRemote (Args& args)
 {
     Error error;
     if (IsHost())
-        error.SetErrorStringWithFormat ("The currently selected platform (%s) is the host platform and is always connected.", GetShortPluginName());
+        error.SetErrorStringWithFormat ("The currently selected platform (%s) is the host platform and is always connected.", GetPluginName().GetCString());
     else
-        error.SetErrorStringWithFormat ("Platform::ConnectRemote() is not supported by %s", GetShortPluginName());
+        error.SetErrorStringWithFormat ("Platform::ConnectRemote() is not supported by %s", GetPluginName().GetCString());
     return error;
 }
 
@@ -605,9 +619,9 @@ Platform::DisconnectRemote ()
 {
     Error error;
     if (IsHost())
-        error.SetErrorStringWithFormat ("The currently selected platform (%s) is the host platform and is always connected.", GetShortPluginName());
+        error.SetErrorStringWithFormat ("The currently selected platform (%s) is the host platform and is always connected.", GetPluginName().GetCString());
     else
-        error.SetErrorStringWithFormat ("Platform::DisconnectRemote() is not supported by %s", GetShortPluginName());
+        error.SetErrorStringWithFormat ("Platform::DisconnectRemote() is not supported by %s", GetPluginName().GetCString());
     return error;
 }
 
@@ -650,10 +664,12 @@ Platform::LaunchProcess (ProcessLaunchInfo &launch_info)
             const bool is_localhost = true;
             const bool will_debug = launch_info.GetFlags().Test(eLaunchFlagDebug);
             const bool first_arg_is_full_shell_command = false;
+            uint32_t num_resumes = GetResumeCountForLaunchInfo (launch_info);
             if (!launch_info.ConvertArgumentsForLaunchingInShell (error,
                                                                   is_localhost,
                                                                   will_debug,
-                                                                  first_arg_is_full_shell_command))
+                                                                  first_arg_is_full_shell_command,
+                                                                  num_resumes))
                 return error;
         }
 
@@ -761,14 +777,265 @@ Platform::IsCompatibleArchitecture (const ArchSpec &arch, bool exact_arch_match,
     if (compatible_arch_ptr)
         compatible_arch_ptr->Clear();
     return false;
-    
 }
 
+uint32_t
+Platform::MakeDirectory (const FileSpec &spec,
+                         mode_t mode)
+{
+    std::string path(spec.GetPath());
+    return this->MakeDirectory(path,mode);
+}
+
+Error
+Platform::PutFile (const FileSpec& source,
+                   const FileSpec& destination,
+                   uint32_t uid,
+                   uint32_t gid)
+{
+    Error error("unimplemented");
+    return error;
+}
+
+Error
+Platform::GetFile (const FileSpec& source,
+                   const FileSpec& destination)
+{
+    Error error("unimplemented");
+    return error;
+}
+
+bool
+Platform::GetFileExists (const lldb_private::FileSpec& file_spec)
+{
+    return false;
+}
+
+lldb_private::Error
+Platform::RunShellCommand (const char *command,           // Shouldn't be NULL
+                           const char *working_dir,       // Pass NULL to use the current working directory
+                           int *status_ptr,               // Pass NULL if you don't want the process exit status
+                           int *signo_ptr,                // Pass NULL if you don't want the signal that caused the process to exit
+                           std::string *command_output,   // Pass NULL if you don't want the command output
+                           uint32_t timeout_sec)          // Timeout in seconds to wait for shell program to finish
+{
+    if (IsHost())
+        return Host::RunShellCommand (command, working_dir, status_ptr, signo_ptr, command_output, timeout_sec);
+    else
+        return Error("unimplemented");
+}
+
+
+bool
+Platform::CalculateMD5 (const FileSpec& file_spec,
+                        uint64_t &low,
+                        uint64_t &high)
+{
+    if (IsHost())
+        return Host::CalculateMD5(file_spec, low, high);
+    else
+        return false;
+}
+
+void
+Platform::SetLocalCacheDirectory (const char* local)
+{
+    m_local_cache_directory.assign(local);
+}
+
+const char*
+Platform::GetLocalCacheDirectory ()
+{
+    return m_local_cache_directory.c_str();
+}
+
+static OptionDefinition
+g_rsync_option_table[] =
+{
+    {   LLDB_OPT_SET_ALL, false, "rsync"                  , 'r', OptionParser::eNoArgument,       NULL, 0, eArgTypeNone         , "Enable rsync." },
+    {   LLDB_OPT_SET_ALL, false, "rsync-opts"             , 'R', OptionParser::eRequiredArgument, NULL, 0, eArgTypeCommandName  , "Platform-specific options required for rsync to work." },
+    {   LLDB_OPT_SET_ALL, false, "rsync-prefix"           , 'P', OptionParser::eRequiredArgument, NULL, 0, eArgTypeCommandName  , "Platform-specific rsync prefix put before the remote path." },
+    {   LLDB_OPT_SET_ALL, false, "ignore-remote-hostname" , 'i', OptionParser::eNoArgument,       NULL, 0, eArgTypeNone         , "Do not automatically fill in the remote hostname when composing the rsync command." },
+};
+
+static OptionDefinition
+g_ssh_option_table[] =
+{
+    {   LLDB_OPT_SET_ALL, false, "ssh"                    , 's', OptionParser::eNoArgument,       NULL, 0, eArgTypeNone         , "Enable SSH." },
+    {   LLDB_OPT_SET_ALL, false, "ssh-opts"               , 'S', OptionParser::eRequiredArgument, NULL, 0, eArgTypeCommandName  , "Platform-specific options required for SSH to work." },
+};
+
+static OptionDefinition
+g_caching_option_table[] =
+{
+    {   LLDB_OPT_SET_ALL, false, "local-cache-dir"        , 'c', OptionParser::eRequiredArgument, NULL, 0, eArgTypePath         , "Path in which to store local copies of files." },
+};
+
+OptionGroupPlatformRSync::OptionGroupPlatformRSync ()
+{
+}
+
+OptionGroupPlatformRSync::~OptionGroupPlatformRSync ()
+{
+}
+
+const lldb_private::OptionDefinition*
+OptionGroupPlatformRSync::GetDefinitions ()
+{
+    return g_rsync_option_table;
+}
+
+void
+OptionGroupPlatformRSync::OptionParsingStarting (CommandInterpreter &interpreter)
+{
+    m_rsync = false;
+    m_rsync_opts.clear();
+    m_rsync_prefix.clear();
+    m_ignores_remote_hostname = false;
+}
+
+lldb_private::Error
+OptionGroupPlatformRSync::SetOptionValue (CommandInterpreter &interpreter,
+                uint32_t option_idx,
+                const char *option_arg)
+{
+    Error error;
+    char short_option = (char) GetDefinitions()[option_idx].short_option;
+    switch (short_option)
+    {
+        case 'r':
+            m_rsync = true;
+            break;
+            
+        case 'R':
+            m_rsync_opts.assign(option_arg);
+            break;
+            
+        case 'P':
+            m_rsync_prefix.assign(option_arg);
+            break;
+            
+        case 'i':
+            m_ignores_remote_hostname = true;
+            break;
+            
+        default:
+            error.SetErrorStringWithFormat ("unrecognized option '%c'", short_option);
+            break;
+    }
+    
+    return error;
+}
+
+uint32_t
+OptionGroupPlatformRSync::GetNumDefinitions ()
+{
+    return llvm::array_lengthof(g_rsync_option_table);
+}
 
 lldb::BreakpointSP
 Platform::SetThreadCreationBreakpoint (lldb_private::Target &target)
 {
     return lldb::BreakpointSP();
+}
+
+OptionGroupPlatformSSH::OptionGroupPlatformSSH ()
+{
+}
+
+OptionGroupPlatformSSH::~OptionGroupPlatformSSH ()
+{
+}
+
+const lldb_private::OptionDefinition*
+OptionGroupPlatformSSH::GetDefinitions ()
+{
+    return g_ssh_option_table;
+}
+
+void
+OptionGroupPlatformSSH::OptionParsingStarting (CommandInterpreter &interpreter)
+{
+    m_ssh = false;
+    m_ssh_opts.clear();
+}
+
+lldb_private::Error
+OptionGroupPlatformSSH::SetOptionValue (CommandInterpreter &interpreter,
+                                          uint32_t option_idx,
+                                          const char *option_arg)
+{
+    Error error;
+    char short_option = (char) GetDefinitions()[option_idx].short_option;
+    switch (short_option)
+    {
+        case 's':
+            m_ssh = true;
+            break;
+            
+        case 'S':
+            m_ssh_opts.assign(option_arg);
+            break;
+            
+        default:
+            error.SetErrorStringWithFormat ("unrecognized option '%c'", short_option);
+            break;
+    }
+    
+    return error;
+}
+
+uint32_t
+OptionGroupPlatformSSH::GetNumDefinitions ()
+{
+    return llvm::array_lengthof(g_ssh_option_table);
+}
+
+OptionGroupPlatformCaching::OptionGroupPlatformCaching ()
+{
+}
+
+OptionGroupPlatformCaching::~OptionGroupPlatformCaching ()
+{
+}
+
+const lldb_private::OptionDefinition*
+OptionGroupPlatformCaching::GetDefinitions ()
+{
+    return g_caching_option_table;
+}
+
+void
+OptionGroupPlatformCaching::OptionParsingStarting (CommandInterpreter &interpreter)
+{
+    m_cache_dir.clear();
+}
+
+lldb_private::Error
+OptionGroupPlatformCaching::SetOptionValue (CommandInterpreter &interpreter,
+                                        uint32_t option_idx,
+                                        const char *option_arg)
+{
+    Error error;
+    char short_option = (char) GetDefinitions()[option_idx].short_option;
+    switch (short_option)
+    {
+        case 'c':
+            m_cache_dir.assign(option_arg);
+            break;
+            
+        default:
+            error.SetErrorStringWithFormat ("unrecognized option '%c'", short_option);
+            break;
+    }
+    
+    return error;
+}
+
+uint32_t
+OptionGroupPlatformCaching::GetNumDefinitions ()
+{
+    return llvm::array_lengthof(g_caching_option_table);
 }
 
 size_t
@@ -777,4 +1044,3 @@ Platform::GetEnvironment (StringList &environment)
     environment.Clear();
     return false;
 }
-

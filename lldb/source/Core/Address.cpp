@@ -12,12 +12,12 @@
 #include "lldb/Core/Section.h"
 #include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/ObjectFile.h"
-#include "lldb/Symbol/Type.h"
 #include "lldb/Symbol/Variable.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
+#include "lldb/Symbol/SymbolVendor.h"
 
 #include "llvm/ADT/Triple.h"
 
@@ -231,7 +231,7 @@ Address::operator= (const Address& rhs)
     if (this != &rhs)
     {
         m_section_wp = rhs.m_section_wp;
-        m_offset = rhs.m_offset;
+        m_offset = rhs.m_offset.load();
     }
     return *this;
 }
@@ -391,7 +391,7 @@ Address::Dump (Stream *s, ExecutionContextScope *exe_scope, DumpStyle style, Dum
         if (section_sp)
         {
             section_sp->DumpName(s);
-            s->Printf (" + %" PRIu64, m_offset);
+            s->Printf (" + %" PRIu64, m_offset.load());
         }
         else
         {
@@ -456,10 +456,10 @@ Address::Dump (Stream *s, ExecutionContextScope *exe_scope, DumpStyle style, Dum
                 case eSectionTypeData:
                     if (module_sp)
                     {
-                        ObjectFile *objfile = module_sp->GetObjectFile();
-                        if (objfile)
+                        SymbolVendor *sym_vendor = module_sp->GetSymbolVendor();
+                        if (sym_vendor)
                         {
-                            Symtab *symtab = objfile->GetSymtab();
+                            Symtab *symtab = sym_vendor->GetSymtab();
                             if (symtab)
                             {
                                 const addr_t file_Addr = GetFileAddress();
@@ -1003,16 +1003,16 @@ lldb_private::operator> (const Address& lhs, const Address& rhs)
 bool
 lldb_private::operator== (const Address& a, const Address& rhs)
 {
-    return  a.GetSection() == rhs.GetSection() &&
-            a.GetOffset()  == rhs.GetOffset();
+    return  a.GetOffset()  == rhs.GetOffset() &&
+            a.GetSection() == rhs.GetSection();
 }
 // The operator != checks for exact inequality only (differing section, or
 // different offset)
 bool
 lldb_private::operator!= (const Address& a, const Address& rhs)
 {
-    return  a.GetSection() != rhs.GetSection() ||
-            a.GetOffset()  != rhs.GetOffset();
+    return  a.GetOffset()  != rhs.GetOffset() ||
+            a.GetSection() != rhs.GetSection();
 }
 
 AddressClass
@@ -1023,7 +1023,11 @@ Address::GetAddressClass () const
     {
         ObjectFile *obj_file = module_sp->GetObjectFile();
         if (obj_file)
+        {
+            // Give the symbol vendor a chance to add to the unified section list.
+            module_sp->GetSymbolVendor();
             return obj_file->GetAddressClass (GetFileAddress());
+        }
     }
     return eAddressClassUnknown;
 }

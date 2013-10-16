@@ -19,6 +19,7 @@
 #include "lldb/Core/Value.h"
 #include "lldb/Core/InputReader.h"
 #include "lldb/Core/ValueObjectVariable.h"
+#include "lldb/DataFormatters/ValueObjectPrinter.h"
 #include "lldb/Expression/ClangExpressionVariable.h"
 #include "lldb/Expression/ClangUserExpression.h"
 #include "lldb/Expression/ClangFunction.h"
@@ -49,13 +50,21 @@ CommandObjectExpression::CommandOptions::~CommandOptions ()
 {
 }
 
+static OptionEnumValueElement g_description_verbosity_type[] =
+{
+    { eLanguageRuntimeDescriptionDisplayVerbosityCompact,      "compact",       "Only show the description string"},
+    { eLanguageRuntimeDescriptionDisplayVerbosityFull,         "full",          "Show the full output, including persistent variable's name and type"},
+    { 0, NULL, NULL }
+};
+
 OptionDefinition
 CommandObjectExpression::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "all-threads",        'a', required_argument, NULL, 0, eArgTypeBoolean,    "Should we run all threads if the execution doesn't complete on one thread."},
-    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "ignore-breakpoints", 'i', required_argument, NULL, 0, eArgTypeBoolean,    "Ignore breakpoint hits while running expressions"},
-    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "timeout",            't', required_argument, NULL, 0, eArgTypeUnsignedInteger,  "Timeout value for running the expression."},
-    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "unwind-on-error",    'u', required_argument, NULL, 0, eArgTypeBoolean,    "Clean up program state if the expression causes a crash, or raises a signal.  Note, unlike gdb hitting a breakpoint is controlled by another option (-i)."},
+    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "all-threads",        'a', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "Should we run all threads if the execution doesn't complete on one thread."},
+    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "ignore-breakpoints", 'i', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "Ignore breakpoint hits while running expressions"},
+    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "timeout",            't', OptionParser::eRequiredArgument, NULL, 0, eArgTypeUnsignedInteger,  "Timeout value (in microseconds) for running the expression."},
+    { LLDB_OPT_SET_1 | LLDB_OPT_SET_2, false, "unwind-on-error",    'u', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "Clean up program state if the expression causes a crash, or raises a signal.  Note, unlike gdb hitting a breakpoint is controlled by another option (-i)."},
+    { LLDB_OPT_SET_1, false, "description-verbosity", 'v', OptionParser::eOptionalArgument, g_description_verbosity_type, 0, eArgTypeDescriptionVerbosity,        "How verbose should the output of this expression be, if the object description is asked for."},
 };
 
 
@@ -127,6 +136,18 @@ CommandObjectExpression::CommandOptions::SetOptionValue (CommandInterpreter &int
                 error.SetErrorStringWithFormat("could not convert \"%s\" to a boolean value.", option_arg);
             break;
         }
+            
+    case 'v':
+        if (!option_arg)
+        {
+            m_verbosity = eLanguageRuntimeDescriptionDisplayVerbosityFull;
+            break;
+        }
+        m_verbosity = (LanguageRuntimeDescriptionDisplayVerbosity) Args::StringToOptionEnum(option_arg, g_option_table[option_idx].enum_values, 0, error);
+        if (!error.Success())
+            error.SetErrorStringWithFormat ("unrecognized value for description-verbosity '%s'", option_arg);
+        break;
+            
     default:
         error.SetErrorStringWithFormat("invalid short option character '%c'", short_option);
         break;
@@ -153,6 +174,7 @@ CommandObjectExpression::CommandOptions::OptionParsingStarting (CommandInterpret
     show_summary = true;
     try_all_threads = true;
     timeout = 0;
+    m_verbosity = eLanguageRuntimeDescriptionDisplayVerbosityCompact;
 }
 
 const OptionDefinition*
@@ -345,36 +367,7 @@ CommandObjectExpression::EvaluateExpression
                                                   exe_ctx.GetFramePtr(),
                                                   result_valobj_sp,
                                                   options);
-        
-        if ((exe_results == eExecutionInterrupted && !m_command_options.unwind_on_error)
-            ||(exe_results == eExecutionHitBreakpoint && !m_command_options.ignore_breakpoints))
-        {
-            uint32_t start_frame = 0;
-            uint32_t num_frames = 1;
-            uint32_t num_frames_with_source = 0;
-            Thread *thread = exe_ctx.GetThreadPtr();
-            if (thread)
-            {
-                thread->GetStatus (result->GetOutputStream(), 
-                                   start_frame, 
-                                   num_frames, 
-                                   num_frames_with_source);
-            }
-            else 
-            {
-                Process *process = exe_ctx.GetProcessPtr();
-                if (process)
-                {
-                    bool only_threads_with_stop_reason = true;
-                    process->GetThreadStatus (result->GetOutputStream(), 
-                                              only_threads_with_stop_reason, 
-                                              start_frame, 
-                                              num_frames, 
-                                              num_frames_with_source);
-                }
-            }
-        }
-        
+
         if (result_valobj_sp)
         {
             Format format = m_format_options.GetFormat();
@@ -386,11 +379,10 @@ CommandObjectExpression::EvaluateExpression
                     if (format != eFormatDefault)
                         result_valobj_sp->SetFormat (format);
 
-                    ValueObject::DumpValueObjectOptions options(m_varobj_options.GetAsDumpOptions(true,format));
+                    DumpValueObjectOptions options(m_varobj_options.GetAsDumpOptions(m_command_options.m_verbosity,format));
 
-                    ValueObject::DumpValueObject (*(output_stream),
-                                                  result_valobj_sp.get(),   // Variable object to dump
-                                                  options);
+                    result_valobj_sp->Dump(*output_stream,options);
+                    
                     if (result)
                         result->SetStatus (eReturnStatusSuccessFinishResult);
                 }

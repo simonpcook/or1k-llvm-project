@@ -9,13 +9,14 @@
 
 #include "ObjectFilePECOFF.h"
 
-#include "llvm/Support/MachO.h"
+#include "llvm/Support/COFF.h"
 
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/DataBuffer.h"
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Core/FileSpecList.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Core/StreamFile.h"
@@ -24,93 +25,10 @@
 #include "lldb/Core/UUID.h"
 #include "lldb/Symbol/ObjectFile.h"
 
-static uint32_t COFFMachineToMachCPU(uint16_t machine);
-
-#define IMAGE_FILE_MACHINE_UNKNOWN      0x0000
-#define IMAGE_FILE_MACHINE_AM33         0x01d3  // Matsushita AM33
-#define IMAGE_FILE_MACHINE_AMD64        0x8664  // x64
-#define IMAGE_FILE_MACHINE_ARM          0x01c0  // ARM little endian
-#define IMAGE_FILE_MACHINE_EBC          0x0ebc  // EFI byte code
-#define IMAGE_FILE_MACHINE_I386         0x014c  // Intel 386 or later processors and compatible processors
-#define IMAGE_FILE_MACHINE_IA64         0x0200  // Intel Itanium processor family
-#define IMAGE_FILE_MACHINE_M32R         0x9041  // Mitsubishi M32R little endian
-#define IMAGE_FILE_MACHINE_MIPS16       0x0266  // MIPS16
-#define IMAGE_FILE_MACHINE_MIPSFPU      0x0366  // MIPS with FPU
-#define IMAGE_FILE_MACHINE_MIPSFPU16    0x0466  // MIPS16 with FPU
-#define IMAGE_FILE_MACHINE_POWERPC      0x01f0  // Power PC little endian
-#define IMAGE_FILE_MACHINE_POWERPCFP    0x01f1  // Power PC with floating point support
-#define IMAGE_FILE_MACHINE_R4000        0x0166  // MIPS little endian
-#define IMAGE_FILE_MACHINE_SH3          0x01a2  // Hitachi SH3
-#define IMAGE_FILE_MACHINE_SH3DSP       0x01a3  // Hitachi SH3 DSP
-#define IMAGE_FILE_MACHINE_SH4          0x01a6  // Hitachi SH4
-#define IMAGE_FILE_MACHINE_SH5          0x01a8  // Hitachi SH5
-#define IMAGE_FILE_MACHINE_THUMB        0x01c2  // Thumb
-#define IMAGE_FILE_MACHINE_WCEMIPSV2    0x0169  // MIPS little-endian WCE v2
-
-
 #define IMAGE_DOS_SIGNATURE             0x5A4D      // MZ
-#define IMAGE_OS2_SIGNATURE             0x454E      // NE
-#define IMAGE_OS2_SIGNATURE_LE          0x454C      // LE
 #define IMAGE_NT_SIGNATURE              0x00004550  // PE00
 #define OPT_HEADER_MAGIC_PE32           0x010b
 #define OPT_HEADER_MAGIC_PE32_PLUS      0x020b
-
-#define IMAGE_FILE_RELOCS_STRIPPED          0x0001
-#define IMAGE_FILE_EXECUTABLE_IMAGE         0x0002
-#define IMAGE_FILE_LINE_NUMS_STRIPPED       0x0004
-#define IMAGE_FILE_LOCAL_SYMS_STRIPPED      0x0008    
-#define IMAGE_FILE_AGGRESSIVE_WS_TRIM       0x0010
-#define IMAGE_FILE_LARGE_ADDRESS_AWARE      0x0020
-//#define                                   0x0040  // Reserved
-#define IMAGE_FILE_BYTES_REVERSED_LO        0x0080
-#define IMAGE_FILE_32BIT_MACHINE            0x0100
-#define IMAGE_FILE_DEBUG_STRIPPED           0x0200
-#define IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP  0x0400
-#define IMAGE_FILE_NET_RUN_FROM_SWAP        0x0800
-#define IMAGE_FILE_SYSTEM                   0x1000
-#define IMAGE_FILE_DLL                      0x2000
-#define IMAGE_FILE_UP_SYSTEM_ONLY           0x4000
-#define IMAGE_FILE_BYTES_REVERSED_HI        0x8000
-
-
-// Section Flags
-// The section flags in the Characteristics field of the section header indicate
-// characteristics of the section.
-#define IMAGE_SCN_TYPE_NO_PAD               0x00000008 // The section should not be padded to the next boundary. This flag is obsolete and is replaced by IMAGE_SCN_ALIGN_1BYTES. This is valid only for object files.
-#define IMAGE_SCN_CNT_CODE                  0x00000020 // The section contains executable code.
-#define IMAGE_SCN_CNT_INITIALIZED_DATA      0x00000040 // The section contains initialized data.
-#define IMAGE_SCN_CNT_UNINITIALIZED_DATA    0x00000080 // The section contains uninitialized data.
-#define IMAGE_SCN_LNK_OTHER                 0x00000100 // Reserved for future use.
-#define IMAGE_SCN_LNK_INFO                  0x00000200 // The section contains comments or other information. The .drectve section has this type. This is valid for object files only.
-#define IMAGE_SCN_LNK_REMOVE                0x00000800 // The section will not become part of the image. This is valid only for object files.
-#define IMAGE_SCN_LNK_COMDAT                0x00001000 // The section contains COMDAT data. For more information, see section 5.5.6, “COMDAT Sections (Object Only).” This is valid only for object files.
-#define IMAGE_SCN_GPREL                     0x00008000 // The section contains data referenced through the global pointer (GP).
-#define IMAGE_SCN_MEM_PURGEABLE             0x00020000
-#define IMAGE_SCN_MEM_16BIT                 0x00020000 // For ARM machine types, the section contains Thumb code.  Reserved for future use with other machine types.
-#define IMAGE_SCN_MEM_LOCKED                0x00040000
-#define IMAGE_SCN_MEM_PRELOAD               0x00080000
-#define IMAGE_SCN_ALIGN_1BYTES              0x00100000 // Align data on a 1-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_2BYTES              0x00200000 // Align data on a 2-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_4BYTES              0x00300000 // Align data on a 4-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_8BYTES              0x00400000 // Align data on an 8-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_16BYTES             0x00500000 // Align data on a 16-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_32BYTES             0x00600000 // Align data on a 32-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_64BYTES             0x00700000 // Align data on a 64-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_128BYTES            0x00800000 // Align data on a 128-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_256BYTES            0x00900000 // Align data on a 256-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_512BYTES            0x00A00000 // Align data on a 512-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_1024BYTES           0x00B00000 // Align data on a 1024-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_2048BYTES           0x00C00000 // Align data on a 2048-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_4096BYTES           0x00D00000 // Align data on a 4096-byte boundary. Valid only for object files.
-#define IMAGE_SCN_ALIGN_8192BYTES           0x00E00000 // Align data on an 8192-byte boundary. Valid only for object files.
-#define IMAGE_SCN_LNK_NRELOC_OVFL           0x01000000 // The section contains extended relocations.
-#define IMAGE_SCN_MEM_DISCARDABLE           0x02000000 // The section can be discarded as needed.
-#define IMAGE_SCN_MEM_NOT_CACHED            0x04000000 // The section cannot be cached.
-#define IMAGE_SCN_MEM_NOT_PAGED             0x08000000 // The section is not pageable.
-#define IMAGE_SCN_MEM_SHARED                0x10000000 // The section can be shared in memory.
-#define IMAGE_SCN_MEM_EXECUTE               0x20000000 // The section can be executed as code.
-#define IMAGE_SCN_MEM_READ                  0x40000000 // The section can be read.
-#define IMAGE_SCN_MEM_WRITE                 0x80000000 // The section can be written to.
 
 using namespace lldb;
 using namespace lldb_private;
@@ -121,7 +39,8 @@ ObjectFilePECOFF::Initialize()
     PluginManager::RegisterPlugin (GetPluginNameStatic(),
                                    GetPluginDescriptionStatic(),
                                    CreateInstance,
-                                   CreateMemoryInstance);
+                                   CreateMemoryInstance,
+                                   GetModuleSpecifications);
 }
 
 void
@@ -131,10 +50,11 @@ ObjectFilePECOFF::Terminate()
 }
 
 
-const char *
+lldb_private::ConstString
 ObjectFilePECOFF::GetPluginNameStatic()
 {
-    return "object-file.pe-coff";
+    static ConstString g_name("pe-coff");
+    return g_name;
 }
 
 const char *
@@ -178,6 +98,18 @@ ObjectFilePECOFF::CreateMemoryInstance (const lldb::ModuleSP &module_sp,
 {
     return NULL;
 }
+
+size_t
+ObjectFilePECOFF::GetModuleSpecifications (const lldb_private::FileSpec& file,
+                                           lldb::DataBufferSP& data_sp,
+                                           lldb::offset_t data_offset,
+                                           lldb::offset_t file_offset,
+                                           lldb::offset_t length,
+                                           lldb_private::ModuleSpecList &specs)
+{
+    return 0;
+}
+
 
 bool
 ObjectFilePECOFF::MagicBytesMatch (DataBufferSP& data_sp)
@@ -251,7 +183,7 @@ ObjectFilePECOFF::GetByteOrder () const
 bool
 ObjectFilePECOFF::IsExecutable() const
 {
-    return (m_coff_header.flags & IMAGE_FILE_DLL) == 0;
+    return (m_coff_header.flags & llvm::COFF::IMAGE_FILE_DLL) == 0;
 }
 
 uint32_t
@@ -512,7 +444,7 @@ ObjectFilePECOFF::GetSymtab()
 
             if (num_syms > 0 && m_coff_header.symoff > 0)
             {
-                const uint32_t symbol_size = sizeof(section_header_t);
+                const uint32_t symbol_size = 18;
                 const uint32_t addr_byte_size = GetAddressByteSize ();
                 const size_t symbol_data_size = num_syms * symbol_size; 
                 // Include the 4 bytes string table size at the end of the symbols
@@ -520,8 +452,13 @@ ObjectFilePECOFF::GetSymtab()
                 DataExtractor symtab_data (symtab_data_sp, GetByteOrder(), addr_byte_size);
                 lldb::offset_t offset = symbol_data_size;
                 const uint32_t strtab_size = symtab_data.GetU32 (&offset);
-                DataBufferSP strtab_data_sp(m_file.ReadFileContents (m_coff_header.symoff + symbol_data_size + 4, strtab_size));
+                DataBufferSP strtab_data_sp(m_file.ReadFileContents (m_coff_header.symoff + symbol_data_size, strtab_size));
                 DataExtractor strtab_data (strtab_data_sp, GetByteOrder(), addr_byte_size);
+
+                // First 4 bytes should be zeroed after strtab_size has been read,
+                // because it is used as offset 0 to encode a NULL string.
+                uint32_t* strtab_data_start = (uint32_t*)strtab_data_sp->GetBytes();
+                strtab_data_start[0] = 0;
 
                 offset = 0;
                 std::string symbol_name;
@@ -556,14 +493,73 @@ ObjectFilePECOFF::GetSymtab()
                     symbol.type     = symtab_data.GetU16 (&offset);
                     symbol.storage  = symtab_data.GetU8  (&offset);
                     symbol.naux     = symtab_data.GetU8  (&offset);		
-                    Address symbol_addr(sect_list->GetSectionAtIndex(symbol.sect-1), symbol.value);
                     symbols[i].GetMangled ().SetValue (ConstString(symbol_name.c_str()));
-                    symbols[i].GetAddress() = symbol_addr;
+                    if ((int16_t)symbol.sect >= 1)
+                    {
+                        Address symbol_addr(sect_list->GetSectionAtIndex(symbol.sect-1), symbol.value);
+                        symbols[i].GetAddress() = symbol_addr;
+                    }
 
                     if (symbol.naux > 0)
+                    {
                         i += symbol.naux;
+                        offset += symbol_size;
+                    }
                 }
                 
+            }
+
+            // Read export header
+            if (coff_data_dir_export_table < m_coff_header_opt.data_dirs.size()
+                && m_coff_header_opt.data_dirs[coff_data_dir_export_table].vmsize > 0 && m_coff_header_opt.data_dirs[coff_data_dir_export_table].vmaddr > 0)
+            {
+                export_directory_entry export_table;
+                uint32_t data_start = m_coff_header_opt.data_dirs[coff_data_dir_export_table].vmaddr;
+                Address address(m_coff_header_opt.image_base + data_start, sect_list);
+                DataBufferSP symtab_data_sp(m_file.ReadFileContents(address.GetSection()->GetFileOffset() + address.GetOffset(), m_coff_header_opt.data_dirs[0].vmsize));
+                DataExtractor symtab_data (symtab_data_sp, GetByteOrder(), GetAddressByteSize());
+                lldb::offset_t offset = 0;
+
+                // Read export_table header
+                export_table.characteristics = symtab_data.GetU32(&offset);
+                export_table.time_date_stamp = symtab_data.GetU32(&offset);
+                export_table.major_version = symtab_data.GetU16(&offset);
+                export_table.minor_version = symtab_data.GetU16(&offset);
+                export_table.name = symtab_data.GetU32(&offset);
+                export_table.base = symtab_data.GetU32(&offset);
+                export_table.number_of_functions = symtab_data.GetU32(&offset);
+                export_table.number_of_names = symtab_data.GetU32(&offset);
+                export_table.address_of_functions = symtab_data.GetU32(&offset);
+                export_table.address_of_names = symtab_data.GetU32(&offset);
+                export_table.address_of_name_ordinals = symtab_data.GetU32(&offset);
+
+                bool has_ordinal = export_table.address_of_name_ordinals != 0;
+
+                lldb::offset_t name_offset = export_table.address_of_names - data_start;
+                lldb::offset_t name_ordinal_offset = export_table.address_of_name_ordinals - data_start;
+
+                Symbol *symbols = m_symtab_ap->Resize(export_table.number_of_names);
+
+                std::string symbol_name;
+
+                // Read each export table entry
+                for (size_t i = 0; i < export_table.number_of_names; ++i)
+                {
+                    uint32_t name_ordinal = has_ordinal ? symtab_data.GetU16(&name_ordinal_offset) : i;
+                    uint32_t name_address = symtab_data.GetU32(&name_offset);
+
+                    const char* symbol_name_cstr = symtab_data.PeekCStr(name_address - data_start);
+                    symbol_name.assign(symbol_name_cstr);
+
+                    lldb::offset_t function_offset = export_table.address_of_functions - data_start + sizeof(uint32_t) * name_ordinal;
+                    uint32_t function_rva = symtab_data.GetU32(&function_offset);
+
+                    Address symbol_addr(m_coff_header_opt.image_base + function_rva, sect_list);
+                    symbols[i].GetMangled().SetValue(ConstString(symbol_name.c_str()));
+                    symbols[i].GetAddress() = symbol_addr;
+                    symbols[i].SetType(lldb::eSymbolTypeCode);
+                    symbols[i].SetDebug(true);
+                }
             }
         }
     }
@@ -571,16 +567,26 @@ ObjectFilePECOFF::GetSymtab()
 
 }
 
-SectionList *
-ObjectFilePECOFF::GetSectionList()
+bool
+ObjectFilePECOFF::IsStripped ()
 {
-    ModuleSP module_sp(GetModule());
-    if (module_sp)
+    // TODO: determine this for COFF
+    return false;
+}
+
+
+
+void
+ObjectFilePECOFF::CreateSections (SectionList &unified_section_list)
+{
+    if (!m_sections_ap.get())
     {
-        lldb_private::Mutex::Locker locker(module_sp->GetMutex());
-        if (m_sections_ap.get() == NULL)
+        m_sections_ap.reset(new SectionList());
+
+        ModuleSP module_sp(GetModule());
+        if (module_sp)
         {
-            m_sections_ap.reset(new SectionList());
+            lldb_private::Mutex::Locker locker(module_sp->GetMutex());
             const uint32_t nsects = m_sect_headers.size();
             ModuleSP module_sp (GetModule());
             for (uint32_t idx = 0; idx<nsects; ++idx)
@@ -598,18 +604,30 @@ ObjectFilePECOFF::GetSectionList()
                 static ConstString g_reloc_sect_name (".reloc");
                 static ConstString g_stab_sect_name (".stab");
                 static ConstString g_stabstr_sect_name (".stabstr");
+                static ConstString g_sect_name_dwarf_debug_abbrev (".debug_abbrev");
+                static ConstString g_sect_name_dwarf_debug_aranges (".debug_aranges");
+                static ConstString g_sect_name_dwarf_debug_frame (".debug_frame");
+                static ConstString g_sect_name_dwarf_debug_info (".debug_info");
+                static ConstString g_sect_name_dwarf_debug_line (".debug_line");
+                static ConstString g_sect_name_dwarf_debug_loc (".debug_loc");
+                static ConstString g_sect_name_dwarf_debug_macinfo (".debug_macinfo");
+                static ConstString g_sect_name_dwarf_debug_pubnames (".debug_pubnames");
+                static ConstString g_sect_name_dwarf_debug_pubtypes (".debug_pubtypes");
+                static ConstString g_sect_name_dwarf_debug_ranges (".debug_ranges");
+                static ConstString g_sect_name_dwarf_debug_str (".debug_str");
+                static ConstString g_sect_name_eh_frame (".eh_frame");
                 SectionType section_type = eSectionTypeOther;
-                if (m_sect_headers[idx].flags & IMAGE_SCN_CNT_CODE && 
+                if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_CODE &&
                     ((const_sect_name == g_code_sect_name) || (const_sect_name == g_CODE_sect_name)))
                 {
                     section_type = eSectionTypeCode;
                 }
-                else if (m_sect_headers[idx].flags & IMAGE_SCN_CNT_INITIALIZED_DATA && 
+                else if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA &&
                          ((const_sect_name == g_data_sect_name) || (const_sect_name == g_DATA_sect_name)))
                 {
                     section_type = eSectionTypeData;
                 }
-                else if (m_sect_headers[idx].flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA && 
+                else if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA &&
                          ((const_sect_name == g_bss_sect_name) || (const_sect_name == g_BSS_sect_name)))
                 {
                     if (m_sect_headers[idx].size == 0)
@@ -629,15 +647,27 @@ ObjectFilePECOFF::GetSectionList()
                 {
                     section_type = eSectionTypeOther;
                 }
-                else if (m_sect_headers[idx].flags & IMAGE_SCN_CNT_CODE)
+                else if (const_sect_name == g_sect_name_dwarf_debug_abbrev)    section_type = eSectionTypeDWARFDebugAbbrev;
+                else if (const_sect_name == g_sect_name_dwarf_debug_aranges)   section_type = eSectionTypeDWARFDebugAranges;
+                else if (const_sect_name == g_sect_name_dwarf_debug_frame)     section_type = eSectionTypeDWARFDebugFrame;
+                else if (const_sect_name == g_sect_name_dwarf_debug_info)      section_type = eSectionTypeDWARFDebugInfo;
+                else if (const_sect_name == g_sect_name_dwarf_debug_line)      section_type = eSectionTypeDWARFDebugLine;
+                else if (const_sect_name == g_sect_name_dwarf_debug_loc)       section_type = eSectionTypeDWARFDebugLoc;
+                else if (const_sect_name == g_sect_name_dwarf_debug_macinfo)   section_type = eSectionTypeDWARFDebugMacInfo;
+                else if (const_sect_name == g_sect_name_dwarf_debug_pubnames)  section_type = eSectionTypeDWARFDebugPubNames;
+                else if (const_sect_name == g_sect_name_dwarf_debug_pubtypes)  section_type = eSectionTypeDWARFDebugPubTypes;
+                else if (const_sect_name == g_sect_name_dwarf_debug_ranges)    section_type = eSectionTypeDWARFDebugRanges;
+                else if (const_sect_name == g_sect_name_dwarf_debug_str)       section_type = eSectionTypeDWARFDebugStr;
+                else if (const_sect_name == g_sect_name_eh_frame)              section_type = eSectionTypeEHFrame;
+                else if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_CODE)
                 {
                     section_type = eSectionTypeCode;
                 }
-                else if (m_sect_headers[idx].flags & IMAGE_SCN_CNT_INITIALIZED_DATA)
+                else if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA)
                 {
                     section_type = eSectionTypeData;
                 }
-                else if (m_sect_headers[idx].flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA)
+                else if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_UNINITIALIZED_DATA)
                 {
                     if (m_sect_headers[idx].size == 0)
                         section_type = eSectionTypeZeroFill;
@@ -648,10 +678,11 @@ ObjectFilePECOFF::GetSectionList()
                 // Use a segment ID of the segment index shifted left by 8 so they
                 // never conflict with any of the sections.
                 SectionSP section_sp (new Section (module_sp,                    // Module to which this section belongs
+                                                   this,                         // Object file to which this section belongs
                                                    idx + 1,                      // Section ID is the 1 based segment index shifted right by 8 bits as not to collide with any of the 256 section IDs that are possible
                                                    const_sect_name,              // Name of this section
-                                                   section_type,                    // This section is a container of other sections.
-                                                   m_sect_headers[idx].vmaddr,   // File VM address == addresses as they are found in the object file
+                                                   section_type,                 // This section is a container of other sections.
+                                                   m_coff_header_opt.image_base + m_sect_headers[idx].vmaddr,   // File VM address == addresses as they are found in the object file
                                                    m_sect_headers[idx].vmsize,   // VM size in bytes of this section
                                                    m_sect_headers[idx].offset,   // Offset to the data for this section in the file
                                                    m_sect_headers[idx].size,     // Size in bytes of this section as found in the the file
@@ -659,13 +690,11 @@ ObjectFilePECOFF::GetSectionList()
 
                 //section_sp->SetIsEncrypted (segment_is_encrypted);
 
-                m_sections_ap->AddSection(section_sp);
+                unified_section_list.AddSection(section_sp);
+                m_sections_ap->AddSection (section_sp);
             }
-            
-            m_sections_ap->Finalize(); // Now that we're done adding sections, finalize to build fast-lookup caches
         }
     }
-    return m_sections_ap.get();
 }
 
 bool
@@ -703,8 +732,9 @@ ObjectFilePECOFF::Dump(Stream *s)
         
         *s << ", file = '" << m_file << "', arch = " << header_arch.GetArchitectureName() << "\n";
         
-        if (m_sections_ap.get())
-            m_sections_ap->Dump(s, NULL, true, UINT32_MAX);
+        SectionList *sections = GetSectionList();
+        if (sections)
+            sections->Dump(s, NULL, true, UINT32_MAX);
         
         if (m_symtab_ap.get())
             m_symtab_ap->Dump(s, NULL, eSortOrderNone);
@@ -879,44 +909,25 @@ ObjectFilePECOFF::DumpSectionHeaders(Stream *s)
     }
 }
 
-static bool 
-COFFMachineToMachCPU (uint16_t machine, ArchSpec &arch)
-{
-    switch (machine)
-    {
-        case IMAGE_FILE_MACHINE_AMD64:
-        case IMAGE_FILE_MACHINE_IA64:
-            arch.SetArchitecture (eArchTypeMachO, 
-                                  llvm::MachO::CPUTypeX86_64,
-                                  llvm::MachO::CPUSubType_X86_64_ALL);
-            return true;
-
-        case IMAGE_FILE_MACHINE_I386:
-            arch.SetArchitecture (eArchTypeMachO, 
-                                  llvm::MachO::CPUTypeI386,
-                                  llvm::MachO::CPUSubType_I386_ALL);
-            return true;
-            
-        case IMAGE_FILE_MACHINE_POWERPC:    
-        case IMAGE_FILE_MACHINE_POWERPCFP:  
-            arch.SetArchitecture (eArchTypeMachO, 
-                                  llvm::MachO::CPUTypePowerPC,
-                                  llvm::MachO::CPUSubType_POWERPC_ALL);
-            return true;
-        case IMAGE_FILE_MACHINE_ARM:
-        case IMAGE_FILE_MACHINE_THUMB:
-            arch.SetArchitecture (eArchTypeMachO, 
-                                  llvm::MachO::CPUTypeARM,
-                                  llvm::MachO::CPUSubType_ARM_V7);
-            return true;
-    }
-    return false;
-}
 bool
 ObjectFilePECOFF::GetArchitecture (ArchSpec &arch)
 {
-    // For index zero return our cpu type
-    return COFFMachineToMachCPU (m_coff_header.machine, arch);
+    uint16_t machine = m_coff_header.machine;
+    switch (machine)
+    {
+        case llvm::COFF::IMAGE_FILE_MACHINE_AMD64:
+        case llvm::COFF::IMAGE_FILE_MACHINE_I386:
+        case llvm::COFF::IMAGE_FILE_MACHINE_POWERPC:
+        case llvm::COFF::IMAGE_FILE_MACHINE_POWERPCFP:
+        case llvm::COFF::IMAGE_FILE_MACHINE_ARM:
+        case llvm::COFF::IMAGE_FILE_MACHINE_ARMV7:
+        case llvm::COFF::IMAGE_FILE_MACHINE_THUMB:
+            arch.SetArchitecture (eArchTypeCOFF, machine, 0);
+            return true;
+        default:
+            break;
+    }
+    return false;
 }
 
 ObjectFile::Type
@@ -924,7 +935,7 @@ ObjectFilePECOFF::CalculateType()
 {
     if (m_coff_header.machine != 0)
     {
-        if ((m_coff_header.flags & IMAGE_FILE_DLL) == 0)
+        if ((m_coff_header.flags & llvm::COFF::IMAGE_FILE_DLL) == 0)
             return eTypeExecutable;
         else
             return eTypeSharedLibrary;
@@ -940,14 +951,8 @@ ObjectFilePECOFF::CalculateStrata()
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+ConstString
 ObjectFilePECOFF::GetPluginName()
-{
-    return "ObjectFilePECOFF";
-}
-
-const char *
-ObjectFilePECOFF::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }

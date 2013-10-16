@@ -90,16 +90,17 @@ lldb_private::formatters::NSArraySummaryProvider (ValueObject& valobj, Stream& s
 }
 
 lldb_private::formatters::NSArrayMSyntheticFrontEnd::NSArrayMSyntheticFrontEnd (lldb::ValueObjectSP valobj_sp) :
-SyntheticChildrenFrontEnd(*valobj_sp.get()),
-m_exe_ctx_ref(),
-m_ptr_size(8),
-m_data_32(NULL),
-m_data_64(NULL)
+    SyntheticChildrenFrontEnd(*valobj_sp.get()),
+    m_exe_ctx_ref(),
+    m_ptr_size(8),
+    m_data_32(NULL),
+    m_data_64(NULL)
 {
     if (valobj_sp)
     {
-        m_id_type = ClangASTType(valobj_sp->GetClangAST(),valobj_sp->GetClangAST()->ObjCBuiltinIdTy.getAsOpaquePtr());
-        Update();
+        clang::ASTContext *ast = valobj_sp->GetClangType().GetASTContext();
+        if (ast)
+            m_id_type = ClangASTType(ast, ast->ObjCBuiltinIdTy);
     }
 }
 
@@ -150,18 +151,12 @@ lldb_private::formatters::NSArrayMSyntheticFrontEnd::Update()
         return false;
     m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
     Error error;
-    if (valobj_sp->IsPointerType())
-    {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return false;
-    }
     error.Clear();
     lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
     if (!process_sp)
         return false;
     m_ptr_size = process_sp->GetAddressByteSize();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    uint64_t data_location = valobj_sp->GetValueAsUnsigned(0) + m_ptr_size;
     if (m_ptr_size == 4)
     {
         m_data_32 = new DataDescriptor_32();
@@ -204,16 +199,17 @@ lldb_private::formatters::NSArrayMSyntheticFrontEnd::~NSArrayMSyntheticFrontEnd 
 }
 
 lldb_private::formatters::NSArrayISyntheticFrontEnd::NSArrayISyntheticFrontEnd (lldb::ValueObjectSP valobj_sp) :
-SyntheticChildrenFrontEnd(*valobj_sp.get()),
-m_exe_ctx_ref(),
-m_ptr_size(8),
-m_items(0),
-m_data_ptr(0)
+    SyntheticChildrenFrontEnd (*valobj_sp.get()),
+    m_exe_ctx_ref (),
+    m_ptr_size (8),
+    m_items (0),
+    m_data_ptr (0)
 {
     if (valobj_sp)
     {
-        m_id_type = ClangASTType(valobj_sp->GetClangAST(),valobj_sp->GetClangAST()->ObjCBuiltinIdTy.getAsOpaquePtr());
-        Update();
+        clang::ASTContext *ast = valobj_sp->GetClangType().GetASTContext();
+        if (ast)
+            m_id_type = ClangASTType(ast, ast->ObjCBuiltinIdTy);
     }
 }
 
@@ -249,18 +245,12 @@ lldb_private::formatters::NSArrayISyntheticFrontEnd::Update()
         return false;
     m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
     Error error;
-    if (valobj_sp->IsPointerType())
-    {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return false;
-    }
     error.Clear();
     lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
     if (!process_sp)
         return false;
     m_ptr_size = process_sp->GetAddressByteSize();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    uint64_t data_location = valobj_sp->GetValueAsUnsigned(0) + m_ptr_size;
     m_items = process_sp->ReadPointerFromMemory(data_location, error);
     if (error.Fail())
         return false;

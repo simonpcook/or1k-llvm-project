@@ -62,6 +62,16 @@ ThreadPlanStepRange::ThreadPlanStepRange (ThreadPlanKind kind,
 ThreadPlanStepRange::~ThreadPlanStepRange ()
 {
     ClearNextBranchBreakpoint();
+    
+    size_t num_instruction_ranges = m_instruction_ranges.size();
+    
+    // FIXME: The DisassemblerLLVMC has a reference cycle and won't go away if it has any active instructions.
+    // I'll fix that but for now, just clear the list and it will go away nicely.
+    for (size_t i = 0; i < num_instruction_ranges; i++)
+    {
+        if (m_instruction_ranges[i])
+            m_instruction_ranges[i]->GetInstructionList().Clear();
+    }
 }
 
 void
@@ -95,6 +105,9 @@ ThreadPlanStepRange::AddRange(const AddressRange &new_range)
     // condense the ranges if they overlap, though I don't think it is likely
     // to be very important.
     m_address_ranges.push_back (new_range);
+    
+    // Fill the slot for this address range with an empty DisassemblerSP in the instruction ranges. I want the
+    // indices to match, but I don't want to do the work to disassemble this range if I don't step into it.
     m_instruction_ranges.push_back (DisassemblerSP());
 }
 
@@ -158,6 +171,25 @@ ThreadPlanStepRange::InRange ()
                                                         true);
 
                         log->Printf ("Step range plan stepped to another range of same line: %s", s.GetData());
+                    }
+                }
+                else if (new_context.line_entry.line == 0)
+                {
+                    new_context.line_entry.line = m_addr_context.line_entry.line;
+                    m_addr_context = new_context;
+                    AddRange(m_addr_context.line_entry.range);
+                    ret_value = true;
+                    if (log)
+                    {
+                        StreamString s;
+                        m_addr_context.line_entry.Dump (&s,
+                                                        m_thread.CalculateTarget().get(),
+                                                        true,
+                                                        Address::DumpStyleLoadAddress,
+                                                        Address::DumpStyleLoadAddress,
+                                                        true);
+
+                        log->Printf ("Step range plan stepped to a range at linenumber 0 stepping through that range: %s", s.GetData());
                     }
                 }
                 else if (new_context.line_entry.range.GetBaseAddress().GetLoadAddress(m_thread.CalculateTarget().get())
@@ -271,11 +303,13 @@ ThreadPlanStepRange::GetInstructionsForAddress(lldb::addr_t addr, size_t &range_
                 ExecutionContext exe_ctx (m_thread.GetProcess());
                 const char *plugin_name = NULL;
                 const char *flavor = NULL;
+                const bool prefer_file_cache = true;
                 m_instruction_ranges[i] = Disassembler::DisassembleRange(GetTarget().GetArchitecture(),
                                                                          plugin_name,
                                                                          flavor,
                                                                          exe_ctx,
-                                                                         m_address_ranges[i]);
+                                                                         m_address_ranges[i],
+                                                                         prefer_file_cache);
                 
             }
             if (!m_instruction_ranges[i])

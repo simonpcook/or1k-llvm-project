@@ -27,7 +27,10 @@
 #define TSAN_RTL_H
 
 #include "sanitizer_common/sanitizer_allocator.h"
+#include "sanitizer_common/sanitizer_allocator_internal.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_libignore.h"
+#include "sanitizer_common/sanitizer_suppressions.h"
 #include "sanitizer_common/sanitizer_thread_registry.h"
 #include "tsan_clock.h"
 #include "tsan_defs.h"
@@ -424,6 +427,7 @@ struct ThreadState {
   ThreadClock clock;
 #ifndef TSAN_GO
   AllocatorCache alloc_cache;
+  InternalAllocatorCache internal_alloc_cache;
   Vector<JmpBuf> jmp_bufs;
 #endif
   u64 stat[StatCnt];
@@ -431,6 +435,7 @@ struct ThreadState {
   const int unique_id;
   int in_rtl;
   bool in_symbolizer;
+  bool in_ignored_lib;
   bool is_alive;
   bool is_freeing;
   bool is_vptr_access;
@@ -531,7 +536,8 @@ struct Context {
 
   Vector<RacyStacks> racy_stacks;
   Vector<RacyAddress> racy_addresses;
-  Vector<FiredSuppression> fired_suppressions;
+  // Number of fired suppressions may be large enough.
+  InternalMmapVector<FiredSuppression> fired_suppressions;
 
   Flags flags;
 
@@ -594,13 +600,15 @@ void MapThreadTrace(uptr addr, uptr size);
 void DontNeedShadowFor(uptr addr, uptr size);
 void InitializeShadowMemory();
 void InitializeInterceptors();
+void InitializeLibIgnore();
 void InitializeDynamicAnnotations();
 
 void ReportRace(ThreadState *thr);
 bool OutputReport(Context *ctx,
                   const ScopedReport &srep,
                   const ReportStack *suppress_stack1 = 0,
-                  const ReportStack *suppress_stack2 = 0);
+                  const ReportStack *suppress_stack2 = 0,
+                  const ReportLocation *suppress_loc = 0);
 bool IsFiredSuppression(Context *ctx,
                         const ScopedReport &srep,
                         const StackTrace &trace);
@@ -641,6 +649,8 @@ void MemoryAccessRange(ThreadState *thr, uptr pc, uptr addr,
     uptr size, bool is_write);
 void MemoryAccessRangeStep(ThreadState *thr, uptr pc, uptr addr,
     uptr size, uptr step, bool is_write);
+void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr,
+    int size, bool kAccessIsWrite, bool kIsAtomic);
 
 const int kSizeLog1 = 0;
 const int kSizeLog2 = 1;
@@ -670,7 +680,8 @@ void ALWAYS_INLINE MemoryWriteAtomic(ThreadState *thr, uptr pc,
 void MemoryResetRange(ThreadState *thr, uptr pc, uptr addr, uptr size);
 void MemoryRangeFreed(ThreadState *thr, uptr pc, uptr addr, uptr size);
 void MemoryRangeImitateWrite(ThreadState *thr, uptr pc, uptr addr, uptr size);
-void IgnoreCtl(ThreadState *thr, bool write, bool begin);
+void ThreadIgnoreBegin(ThreadState *thr);
+void ThreadIgnoreEnd(ThreadState *thr);
 
 void FuncEntry(ThreadState *thr, uptr pc);
 void FuncExit(ThreadState *thr);
@@ -689,8 +700,8 @@ void ProcessPendingSignals(ThreadState *thr);
 void MutexCreate(ThreadState *thr, uptr pc, uptr addr,
                  bool rw, bool recursive, bool linker_init);
 void MutexDestroy(ThreadState *thr, uptr pc, uptr addr);
-void MutexLock(ThreadState *thr, uptr pc, uptr addr);
-void MutexUnlock(ThreadState *thr, uptr pc, uptr addr);
+void MutexLock(ThreadState *thr, uptr pc, uptr addr, int rec = 1);
+int  MutexUnlock(ThreadState *thr, uptr pc, uptr addr, bool all = false);
 void MutexReadLock(ThreadState *thr, uptr pc, uptr addr);
 void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr);
 void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr);

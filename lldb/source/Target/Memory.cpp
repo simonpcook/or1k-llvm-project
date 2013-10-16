@@ -40,10 +40,12 @@ MemoryCache::~MemoryCache()
 }
 
 void
-MemoryCache::Clear()
+MemoryCache::Clear(bool clear_invalid_ranges)
 {
     Mutex::Locker locker (m_mutex);
     m_cache.clear();
+    if (clear_invalid_ranges)
+        m_invalid_ranges.Clear();
 }
 
 void
@@ -128,7 +130,10 @@ MemoryCache::Read (addr_t addr,
         while (bytes_left > 0)
         {
             if (m_invalid_ranges.FindEntryThatContains(curr_addr))
+            {
+                error.SetErrorStringWithFormat("memory read failed for 0x%" PRIx64, curr_addr);
                 return dst_len - bytes_left;
+            }
 
             BlockMap::const_iterator pos = m_cache.find (curr_addr);
             BlockMap::const_iterator end = m_cache.end ();

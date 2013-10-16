@@ -44,16 +44,21 @@ namespace lld {
 ///
 /// Calling dec() on a Latch with a count of 0 has undefined behaivor.
 class Latch {
-  std::atomic<uint32_t> _count;
+  uint32_t _count;
   mutable std::mutex _condMut;
   mutable std::condition_variable _cond;
 
 public:
-  Latch(uint32_t count = 0) : _count(count) {}
+  explicit Latch(uint32_t count = 0) : _count(count) {}
   ~Latch() { sync(); }
-  void inc() { ++_count; }
+
+  void inc() {
+    std::unique_lock<std::mutex> lock(_condMut);
+    ++_count;
+  }
 
   void dec() {
+    std::unique_lock<std::mutex> lock(_condMut);
     if (--_count == 0)
       _cond.notify_all();
   }
@@ -77,8 +82,8 @@ public:
 ///   in filo order.
 class ThreadPoolExecutor : public Executor {
 public:
-  ThreadPoolExecutor(unsigned threadCount =
-                         std::thread::hardware_concurrency())
+  explicit ThreadPoolExecutor(unsigned threadCount =
+                                  std::thread::hardware_concurrency())
       : _stop(false), _done(threadCount) {
     // Spawn all but one of the threads in another thread as spawning threads
     // can take a while.
@@ -93,7 +98,9 @@ public:
   }
 
   ~ThreadPoolExecutor() {
+    std::unique_lock<std::mutex> lock(_mutex);
     _stop = true;
+    lock.unlock();
     _cond.notify_all();
     // Wait for ~Latch.
   }
@@ -140,14 +147,14 @@ class ConcRTExecutor : public Executor {
     static void run(void *p) {
       Taskish *self = static_cast<Taskish *>(p);
       self->_task();
-      delete self;
+      concurrency::Free(self);
     }
   };
 
 public:
   virtual void add(std::function<void()> func) {
     Concurrency::CurrentScheduler::ScheduleTask(Taskish::run,
-                                                new Taskish(func));
+        new (concurrency::Alloc(sizeof(Taskish))) Taskish(func));
   }
 };
 
@@ -245,6 +252,20 @@ void parallel_sort(
 template <class T> void parallel_sort(T *start, T *end) {
   parallel_sort(start, end, std::less<T>());
 }
+
+#ifdef _MSC_VER
+// Use ppl parallel_for_each on Windows.
+template <class Iterator, class Func>
+void parallel_for_each(Iterator begin, Iterator end, Func func) {
+  concurrency::parallel_for_each(begin, end, func);
+}
+#else
+template <class Iterator, class Func>
+void parallel_for_each(Iterator begin, Iterator end, Func func) {
+  // TODO: Make this parallel.
+  std::for_each(begin, end, func);
+}
+#endif
 } // end namespace lld
 
 #endif

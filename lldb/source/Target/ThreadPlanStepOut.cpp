@@ -174,7 +174,7 @@ ThreadPlanStepOut::ValidatePlan (Stream *error)
 }
 
 bool
-ThreadPlanStepOut::PlanExplainsStop (Event *event_ptr)
+ThreadPlanStepOut::DoPlanExplainsStop (Event *event_ptr)
 {
     // If one of our child plans just finished, then we do explain the stop.
     if (m_step_out_plan_sp)
@@ -200,7 +200,7 @@ ThreadPlanStepOut::PlanExplainsStop (Event *event_ptr)
     // We don't explain signals or breakpoints (breakpoints that handle stepping in or
     // out will be handled by a child plan.
     
-    StopInfoSP stop_info_sp = GetPrivateStopReason();
+    StopInfoSP stop_info_sp = GetPrivateStopInfo ();
     if (stop_info_sp)
     {
         StopReason reason = stop_info_sp->GetStopReason();
@@ -336,9 +336,8 @@ ThreadPlanStepOut::GetPlanRunState ()
 }
 
 bool
-ThreadPlanStepOut::WillResume (StateType resume_state, bool current_plan)
+ThreadPlanStepOut::DoWillResume (StateType resume_state, bool current_plan)
 {
-    ThreadPlan::WillResume (resume_state, current_plan);
     if (m_step_out_plan_sp || m_step_through_inline_plan_sp)
         return true;
         
@@ -465,17 +464,12 @@ ThreadPlanStepOut::CalculateReturnValue ()
         
     if (m_immediate_step_from_function != NULL)
     {
-        Type *return_type = m_immediate_step_from_function->GetType();
-        lldb::clang_type_t return_clang_type = m_immediate_step_from_function->GetReturnClangType();
-        if (return_type && return_clang_type)
+        ClangASTType return_clang_type = m_immediate_step_from_function->GetClangType().GetFunctionReturnType();
+        if (return_clang_type)
         {
-            ClangASTType ast_type (return_type->GetClangAST(), return_clang_type);
-            
             lldb::ABISP abi_sp = m_thread.GetProcess()->GetABI();
             if (abi_sp)
-            {
-                m_return_valobj_sp = abi_sp->GetReturnValueObject(m_thread, ast_type);
-            }
+                m_return_valobj_sp = abi_sp->GetReturnValueObject(m_thread, return_clang_type);
         }
     }
 }

@@ -9,6 +9,7 @@
 
 #include "lldb/lldb-python.h"
 
+#include "lldb/Core/AddressResolverFileLine.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/DataBuffer.h"
@@ -33,6 +34,7 @@
 #include "lldb/Target/ObjCLanguageRuntime.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
+#include "lldb/Symbol/SymbolFile.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -136,6 +138,7 @@ Module::Module (const ModuleSpec &module_spec) :
     m_symfile_spec (module_spec.GetSymbolFileSpec()),
     m_object_name (module_spec.GetObjectName()),
     m_object_offset (module_spec.GetObjectOffset()),
+    m_object_mod_time (module_spec.GetObjectModificationTime()),
     m_objfile_sp (),
     m_symfile_ap (),
     m_ast (),
@@ -156,11 +159,10 @@ Module::Module (const ModuleSpec &module_spec) :
     
     Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_OBJECT|LIBLLDB_LOG_MODULES));
     if (log)
-        log->Printf ("%p Module::Module((%s) '%s/%s%s%s%s')",
+        log->Printf ("%p Module::Module((%s) '%s%s%s%s')",
                      this,
                      m_arch.GetArchitectureName(),
-                     m_file.GetDirectory().AsCString(""),
-                     m_file.GetFilename().AsCString(""),
+                     m_file.GetPath().c_str(),
                      m_object_name.IsEmpty() ? "" : "(",
                      m_object_name.IsEmpty() ? "" : m_object_name.AsCString(""),
                      m_object_name.IsEmpty() ? "" : ")");
@@ -169,7 +171,8 @@ Module::Module (const ModuleSpec &module_spec) :
 Module::Module(const FileSpec& file_spec, 
                const ArchSpec& arch, 
                const ConstString *object_name, 
-               off_t object_offset) :
+               off_t object_offset,
+               const TimeValue *object_mod_time_ptr) :
     m_mutex (Mutex::eMutexTypeRecursive),
     m_mod_time (file_spec.GetModificationTime()),
     m_arch (arch),
@@ -179,6 +182,7 @@ Module::Module(const FileSpec& file_spec,
     m_symfile_spec (),
     m_object_name (),
     m_object_offset (object_offset),
+    m_object_mod_time (),
     m_objfile_sp (),
     m_symfile_ap (),
     m_ast (),
@@ -199,13 +203,16 @@ Module::Module(const FileSpec& file_spec,
 
     if (object_name)
         m_object_name = *object_name;
+    
+    if (object_mod_time_ptr)
+        m_object_mod_time = *object_mod_time_ptr;
+
     Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_OBJECT|LIBLLDB_LOG_MODULES));
     if (log)
-        log->Printf ("%p Module::Module((%s) '%s/%s%s%s%s')",
+        log->Printf ("%p Module::Module((%s) '%s%s%s%s')",
                      this,
                      m_arch.GetArchitectureName(),
-                     m_file.GetDirectory().AsCString(""),
-                     m_file.GetFilename().AsCString(""),
+                     m_file.GetPath().c_str(),
                      m_object_name.IsEmpty() ? "" : "(",
                      m_object_name.IsEmpty() ? "" : m_object_name.AsCString(""),
                      m_object_name.IsEmpty() ? "" : ")");
@@ -213,6 +220,9 @@ Module::Module(const FileSpec& file_spec,
 
 Module::~Module()
 {
+    // Lock our module down while we tear everything down to make sure
+    // we don't get any access to the module while it is being destroyed
+    Mutex::Locker locker (m_mutex);
     // Scope for locker below...
     {
         Mutex::Locker locker (GetAllocationModuleCollectionMutex());
@@ -224,11 +234,10 @@ Module::~Module()
     }
     Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_OBJECT|LIBLLDB_LOG_MODULES));
     if (log)
-        log->Printf ("%p Module::~Module((%s) '%s/%s%s%s%s')",
+        log->Printf ("%p Module::~Module((%s) '%s%s%s%s')",
                      this,
                      m_arch.GetArchitectureName(),
-                     m_file.GetDirectory().AsCString(""),
-                     m_file.GetFilename().AsCString(""),
+                     m_file.GetPath().c_str(),
                      m_object_name.IsEmpty() ? "" : "(",
                      m_object_name.IsEmpty() ? "" : m_object_name.AsCString(""),
                      m_object_name.IsEmpty() ? "" : ")");
@@ -237,6 +246,7 @@ Module::~Module()
     // function calls back into this module object. The ordering is important
     // here because symbol files can require the module object file. So we tear
     // down the symbol file first, then the object file.
+    m_sections_ap.reset();
     m_symfile_ap.reset();
     m_objfile_sp.reset();
 }
@@ -432,14 +442,15 @@ Module::ResolveFileAddress (lldb::addr_t vm_addr, Address& so_addr)
 {
     Mutex::Locker locker (m_mutex);
     Timer scoped_timer(__PRETTY_FUNCTION__, "Module::ResolveFileAddress (vm_addr = 0x%" PRIx64 ")", vm_addr);
-    ObjectFile* ofile = GetObjectFile();
-    if (ofile)
-        return so_addr.ResolveAddressUsingFileSections(vm_addr, ofile->GetSectionList());
+    SectionList *section_list = GetSectionList();
+    if (section_list)
+        return so_addr.ResolveAddressUsingFileSections(vm_addr, section_list);
     return false;
 }
 
 uint32_t
-Module::ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve_scope, SymbolContext& sc)
+Module::ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve_scope, SymbolContext& sc,
+                                        bool resolve_tail_call_address)
 {
     Mutex::Locker locker (m_mutex);
     uint32_t resolved_flags = 0;
@@ -458,6 +469,10 @@ Module::ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve
         sc.module_sp = shared_from_this();
         resolved_flags |= eSymbolContextModule;
 
+        SymbolVendor* sym_vendor = GetSymbolVendor();
+        if (!sym_vendor)
+            return resolved_flags;
+
         // Resolve the compile unit, function, block, line table or line
         // entry if requested.
         if (resolve_scope & eSymbolContextCompUnit    ||
@@ -465,25 +480,60 @@ Module::ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve
             resolve_scope & eSymbolContextBlock       ||
             resolve_scope & eSymbolContextLineEntry   )
         {
-            SymbolVendor *symbols = GetSymbolVendor ();
-            if (symbols)
-                resolved_flags |= symbols->ResolveSymbolContext (so_addr, resolve_scope, sc);
+            resolved_flags |= sym_vendor->ResolveSymbolContext (so_addr, resolve_scope, sc);
         }
 
         // Resolve the symbol if requested, but don't re-look it up if we've already found it.
         if (resolve_scope & eSymbolContextSymbol && !(resolved_flags & eSymbolContextSymbol))
         {
-            ObjectFile* ofile = GetObjectFile();
-            if (ofile)
+            Symtab *symtab = sym_vendor->GetSymtab();
+            if (symtab && so_addr.IsSectionOffset())
             {
-                Symtab *symtab = ofile->GetSymtab();
-                if (symtab)
+                sc.symbol = symtab->FindSymbolContainingFileAddress(so_addr.GetFileAddress());
+                if (!sc.symbol &&
+                    resolve_scope & eSymbolContextFunction && !(resolved_flags & eSymbolContextFunction))
                 {
-                    if (so_addr.IsSectionOffset())
+                    bool verify_unique = false; // No need to check again since ResolveSymbolContext failed to find a symbol at this address.
+                    if (ObjectFile *obj_file = sc.module_sp->GetObjectFile())
+                        sc.symbol = obj_file->ResolveSymbolForAddress(so_addr, verify_unique);
+                }
+
+                if (sc.symbol)
+                    resolved_flags |= eSymbolContextSymbol;
+            }
+        }
+
+        // For function symbols, so_addr may be off by one.  This is a convention consistent
+        // with FDE row indices in eh_frame sections, but requires extra logic here to permit
+        // symbol lookup for disassembly and unwind.
+        if (resolve_scope & eSymbolContextSymbol && !(resolved_flags & eSymbolContextSymbol) &&
+            resolve_tail_call_address && so_addr.IsSectionOffset())
+        {
+            Address previous_addr = so_addr;
+            previous_addr.Slide(-1);
+
+            bool do_resolve_tail_call_address = false; // prevent recursion
+            const uint32_t flags = ResolveSymbolContextForAddress(previous_addr, resolve_scope, sc,
+                                                                  do_resolve_tail_call_address);
+            if (flags & eSymbolContextSymbol)
+            {
+                AddressRange addr_range;
+                if (sc.GetAddressRange (eSymbolContextFunction | eSymbolContextSymbol, 0, false, addr_range))
+                {
+                    if (addr_range.GetBaseAddress().GetSection() == so_addr.GetSection())
                     {
-                        sc.symbol = symtab->FindSymbolContainingFileAddress(so_addr.GetFileAddress());
-                        if (sc.symbol)
-                            resolved_flags |= eSymbolContextSymbol;
+                        // If the requested address is one past the address range of a function (i.e. a tail call),
+                        // or the decremented address is the start of a function (i.e. some forms of trampoline),
+                        // indicate that the symbol has been resolved.
+                        if (so_addr.GetOffset() == addr_range.GetBaseAddress().GetOffset() ||
+                            so_addr.GetOffset() == addr_range.GetBaseAddress().GetOffset() + addr_range.GetByteSize())
+                        {
+                            resolved_flags |= flags;
+                        }
+                    }
+                    else
+                    {
+                        sc.symbol = nullptr; // Don't trust the symbol if the sections didn't match.
                     }
                 }
             }
@@ -511,10 +561,8 @@ Module::ResolveSymbolContextsForFileSpec (const FileSpec &file_spec, uint32_t li
 {
     Mutex::Locker locker (m_mutex);
     Timer scoped_timer(__PRETTY_FUNCTION__,
-                       "Module::ResolveSymbolContextForFilePath (%s%s%s:%u, check_inlines = %s, resolve_scope = 0x%8.8x)",
-                       file_spec.GetDirectory().AsCString(""),
-                       file_spec.GetDirectory() ? "/" : "",
-                       file_spec.GetFilename().AsCString(""),
+                       "Module::ResolveSymbolContextForFilePath (%s:%u, check_inlines = %s, resolve_scope = 0x%8.8x)",
+                       file_spec.GetPath().c_str(),
                        line,
                        check_inlines ? "yes" : "no",
                        resolve_scope);
@@ -566,7 +614,7 @@ Module::FindCompileUnits (const FileSpec &path,
     const size_t num_compile_units = GetNumCompileUnits();
     SymbolContext sc;
     sc.module_sp = shared_from_this();
-    const bool compare_directory = path.GetDirectory();
+    const bool compare_directory = (bool)path.GetDirectory();
     for (size_t i=0; i<num_compile_units; ++i)
     {
         sc.comp_unit = GetCompileUnitAtIndex(i).get();
@@ -608,6 +656,7 @@ Module::FindFunctions (const ConstString &name,
                                               match_name_after_lookup);
         
         if (symbols)
+        {
             symbols->FindFunctions(lookup_name,
                                    namespace_decl,
                                    lookup_name_type_mask,
@@ -615,13 +664,10 @@ Module::FindFunctions (const ConstString &name,
                                    append,
                                    sc_list);
         
-        // Now check our symbol table for symbols that are code symbols if requested
-        if (include_symbols)
-        {
-            ObjectFile *objfile = GetObjectFile();
-            if (objfile)
+            // Now check our symbol table for symbols that are code symbols if requested
+            if (include_symbols)
             {
-                Symtab *symtab = objfile->GetSymtab();
+                Symtab *symtab = symbols->GetSymtab();
                 if (symtab)
                     symtab->FindFunctionSymbols(lookup_name, lookup_name_type_mask, sc_list);
             }
@@ -647,20 +693,17 @@ Module::FindFunctions (const ConstString &name,
                 ++i;
             }
         }
-        
     }
     else
     {
         if (symbols)
+        {
             symbols->FindFunctions(name, namespace_decl, name_type_mask, include_inlines, append, sc_list);
 
-        // Now check our symbol table for symbols that are code symbols if requested
-        if (include_symbols)
-        {
-            ObjectFile *objfile = GetObjectFile();
-            if (objfile)
+            // Now check our symbol table for symbols that are code symbols if requested
+            if (include_symbols)
             {
-                Symtab *symtab = objfile->GetSymtab();
+                Symtab *symtab = symbols->GetSymtab();
                 if (symtab)
                     symtab->FindFunctionSymbols(name, name_type_mask, sc_list);
             }
@@ -684,14 +727,13 @@ Module::FindFunctions (const RegularExpression& regex,
     
     SymbolVendor *symbols = GetSymbolVendor ();
     if (symbols)
-        symbols->FindFunctions(regex, include_inlines, append, sc_list);
-    // Now check our symbol table for symbols that are code symbols if requested
-    if (include_symbols)
     {
-        ObjectFile *objfile = GetObjectFile();
-        if (objfile)
+        symbols->FindFunctions(regex, include_inlines, append, sc_list);
+        
+        // Now check our symbol table for symbols that are code symbols if requested
+        if (include_symbols)
         {
-            Symtab *symtab = objfile->GetSymtab();
+            Symtab *symtab = symbols->GetSymtab();
             if (symtab)
             {
                 std::vector<uint32_t> symbol_indexes;
@@ -699,21 +741,77 @@ Module::FindFunctions (const RegularExpression& regex,
                 const size_t num_matches = symbol_indexes.size();
                 if (num_matches)
                 {
-                    const bool merge_symbol_into_function = true;
                     SymbolContext sc(this);
-                    for (size_t i=0; i<num_matches; i++)
+                    const size_t end_functions_added_index = sc_list.GetSize();
+                    size_t num_functions_added_to_sc_list = end_functions_added_index - start_size;
+                    if (num_functions_added_to_sc_list == 0)
                     {
-                        sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
-                        SymbolType sym_type = sc.symbol->GetType();
-                        if (sc.symbol && (sym_type == eSymbolTypeCode ||
-                                          sym_type == eSymbolTypeResolver))
-                            sc_list.AppendIfUnique (sc, merge_symbol_into_function);
+                        // No functions were added, just symbols, so we can just append them
+                        for (size_t i=0; i<num_matches; ++i)
+                        {
+                            sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
+                            SymbolType sym_type = sc.symbol->GetType();
+                            if (sc.symbol && (sym_type == eSymbolTypeCode ||
+                                              sym_type == eSymbolTypeResolver))
+                                sc_list.Append(sc);
+                        }
+                    }
+                    else
+                    {
+                        typedef std::map<lldb::addr_t, uint32_t> FileAddrToIndexMap;
+                        FileAddrToIndexMap file_addr_to_index;
+                        for (size_t i=start_size; i<end_functions_added_index; ++i)
+                        {
+                            const SymbolContext &sc = sc_list[i];
+                            if (sc.block)
+                                continue;
+                            file_addr_to_index[sc.function->GetAddressRange().GetBaseAddress().GetFileAddress()] = i;
+                        }
+
+                        FileAddrToIndexMap::const_iterator end = file_addr_to_index.end();
+                        // Functions were added so we need to merge symbols into any
+                        // existing function symbol contexts
+                        for (size_t i=start_size; i<num_matches; ++i)
+                        {
+                            sc.symbol = symtab->SymbolAtIndex(symbol_indexes[i]);
+                            SymbolType sym_type = sc.symbol->GetType();
+                            if (sc.symbol && (sym_type == eSymbolTypeCode ||
+                                              sym_type == eSymbolTypeResolver))
+                            {
+                                FileAddrToIndexMap::const_iterator pos = file_addr_to_index.find(sc.symbol->GetAddress().GetFileAddress());
+                                if (pos == end)
+                                    sc_list.Append(sc);
+                                else
+                                    sc_list[pos->second].symbol = sc.symbol;
+                            }
+                        }
                     }
                 }
             }
         }
     }
     return sc_list.GetSize() - start_size;
+}
+
+void
+Module::FindAddressesForLine (const lldb::TargetSP target_sp,
+                              const FileSpec &file, uint32_t line,
+                              Function *function,
+                              std::vector<Address> &output_local, std::vector<Address> &output_extern)
+{
+    SearchFilterByModule filter(target_sp, m_file);
+    AddressResolverFileLine resolver(file, line, true);
+    resolver.ResolveAddress (filter);
+
+    for (size_t n=0;n<resolver.GetNumberOfAddresses();n++)
+    {
+        Address addr = resolver.GetAddressRangeAtIndex(n).GetBaseAddress();
+        Function *f = addr.CalculateSymbolContextFunction();
+        if (f && f == function)
+            output_local.push_back (addr);
+        else
+            output_extern.push_back (addr);
+    }
 }
 
 size_t
@@ -842,6 +940,19 @@ const ArchSpec&
 Module::GetArchitecture () const
 {
     return m_arch;
+}
+
+std::string
+Module::GetSpecificationDescription () const
+{
+    std::string spec(GetFileSpec().GetPath());
+    if (m_object_name)
+    {
+        spec += '(';
+        spec += m_object_name.GetCString();
+        spec += ')';
+    }
+    return spec;
 }
 
 void
@@ -1007,21 +1118,19 @@ Module::Dump(Stream *s)
     Mutex::Locker locker (m_mutex);
     //s->Printf("%.*p: ", (int)sizeof(void*) * 2, this);
     s->Indent();
-    s->Printf("Module %s/%s%s%s%s\n",
-              m_file.GetDirectory().AsCString(),
-              m_file.GetFilename().AsCString(),
+    s->Printf("Module %s%s%s%s\n",
+              m_file.GetPath().c_str(),
               m_object_name ? "(" : "",
               m_object_name ? m_object_name.GetCString() : "",
               m_object_name ? ")" : "");
 
     s->IndentMore();
+    
     ObjectFile *objfile = GetObjectFile ();
-
     if (objfile)
         objfile->Dump(s);
 
     SymbolVendor *symbols = GetSymbolVendor ();
-
     if (symbols)
         symbols->Dump(s);
 
@@ -1050,28 +1159,53 @@ Module::GetObjectFile()
     Mutex::Locker locker (m_mutex);
     if (m_did_load_objfile == false)
     {
-        m_did_load_objfile = true;
         Timer scoped_timer(__PRETTY_FUNCTION__,
                            "Module::GetObjectFile () module = %s", GetFileSpec().GetFilename().AsCString(""));
         DataBufferSP data_sp;
         lldb::offset_t data_offset = 0;
-        m_objfile_sp = ObjectFile::FindPlugin (shared_from_this(),
-                                               &m_file, 
-                                               m_object_offset, 
-                                               m_file.GetByteSize(), 
-                                               data_sp,
-                                               data_offset);
-        if (m_objfile_sp)
+        const lldb::offset_t file_size = m_file.GetByteSize();
+        if (file_size > m_object_offset)
         {
-			// Once we get the object file, update our module with the object file's 
-			// architecture since it might differ in vendor/os if some parts were
-			// unknown.
-            m_objfile_sp->GetArchitecture (m_arch);
+            m_did_load_objfile = true;
+            m_objfile_sp = ObjectFile::FindPlugin (shared_from_this(),
+                                                   &m_file,
+                                                   m_object_offset,
+                                                   file_size - m_object_offset,
+                                                   data_sp,
+                                                   data_offset);
+            if (m_objfile_sp)
+            {
+                // Once we get the object file, update our module with the object file's 
+                // architecture since it might differ in vendor/os if some parts were
+                // unknown.
+                m_objfile_sp->GetArchitecture (m_arch);
+            }
         }
     }
     return m_objfile_sp.get();
 }
 
+SectionList *
+Module::GetSectionList()
+{
+    // Populate m_unified_sections_ap with sections from objfile.
+    if (m_sections_ap.get() == NULL)
+    {
+        ObjectFile *obj_file = GetObjectFile();
+        if (obj_file)
+            obj_file->CreateSections(*GetUnifiedSectionList());
+    }
+    return m_sections_ap.get();
+}
+
+SectionList *
+Module::GetUnifiedSectionList()
+{
+    // Populate m_unified_sections_ap with sections from objfile.
+    if (m_sections_ap.get() == NULL)
+        m_sections_ap.reset(new SectionList());
+    return m_sections_ap.get();
+}
 
 const Symbol *
 Module::FindFirstSymbolWithNameAndType (const ConstString &name, SymbolType symbol_type)
@@ -1080,10 +1214,10 @@ Module::FindFirstSymbolWithNameAndType (const ConstString &name, SymbolType symb
                        "Module::FindFirstSymbolWithNameAndType (name = %s, type = %i)",
                        name.AsCString(),
                        symbol_type);
-    ObjectFile *objfile = GetObjectFile();
-    if (objfile)
+    SymbolVendor* sym_vendor = GetSymbolVendor();
+    if (sym_vendor)
     {
-        Symtab *symtab = objfile->GetSymtab();
+        Symtab *symtab = sym_vendor->GetSymtab();
         if (symtab)
             return symtab->FindFirstSymbolWithNameAndType (name, symbol_type, Symtab::eDebugAny, Symtab::eVisibilityAny);
     }
@@ -1118,10 +1252,10 @@ Module::FindFunctionSymbols (const ConstString &name,
                        "Module::FindSymbolsFunctions (name = %s, mask = 0x%8.8x)",
                        name.AsCString(),
                        name_type_mask);
-    ObjectFile *objfile = GetObjectFile ();
-    if (objfile)
+    SymbolVendor* sym_vendor = GetSymbolVendor();
+    if (sym_vendor)
     {
-        Symtab *symtab = objfile->GetSymtab();
+        Symtab *symtab = sym_vendor->GetSymtab();
         if (symtab)
             return symtab->FindFunctionSymbols (name, name_type_mask, sc_list);
     }
@@ -1140,10 +1274,10 @@ Module::FindSymbolsWithNameAndType (const ConstString &name, SymbolType symbol_t
                        name.AsCString(),
                        symbol_type);
     const size_t initial_size = sc_list.GetSize();
-    ObjectFile *objfile = GetObjectFile ();
-    if (objfile)
+    SymbolVendor* sym_vendor = GetSymbolVendor();
+    if (sym_vendor)
     {
-        Symtab *symtab = objfile->GetSymtab();
+        Symtab *symtab = sym_vendor->GetSymtab();
         if (symtab)
         {
             std::vector<uint32_t> symbol_indexes;
@@ -1165,10 +1299,10 @@ Module::FindSymbolsMatchingRegExAndType (const RegularExpression &regex, SymbolT
                        regex.GetText(),
                        symbol_type);
     const size_t initial_size = sc_list.GetSize();
-    ObjectFile *objfile = GetObjectFile ();
-    if (objfile)
+    SymbolVendor* sym_vendor = GetSymbolVendor();
+    if (sym_vendor)
     {
-        Symtab *symtab = objfile->GetSymtab();
+        Symtab *symtab = sym_vendor->GetSymtab();
         if (symtab)
         {
             std::vector<uint32_t> symbol_indexes;
@@ -1179,20 +1313,38 @@ Module::FindSymbolsMatchingRegExAndType (const RegularExpression &regex, SymbolT
     return sc_list.GetSize() - initial_size;
 }
 
-const TimeValue &
-Module::GetModificationTime () const
-{
-    return m_mod_time;
-}
-
 void
 Module::SetSymbolFileFileSpec (const FileSpec &file)
 {
+    // Remove any sections in the unified section list that come from the current symbol vendor.
+    if (m_symfile_ap)
+    {
+        SectionList *section_list = GetSectionList();
+        SymbolFile *symbol_file = m_symfile_ap->GetSymbolFile();
+        if (section_list && symbol_file)
+        {
+            ObjectFile *obj_file = symbol_file->GetObjectFile();
+            // Make sure we have an object file and that the symbol vendor's objfile isn't
+            // the same as the module's objfile before we remove any sections for it...
+            if (obj_file && obj_file != m_objfile_sp.get())
+            {
+                size_t num_sections = section_list->GetNumSections (0);
+                for (size_t idx = num_sections; idx > 0; --idx)
+                {
+                    lldb::SectionSP section_sp (section_list->GetSectionAtIndex (idx - 1));
+                    if (section_sp->GetObjectFile() == obj_file)
+                    {
+                        section_list->DeleteSection (idx - 1);
+                    }
+                }
+            }
+        }
+    }
+
     m_symfile_spec = file;
     m_symfile_ap.reset();
     m_did_load_symbol_vendor = false;
 }
-
 
 bool
 Module::IsExecutable ()
@@ -1209,7 +1361,7 @@ Module::IsLoadedInTarget (Target *target)
     ObjectFile *obj_file = GetObjectFile();
     if (obj_file)
     {
-        SectionList *sections = obj_file->GetSectionList();
+        SectionList *sections = GetSectionList();
         if (sections != NULL)
         {
             size_t num_sections = sections->GetSize();
@@ -1227,13 +1379,15 @@ Module::IsLoadedInTarget (Target *target)
 }
 
 bool
-Module::LoadScriptingResourceInTarget (Target *target, Error& error)
+Module::LoadScriptingResourceInTarget (Target *target, Error& error, Stream* feedback_stream)
 {
     if (!target)
     {
         error.SetErrorString("invalid destination Target");
         return false;
     }
+    
+    LoadScriptFromSymFile shoud_load = target->TargetProperties::GetLoadScriptFromSymbolFile();
     
     Debugger &debugger = target->GetDebugger();
     const ScriptLanguage script_language = debugger.GetScriptLanguage();
@@ -1263,12 +1417,27 @@ Module::LoadScriptingResourceInTarget (Target *target, Error& error)
                     FileSpec scripting_fspec (file_specs.GetFileSpecAtIndex(i));
                     if (scripting_fspec && scripting_fspec.Exists())
                     {
-
+                        if (shoud_load == eLoadScriptFromSymFileFalse)
+                            return false;
+                        if (shoud_load == eLoadScriptFromSymFileWarn)
+                        {
+                            if (feedback_stream)
+                                feedback_stream->Printf("warning: '%s' contains a debug script. To run this script in "
+                                                        "this debug session:\n\n    command script import \"%s\"\n\n"
+                                                        "To run all discovered debug scripts in this session:\n\n"
+                                                        "    settings set target.load-script-from-symbol-file true\n",
+                                                        GetFileSpec().GetFileNameStrippingExtension().GetCString(),
+                                                        scripting_fspec.GetPath().c_str());
+                            return false;
+                        }
                         StreamString scripting_stream;
                         scripting_fspec.Dump(&scripting_stream);
-                        const bool can_reload = false;
+                        const bool can_reload = true;
                         const bool init_lldb_globals = false;
-                        bool did_load = script_interpreter->LoadScriptingModule(scripting_stream.GetData(), can_reload, init_lldb_globals, error);
+                        bool did_load = script_interpreter->LoadScriptingModule(scripting_stream.GetData(),
+                                                                                can_reload,
+                                                                                init_lldb_globals,
+                                                                                error);
                         if (!did_load)
                             return false;
                     }
@@ -1299,26 +1468,22 @@ bool
 Module::SetLoadAddress (Target &target, lldb::addr_t offset, bool &changed)
 {
     size_t num_loaded_sections = 0;
-    ObjectFile *objfile = GetObjectFile();
-    if (objfile)
+    SectionList *section_list = GetSectionList ();
+    if (section_list)
     {
-        SectionList *section_list = objfile->GetSectionList ();
-        if (section_list)
+        const size_t num_sections = section_list->GetSize();
+        size_t sect_idx = 0;
+        for (sect_idx = 0; sect_idx < num_sections; ++sect_idx)
         {
-            const size_t num_sections = section_list->GetSize();
-            size_t sect_idx = 0;
-            for (sect_idx = 0; sect_idx < num_sections; ++sect_idx)
+            // Iterate through the object file sections to find the
+            // first section that starts of file offset zero and that
+            // has bytes in the file...
+            SectionSP section_sp (section_list->GetSectionAtIndex (sect_idx));
+            // Only load non-thread specific sections when given a slide
+            if (section_sp && !section_sp->IsThreadSpecific())
             {
-                // Iterate through the object file sections to find the
-                // first section that starts of file offset zero and that
-                // has bytes in the file...
-                SectionSP section_sp (section_list->GetSectionAtIndex (sect_idx));
-                // Only load non-thread specific sections when given a slide
-                if (section_sp && !section_sp->IsThreadSpecific())
-                {
-                    if (target.GetSectionLoadList().SetSectionLoadAddress (section_sp, section_sp->GetFileAddress() + offset))
-                        ++num_loaded_sections;
-                }
+                if (target.GetSectionLoadList().SetSectionLoadAddress (section_sp, section_sp->GetFileAddress() + offset))
+                    ++num_loaded_sections;
             }
         }
     }
@@ -1344,14 +1509,14 @@ Module::MatchesModuleSpec (const ModuleSpec &module_ref)
     const FileSpec &file_spec = module_ref.GetFileSpec();
     if (file_spec)
     {
-        if (!FileSpec::Equal (file_spec, m_file, file_spec.GetDirectory()))
+        if (!FileSpec::Equal (file_spec, m_file, (bool)file_spec.GetDirectory()))
             return false;
     }
 
     const FileSpec &platform_file_spec = module_ref.GetPlatformFileSpec();
     if (platform_file_spec)
     {
-        if (!FileSpec::Equal (platform_file_spec, GetPlatformFileSpec (), platform_file_spec.GetDirectory()))
+        if (!FileSpec::Equal (platform_file_spec, GetPlatformFileSpec (), (bool)platform_file_spec.GetDirectory()))
             return false;
     }
     
@@ -1424,8 +1589,19 @@ Module::PrepareForFunctionNameLookup (const ConstString &name,
             if (ObjCLanguageRuntime::IsPossibleObjCSelector(name_cstr))
                 lookup_name_type_mask |= eFunctionNameTypeSelector;
             
-            if (CPPLanguageRuntime::IsPossibleCPPCall(name_cstr, base_name_start, base_name_end))
+            CPPLanguageRuntime::MethodName cpp_method (name);
+            llvm::StringRef basename (cpp_method.GetBasename());
+            if (basename.empty())
+            {
+                if (CPPLanguageRuntime::StripNamespacesFromVariableName (name_cstr, base_name_start, base_name_end))
+                    lookup_name_type_mask |= (eFunctionNameTypeMethod | eFunctionNameTypeBase);
+            }
+            else
+            {
+                base_name_start = basename.data();
+                base_name_end = base_name_start + basename.size();
                 lookup_name_type_mask |= (eFunctionNameTypeMethod | eFunctionNameTypeBase);
+            }
         }
     }
     else
@@ -1435,11 +1611,30 @@ Module::PrepareForFunctionNameLookup (const ConstString &name,
         {
             // If they've asked for a CPP method or function name and it can't be that, we don't
             // even need to search for CPP methods or names.
-            if (!CPPLanguageRuntime::IsPossibleCPPCall(name_cstr, base_name_start, base_name_end))
+            CPPLanguageRuntime::MethodName cpp_method (name);
+            if (cpp_method.IsValid())
             {
-                lookup_name_type_mask &= ~(eFunctionNameTypeMethod | eFunctionNameTypeBase);
-                if (lookup_name_type_mask == eFunctionNameTypeNone)
-                    return;
+                llvm::StringRef basename (cpp_method.GetBasename());
+                base_name_start = basename.data();
+                base_name_end = base_name_start + basename.size();
+
+                if (!cpp_method.GetQualifiers().empty())
+                {
+                    // There is a "const" or other qualifer following the end of the fucntion parens,
+                    // this can't be a eFunctionNameTypeBase
+                    lookup_name_type_mask &= ~(eFunctionNameTypeBase);
+                    if (lookup_name_type_mask == eFunctionNameTypeNone)
+                        return;
+                }
+            }
+            else
+            {
+                if (!CPPLanguageRuntime::StripNamespacesFromVariableName (name_cstr, base_name_start, base_name_end))
+                {
+                    lookup_name_type_mask &= ~(eFunctionNameTypeMethod | eFunctionNameTypeBase);
+                    if (lookup_name_type_mask == eFunctionNameTypeNone)
+                        return;
+                }
             }
         }
         

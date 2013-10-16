@@ -15,10 +15,10 @@
 
 #ifdef OPENSCOP_FOUND
 
+#include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/ScopPass.h"
 
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Assembly/Writer.h"
 
 #define OPENSCOP_INT_T_IS_MP
@@ -36,7 +36,8 @@ namespace {
 static cl::opt<std::string>
 ExportDir("polly-export-dir",
           cl::desc("The directory to export the .scop files to."), cl::Hidden,
-          cl::value_desc("Directory path"), cl::ValueRequired, cl::init("."));
+          cl::value_desc("Directory path"), cl::ValueRequired, cl::init("."),
+          cl::cat(PollyCategory));
 
 struct ScopExporter : public ScopPass {
   static char ID;
@@ -49,7 +50,6 @@ struct ScopExporter : public ScopPass {
   void printScop(raw_ostream &OS) const;
   void getAnalysisUsage(AnalysisUsage &AU) const;
 };
-
 }
 
 char ScopExporter::ID = 0;
@@ -80,7 +80,6 @@ public:
   OpenScop(Scop *S);
   ~OpenScop();
   void print(FILE *F);
-
 };
 
 OpenScop::OpenScop(Scop *S) : PollyScop(S) {
@@ -221,7 +220,7 @@ void OpenScop::print(FILE *F) { openscop_scop_print_dot_scop(F, openscop); }
 /// @param user The matrix
 /// @param c The constraint
 int OpenScop::domainToMatrix_constraint(isl_constraint *c, void *user) {
-  openscop_matrix_p m = (openscop_matrix_p) user;
+  openscop_matrix_p m = (openscop_matrix_p)user;
 
   int nb_params = isl_constraint_dim(c, isl_space_param);
   int nb_vars = isl_constraint_dim(c, isl_space_set);
@@ -270,7 +269,7 @@ int OpenScop::domainToMatrix_constraint(isl_constraint *c, void *user) {
 /// for matrix lists is currently not available in OpenScop. So union of
 /// polyhedron are not yet supported
 int OpenScop::domainToMatrix_basic_set(isl_basic_set *bset, void *user) {
-  openscop_matrix_p m = (openscop_matrix_p) user;
+  openscop_matrix_p m = (openscop_matrix_p)user;
   assert(!m->NbRows && "Union of polyhedron not yet supported");
 
   isl_basic_set_foreach_constraint(bset, &domainToMatrix_constraint, user);
@@ -307,7 +306,7 @@ openscop_matrix_p OpenScop::domainToMatrix(isl_set *PS) {
 /// @param user The matrix
 /// @param c The constraint
 int OpenScop::scatteringToMatrix_constraint(isl_constraint *c, void *user) {
-  openscop_matrix_p m = (openscop_matrix_p) user;
+  openscop_matrix_p m = (openscop_matrix_p)user;
 
   int nb_params = isl_constraint_dim(c, isl_space_param);
   int nb_in = isl_constraint_dim(c, isl_space_in);
@@ -364,7 +363,7 @@ int OpenScop::scatteringToMatrix_constraint(isl_constraint *c, void *user) {
 /// for matrix lists is currently not available in OpenScop. So union of
 /// polyhedron are not yet supported
 int OpenScop::scatteringToMatrix_basic_map(isl_basic_map *bmap, void *user) {
-  openscop_matrix_p m = (openscop_matrix_p) user;
+  openscop_matrix_p m = (openscop_matrix_p)user;
   assert(!m->NbRows && "Union of polyhedron not yet supported");
 
   isl_basic_map_foreach_constraint(bmap, &scatteringToMatrix_constraint, user);
@@ -402,7 +401,7 @@ openscop_matrix_p OpenScop::scatteringToMatrix(isl_map *pmap) {
 /// @param user The matrix
 /// @param c The constraint
 int OpenScop::accessToMatrix_constraint(isl_constraint *c, void *user) {
-  openscop_matrix_p m = (openscop_matrix_p) user;
+  openscop_matrix_p m = (openscop_matrix_p)user;
 
   int nb_params = isl_constraint_dim(c, isl_space_param);
   int nb_in = isl_constraint_dim(c, isl_space_in);
@@ -571,9 +570,9 @@ void ScopExporter::getAnalysisUsage(AnalysisUsage &AU) const {
   ScopPass::getAnalysisUsage(AU);
 }
 
-static RegisterPass<ScopExporter>
-A("polly-export", "Polly - Export Scops with OpenScop library"
-                  " (Writes a .scop file for each Scop)");
+static RegisterPass<ScopExporter> A("polly-export",
+                                    "Polly - Export Scops with OpenScop library"
+                                    " (Writes a .scop file for each Scop)");
 
 Pass *polly::createScopExporterPass() { return new ScopExporter(); }
 

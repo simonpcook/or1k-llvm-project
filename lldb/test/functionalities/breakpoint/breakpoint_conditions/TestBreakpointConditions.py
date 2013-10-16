@@ -34,12 +34,14 @@ class BreakpointConditionsTestCase(TestBase):
         self.buildDsym()
         self.breakpoint_conditions_python()
 
+    @expectedFailureFreeBSD('llvm.org/pr17213')
     @dwarf_test
     def test_breakpoint_condition_with_dwarf_and_run_command(self):
         """Exercise breakpoint condition with 'breakpoint modify -c <expr> id'."""
         self.buildDwarf()
         self.breakpoint_conditions()
 
+    @expectedFailureFreeBSD('llvm.org/pr17213')
     @dwarf_test
     def test_breakpoint_condition_inline_with_dwarf_and_run_command(self):
         """Exercise breakpoint condition inline with 'breakpoint set'."""
@@ -117,6 +119,20 @@ class BreakpointConditionsTestCase(TestBase):
         self.expect("frame variable --show-types val", VARIABLES_DISPLAYED_CORRECTLY,
             startstr = '(int) val = 1')
 
+        self.runCmd("process kill")
+        self.runCmd("breakpoint disable")
+
+        self.runCmd("breakpoint set -p Loop")
+        self.runCmd("breakpoint modify -c ($eax&&i)")
+        self.runCmd("run")
+        
+        self.expect("process status", PROCESS_STOPPED,
+            patterns = ['Process .* stopped'])
+
+        self.runCmd("continue")
+
+        self.expect("process status", PROCESS_EXITED,
+            patterns = ['Process .* exited'])
 
     def breakpoint_conditions_python(self):
         """Use Python APIs to set breakpoint conditions."""

@@ -59,9 +59,6 @@ public:
     ValidatePlan (Stream *error);
 
     virtual bool
-    PlanExplainsStop (Event *event_ptr);
-
-    virtual bool
     ShouldStop (Event *event_ptr);
     
     virtual Vote
@@ -118,12 +115,17 @@ public:
     
     // If the thread plan stops mid-course, this will be the stop reason that interrupted us.
     // Once DoTakedown is called, this will be the real stop reason at the end of the function call.
+    // If it hasn't been set for one or the other of these reasons, we'll return the PrivateStopReason.
     // This is needed because we want the CallFunction thread plans not to show up as the stop reason.
     // But if something bad goes wrong, it is nice to be able to tell the user what really happened.
+
     virtual lldb::StopInfoSP
     GetRealStopInfo()
     {
-        return m_real_stop_info_sp;
+        if (m_real_stop_info_sp)
+            return m_real_stop_info_sp;
+        else
+            return GetPrivateStopInfo ();
     }
     
     lldb::addr_t
@@ -135,8 +137,12 @@ public:
     virtual bool
     RestoreThreadState();
 
-protected:
+protected:    
     void ReportRegisterState (const char *message);
+
+    virtual bool
+    DoPlanExplainsStop (Event *event_ptr);
+
 private:
 
     bool

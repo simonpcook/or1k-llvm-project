@@ -13,10 +13,12 @@
 
 #include <stdarg.h>
 
+#include <map>
 #include <string>
 
 #include "lldb/lldb-private.h"
 #include "lldb/Core/StringList.h"
+#include "lldb/Host/File.h"
 
 namespace lldb_private {
 
@@ -208,6 +210,9 @@ public:
     static lldb::pid_t
     GetCurrentProcessID ();
 
+    static void
+    Kill(lldb::pid_t pid, int signo);
+
     //------------------------------------------------------------------
     /// Get the thread ID for the calling thread in the current process.
     ///
@@ -263,6 +268,17 @@ public:
                 lldb::thread_result_t *thread_result_ptr,
                 Error *error);
 
+    typedef void (*ThreadLocalStorageCleanupCallback) (void *p);
+
+    static lldb::thread_key_t
+    ThreadLocalStorageCreate(ThreadLocalStorageCleanupCallback callback);
+
+    static void*
+    ThreadLocalStorageGet(lldb::thread_key_t key);
+
+    static void
+    ThreadLocalStorageSet(lldb::thread_key_t key, void *value);
+
     //------------------------------------------------------------------
     /// Gets the name of a thread in a process.
     ///
@@ -299,8 +315,29 @@ public:
     ///     \b true if the thread name was able to be set, \b false
     ///     otherwise.
     //------------------------------------------------------------------
-    static void
+    static bool
     SetThreadName (lldb::pid_t pid, lldb::tid_t tid, const char *name);
+
+    //------------------------------------------------------------------
+    /// Sets a shortened name of a thread in the current process.
+    ///
+    /// @param[in] pid
+    ///     The process ID in which we are trying to name a thread.
+    ///
+    /// @param[in] tid
+    ///     The thread ID which we are trying to name.
+    ///
+    /// @param[in] name
+    ///     The current thread's name in the current process to \a name.
+    ///
+    /// @param[in] len
+    ///     The maximum length for the thread's shortened name.
+    ///
+    /// @return
+    ///     \b true if the thread name was able to be set, \b false
+    ///     otherwise.
+    static bool
+    SetShortThreadName (lldb::pid_t pid, lldb::tid_t tid, const char *name, size_t len);
 
     //------------------------------------------------------------------
     /// Gets the FileSpec of the current process (the process that
@@ -414,7 +451,12 @@ public:
     static uint32_t
     FindProcesses (const ProcessInstanceInfoMatch &match_info,
                    ProcessInstanceInfoList &proc_infos);
-    
+
+    typedef std::map<lldb::pid_t, bool> TidMap;
+    typedef std::pair<lldb::pid_t, bool> TidPair;
+    static bool
+    FindProcessThreads (const lldb::pid_t pid, TidMap &tids_to_attach);
+
     static bool
     GetProcessInfo (lldb::pid_t pid, ProcessInstanceInfo &proc_info);
     
@@ -431,7 +473,7 @@ public:
                      int *signo_ptr,                // Pass NULL if you don't want the signal that caused the process to exit
                      std::string *command_output,   // Pass NULL if you don't want the command output
                      uint32_t timeout_sec,
-                     const char *shell = "/bin/bash");
+                     const char *shell = LLDB_DEFAULT_SHELL);
     
     static lldb::DataBufferSP
     GetAuxvData (lldb_private::Process *process);
@@ -467,6 +509,45 @@ public:
     DynamicLibraryGetSymbol (void *dynamic_library_handle, 
                              const char *symbol_name, 
                              Error &error);
+    
+    static uint32_t
+    MakeDirectory (const char* path, mode_t mode);
+    
+    static lldb::user_id_t
+    OpenFile (const FileSpec& file_spec,
+              uint32_t flags,
+              mode_t mode,
+              Error &error);
+    
+    static bool
+    CloseFile (lldb::user_id_t fd,
+               Error &error);
+    
+    static uint64_t
+    WriteFile (lldb::user_id_t fd,
+               uint64_t offset,
+               const void* src,
+               uint64_t src_len,
+               Error &error);
+    
+    static uint64_t
+    ReadFile (lldb::user_id_t fd,
+              uint64_t offset,
+              void* dst,
+              uint64_t dst_len,
+              Error &error);
+
+    static lldb::user_id_t
+    GetFileSize (const FileSpec& file_spec);
+    
+    static bool
+    GetFileExists (const FileSpec& file_spec);
+    
+    static bool
+    CalculateMD5 (const FileSpec& file_spec,
+                  uint64_t &low,
+                  uint64_t &high);
+
 };
 
 } // namespace lldb_private

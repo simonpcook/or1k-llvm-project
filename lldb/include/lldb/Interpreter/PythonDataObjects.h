@@ -82,13 +82,16 @@ namespace lldb_private {
         }
         
         void
-        Dump  () const
+        Dump () const
         {
             if (m_py_obj)
                 _PyObject_Dump (m_py_obj);
             else
                 puts ("NULL");
         }
+        
+        void
+        Dump (Stream &strm) const;
 
         PyObject*
         GetPythonObject () const
@@ -96,7 +99,13 @@ namespace lldb_private {
             return m_py_obj;
         }
         
-        operator bool () const
+        PythonString
+        Repr ();
+        
+        PythonString
+        Str ();
+        
+        explicit operator bool () const
         {
             return m_py_obj != NULL;
         }

@@ -51,6 +51,7 @@ public:
     const char *
     GetPluginName ();
     
+    // DEPRECATED: use GetPluginName()
     const char *
     GetShortPluginName ();
     
@@ -203,6 +204,9 @@ public:
 
     lldb::SBError
     Detach ();
+
+    lldb::SBError
+    Detach (bool keep_stopped);
 
     lldb::SBError
     Signal (int signal);

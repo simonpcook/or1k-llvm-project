@@ -23,23 +23,22 @@
 namespace lld {
 
 class Atom;
-class TargetInfo;
+class LinkingContext;
 
 /// \brief The Resolver is responsible for merging all input object files
 /// and producing a merged graph.
 class Resolver : public InputFiles::Handler {
 public:
-  Resolver(const TargetInfo &ti, const InputFiles &inputs)
-      : _targetInfo(ti), _inputFiles(inputs), _symbolTable(ti), _result(ti),
-        _haveLLVMObjs(false), _addToFinalSection(false),
-        _completedInitialObjectFiles(false) {
-  }
+  Resolver(const LinkingContext &context, const InputFiles &inputs)
+      : _context(context), _inputFiles(inputs), _symbolTable(context),
+        _result(context), _haveLLVMObjs(false), _addToFinalSection(false),
+        _completedInitialObjectFiles(false) {}
 
   // InputFiles::Handler methods
-  virtual void doDefinedAtom(const class DefinedAtom&);
-  virtual void doUndefinedAtom(const class UndefinedAtom&);
-  virtual void doSharedLibraryAtom(const class SharedLibraryAtom &);
-  virtual void doAbsoluteAtom(const class AbsoluteAtom &);
+  virtual void doDefinedAtom(const DefinedAtom&);
+  virtual void doUndefinedAtom(const UndefinedAtom&);
+  virtual void doSharedLibraryAtom(const SharedLibraryAtom &);
+  virtual void doAbsoluteAtom(const AbsoluteAtom &);
   virtual void doFile(const File&);
 
   /// @brief do work of merging and resolving and return list
@@ -66,38 +65,37 @@ private:
 
   class MergedFile : public MutableFile {
   public:
-    MergedFile(const TargetInfo &ti) : MutableFile(ti, "<linker-internal>") {}
+    MergedFile(const LinkingContext &context)
+        : MutableFile(context, "<linker-internal>") {}
 
     virtual const atom_collection<DefinedAtom> &defined() const {
       return _definedAtoms;
-  }
-  virtual const atom_collection<UndefinedAtom>& undefined() const {
+    }
+    virtual const atom_collection<UndefinedAtom>& undefined() const {
       return _undefinedAtoms;
-  }
-  virtual const atom_collection<SharedLibraryAtom>& sharedLibrary() const {
+    }
+    virtual const atom_collection<SharedLibraryAtom>& sharedLibrary() const {
       return _sharedLibraryAtoms;
-  }
-  virtual const atom_collection<AbsoluteAtom>& absolute() const {
+    }
+    virtual const atom_collection<AbsoluteAtom>& absolute() const {
       return _absoluteAtoms;
-  }
+    }
 
-  void addAtoms(std::vector<const Atom*>& atoms);
+    void addAtoms(std::vector<const Atom*>& atoms);
 
-  virtual void addAtom(const Atom& atom);
-  virtual DefinedAtomRange definedAtoms();
+    virtual void addAtom(const Atom& atom);
+    virtual DefinedAtomRange definedAtoms();
 
   private:
-    friend class Resolver;
     atom_collection_vector<DefinedAtom>         _definedAtoms;
     atom_collection_vector<UndefinedAtom>       _undefinedAtoms;
     atom_collection_vector<SharedLibraryAtom>   _sharedLibraryAtoms;
     atom_collection_vector<AbsoluteAtom>        _absoluteAtoms;
   };
 
-
-  const TargetInfo             &_targetInfo;
-  const InputFiles             &_inputFiles;
-  SymbolTable                   _symbolTable;
+  const LinkingContext &_context;
+  const InputFiles &_inputFiles;
+  SymbolTable _symbolTable;
   std::vector<const Atom *>     _atoms;
   std::set<const Atom *>        _deadStripRoots;
   std::vector<const Atom *>     _atomsWithUnresolvedReferences;

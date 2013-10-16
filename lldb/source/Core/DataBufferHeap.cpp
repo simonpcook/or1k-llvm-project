@@ -24,8 +24,10 @@ DataBufferHeap::DataBufferHeap () :
 // with "ch".
 //----------------------------------------------------------------------
 DataBufferHeap::DataBufferHeap (lldb::offset_t n, uint8_t ch) :
-    m_data(n, ch)
+    m_data()
 {
+    if (n < m_data.max_size())
+        m_data.assign (n, ch);
 }
 
 //----------------------------------------------------------------------
@@ -101,5 +103,9 @@ DataBufferHeap::CopyData (const void *src, uint64_t src_len)
         m_data.clear();
 }
 
-
-
+void
+DataBufferHeap::Clear()
+{
+    buffer_t empty;
+    m_data.swap(empty);
+}

@@ -71,6 +71,10 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   endif() 
 endif()
 
+if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+  add_definitions( -DLLDB_DISABLE_PYTHON )
+endif ()
+
 macro(add_lldb_definitions)
   # We don't want no semicolons on LLDB_DEFINITIONS:
   foreach(arg ${ARGN})
@@ -85,7 +89,7 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}/../clang/include")
 
 # lldb requires c++11 to build. Make sure that we have a compiler and standard
 # library combination that can do that.
-if (MSVC11)
+if (MSVC11 OR MSVC12)
   # Do nothing, we're good.
 elseif (NOT MSVC)
   # gcc and clang require the -std=c++0x or -std=c++11 flag.
@@ -118,6 +122,13 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   )
 endif()
 
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+    AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "3.3")
+  add_lldb_definitions(
+    -Wno-deprecated-register # Suppress "deprecated register keyword" warnings
+  )
+endif()
+
 # Disable MSVC warnings
 if( MSVC )
   add_lldb_definitions(
@@ -147,6 +158,11 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
 "`CMakeFiles'. Please delete them.")
 endif()
 
+# Compute the LLDB version from the LLVM version.
+string(REGEX MATCH "[0-9]+\\.[0-9]+(\\.[0-9]+)?" LLDB_VERSION
+  ${PACKAGE_VERSION})
+message(STATUS "LLDB version: ${LLDB_VERSION}")
+
 macro(add_lldb_library name)
   llvm_process_sources(srcs ${ARGN})
   if (MSVC_IDE OR XCODE)
@@ -170,8 +186,10 @@ macro(add_lldb_library name)
   #endif()
 
   if(LLDB_USED_LIBS)
-    if (CMAKE_SYSTEM_NAME MATCHES "Linux")
+    if (CMAKE_SYSTEM_NAME MATCHES "Linux" OR CMAKE_SYSTEM_NAME MATCHES "FreeBSD" OR CMAKE_SYSTEM_NAME MATCHES "Windows")
       target_link_libraries(${name} -Wl,--start-group ${LLDB_USED_LIBS} -Wl,--end-group)
+    else()
+      target_link_libraries(${name} ${LLDB_USED_LIBS})
     endif()
   endif()
   target_link_libraries(${name} ${CLANG_USED_LIBS})
@@ -222,8 +240,33 @@ install(DIRECTORY include/
   PATTERN ".svn" EXCLUDE
   )
 
+
+# Find libraries or frameworks that may be needed
+if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
+  find_library(CARBON_LIBRARY Carbon)
+  find_library(FOUNDATION_LIBRARY Foundation)
+  find_library(CORE_FOUNDATION_LIBRARY CoreFoundation)
+  find_library(CORE_SERVICES_LIBRARY CoreServices)
+  find_library(SECURITY_LIBRARY Security)
+  find_library(DEBUG_SYMBOLS_LIBRARY DebugSymbols PATHS "/System/Library/PrivateFrameworks")
+
+  set(LIBXML2_INCLUDE_DIR "/usr/include/libxml2")
+  list(APPEND system_libs xml2)
+  list(APPEND system_libs ${CARBON_LIBRARY} ${FOUNDATION_LIBRARY}
+  ${CORE_FOUNDATION_LIBRARY} ${CORE_SERVICES_LIBRARY} ${SECURITY_LIBRARY}
+  ${DEBUG_SYMBOLS_LIBRARY})
+endif()
+
+# On FreeBSD, link libexecinfo because libc is missing  backtrace()
+if (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+  list(APPEND system_libs execinfo)
+endif()
+
 #add_subdirectory(include)
-add_subdirectory(scripts)
+add_subdirectory(docs)
+if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+  add_subdirectory(scripts)
+endif()
 add_subdirectory(source)
 add_subdirectory(test)
 add_subdirectory(tools)

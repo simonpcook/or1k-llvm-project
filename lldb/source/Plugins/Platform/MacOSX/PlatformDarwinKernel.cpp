@@ -53,7 +53,7 @@ PlatformDarwinKernel::Initialize ()
 {
     if (g_initialize_count++ == 0)
     {
-        PluginManager::RegisterPlugin (PlatformDarwinKernel::GetShortPluginNameStatic(),
+        PluginManager::RegisterPlugin (PlatformDarwinKernel::GetPluginNameStatic(),
                                        PlatformDarwinKernel::GetDescriptionStatic(),
                                        PlatformDarwinKernel::CreateInstance,
                                        PlatformDarwinKernel::DebuggerInitialize);
@@ -147,16 +147,11 @@ PlatformDarwinKernel::CreateInstance (bool force, const ArchSpec *arch)
 }
 
 
-const char *
+lldb_private::ConstString
 PlatformDarwinKernel::GetPluginNameStatic ()
 {
-    return "PlatformDarwinKernel";
-}
-
-const char *
-PlatformDarwinKernel::GetShortPluginNameStatic()
-{
-    return "darwin-kernel";
+    static ConstString g_name("darwin-kernel");
+    return g_name;
 }
 
 const char *
@@ -290,11 +285,7 @@ PlatformDarwinKernel::GetStatus (Stream &strm)
     for (uint32_t i=0; i<num_kext_dirs; ++i)
     {
         const FileSpec &kext_dir = m_directories_searched[i];
-        char pathbuf[PATH_MAX];
-        if (kext_dir.GetPath (pathbuf, sizeof (pathbuf)))
-        {
-            strm.Printf (" Kext directories: [%2u] \"%s\"\n", i, pathbuf);
-        }
+        strm.Printf (" Kext directories: [%2u] \"%s\"\n", i, kext_dir.GetPath().c_str());
     }
     strm.Printf (" Total number of kexts indexed: %d\n", (int) m_name_to_kext_path_map.size());
 }
@@ -347,7 +338,7 @@ PlatformDarwinKernel::GetiOSSDKDirectoriesToSearch (std::vector<lldb_private::Fi
     char pathbuf[PATH_MAX];
     ::snprintf (pathbuf, sizeof (pathbuf), "%s/Platforms/iPhoneOS.platform/Developer/SDKs", developer_dir);
     FileSpec ios_sdk(pathbuf, true);
-    if (ios_sdk.Exists() && ios_sdk.GetFileType() == FileSpec::eFileTypeDirectory)
+    if (ios_sdk.Exists() && ios_sdk.IsDirectory())
     {
         directories.push_back (ios_sdk);
     }
@@ -364,7 +355,7 @@ PlatformDarwinKernel::GetMacSDKDirectoriesToSearch (std::vector<lldb_private::Fi
     char pathbuf[PATH_MAX];
     ::snprintf (pathbuf, sizeof (pathbuf), "%s/Platforms/MacOSX.platform/Developer/SDKs", developer_dir);
     FileSpec mac_sdk(pathbuf, true);
-    if (mac_sdk.Exists() && mac_sdk.GetFileType() == FileSpec::eFileTypeDirectory)
+    if (mac_sdk.Exists() && mac_sdk.IsDirectory())
     {
         directories.push_back (mac_sdk);
     }
@@ -374,7 +365,7 @@ void
 PlatformDarwinKernel::GetGenericSDKDirectoriesToSearch (std::vector<lldb_private::FileSpec> &directories)
 {
     FileSpec generic_sdk("/AppleInternal/Developer/KDKs", true);
-    if (generic_sdk.Exists() && generic_sdk.GetFileType() == FileSpec::eFileTypeDirectory)
+    if (generic_sdk.Exists() && generic_sdk.IsDirectory())
     {
         directories.push_back (generic_sdk);
     }
@@ -389,13 +380,19 @@ void
 PlatformDarwinKernel::GetMacDirectoriesToSearch (std::vector<lldb_private::FileSpec> &directories)
 {
     FileSpec sle("/System/Library/Extensions", true);
-    if (sle.Exists() && sle.GetFileType() == FileSpec::eFileTypeDirectory)
+    if (sle.Exists() && sle.IsDirectory())
     {
         directories.push_back(sle);
     }
 
+    FileSpec le("/Library/Extensions", true);
+    if (le.Exists() && le.IsDirectory())
+    {
+        directories.push_back(le);
+    }
+
     FileSpec kdk("/Volumes/KernelDebugKit", true);
-    if (kdk.Exists() && kdk.GetFileType() == FileSpec::eFileTypeDirectory)
+    if (kdk.Exists() && kdk.IsDirectory())
     {
         directories.push_back(kdk);
     }
@@ -412,7 +409,7 @@ PlatformDarwinKernel::GetGenericDirectoriesToSearch (std::vector<lldb_private::F
     char pathbuf[PATH_MAX];
     ::snprintf (pathbuf, sizeof (pathbuf), "%s/../Symbols", developer_dir);
     FileSpec symbols_dir (pathbuf, true);
-    if (symbols_dir.Exists() && symbols_dir.GetFileType() == FileSpec::eFileTypeDirectory)
+    if (symbols_dir.Exists() && symbols_dir.IsDirectory())
     {
         directories.push_back (symbols_dir);
     }
@@ -429,22 +426,18 @@ PlatformDarwinKernel::GetUserSpecifiedDirectoriesToSearch (std::vector<lldb_priv
     {
         FileSpec dir = user_dirs.GetFileSpecAtIndex (i);
         dir.ResolvePath();
-        if (dir.Exists() && dir.GetFileType() == FileSpec::eFileTypeDirectory)
+        if (dir.Exists() && dir.IsDirectory())
         {
             directories.push_back (dir);
             possible_sdk_dirs.push_back (dir);  // does this directory have a *.sdk or *.kdk that we should look in?
 
-            char dir_pathbuf[PATH_MAX];
-            if (dir.GetPath (dir_pathbuf, sizeof (dir_pathbuf)))
+            // Is there a "System/Library/Extensions" subdir of this directory?
+            std::string dir_sle_path = dir.GetPath();
+            dir_sle_path.append ("/System/Library/Extensions");
+            FileSpec dir_sle(dir_sle_path.c_str(), true);
+            if (dir_sle.Exists() && dir_sle.IsDirectory())
             {
-                // Is there a "System/Library/Extensions" subdir of this directory?
-                char pathbuf[PATH_MAX];
-                ::snprintf (pathbuf, sizeof (pathbuf), "%s/System/Library/Extensions", dir_pathbuf);
-                FileSpec dir_sle(pathbuf, true);
-                if (dir_sle.Exists() && dir_sle.GetFileType() == FileSpec::eFileTypeDirectory)
-                {
-                    directories.push_back (dir_sle);
-                }
+                directories.push_back (dir_sle);
             }
         }
     }
@@ -461,13 +454,13 @@ PlatformDarwinKernel::SearchSDKsForKextDirectories (std::vector<lldb_private::Fi
     for (uint32_t i = 0; i < num_sdks; i++)
     {
         const FileSpec &sdk_dir = sdk_dirs[i];
-        char pathbuf[PATH_MAX];
-        if (sdk_dir.GetPath (pathbuf, sizeof (pathbuf)))
+        std::string sdk_dir_path = sdk_dir.GetPath();
+        if (!sdk_dir_path.empty())
         {
             const bool find_directories = true;
             const bool find_files = false;
             const bool find_other = false;
-            FileSpec::EnumerateDirectory (pathbuf,
+            FileSpec::EnumerateDirectory (sdk_dir_path.c_str(),
                                           find_directories,
                                           find_files,
                                           find_other,
@@ -492,16 +485,12 @@ PlatformDarwinKernel::GetKextDirectoriesInSDK (void *baton,
         && (file_spec.GetFileNameExtension() == ConstString("sdk")
             || file_spec.GetFileNameExtension() == ConstString("kdk")))
     {
-        char pathbuf[PATH_MAX];
-        if (file_spec.GetPath (pathbuf, PATH_MAX))
+        std::string kext_directory_path = file_spec.GetPath();
+        kext_directory_path.append ("/System/Library/Extensions");
+        FileSpec kext_directory (kext_directory_path.c_str(), true);
+        if (kext_directory.Exists() && kext_directory.IsDirectory())
         {
-            char kext_directory_str[PATH_MAX];
-            ::snprintf (kext_directory_str, sizeof (kext_directory_str), "%s/%s", pathbuf, "System/Library/Extensions");
-            FileSpec kext_directory (kext_directory_str, true);
-            if (kext_directory.Exists() && kext_directory.GetFileType() == FileSpec::eFileTypeDirectory)
-            {
-                ((std::vector<lldb_private::FileSpec> *)baton)->push_back(kext_directory);
-            }
+            ((std::vector<lldb_private::FileSpec> *)baton)->push_back(kext_directory);
         }
     }
     return FileSpec::eEnumerateDirectoryResultNext;
@@ -516,38 +505,30 @@ PlatformDarwinKernel::IndexKextsInDirectories (std::vector<lldb_private::FileSpe
     for (uint32_t i = 0; i < num_dirs; i++)
     {
         const FileSpec &dir = kext_dirs[i];
-        char pathbuf[PATH_MAX];
-        if (dir.GetPath (pathbuf, sizeof(pathbuf)))
-        {
-            const bool find_directories = true;
-            const bool find_files = false;
-            const bool find_other = false;
-            FileSpec::EnumerateDirectory (pathbuf,
-                                          find_directories,
-                                          find_files,
-                                          find_other,
-                                          GetKextsInDirectory,
-                                          &kext_bundles);
-        }
+        const bool find_directories = true;
+        const bool find_files = false;
+        const bool find_other = false;
+        FileSpec::EnumerateDirectory (dir.GetPath().c_str(),
+                                      find_directories,
+                                      find_files,
+                                      find_other,
+                                      GetKextsInDirectory,
+                                      &kext_bundles);
     }
 
     const uint32_t num_kexts = kext_bundles.size();
     for (uint32_t i = 0; i < num_kexts; i++)
     {
         const FileSpec &kext = kext_bundles[i];
-        char pathbuf[PATH_MAX];
-        if (kext.GetPath (pathbuf, sizeof (pathbuf)))
+        CFCBundle bundle (kext.GetPath().c_str());
+        CFStringRef bundle_id (bundle.GetIdentifier());
+        if (bundle_id && CFGetTypeID (bundle_id) == CFStringGetTypeID ())
         {
-            CFCBundle bundle (pathbuf);
-            CFStringRef bundle_id (bundle.GetIdentifier());
-            if (bundle_id && CFGetTypeID (bundle_id) == CFStringGetTypeID ())
+            char bundle_id_buf[PATH_MAX];
+            if (CFStringGetCString (bundle_id, bundle_id_buf, sizeof (bundle_id_buf), kCFStringEncodingUTF8))
             {
-                char bundle_id_buf[PATH_MAX];
-                if (CFStringGetCString (bundle_id, bundle_id_buf, sizeof (bundle_id_buf), kCFStringEncodingUTF8))
-                {
-                    ConstString bundle_conststr(bundle_id_buf);
-                    m_name_to_kext_path_map.insert(std::pair<ConstString, FileSpec>(bundle_conststr, kext));
-                }
+                ConstString bundle_conststr(bundle_id_buf);
+                m_name_to_kext_path_map.insert(std::pair<ConstString, FileSpec>(bundle_conststr, kext));
             }
         }
     }
@@ -566,30 +547,30 @@ PlatformDarwinKernel::GetKextsInDirectory (void *baton,
     if (file_type == FileSpec::eFileTypeDirectory && file_spec.GetFileNameExtension() == ConstString("kext"))
     {
         ((std::vector<lldb_private::FileSpec> *)baton)->push_back(file_spec);
-        bool search_inside = false;
-        char pathbuf[PATH_MAX];
-        ::snprintf (pathbuf, sizeof (pathbuf), "%s/%s/Contents/PlugIns", file_spec.GetDirectory().GetCString(), file_spec.GetFilename().GetCString());
-        FileSpec contents_plugins (pathbuf, false);
-        if (contents_plugins.Exists() && contents_plugins.GetFileType() == FileSpec::eFileTypeDirectory)
+        std::string kext_bundle_path = file_spec.GetPath();
+        std::string search_here_too;
+        std::string contents_plugins_path = kext_bundle_path + "/Contents/PlugIns";
+        FileSpec contents_plugins (contents_plugins_path.c_str(), false);
+        if (contents_plugins.Exists() && contents_plugins.IsDirectory())
         {
-            search_inside = true;
+            search_here_too = contents_plugins_path;
         }
         else
         {
-            ::snprintf (pathbuf, sizeof (pathbuf), "%s/%s/PlugIns", file_spec.GetDirectory().GetCString(), file_spec.GetFilename().GetCString());
-            FileSpec plugins (pathbuf, false);
-            if (plugins.Exists() && plugins.GetFileType() == FileSpec::eFileTypeDirectory)
+            std::string plugins_path = kext_bundle_path + "/PlugIns";
+            FileSpec plugins (plugins_path.c_str(), false);
+            if (plugins.Exists() && plugins.IsDirectory())
             {
-                search_inside = true;
+                search_here_too = plugins_path;
             }
         }
 
-        if (search_inside)
+        if (!search_here_too.empty())
         {
             const bool find_directories = true;
             const bool find_files = false;
             const bool find_other = false;
-            FileSpec::EnumerateDirectory (pathbuf,
+            FileSpec::EnumerateDirectory (search_here_too.c_str(),
                                           find_directories,
                                           find_files,
                                           find_other,
@@ -610,17 +591,19 @@ PlatformDarwinKernel::GetSharedModule (const ModuleSpec &module_spec,
     Error error;
     module_sp.reset();
     const FileSpec &platform_file = module_spec.GetFileSpec();
-    char kext_bundle_id[PATH_MAX];
-    if (platform_file.GetPath (kext_bundle_id, sizeof (kext_bundle_id)))
+
+    // Treat the file's path as a kext bundle ID (e.g. "com.apple.driver.AppleIRController") and search our kext index.
+    std::string kext_bundle_id = platform_file.GetPath();
+    if (!kext_bundle_id.empty())
     {
-        ConstString kext_bundle_cs(kext_bundle_id);
+        ConstString kext_bundle_cs(kext_bundle_id.c_str());
         if (m_name_to_kext_path_map.count(kext_bundle_cs) > 0)
         {
             for (BundleIDToKextIterator it = m_name_to_kext_path_map.begin (); it != m_name_to_kext_path_map.end (); ++it)
             {
                 if (it->first == kext_bundle_cs)
                 {
-                    error = ExamineKextForMatchingUUID (it->second, module_spec.GetUUID(), module_sp);
+                    error = ExamineKextForMatchingUUID (it->second, module_spec.GetUUID(), module_spec.GetArchitecture(), module_sp);
                     if (module_sp.get())
                     {
                         return error;
@@ -630,11 +613,12 @@ PlatformDarwinKernel::GetSharedModule (const ModuleSpec &module_spec,
         }
     }
 
-    return error;
+    // Else fall back to treating the file's path as an actual file path - defer to PlatformDarwin's GetSharedModule.
+    return PlatformDarwin::GetSharedModule (module_spec, module_sp, module_search_paths_ptr, old_module_sp_ptr, did_create_ptr);
 }
 
 Error
-PlatformDarwinKernel::ExamineKextForMatchingUUID (const FileSpec &kext_bundle_path, const lldb_private::UUID &uuid, ModuleSP &exe_module_sp)
+PlatformDarwinKernel::ExamineKextForMatchingUUID (const FileSpec &kext_bundle_path, const lldb_private::UUID &uuid, const ArchSpec &arch, ModuleSP &exe_module_sp)
 {
     Error error;
     FileSpec exe_file = kext_bundle_path;
@@ -643,10 +627,19 @@ PlatformDarwinKernel::ExamineKextForMatchingUUID (const FileSpec &kext_bundle_pa
     {
         ModuleSpec exe_spec (exe_file);
         exe_spec.GetUUID() = uuid;
-        error = ModuleList::GetSharedModule (exe_spec, exe_module_sp, NULL, NULL, NULL);
-        if (exe_module_sp && exe_module_sp->GetObjectFile())
+        exe_spec.GetArchitecture() = arch;
+
+        // First try to create a ModuleSP with the file / arch and see if the UUID matches.
+        // If that fails (this exec file doesn't have the correct uuid), don't call GetSharedModule
+        // (which may call in to the DebugSymbols framework and therefore can be slow.)
+        ModuleSP module_sp (new Module (exe_file, arch));
+        if (module_sp && module_sp->GetObjectFile() && module_sp->MatchesModuleSpec (exe_spec))
         {
-            return error;
+            error = ModuleList::GetSharedModule (exe_spec, exe_module_sp, NULL, NULL, NULL);
+            if (exe_module_sp && exe_module_sp->GetObjectFile())
+            {
+                return error;
+            }
         }
         exe_module_sp.reset();
     }
@@ -662,5 +655,23 @@ PlatformDarwinKernel::GetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &a
     return x86GetSupportedArchitectureAtIndex (idx, arch);
 #endif
 }
+
+#else  // __APPLE__
+
+// Since DynamicLoaderDarwinKernel is compiled in for all systems, and relies on
+// PlatformDarwinKernel for the plug-in name, we compile just the plug-in name in
+// here to avoid issues. We are tracking an internal bug to resolve this issue by
+// either not compiling in DynamicLoaderDarwinKernel for non-apple builds, or to make
+// PlatformDarwinKernel build on all systems. PlatformDarwinKernel is currently not
+// compiled on other platforms due to the use of the Mac-specific
+// source/Host/macosx/cfcpp utilities.
+
+lldb_private::ConstString
+PlatformDarwinKernel::GetPluginNameStatic ()
+{
+    static lldb_private::ConstString g_name("darwin-kernel");
+    return g_name;
+}
+
 
 #endif // __APPLE__

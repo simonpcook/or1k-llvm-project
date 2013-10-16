@@ -3,12 +3,11 @@ RUN: lld -flavor gnu -target x86_64 %p/Inputs/weak.o %p/Inputs/ovrd.o \
 RUN:    -o %t --noinhibit-exec
 RUN: llvm-nm %t | FileCheck -check-prefix=WEAKORDER %s
 RUN: lld -flavor gnu -target x86_64 %p/Inputs/weak.o \
-RUN:   %p/Inputs/ovrd.o -o %t2 -emit-yaml --noinhibit-exec
+RUN:   %p/Inputs/ovrd.o -o %t2 --output-filetype=yaml --noinhibit-exec
 RUN: FileCheck -check-prefix=WEAKATOMSORDER %s < %t2
 
-WEAKORDER: 004001ec T f
+WEAKORDER: {{[0-9a-c]+}} T f
 
-WEAKATOMSORDER:  - name:            .text
 WEAKATOMSORDER:    references:      
 WEAKATOMSORDER:      - kind:            layout-after
 WEAKATOMSORDER:        offset:          0
@@ -17,18 +16,18 @@ WEAKATOMSORDER:  - name:            fn
 WEAKATOMSORDER:    references:      
 WEAKATOMSORDER:      - kind:            layout-after
 WEAKATOMSORDER:        offset:          0
-WEAKATOMSORDER:        target:          L001
-WEAKATOMSORDER:  - ref-name:        L001
+WEAKATOMSORDER:        target:          [[CONSTSTRA:[-a-zA-Z0-9_]+]]
+WEAKATOMSORDER:  - ref-name:        [[CONSTSTRA]]
 WEAKATOMSORDER:    scope:           global
 WEAKATOMSORDER:    content:         [ 55, 48, 89, E5, BF, 00, 00, 00, 00, E8, 00, 00, 
 WEAKATOMSORDER:                       00, 00, 5D, C3 ]
 WEAKATOMSORDER:    references:      
-WEAKATOMSORDER:      - kind:            layout-after
-WEAKATOMSORDER:        offset:          0
-WEAKATOMSORDER:        target:          main
 WEAKATOMSORDER:      - kind:            layout-before
 WEAKATOMSORDER:        offset:          0
 WEAKATOMSORDER:        target:          fn
+WEAKATOMSORDER:      - kind:            layout-after
+WEAKATOMSORDER:        offset:          0
+WEAKATOMSORDER:        target:          main
 WEAKATOMSORDER:  - name:            main
 WEAKATOMSORDER:    scope:           global
 WEAKATOMSORDER:    content:         [ 55, 48, 89, E5, B8, 00, 00, 00, 00, E8, 00, 00, 
@@ -40,8 +39,8 @@ WEAKATOMSORDER:        target:          f
 WEAKATOMSORDER:        addend:          -4
 WEAKATOMSORDER:      - kind:            layout-before
 WEAKATOMSORDER:        offset:          0
-WEAKATOMSORDER:        target:          L001
-WEAKATOMSORDER:  - name:            .text
+WEAKATOMSORDER:        target:          [[CONSTSTRA]]
+WEAKATOMSORDER:  - ref-name:            {{[0-9A-Z]+}}
 WEAKATOMSORDER:    section-name:    .text
 WEAKATOMSORDER:    references:      
 WEAKATOMSORDER:      - kind:            layout-after

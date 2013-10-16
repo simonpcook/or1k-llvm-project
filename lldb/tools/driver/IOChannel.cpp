@@ -205,6 +205,7 @@ IOChannel::IOChannel
     m_read_thread_should_exit (false),
     m_out_file (out),
     m_err_file (err),
+    m_editline_out (editline_out),
     m_command_queue (),
     m_completion_key ("\t"),
     m_edit_line (::el_init (SBHostOS::GetProgramFileSpec().GetFilename(), editline_in, editline_out,  editline_out)),
@@ -226,7 +227,7 @@ IOChannel::IOChannel
     el_set (m_edit_line, EL_BIND, m_completion_key, "lldb_complete", NULL);
     el_set (m_edit_line, EL_BIND, "^r", "em-inc-search-prev", NULL);  // Cycle through backwards search, entering string
     el_set (m_edit_line, EL_BIND, "^w", "ed-delete-prev-word", NULL); // Delete previous word, behave like bash does.
-    el_set (m_edit_line, EL_BIND, "\e[3~", "ed-delete-next-char", NULL); // Fix the delete key.
+    el_set (m_edit_line, EL_BIND, "\033[3~", "ed-delete-next-char", NULL); // Fix the delete key.
     el_set (m_edit_line, EL_CLIENTDATA, this);
 
     // Source $PWD/.editrc then $HOME/.editrc
@@ -252,6 +253,9 @@ IOChannel::IOChannel
     error = ::pthread_mutexattr_destroy (&attr);
     assert (error == 0);
 
+    error = ::pthread_cond_init (&m_output_cond, NULL);
+    assert (error == 0);
+
     // Initialize time that ::el_gets was last called.
 
     m_enter_elgets_time.tv_sec = 0;
@@ -275,6 +279,7 @@ IOChannel::~IOChannel ()
         m_edit_line = NULL;
     }
 
+    ::pthread_cond_destroy (&m_output_cond);
     ::pthread_mutex_destroy (&m_output_mutex);
 }
 
@@ -305,6 +310,15 @@ IOChannel::LibeditOutputBytesReceived (void *baton, const void *src, size_t src_
     IOLocker locker (io_channel->m_output_mutex);
     const char *bytes = (const char *) src;
 
+    bool flush = false;
+
+    // See if we have a 'flush' syncronization point in there.
+    if (src_len > 0 && bytes[src_len-1] == 0)
+    {
+        src_len--;
+        flush = true;
+    }
+
     if (io_channel->IsGettingCommand() && io_channel->m_expecting_prompt)
     {
         io_channel->m_prompt_str.append (bytes, src_len);
@@ -327,11 +341,20 @@ IOChannel::LibeditOutputBytesReceived (void *baton, const void *src, size_t src_
             io_channel->m_refresh_request_pending = false;
         io_channel->OutWrite (bytes, src_len, NO_ASYNC);
     }
+
+    if (flush)
+    {
+        // Signal that we have finished all data up to the sync point.
+        IOLocker locker (io_channel->m_output_mutex);
+        io_channel->m_output_flushed = true;
+        pthread_cond_signal (&io_channel->m_output_cond);
+    }
 }
 
-bool
+IOChannel::LibeditGetInputResult
 IOChannel::LibeditGetInput (std::string &new_line)
 {
+    IOChannel::LibeditGetInputResult retval = IOChannel::eLibeditGetInputResultUnknown;
     if (m_edit_line != NULL)
     {
         int line_len = 0;
@@ -343,12 +366,29 @@ IOChannel::LibeditGetInput (std::string &new_line)
 
         // Call el_gets to prompt the user and read the user's input.
         const char *line = ::el_gets (m_edit_line, &line_len);
+
+        // Force the piped output from el_gets to finish processing.
+        // el_gets does an fflush internally, which is not sufficient here; it only
+        // writes the data into m_editline_out, but doesn't affect whether our worker
+        // thread will read that data yet. So we block here manually.
+        {
+            IOLocker locker (m_output_mutex);
+            m_output_flushed = false;
+
+            // Write a synchronization point into the stream, so we can guarantee
+            // LibeditOutputBytesReceived has processed everything up till that mark.
+            fputc (0, m_editline_out);
+
+            while (!m_output_flushed && pthread_cond_wait (&m_output_cond, &m_output_mutex))
+            { /* wait */ }
+        }
         
         // Re-set the boolean indicating whether or not el_gets is trying to get input.
         SetGettingCommand (false);
 
         if (line)
         {
+            retval = IOChannel::eLibeditGetInputValid;
             // strip any newlines off the end of the string...
             while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r'))
                 --line_len;
@@ -359,17 +399,22 @@ IOChannel::LibeditGetInput (std::string &new_line)
             }
             else
             {
+                retval = IOChannel::eLibeditGetInputEmpty;
                 // Someone just hit ENTER, return the empty string
                 new_line.clear();
             }
             // Return true to indicate success even if a string is empty
-            return true;
+            return retval;
+        }
+        else
+        {
+            retval = (line_len == 0 ? IOChannel::eLibeditGetInputEOF : IOChannel::eLibeditGetInputResultError);
         }
     }
     // Return false to indicate failure. This can happen when the file handle
     // is closed (EOF).
     new_line.clear();
-    return false;
+    return retval;
 }
 
 void *
@@ -422,9 +467,17 @@ IOChannel::Run ()
 
                     if (CommandQueueIsEmpty())
                     {
-                        if (LibeditGetInput(line) == false)
+                        IOChannel::LibeditGetInputResult getline_result = LibeditGetInput(line);
+                        if (getline_result == IOChannel::eLibeditGetInputEOF)
                         {
-                            // EOF or some other file error occurred
+                            // EOF occurred
+                            // pretend that a quit was typed so the user gets a potential
+                            // chance to confirm
+                            line.assign("quit");
+                        }
+                        else if (getline_result == IOChannel::eLibeditGetInputResultError || getline_result == IOChannel::eLibeditGetInputResultUnknown)
+                        {
+                            // some random error occurred, exit and don't ask because the state might be corrupt
                             done = true;
                             continue;
                         }

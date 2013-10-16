@@ -40,7 +40,6 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/CodeGen/BlockGenerators.h"
 #include "polly/Support/ScopHelper.h"
-
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -53,10 +52,9 @@ namespace {
 /// @brief Prepare the IR for the scop detection.
 ///
 class CodePreparation : public FunctionPass {
-  // DO NOT IMPLEMENT.
-  CodePreparation(const CodePreparation &);
-  // DO NOT IMPLEMENT.
-  const CodePreparation &operator=(const CodePreparation &);
+  CodePreparation(const CodePreparation &) LLVM_DELETED_FUNCTION;
+  const CodePreparation &operator=(
+      const CodePreparation &) LLVM_DELETED_FUNCTION;
 
   LoopInfo *LI;
   ScalarEvolution *SE;
@@ -78,7 +76,6 @@ public:
   virtual bool runOnFunction(Function &F);
   virtual void print(raw_ostream &OS, const Module *) const;
   //@}
-
 };
 }
 

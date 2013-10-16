@@ -49,7 +49,8 @@ public:
         // v1 does not support tagged pointers
         virtual bool
         GetTaggedPointerInfo (uint64_t* info_bits = NULL,
-                              uint64_t* value_bits = NULL)
+                              uint64_t* value_bits = NULL,
+                              uint64_t* payload = NULL)
         {
             return false;
         }
@@ -113,14 +114,14 @@ public:
     static lldb_private::LanguageRuntime *
     CreateInstance (Process *process, lldb::LanguageType language);
     
+    static lldb_private::ConstString
+    GetPluginNameStatic();
+    
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual ConstString
     GetPluginName();
-    
-    virtual const char *
-    GetShortPluginName();
     
     virtual uint32_t
     GetPluginVersion();

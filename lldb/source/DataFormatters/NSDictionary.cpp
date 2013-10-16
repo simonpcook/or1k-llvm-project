@@ -30,52 +30,52 @@ using namespace lldb_private::formatters;
 static ClangASTType
 GetLLDBNSPairType (TargetSP target_sp)
 {
-    ClangASTType clang_type = ClangASTType();
+    ClangASTType clang_type;
 
     ClangASTContext *target_ast_context = target_sp->GetScratchClangASTContext();
 
-    if (!target_ast_context)
-        return clang_type;
-    
-    const char* type_name = "__lldb_autogen_nspair";
-    
-    clang::IdentifierInfo &myIdent = target_ast_context->getASTContext()->Idents.get(type_name);
-    clang::DeclarationName myName = target_ast_context->getASTContext()->DeclarationNames.getIdentifier(&myIdent);
-
-    clang::DeclContext::lookup_const_result result = target_ast_context->getASTContext()->getTranslationUnitDecl()->lookup(myName);
-
-    clang_type_t opaque_type = NULL;
-    
-    for (clang::NamedDecl *named_decl : result)
+    if (target_ast_context)
     {
-        if (const clang::CXXRecordDecl *record_decl = llvm::dyn_cast<clang::CXXRecordDecl>(named_decl))
+        clang::ASTContext *ast = target_ast_context->getASTContext();
+
+        if (ast)
         {
-            opaque_type = clang::QualType(record_decl->getTypeForDecl(), 0).getAsOpaquePtr();
-            break;
-        }
-        else
-        {
-            // somebody else (the user?) has defined a type with the magic name already - fail!!!
-            return clang_type;
+            const char* type_name = "__lldb_autogen_nspair";
+            
+            clang::IdentifierInfo &myIdent = ast->Idents.get(type_name);
+            clang::DeclarationName myName = ast->DeclarationNames.getIdentifier(&myIdent);
+
+            clang::DeclContext::lookup_const_result result = ast->getTranslationUnitDecl()->lookup(myName);
+
+            for (clang::NamedDecl *named_decl : result)
+            {
+                if (const clang::CXXRecordDecl *record_decl = llvm::dyn_cast<clang::CXXRecordDecl>(named_decl))
+                {
+                    clang_type.SetClangType(ast, clang::QualType(record_decl->getTypeForDecl(), 0));
+                    break;
+                }
+                else
+                {
+                    // somebody else (the user?) has defined a type with the magic name already - fail!!!
+                    return clang_type;
+                }
+            }
+
+            if (!clang_type)
+            {
+                clang_type = target_ast_context->CreateRecordType(NULL, lldb::eAccessPublic, type_name, clang::TTK_Struct, lldb::eLanguageTypeC);
+                
+                if (clang_type)
+                {
+                    clang_type.StartTagDeclarationDefinition();
+                    ClangASTType id_clang_type = target_ast_context->GetBasicType (eBasicTypeObjCID);
+                    clang_type.AddFieldToRecordType("key", id_clang_type, lldb::eAccessPublic, 0);
+                    clang_type.AddFieldToRecordType("value", id_clang_type, lldb::eAccessPublic, 0);
+                    clang_type.CompleteTagDeclarationDefinition();
+                }
+            }
         }
     }
-
-    if (!opaque_type)
-    {
-        opaque_type = target_ast_context->CreateRecordType(NULL, lldb::eAccessPublic, type_name, clang::TTK_Struct, lldb::eLanguageTypeC);
-        
-        if (!opaque_type)
-            return clang_type;
-        
-        target_ast_context->StartTagDeclarationDefinition(opaque_type);
-        
-        target_ast_context->AddFieldToRecordType(opaque_type, "key", target_ast_context->GetBuiltInType_objc_id(), lldb::eAccessPublic, 0);
-        target_ast_context->AddFieldToRecordType(opaque_type, "value", target_ast_context->GetBuiltInType_objc_id(), lldb::eAccessPublic, 0);
-        
-        target_ast_context->CompleteTagDeclarationDefinition(opaque_type);
-    }
-    
-    clang_type.SetClangType(target_ast_context->getASTContext(), opaque_type);
     return clang_type;
 }
 
@@ -255,8 +255,6 @@ m_data_32(NULL),
 m_data_64(NULL),
 m_pair_type()
 {
-    if (valobj_sp)
-        Update();
 }
 
 lldb_private::formatters::NSDictionaryISyntheticFrontEnd::~NSDictionaryISyntheticFrontEnd ()
@@ -297,23 +295,15 @@ lldb_private::formatters::NSDictionaryISyntheticFrontEnd::Update()
     ValueObjectSP valobj_sp = m_backend.GetSP();
     if (!valobj_sp)
         return false;
-    if (!valobj_sp)
-        return false;
     m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
     Error error;
-    if (valobj_sp->IsPointerType())
-    {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return false;
-    }
     error.Clear();
     lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
     if (!process_sp)
         return false;
     m_ptr_size = process_sp->GetAddressByteSize();
     m_order = process_sp->GetByteOrder();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    uint64_t data_location = valobj_sp->GetValueAsUnsigned(0) + m_ptr_size;
     if (m_ptr_size == 4)
     {
         m_data_32 = new DataDescriptor_32();
@@ -427,8 +417,6 @@ m_data_32(NULL),
 m_data_64(NULL),
 m_pair_type()
 {
-    if (valobj_sp)
-        Update ();
 }
 
 lldb_private::formatters::NSDictionaryMSyntheticFrontEnd::~NSDictionaryMSyntheticFrontEnd ()
@@ -469,23 +457,15 @@ lldb_private::formatters::NSDictionaryMSyntheticFrontEnd::Update()
     m_data_64 = NULL;
     if (!valobj_sp)
         return false;
-    if (!valobj_sp)
-        return false;
     m_exe_ctx_ref = valobj_sp->GetExecutionContextRef();
     Error error;
-    if (valobj_sp->IsPointerType())
-    {
-        valobj_sp = valobj_sp->Dereference(error);
-        if (error.Fail() || !valobj_sp)
-            return false;
-    }
     error.Clear();
     lldb::ProcessSP process_sp(valobj_sp->GetProcessSP());
     if (!process_sp)
         return false;
     m_ptr_size = process_sp->GetAddressByteSize();
     m_order = process_sp->GetByteOrder();
-    uint64_t data_location = valobj_sp->GetAddressOf() + m_ptr_size;
+    uint64_t data_location = valobj_sp->GetValueAsUnsigned(0) + m_ptr_size;
     if (m_ptr_size == 4)
     {
         m_data_32 = new DataDescriptor_32();

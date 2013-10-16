@@ -40,10 +40,11 @@ SymbolFileSymtab::Terminate()
 }
 
 
-const char *
+lldb_private::ConstString
 SymbolFileSymtab::GetPluginNameStatic()
 {
-    return "symbol-file.symtab";
+    static ConstString g_name("symtab");
+    return g_name;
 }
 
 const char *
@@ -57,6 +58,12 @@ SymbolFile*
 SymbolFileSymtab::CreateInstance (ObjectFile* obj_file)
 {
     return new SymbolFileSymtab(obj_file);
+}
+
+size_t
+SymbolFileSymtab::GetTypes (SymbolContextScope *sc_scope, uint32_t type_mask, lldb_private::TypeList &type_list)
+{
+    return 0;
 }
 
 SymbolFileSymtab::SymbolFileSymtab(ObjectFile* obj_file) :
@@ -285,10 +292,10 @@ SymbolFileSymtab::ResolveTypeUID(lldb::user_id_t type_uid)
     return NULL;
 }
 
-lldb::clang_type_t
-SymbolFileSymtab::ResolveClangOpaqueTypeDefinition (lldb::clang_type_t clang_Type)
+bool
+SymbolFileSymtab::ResolveClangOpaqueTypeDefinition (lldb_private::ClangASTType& clang_opaque_type)
 {
-    return NULL;
+    return false;
 }
 
 ClangNamespaceDecl 
@@ -387,14 +394,8 @@ SymbolFileSymtab::FindTypes (const lldb_private::SymbolContext& sc,
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+lldb_private::ConstString
 SymbolFileSymtab::GetPluginName()
-{
-    return "SymbolFileSymtab";
-}
-
-const char *
-SymbolFileSymtab::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }

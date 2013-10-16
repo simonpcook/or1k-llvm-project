@@ -18,6 +18,7 @@
 #include "lldb/Core/RangeMap.h"
 #include "lldb/Core/UserID.h"
 #include "lldb/Core/VMRange.h"
+#include "lldb/Symbol/ObjectFile.h"
 #include <limits.h>
 
 namespace lldb_private {
@@ -31,8 +32,10 @@ public:
 
     SectionList();
 
-    virtual
     ~SectionList();
+
+    SectionList &
+    operator =(const SectionList& rhs);
 
     size_t
     AddSection (const lldb::SectionSP& section_sp);
@@ -78,16 +81,16 @@ public:
     bool
     ReplaceSection (lldb::user_id_t sect_id, const lldb::SectionSP& section_sp, uint32_t depth = UINT32_MAX);
 
+    // Warning, this can be slow as it's removing items from a std::vector.
+    bool
+    DeleteSection (size_t idx);
+
     lldb::SectionSP
     GetSectionAtIndex (size_t idx) const;
 
     size_t
     Slide (lldb::addr_t slide_amount, bool slide_children);
     
-    // Update all section lookup caches
-    void
-    Finalize ();
-
     void
     Clear ()
     {
@@ -108,6 +111,7 @@ class Section :
 public:
     // Create a root section (one that has no parent)
     Section (const lldb::ModuleSP &module_sp,
+             ObjectFile *obj_file,
              lldb::user_id_t sect_id,
              const ConstString &name,
              lldb::SectionType sect_type,
@@ -120,6 +124,7 @@ public:
     // Create a section that is a child of parent_section_sp
     Section (const lldb::SectionSP &parent_section_sp,    // NULL for top level sections, non-NULL for child sections
              const lldb::ModuleSP &module_sp,
+             ObjectFile *obj_file,
              lldb::user_id_t sect_id,
              const ConstString &name,
              lldb::SectionType sect_type,
@@ -187,6 +192,9 @@ public:
 
     lldb::addr_t
     GetFileAddress () const;
+
+    bool
+    SetFileAddress (lldb::addr_t file_addr);
 
     lldb::addr_t
     GetOffset () const;
@@ -265,18 +273,24 @@ public:
         m_thread_specific = b;
     }
     
-    // Update all section lookup caches
-    void
-    Finalize ()
+    ObjectFile *
+    GetObjectFile ()
     {
-        m_children.Finalize();
+        return m_obj_file;
     }
+    const ObjectFile *
+    GetObjectFile () const 
+    {
+        return m_obj_file;
+    }
+
 
 protected:
 
+    ObjectFile      *m_obj_file;        // The object file that data for this section should be read from
+    lldb::SectionType m_type;           // The type of this section
     lldb::SectionWP m_parent_wp;        // Weak pointer to parent section
     ConstString     m_name;             // Name of this section
-    lldb::SectionType m_type;           // The type of this section
     lldb::addr_t    m_file_addr;        // The absolute file virtual address range of this section if m_parent == NULL,
                                         // offset from parent file virtual address if m_parent != NULL
     lldb::addr_t    m_byte_size;        // Size in bytes that this section will occupy in memory at runtime

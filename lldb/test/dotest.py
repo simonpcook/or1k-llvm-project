@@ -35,6 +35,22 @@ if sys.version_info >= (2, 7):
 else:
     argparse = __import__('argparse_compat')
 
+def parse_args(parser):
+    """ Returns an argument object. LLDB_TEST_ARGUMENTS environment variable can
+        be used to pass additional arguments if a compatible (>=2.7) argparse
+        library is available.
+    """
+    if sys.version_info >= (2, 7):
+        args = ArgParseNamespace()
+
+        if ('LLDB_TEST_ARGUMENTS' in os.environ):
+            print "Arguments passed through environment: '%s'" % os.environ['LLDB_TEST_ARGUMENTS']
+            args = parser.parse_args([sys.argv[0]].__add__(os.environ['LLDB_TEST_ARGUMENTS'].split()),namespace=args)
+
+        return parser.parse_args(namespace=args)
+    else:
+        return parser.parse_args()
+
 def is_exe(fpath):
     """Returns true if fpath is an executable."""
     return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
@@ -80,7 +96,8 @@ validCategories = {
 'expression':'Tests related to the expression parser',
 'objc':'Tests related to the Objective-C programming language support',
 'pyapi':'Tests related to the Python API',
-'basic_process': 'Basic process execution sniff tests.'
+'basic_process': 'Basic process execution sniff tests.',
+'cmdline' : 'Tests related to the LLDB command-line interface'
 }
 
 # The test suite.
@@ -101,7 +118,7 @@ just_do_benchmarks_test = False
 # Use @dsym_test or @dwarf_test decorators, defined in lldbtest.py, to mark a test
 # as a dsym or dwarf test.  Use '-N dsym' or '-N dwarf' to exclude dsym or dwarf
 # tests from running.
-dont_do_dsym_test = "linux" in sys.platform
+dont_do_dsym_test = "linux" in sys.platform or "freebsd" in sys.platform
 dont_do_dwarf_test = False
 
 # The blacklist is optional (-b blacklistFile) and allows a central place to skip
@@ -115,6 +132,8 @@ blacklistConfig = {}
 categoriesList = None
 # set to true if we are going to use categories for cherry-picking test cases
 useCategories = False
+# Categories we want to skip
+skipCategories = []
 # use this to track per-category failures
 failuresPerCategory = {}
 
@@ -135,6 +154,9 @@ config = {}
 # The pre_flight and post_flight functions come from reading a config file.
 pre_flight = None
 post_flight = None
+# So do the lldbtest_remote_sandbox and lldbtest_remote_shell_template variables.
+lldbtest_remote_sandbox = None
+lldbtest_remote_shell_template = None
 
 # The 'archs' and 'compilers' can be specified via either command line or configFile,
 # with the command line overriding the configFile.  The corresponding options can be
@@ -318,6 +340,38 @@ o GDB_REMOTE_LOG: if defined, specifies the log file pathname for the
     sys.exit(0)
 
 
+def unique_string_match(yourentry,list):
+	candidate = None
+	for item in list:
+		if item.startswith(yourentry):
+			if candidate:
+				return None
+			candidate = item
+	return candidate
+
+class ArgParseNamespace(object):
+    pass
+
+def validate_categories(categories):
+    """For each category in categories, ensure that it's a valid category (or a prefix thereof).
+       If a category is invalid, print a message and quit.
+       If all categories are valid, return the list of categories. Prefixes are expanded in the
+       returned list.
+    """
+    global validCategories
+    result = []
+    for category in categories:
+        origCategory = category
+        if category not in validCategories:
+            category = unique_string_match(category, validCategories)
+        if (category not in validCategories) or category == None:
+            print "fatal error: category '" + origCategory + "' is not a valid category"
+            print "if you have added a new category, please edit dotest.py, adding your new category to validCategories"
+            print "else, please specify one or more of the following: " + str(validCategories.keys())
+            sys.exit(1)
+        result.append(category)
+    return result
+
 def parseOptionsAndInitTestdirs():
     """Initialize the list of directories containing our unittest scripts.
 
@@ -334,6 +388,7 @@ def parseOptionsAndInitTestdirs():
     global categoriesList
     global validCategories
     global useCategories
+    global skipCategories
     global lldbFrameworkPath
     global lldbExecutablePath
     global configFile
@@ -395,12 +450,14 @@ def parseOptionsAndInitTestdirs():
     group.add_argument('-p', metavar='pattern', help='Specify a regexp filename pattern for inclusion in the test suite')
     group.add_argument('-X', metavar='directory', help="Exclude a directory from consideration for test discovery. -X types => if 'types' appear in the pathname components of a potential testfile, it will be ignored")
     group.add_argument('-G', '--category', metavar='category', action='append', dest='categoriesList', help=textwrap.dedent('''Specify categories of test cases of interest. Can be specified more than once.'''))
+    group.add_argument('--skip-category', metavar='category', action='append', dest='skipCategories', help=textwrap.dedent('''Specify categories of test cases to skip. Takes precedence over -G. Can be specified more than once.'''))
 
     # Configuration options
     group = parser.add_argument_group('Configuration options')
     group.add_argument('-c', metavar='config-file', help='Read a config file specified after this option')  # FIXME: additional doc.
     group.add_argument('--framework', metavar='framework-path', help='The path to LLDB.framework')
     group.add_argument('--executable', metavar='executable-path', help='The path to the lldb executable')
+    group.add_argument('--libcxx', metavar='directory', help='The path to custom libc++ library')
     group.add_argument('-e', metavar='benchmark-exe', help='Specify the full path of an executable used for benchmark purposes (see also: -x)')
     group.add_argument('-k', metavar='command', action='append', help="Specify a runhook, which is an lldb command to be executed by the debugger; The option can occur multiple times. The commands are executed one after the other to bring the debugger to a desired state, so that, for example, further benchmarking can be done")
     group.add_argument('-R', metavar='dir', help='Specify a directory to relocate the tests and their intermediate files to. BE WARNED THAT the directory, if exists, will be deleted before running this test driver. No cleanup of intermediate test files is performed in this case')
@@ -430,8 +487,8 @@ def parseOptionsAndInitTestdirs():
 
     group = parser.add_argument_group('Test directories')
     group.add_argument('args', metavar='test-dir', nargs='*', help='Specify a list of directory names to search for test modules named after Test*.py (test discovery). If empty, search from the current working directory instead.')
-    args = parser.parse_args()
 
+    args = parse_args(parser)
     platform_system = platform.system()
     platform_machine = platform.machine()
     
@@ -445,35 +502,32 @@ def parseOptionsAndInitTestdirs():
     
     # only print the args if being verbose (and parsable is off)
     if args.v and not args.q:
-        print args
+        print sys.argv
 
     if args.h:
         do_help = True
-
-    if args.archs:
-        archs = args.archs
-    else:
-        if platform_system == 'Darwin' and platform_machine == 'x86_64':
-            archs = ['x86_64', 'i386']
-        else:
-            archs = [platform_machine]
-
-    if args.categoriesList:
-        for category in args.categoriesList:
-            if not(category in validCategories):
-                print "fatal error: category '" + category + "' is not a valid category"
-                print "if you have added a new category, please edit dotest.py, adding your new category to validCategories"
-                print "else, please specify one or more of the following: " + str(validCategories.keys())
-                sys.exit(1)
-        categoriesList = set(args.categoriesList)
-        useCategories = True
-    else:
-        categoriesList = []
 
     if args.compilers:
         compilers = args.compilers
     else:
         compilers = ['clang']
+
+    if args.archs:
+        archs = args.archs
+    else:
+        if (platform_system == 'Darwin' or (platform_system == 'Linux' and compilers == ['clang'])) and platform_machine == 'x86_64':
+            archs = ['x86_64', 'i386']
+        else:
+            archs = [platform_machine]
+
+    if args.categoriesList:
+        categoriesList = set(validate_categories(args.categoriesList))
+        useCategories = True
+    else:
+        categoriesList = []
+
+    if args.skipCategories:
+        skipCategories = validate_categories(args.skipCategories)
 
     if args.D:
         dumpSysPath = True
@@ -554,6 +608,9 @@ def parseOptionsAndInitTestdirs():
 
     if args.executable:
         lldbExecutablePath = args.executable
+
+    if args.libcxx:
+        os.environ["LIBCXX_PATH"] = args.libcxx
 
     if args.n:
         noHeaders = True
@@ -691,11 +748,11 @@ def parseOptionsAndInitTestdirs():
     # respectively.
     #
     # See also lldb-trunk/examples/test/usage-config.
-    global config, pre_flight, post_flight
+    global config, pre_flight, post_flight, lldbtest_remote_sandbox, lldbtest_remote_shell_template
     if configFile:
         # Pass config (a dictionary) as the locals namespace for side-effect.
         execfile(configFile, globals(), config)
-        print "config:", config
+        #print "config:", config
         if "pre_flight" in config:
             pre_flight = config["pre_flight"]
             if not callable(pre_flight):
@@ -706,6 +763,10 @@ def parseOptionsAndInitTestdirs():
             if not callable(post_flight):
                 print "fatal error: post_flight is not callable, exiting."
                 sys.exit(1)
+        if "lldbtest_remote_sandbox" in config:
+            lldbtest_remote_sandbox = config["lldbtest_remote_sandbox"]
+        if "lldbtest_remote_shell_template" in config:
+            lldbtest_remote_shell_template = config["lldbtest_remote_shell_template"]
         #print "sys.stderr:", sys.stderr
         #print "sys.stdout:", sys.stdout
 
@@ -1033,6 +1094,7 @@ def lldbLoggings():
     ci = lldb.DBG.GetCommandInterpreter()
     res = lldb.SBCommandReturnObject()
     if ("LLDB_LOG" in os.environ):
+        open(os.environ["LLDB_LOG"], 'w').close()
         if ("LLDB_LOG_OPTION" in os.environ):
             lldb_log_option = os.environ["LLDB_LOG_OPTION"]
         else:
@@ -1042,6 +1104,19 @@ def lldbLoggings():
             res)
         if not res.Succeeded():
             raise Exception('log enable failed (check LLDB_LOG env variable.')
+
+    if ("LLDB_LINUX_LOG" in os.environ):
+        open(os.environ["LLDB_LINUX_LOG"], 'w').close()
+        if ("LLDB_LINUX_LOG_OPTION" in os.environ):
+            lldb_log_option = os.environ["LLDB_LINUX_LOG_OPTION"]
+        else:
+            lldb_log_option = "event process expr state api"
+        ci.HandleCommand(
+            "log enable -n -f " + os.environ["LLDB_LINUX_LOG"] + " linux " + lldb_log_option,
+            res)
+        if not res.Succeeded():
+            raise Exception('log enable failed (check LLDB_LINUX_LOG env variable.')
+ 
     # Ditto for gdb-remote logging if ${GDB_REMOTE_LOG} environment variable is defined.
     # Use ${GDB_REMOTE_LOG} to specify the log file.
     if ("GDB_REMOTE_LOG" in os.environ):
@@ -1057,7 +1132,7 @@ def lldbLoggings():
             raise Exception('log enable failed (check GDB_REMOTE_LOG env variable.')
 
 def getMyCommandLine():
-    ps = subprocess.Popen(['ps', '-o', "command=CMD", str(os.getpid())], stdout=subprocess.PIPE).communicate()[0]
+    ps = subprocess.Popen([which('ps'), '-o', "command=CMD", str(os.getpid())], stdout=subprocess.PIPE).communicate()[0]
     lines = ps.split('\n')
     cmd_line = lines[1]
     return cmd_line
@@ -1145,6 +1220,17 @@ if not noHeaders:
     print "lldb.pre_flight:", getsource_if_available(lldb.pre_flight)
     print "lldb.post_flight:", getsource_if_available(lldb.post_flight)
 
+# If either pre_flight or post_flight is defined, set lldb.test_remote to True.
+if lldb.pre_flight or lldb.post_flight:
+    lldb.test_remote = True
+else:
+    lldb.test_remote = False
+
+# So do the lldbtest_remote_sandbox and lldbtest_remote_shell_template variables.
+lldb.lldbtest_remote_sandbox = lldbtest_remote_sandbox
+lldb.lldbtest_remote_sandboxed_executable = None
+lldb.lldbtest_remote_shell_template = lldbtest_remote_shell_template
+
 # Put all these test decorators in the lldb namespace.
 lldb.dont_do_python_api_test = dont_do_python_api_test
 lldb.just_do_python_api_test = just_do_python_api_test
@@ -1189,6 +1275,7 @@ if not noHeaders:
 
 if not os.path.isdir(sdir_name):
     os.mkdir(sdir_name)
+where_to_save_session = os.getcwd()
 fname = os.path.join(sdir_name, "TestStarted")
 with open(fname, "w") as f:
     print >> f, "Test started at: %s\n" % timestamp_started
@@ -1392,10 +1479,12 @@ for ia in range(len(archs) if iterArchs else 1):
             def _exc_info_to_string(self, err, test):
                 """Overrides superclass TestResult's method in order to append
                 our test config info string to the exception info string."""
-                modified_exc_string = '%sConfig=%s-%s' % (super(LLDBTestResult, self)._exc_info_to_string(err, test),
-                                                          test.getArchitecture(),
-                                                          test.getCompiler())
-                return modified_exc_string
+                if hasattr(test, "getArchitecture") and hasattr(test, "getCompiler"):
+                    return '%sConfig=%s-%s' % (super(LLDBTestResult, self)._exc_info_to_string(err, test),
+                                                              test.getArchitecture(),
+                                                              test.getCompiler())
+                else:
+                    return super(LLDBTestResult, self)._exc_info_to_string(err, test)
 
             def getDescription(self, test):
                 doc_first_line = test.shortDescription()
@@ -1430,11 +1519,19 @@ for ia in range(len(archs) if iterArchs else 1):
                     test_categories = self.getCategoriesForTest(test)
                     if len(test_categories) == 0 or len(categoriesList & set(test_categories)) == 0:
                         return True
+
+                global skipCategories
+                for category in skipCategories:
+                    if category in self.getCategoriesForTest(test):
+                        return True
+
                 return False
 
             def hardMarkAsSkipped(self,test):
                 getattr(test, test._testMethodName).__func__.__unittest_skip__ = True
                 getattr(test, test._testMethodName).__func__.__unittest_skip_why__ = "test case does not fall in any category of interest for this run"
+                test.__class__.__unittest_skip__ = True
+                test.__class__.__unittest_skip_why__ = "test case does not fall in any category of interest for this run"
 
             def startTest(self, test):
                 if self.shouldSkipBecauseOfCategories(test):
@@ -1549,6 +1646,7 @@ if useCategories and len(failuresPerCategory) > 0:
     for category in failuresPerCategory:
         sys.stderr.write("%s - %d\n" % (category,failuresPerCategory[category]))
 
+os.chdir(where_to_save_session)
 fname = os.path.join(sdir_name, "TestFinished")
 with open(fname, "w") as f:
     print >> f, "Test finished at: %s\n" % datetime.datetime.now().strftime("%Y-%m-%d-%H_%M_%S")

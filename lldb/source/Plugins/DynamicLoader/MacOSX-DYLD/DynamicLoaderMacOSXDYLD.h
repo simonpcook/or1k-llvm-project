@@ -37,7 +37,7 @@ public:
     static void
     Terminate();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
 
     static const char *
@@ -80,11 +80,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -231,7 +228,7 @@ protected:
         {
             if (header.cputype)
             {
-                if (header.cputype & llvm::MachO::CPUArchABI64)
+                if (header.cputype & llvm::MachO::CPU_ARCH_ABI64)
                     return 8;
                 else
                     return 4;
@@ -367,6 +364,7 @@ protected:
 
 
     DYLDImageInfo m_dyld;               // Info about the current dyld being used
+    lldb::ModuleWP m_dyld_module_wp;
     lldb::addr_t m_dyld_all_image_infos_addr;
     DYLDAllImageInfos m_dyld_all_image_infos;
     uint32_t m_dyld_all_image_infos_stop_id;

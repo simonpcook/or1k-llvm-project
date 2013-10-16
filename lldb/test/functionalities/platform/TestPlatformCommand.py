@@ -18,7 +18,6 @@ class PlatformCommandTestCase(TestBase):
         self.expect("platform list",
             patterns = ['^Available platforms:'])
 
-    @expectedFailureLinux # due to bugzilla 14541 -- Cannot list processes on Linux
     def test_process_list(self):
         self.expect("platform process list",
             substrs = ['PID', 'ARCH', 'NAME'])
@@ -28,10 +27,26 @@ class PlatformCommandTestCase(TestBase):
         self.expect("platform process info", error=True,
             substrs = ['one or more process id(s) must be specified'])
 
-    @expectedFailureLinux # due to bugzilla 14806 -- "platform status" prints more information on Mac OS X than on Linux
     def test_status(self):
         self.expect("platform status",
             substrs = ['Platform', 'Triple', 'OS Version', 'Kernel', 'Hostname'])
+
+    def test_shell(self):
+        """ Test that the platform shell command can invoke ls. """
+        self.expect("platform shell ls /",
+            substrs = ["dev", "tmp", "usr"])
+
+    def test_shell_builtin(self):
+        """ Test a shell built-in command (echo) """
+        self.expect("platform shell echo hello lldb",
+            substrs = ["hello lldb"])
+
+    #FIXME: re-enable once platform shell -t can specify the desired timeout
+    def test_shell_timeout(self):
+        """ Test a shell built-in command (sleep) that times out """
+        self.skipTest("due to taking too long to complete.")
+        self.expect("platform shell sleep 15", error=True,
+                substrs = ["error: timed out waiting for shell command to complete"])
 
 
 if __name__ == '__main__':

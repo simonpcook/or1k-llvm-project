@@ -7,6 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lldb/lldb-python.h"
+
 #include "lldb/DataFormatters/CXXFormatterFunctions.h"
 
 #include "lldb/Core/DataBufferHeap.h"
@@ -181,26 +183,44 @@ lldb_private::formatters::LibcxxStdListSyntheticFrontEnd::CalculateNumChildren (
         return m_count;
     if (!m_head || !m_tail || m_node_address == 0)
         return 0;
-    uint64_t next_val = m_head->GetValueAsUnsigned(0);
-    uint64_t prev_val = m_tail->GetValueAsUnsigned(0);
-    if (next_val == 0 || prev_val == 0)
-        return 0;
-    if (next_val == m_node_address)
-        return 0;
-    if (next_val == prev_val)
-        return 1;
-    if (HasLoop())
-        return 0;
-    uint64_t size = 2;
-    ListEntry current(m_head);
-    while (current.next() && current.next()->GetValueAsUnsigned(0) != m_node_address)
+    ValueObjectSP size_alloc(m_backend.GetChildMemberWithName(ConstString("__size_alloc_"), true));
+    if (size_alloc)
     {
-        size++;
-        current.SetEntry(current.next());
-        if (size > m_list_capping_size)
-            break;
+        ValueObjectSP first(size_alloc->GetChildMemberWithName(ConstString("__first_"), true));
+        if (first)
+        {
+            m_count = first->GetValueAsUnsigned(UINT32_MAX);
+        }
     }
-    return m_count = (size-1);
+    if (m_count != UINT32_MAX)
+    {
+        if (!HasLoop())
+            return m_count;
+        return m_count = 0;
+    }
+    else
+    {
+        uint64_t next_val = m_head->GetValueAsUnsigned(0);
+        uint64_t prev_val = m_tail->GetValueAsUnsigned(0);
+        if (next_val == 0 || prev_val == 0)
+            return 0;
+        if (next_val == m_node_address)
+            return 0;
+        if (next_val == prev_val)
+            return 1;
+        if (HasLoop())
+            return 0;
+        uint64_t size = 2;
+        ListEntry current(m_head);
+        while (current.next() && current.next()->GetValueAsUnsigned(0) != m_node_address)
+        {
+            size++;
+            current.SetEntry(current.next());
+            if (size > m_list_capping_size)
+                break;
+        }
+        return m_count = (size-1);
+    }
 }
 
 lldb::ValueObjectSP
@@ -252,16 +272,14 @@ lldb_private::formatters::LibcxxStdListSyntheticFrontEnd::Update()
     ValueObjectSP impl_sp(m_backend.GetChildMemberWithName(ConstString("__end_"),true));
     if (!impl_sp)
         return false;
-    auto list_type = m_backend.GetClangType();
-    if (ClangASTContext::IsReferenceType(list_type))
-    {
-        clang::QualType qt = clang::QualType::getFromOpaquePtr(list_type);
-        list_type = qt.getNonReferenceType().getAsOpaquePtr();
-    }
-    if (ClangASTContext::GetNumTemplateArguments(m_backend.GetClangAST(), list_type) == 0)
+    ClangASTType list_type = m_backend.GetClangType();
+    if (list_type.IsReferenceType())
+        list_type = list_type.GetNonReferenceType();
+
+    if (list_type.GetNumTemplateArguments() == 0)
         return false;
     lldb::TemplateArgumentKind kind;
-    m_element_type = ClangASTType(m_backend.GetClangAST(), ClangASTContext::GetTemplateArgument(m_backend.GetClangAST(), list_type, 0, kind));
+    m_element_type = list_type.GetTemplateArgument(0, kind);
     m_head = impl_sp->GetChildMemberWithName(ConstString("__next_"), true).get();
     m_tail = impl_sp->GetChildMemberWithName(ConstString("__prev_"), true).get();
     return false;

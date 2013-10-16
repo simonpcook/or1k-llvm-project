@@ -10,6 +10,8 @@
 #ifndef liblldb_PlatformDarwinKernel_h_
 #define liblldb_PlatformDarwinKernel_h_
 
+#include "lldb/Core/ConstString.h"
+
 #if defined (__APPLE__)  // This Plugin uses the Mac-specific source/Host/macosx/cfcpp utilities
 
 
@@ -40,11 +42,8 @@ public:
     static void
     Terminate ();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic ();
-
-    static const char *
-    GetShortPluginNameStatic();
 
     static const char *
     GetDescriptionStatic();
@@ -60,16 +59,10 @@ public:
     //------------------------------------------------------------
     // lldb_private::PluginInterface functions
     //------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName()
     {
         return GetPluginNameStatic();
-    }
-
-    virtual const char *
-    GetShortPluginName()
-    {
-        return GetShortPluginNameStatic();
     }
 
     virtual uint32_t
@@ -166,7 +159,7 @@ protected:
     IndexKextsInDirectories (std::vector<lldb_private::FileSpec> kext_dirs);
 
     lldb_private::Error
-    ExamineKextForMatchingUUID (const lldb_private::FileSpec &kext_bundle_path, const lldb_private::UUID &uuid, lldb::ModuleSP &exe_module_sp);
+    ExamineKextForMatchingUUID (const lldb_private::FileSpec &kext_bundle_path, const lldb_private::UUID &uuid, const lldb_private::ArchSpec &arch, lldb::ModuleSP &exe_module_sp);
 
 private:
 
@@ -178,6 +171,22 @@ private:
 
 };
 
-#endif // __APPLE__
+#else   // __APPLE__
+
+// Since DynamicLoaderDarwinKernel is compiled in for all systems, and relies on
+// PlatformDarwinKernel for the plug-in name, we compile just the plug-in name in
+// here to avoid issues. We are tracking an internal bug to resolve this issue by
+// either not compiling in DynamicLoaderDarwinKernel for non-apple builds, or to make
+// PlatformDarwinKernel build on all systems. PlatformDarwinKernel is currently not
+// compiled on other platforms due to the use of the Mac-specific
+// source/Host/macosx/cfcpp utilities.
+
+class PlatformDarwinKernel
+{
+    static lldb_private::ConstString
+    GetPluginNameStatic ();
+};
+
+#endif  // __APPLE__
 
 #endif  // liblldb_PlatformDarwinKernel_h_

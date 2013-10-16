@@ -2,12 +2,12 @@
 // RUN: %clangxx %t.o -o %t.out
 // RUN: %test_debuginfo %s %t.out 
 // Radar 8775834
-// DEBUGGER: break 61
+// DEBUGGER: break 62
 // DEBUGGER: r
 // DEBUGGER: p a
-// CHECK: $1 = (A &)
-// CHECK:  _vptr$A =
-// CHECK:  m_int = 12
+// CHECK: ${{[0-9]+}} = {
+// LLDB does not print artificial members.
+// CHECK:  {{(_vptr\$A =)?.*}}m_int = 12
 
 class A
 {

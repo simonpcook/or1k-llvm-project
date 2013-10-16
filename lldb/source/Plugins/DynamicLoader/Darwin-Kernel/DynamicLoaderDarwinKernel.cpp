@@ -26,7 +26,7 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadPlanRunToAddress.h"
-
+#include "Plugins/Platform/MacOSX/PlatformDarwinKernel.h"
 
 #include "DynamicLoaderDarwinKernel.h"
 
@@ -394,10 +394,10 @@ DynamicLoaderDarwinKernel::CheckForKernelImageAtAddress (lldb::addr_t addr, Proc
 
     Error read_error;
     uint64_t result = process->ReadUnsignedIntegerFromMemory (addr, 4, LLDB_INVALID_ADDRESS, read_error);
-    if (result != llvm::MachO::HeaderMagic64
-        && result != llvm::MachO::HeaderMagic32
-        && result != llvm::MachO::HeaderMagic32Swapped 
-        && result != llvm::MachO::HeaderMagic64Swapped)
+    if (result != llvm::MachO::MH_MAGIC_64
+        && result != llvm::MachO::MH_MAGIC
+        && result != llvm::MachO::MH_CIGAM
+        && result != llvm::MachO::MH_CIGAM_64)
     {
         return UUID();
     }
@@ -407,8 +407,8 @@ DynamicLoaderDarwinKernel::CheckForKernelImageAtAddress (lldb::addr_t addr, Proc
     if (process->DoReadMemory (addr, &header, sizeof(header), read_error) != sizeof(header))
         return UUID();
 
-    if (header.magic == llvm::MachO::HeaderMagic32Swapped ||
-        header.magic == llvm::MachO::HeaderMagic64Swapped)
+    if (header.magic == llvm::MachO::MH_CIGAM ||
+        header.magic == llvm::MachO::MH_CIGAM_64)
     {
         header.magic        = llvm::ByteSwap_32(header.magic);
         header.cputype      = llvm::ByteSwap_32(header.cputype);
@@ -420,8 +420,8 @@ DynamicLoaderDarwinKernel::CheckForKernelImageAtAddress (lldb::addr_t addr, Proc
     }
 
     // A kernel is an executable which does not have the dynamic link object flag set.
-    if (header.filetype == llvm::MachO::HeaderFileTypeExecutable
-        && (header.flags & llvm::MachO::HeaderFlagBitIsDynamicLinkObject) == 0)
+    if (header.filetype == llvm::MachO::MH_EXECUTE
+        && (header.flags & llvm::MachO::MH_DYLDLINK) == 0)
     {
         // Create a full module to get the UUID
         ModuleSP memory_module_sp = process->ReadModuleFromMemory (FileSpec ("temp_mach_kernel", false), addr);
@@ -434,6 +434,11 @@ DynamicLoaderDarwinKernel::CheckForKernelImageAtAddress (lldb::addr_t addr, Proc
 
         if (exe_objfile->GetType() == ObjectFile::eTypeExecutable && exe_objfile->GetStrata() == ObjectFile::eStrataKernel)
         {
+            ArchSpec kernel_arch (eArchTypeMachO, header.cputype, header.cpusubtype);
+            if (!process->GetTarget().GetArchitecture().IsCompatibleMatch(kernel_arch))
+            {
+                process->GetTarget().SetArchitecture (kernel_arch);
+            }
             return memory_module_sp->GetUUID();
         }
     }
@@ -455,7 +460,7 @@ DynamicLoaderDarwinKernel::DynamicLoaderDarwinKernel (Process* process, lldb::ad
     m_mutex(Mutex::eMutexTypeRecursive),
     m_break_id (LLDB_INVALID_BREAK_ID)
 {
-    PlatformSP platform_sp(Platform::FindPlugin (process, "darwin-kernel"));
+    PlatformSP platform_sp(Platform::FindPlugin (process, PlatformDarwinKernel::GetPluginNameStatic ()));
     // Only select the darwin-kernel Platform if we've been asked to load kexts.
     // It can take some time to scan over all of the kext info.plists and that
     // shouldn't be done if kext loading is explicitly disabled.
@@ -715,11 +720,9 @@ DynamicLoaderDarwinKernel::KextImageInfo::ReadMemoryModule (Process *process)
                     Stream *s = &process->GetTarget().GetDebugger().GetOutputStream();
                     if (s)
                     {
-                        char memory_module_uuidbuf[64];
-                        char exe_module_uuidbuf[64];
                         s->Printf ("warning: Host-side kernel file has Mach-O UUID of %s but remote kernel has a UUID of %s -- a mismatched kernel file will result in a poor debugger experience.\n", 
-                                   exe_module->GetUUID().GetAsCString(exe_module_uuidbuf, sizeof (exe_module_uuidbuf)),
-                                   m_uuid.GetAsCString(memory_module_uuidbuf, sizeof (memory_module_uuidbuf)));
+                                   exe_module->GetUUID().GetAsString().c_str(),
+                                   m_uuid.GetAsString().c_str());
                         s->Flush ();
                     }
                 }
@@ -765,8 +768,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
         Stream *s = &target.GetDebugger().GetOutputStream();
         if (s)
         {
-            char uuidbuf[64];
-            s->Printf ("Kernel UUID: %s\n", m_memory_module_sp->GetUUID().GetAsCString(uuidbuf, sizeof (uuidbuf)));
+            s->Printf ("Kernel UUID: %s\n", m_memory_module_sp->GetUUID().GetAsString().c_str());
             s->Printf ("Load Address: 0x%" PRIx64 "\n", m_load_address);
         }
     }
@@ -809,8 +811,9 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
             PlatformSP platform_sp (target.GetPlatform());
             if (platform_sp)
             {
-                const char *pname = platform_sp->GetShortPluginName();
-                if (pname && strcmp (pname, "darwin-kernel") == 0)
+                ConstString platform_name (platform_sp->GetPluginName());
+                static ConstString g_platform_name (PlatformDarwinKernel::GetPluginNameStatic());
+                if (platform_name == g_platform_name)
                 {
                     ModuleSpec kext_bundle_module_spec(module_spec);
                     FileSpec kext_filespec(m_name.c_str(), false);
@@ -834,7 +837,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
                 Stream *s = &target.GetDebugger().GetOutputStream();
                 if (s)
                 {
-                    s->Printf ("WARNING: Unable to locate kernel binary on this system.\n");
+                    s->Printf ("WARNING: Unable to locate kernel binary on the debugger system.\n");
                 }
             }
         }
@@ -867,9 +870,8 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
         Stream *s = &target.GetDebugger().GetOutputStream();
         if (s)
         {
-            char uuidbuf[64];
             s->Printf ("warning: Can't find binary/dSYM for %s (%s)\n", 
-                       m_name.c_str(), m_uuid.GetAsCString(uuidbuf, sizeof (uuidbuf)));
+                       m_name.c_str(), m_uuid.GetAsString().c_str());
         }
     }
 
@@ -955,15 +957,9 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
                     s->Printf ("Kernel slid 0x%" PRIx64 " in memory.\n", m_load_address - file_address);
                 }
             }
-            if (m_module_sp->GetFileSpec().GetDirectory().IsEmpty())
             {
-                s->Printf ("Loaded kernel file %s\n", m_module_sp->GetFileSpec().GetFilename().AsCString());
-            }
-            else
-            {
-                s->Printf ("Loaded kernel file %s/%s\n",
-                              m_module_sp->GetFileSpec().GetDirectory().AsCString(),
-                              m_module_sp->GetFileSpec().GetFilename().AsCString());
+                s->Printf ("Loaded kernel file %s\n",
+                           m_module_sp->GetFileSpec().GetPath().c_str());
             }
             s->Flush ();
         }
@@ -1599,10 +1595,11 @@ DynamicLoaderDarwinKernel::DebuggerInitialize (lldb_private::Debugger &debugger)
     }
 }
 
-const char *
+lldb_private::ConstString
 DynamicLoaderDarwinKernel::GetPluginNameStatic()
 {
-    return "dynamic-loader.darwin-kernel";
+    static ConstString g_name("darwin-kernel");
+    return g_name;
 }
 
 const char *
@@ -1615,14 +1612,8 @@ DynamicLoaderDarwinKernel::GetPluginDescriptionStatic()
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+lldb_private::ConstString
 DynamicLoaderDarwinKernel::GetPluginName()
-{
-    return "DynamicLoaderDarwinKernel";
-}
-
-const char *
-DynamicLoaderDarwinKernel::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }
@@ -1638,12 +1629,12 @@ DynamicLoaderDarwinKernel::GetByteOrderFromMagic (uint32_t magic)
 {
     switch (magic)
     {
-        case llvm::MachO::HeaderMagic32:
-        case llvm::MachO::HeaderMagic64:
+        case llvm::MachO::MH_MAGIC:
+        case llvm::MachO::MH_MAGIC_64:
             return lldb::endian::InlHostByteOrder();
             
-        case llvm::MachO::HeaderMagic32Swapped:
-        case llvm::MachO::HeaderMagic64Swapped:
+        case llvm::MachO::MH_CIGAM:
+        case llvm::MachO::MH_CIGAM_64:
             if (lldb::endian::InlHostByteOrder() == lldb::eByteOrderBig)
                 return lldb::eByteOrderLittle;
             else

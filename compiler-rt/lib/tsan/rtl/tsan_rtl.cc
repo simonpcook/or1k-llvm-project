@@ -74,7 +74,7 @@ Context::Context()
       CreateThreadContext, kMaxTid, kThreadQuarantineSize))
   , racy_stacks(MBlockRacyStacks)
   , racy_addresses(MBlockRacyAddresses)
-  , fired_suppressions(MBlockRacyAddresses) {
+  , fired_suppressions(8) {
 }
 
 // The objects are allocated in TLS, so one may rely on zero-initialization.
@@ -84,8 +84,7 @@ ThreadState::ThreadState(Context *ctx, int tid, int unique_id, u64 epoch,
   : fast_state(tid, epoch)
   // Do not touch these, rely on zero initialization,
   // they may be accessed before the ctor.
-  // , fast_ignore_reads()
-  // , fast_ignore_writes()
+  // , ignore_reads_and_writes()
   // , in_rtl()
   , shadow_stack_pos(&shadow_stack[0])
 #ifndef TSAN_GO
@@ -120,25 +119,48 @@ static void BackgroundThread(void *arg) {
   if (flags()->profile_memory && flags()->profile_memory[0]) {
     InternalScopedBuffer<char> filename(4096);
     internal_snprintf(filename.data(), filename.size(), "%s.%d",
-        flags()->profile_memory, GetPid());
-    mprof_fd = OpenFile(filename.data(), true);
-    if (mprof_fd == kInvalidFd) {
+        flags()->profile_memory, (int)internal_getpid());
+    uptr openrv = OpenFile(filename.data(), true);
+    if (internal_iserror(openrv)) {
       Printf("ThreadSanitizer: failed to open memory profile file '%s'\n",
           &filename[0]);
+    } else {
+      mprof_fd = openrv;
     }
   }
 
   u64 last_flush = NanoTime();
+  uptr last_rss = 0;
   for (int i = 0; ; i++) {
     SleepForSeconds(1);
     u64 now = NanoTime();
 
     // Flush memory if requested.
-    if (flags()->flush_memory_ms) {
+    if (flags()->flush_memory_ms > 0) {
       if (last_flush + flags()->flush_memory_ms * kMs2Ns < now) {
+        if (flags()->verbosity > 0)
+          Printf("ThreadSanitizer: periodic memory flush\n");
         FlushShadowMemory();
         last_flush = NanoTime();
       }
+    }
+    if (flags()->memory_limit_mb > 0) {
+      uptr rss = GetRSS();
+      uptr limit = uptr(flags()->memory_limit_mb) << 20;
+      if (flags()->verbosity > 0) {
+        Printf("ThreadSanitizer: memory flush check"
+               " RSS=%llu LAST=%llu LIMIT=%llu\n",
+               (u64)rss>>20, (u64)last_rss>>20, (u64)limit>>20);
+      }
+      if (2 * rss > limit + last_rss) {
+        if (flags()->verbosity > 0)
+          Printf("ThreadSanitizer: flushing memory due to RSS\n");
+        FlushShadowMemory();
+        rss = GetRSS();
+        if (flags()->verbosity > 0)
+          Printf("ThreadSanitizer: memory flushed RSS=%llu\n", (u64)rss>>20);
+      }
+      last_rss = rss;
     }
 
     // Write memory profile if requested.
@@ -213,33 +235,35 @@ void Initialize(ThreadState *thr) {
     __sanitizer_set_report_path(flags()->log_path);
   InitializeSuppressions();
 #ifndef TSAN_GO
+  InitializeLibIgnore();
   // Initialize external symbolizer before internal threads are started.
   const char *external_symbolizer = flags()->external_symbolizer_path;
-  if (external_symbolizer != 0 && external_symbolizer[0] != '\0') {
-    if (!InitializeExternalSymbolizer(external_symbolizer)) {
-      Printf("Failed to start external symbolizer: '%s'\n",
-             external_symbolizer);
-      Die();
-    }
+  bool symbolizer_started =
+      getSymbolizer()->InitializeExternal(external_symbolizer);
+  if (external_symbolizer != 0 && external_symbolizer[0] != '\0' &&
+      !symbolizer_started) {
+    Printf("Failed to start external symbolizer: '%s'\n",
+           external_symbolizer);
+    Die();
   }
 #endif
   internal_start_thread(&BackgroundThread, 0);
 
   if (ctx->flags.verbosity)
     Printf("***** Running under ThreadSanitizer v2 (pid %d) *****\n",
-               GetPid());
+           (int)internal_getpid());
 
   // Initialize thread 0.
   int tid = ThreadCreate(thr, 0, 0, true);
   CHECK_EQ(tid, 0);
-  ThreadStart(thr, tid, GetPid());
+  ThreadStart(thr, tid, internal_getpid());
   CHECK_EQ(thr->in_rtl, 1);
   ctx->initialized = true;
 
   if (flags()->stop_on_start) {
     Printf("ThreadSanitizer is suspended at startup (pid %d)."
            " Call __tsan_resume().\n",
-           GetPid());
+           (int)internal_getpid());
     while (__tsan_resumed == 0) {}
   }
 }
@@ -462,6 +486,27 @@ void MemoryAccessImpl(ThreadState *thr, uptr addr,
   return;
 }
 
+void UnalignedMemoryAccess(ThreadState *thr, uptr pc, uptr addr,
+    int size, bool kAccessIsWrite, bool kIsAtomic) {
+  while (size) {
+    int size1 = 1;
+    int kAccessSizeLog = kSizeLog1;
+    if (size >= 8 && (addr & ~7) == ((addr + 8) & ~7)) {
+      size1 = 8;
+      kAccessSizeLog = kSizeLog8;
+    } else if (size >= 4 && (addr & ~7) == ((addr + 4) & ~7)) {
+      size1 = 4;
+      kAccessSizeLog = kSizeLog4;
+    } else if (size >= 2 && (addr & ~7) == ((addr + 2) & ~7)) {
+      size1 = 2;
+      kAccessSizeLog = kSizeLog2;
+    }
+    MemoryAccess(thr, pc, addr, kAccessSizeLog, kAccessIsWrite, kIsAtomic);
+    addr += size1;
+    size -= size1;
+  }
+}
+
 ALWAYS_INLINE USED
 void MemoryAccess(ThreadState *thr, uptr pc, uptr addr,
     int kAccessSizeLog, bool kAccessIsWrite, bool kIsAtomic) {
@@ -534,7 +579,9 @@ static void MemoryRangeSet(ThreadState *thr, uptr pc, uptr addr, uptr size,
   // Don't want to touch lots of shadow memory.
   // If a program maps 10MB stack, there is no need reset the whole range.
   size = (size + (kShadowCell - 1)) & ~(kShadowCell - 1);
-  if (size < 64*1024) {
+  // UnmapOrDie/MmapFixedNoReserve does not work on Windows,
+  // so we do it only for C/C++.
+  if (kGoMode || size < 64*1024) {
     u64 *p = (u64*)MemToShadow(addr);
     CHECK(IsShadowMem((uptr)p));
     CHECK(IsShadowMem((uptr)(p + size * kShadowCnt / kShadowCell - 1)));
@@ -584,6 +631,8 @@ void MemoryRangeFreed(ThreadState *thr, uptr pc, uptr addr, uptr size) {
   thr->is_freeing = true;
   MemoryAccessRange(thr, pc, addr, size, true);
   thr->is_freeing = false;
+  thr->fast_state.IncrementEpoch();
+  TraceAddEvent(thr, thr->fast_state, EventTypeMop, pc);
   Shadow s(thr->fast_state);
   s.ClearIgnoreBit();
   s.MarkAsFreed();
@@ -593,6 +642,8 @@ void MemoryRangeFreed(ThreadState *thr, uptr pc, uptr addr, uptr size) {
 }
 
 void MemoryRangeImitateWrite(ThreadState *thr, uptr pc, uptr addr, uptr size) {
+  thr->fast_state.IncrementEpoch();
+  TraceAddEvent(thr, thr->fast_state, EventTypeMop, pc);
   Shadow s(thr->fast_state);
   s.ClearIgnoreBit();
   s.SetWrite(true);
@@ -645,13 +696,18 @@ void FuncExit(ThreadState *thr) {
   thr->shadow_stack_pos--;
 }
 
-void IgnoreCtl(ThreadState *thr, bool write, bool begin) {
-  DPrintf("#%d: IgnoreCtl(%d, %d)\n", thr->tid, write, begin);
-  thr->ignore_reads_and_writes += begin ? 1 : -1;
+void ThreadIgnoreBegin(ThreadState *thr) {
+  DPrintf("#%d: ThreadIgnoreBegin\n", thr->tid);
+  thr->ignore_reads_and_writes++;
   CHECK_GE(thr->ignore_reads_and_writes, 0);
-  if (thr->ignore_reads_and_writes)
-    thr->fast_state.SetIgnoreBit();
-  else
+  thr->fast_state.SetIgnoreBit();
+}
+
+void ThreadIgnoreEnd(ThreadState *thr) {
+  DPrintf("#%d: ThreadIgnoreEnd\n", thr->tid);
+  thr->ignore_reads_and_writes--;
+  CHECK_GE(thr->ignore_reads_and_writes, 0);
+  if (thr->ignore_reads_and_writes == 0)
     thr->fast_state.ClearIgnoreBit();
 }
 

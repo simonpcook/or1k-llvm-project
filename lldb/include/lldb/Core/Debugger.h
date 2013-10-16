@@ -13,7 +13,6 @@
 
 
 #include <stdint.h>
-#include <unistd.h>
 
 #include <stack>
 
@@ -236,7 +235,6 @@ public:
                   const ExecutionContext *exe_ctx,
                   const Address *addr,
                   Stream &s,
-                  const char **end,
                   ValueObject* valobj = NULL);
 
 
@@ -308,6 +306,12 @@ public:
     bool
     SetUseExternalEditor (bool use_external_editor_p);
     
+    bool
+    GetUseColor () const;
+    
+    bool
+    SetUseColor (bool use_color);
+    
     uint32_t
     GetStopSourceLineCount (bool before) const;
     
@@ -330,7 +334,7 @@ public:
     typedef bool (*LLDBCommandPluginInit) (lldb::SBDebugger& debugger);
     
     bool
-    LoadPlugin (const FileSpec& spec);
+    LoadPlugin (const FileSpec& spec, Error& error);
 
 protected:
 

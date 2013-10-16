@@ -27,30 +27,29 @@
 #define DEBUG_TYPE "indvars"
 
 #include "polly/LinkAllPasses.h"
-
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/IVUsers.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/LoopPass.h"
+#include "llvm/Analysis/ScalarEvolutionExpander.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Type.h"
-#include "llvm/Analysis/Dominators.h"
-#include "llvm/Analysis/IVUsers.h"
-#include "llvm/Analysis/ScalarEvolutionExpander.h"
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/LoopPass.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/SimplifyIndVar.h"
-#include "llvm/IR/DataLayout.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Statistic.h"
 using namespace llvm;
 
 STATISTIC(NumRemoved, "Number of aux indvars removed");
@@ -181,8 +180,8 @@ bool PollyIndVarSimplify::isValidRewrite(Value *FromVal, Value *ToVal) {
 /// before the user. SCEVExpander or LICM will hoist loop invariants out of the
 /// loop. For PHI nodes, there may be multiple uses, so compute the nearest
 /// common dominator for the incoming blocks.
-static Instruction *
-getInsertPointForUses(Instruction *User, Value *Def, DominatorTree *DT) {
+static Instruction *getInsertPointForUses(Instruction *User, Value *Def,
+                                          DominatorTree *DT) {
   PHINode *PHI = dyn_cast<PHINode>(User);
   if (!PHI)
     return User;
@@ -219,7 +218,8 @@ static bool ConvertToSInt(const APFloat &APF, int64_t &IntVal) {
   // See if we can convert this to an int64_t
   uint64_t UIntVal;
   if (APF.convertToInteger(&UIntVal, 64, true, APFloat::rmTowardZero,
-                           &isExact) != APFloat::opOK || !isExact)
+                           &isExact) != APFloat::opOK ||
+      !isExact)
     return false;
   IntVal = UIntVal;
   return true;
@@ -492,8 +492,8 @@ void PollyIndVarSimplify::RewriteNonIntegerIVs(Loop *L) {
 /// happen later, except that it's more powerful in some cases, because it's
 /// able to brute-force evaluate arbitrary instructions as long as they have
 /// constant operands at the beginning of the loop.
-void
-PollyIndVarSimplify::RewriteLoopExitValues(Loop *L, SCEVExpander &Rewriter) {
+void PollyIndVarSimplify::RewriteLoopExitValues(Loop *L,
+                                                SCEVExpander &Rewriter) {
   // Verify the input to the pass in already in LCSSA form.
   assert(L->isLCSSAForm(*DT));
 
@@ -645,8 +645,8 @@ static bool isSafe(const SCEV *S, const Loop *L, ScalarEvolution *SE) {
   return false;
 }
 
-void
-PollyIndVarSimplify::RewriteIVExpressions(Loop *L, SCEVExpander &Rewriter) {
+void PollyIndVarSimplify::RewriteIVExpressions(Loop *L,
+                                               SCEVExpander &Rewriter) {
   // Rewrite all induction variable expressions in terms of the canonical
   // induction variable.
   //
@@ -834,8 +834,8 @@ public:
   PHINode *CreateWideIV(SCEVExpander &Rewriter);
 
 protected:
-  Value *
-  getExtend(Value *NarrowOper, Type *WideType, bool IsSigned, Instruction *Use);
+  Value *getExtend(Value *NarrowOper, Type *WideType, bool IsSigned,
+                   Instruction *Use);
 
   Instruction *CloneIVUser(NarrowIVDefUse DU);
 
@@ -1462,9 +1462,9 @@ static bool AlmostDeadIV(PHINode *Phi, BasicBlock *LatchBlock, Value *Cond) {
 /// FIXME: Accept non-unit stride as long as SCEV can reduce BECount * Stride.
 /// This is difficult in general for SCEV because of potential overflow. But we
 /// could at least handle constant BECounts.
-static PHINode *
-FindLoopCounter(Loop *L, const SCEV *BECount, ScalarEvolution *SE,
-                DominatorTree *DT, const DataLayout *TD) {
+static PHINode *FindLoopCounter(Loop *L, const SCEV *BECount,
+                                ScalarEvolution *SE, DominatorTree *DT,
+                                const DataLayout *TD) {
   uint64_t BCWidth = SE->getTypeSizeInBits(BECount->getType());
 
   Value *Cond =
@@ -1557,9 +1557,10 @@ static Value *genLoopLimit(PHINode *IndVar, const SCEV *IVCount, Loop *L,
     assert(AR->getStart() == SE->getSCEV(GEPBase) && "bad loop counter");
     // We could handle pointer IVs other than i8*, but we need to compensate for
     // gep index scaling. See canExpandBackedgeTakenCount comments.
-    assert(SE->getSizeOfExpr(cast<PointerType>(GEPBase->getType())
-                                 ->getElementType())
-               ->isOne() && "unit stride pointer IV must be i8*");
+    assert(SE->getSizeOfExpr(IntegerType::getInt64Ty(IndVar->getContext()),
+                             cast<PointerType>(GEPBase->getType())
+                                 ->getElementType())->isOne() &&
+           "unit stride pointer IV must be i8*");
 
     IRBuilder<> Builder(L->getLoopPreheader()->getTerminator());
     return Builder.CreateGEP(GEPBase, GEPOffset, "lftr.limit");
@@ -1657,7 +1658,8 @@ Value *PollyIndVarSimplify::LinearFunctionTestReplace(
 
   Value *ExitCnt = genLoopLimit(IndVar, IVCount, L, Rewriter, SE);
   assert(ExitCnt->getType()->isPointerTy() ==
-             IndVar->getType()->isPointerTy() && "genLoopLimit missed a cast");
+             IndVar->getType()->isPointerTy() &&
+         "genLoopLimit missed a cast");
 
   // Insert a new icmp_ne or icmp_eq instruction before the branch.
   BranchInst *BI = cast<BranchInst>(L->getExitingBlock()->getTerminator());
@@ -1851,7 +1853,7 @@ bool PollyIndVarSimplify::runOnLoop(Loop *L, LPPassManager &LPM) {
   //        but just a canonical induction variable. In the near future, we
   //        should remove the need of canonical induction variables all
   //        together.
-  //if (EnableIVRewrite)
+  // if (EnableIVRewrite)
   //  Changed |= simplifyIVUsers(IU, SE, &LPM, DeadInsts);
 
   // Eliminate redundant IV cycles.

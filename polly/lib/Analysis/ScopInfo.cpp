@@ -21,23 +21,21 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopInfo.h"
 #include "polly/Support/GICHelper.h"
-#include "polly/Support/ScopHelper.h"
 #include "polly/Support/SCEVValidator.h"
+#include "polly/Support/ScopHelper.h"
 #include "polly/TempScopInfo.h"
-
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/ScalarEvolutionExpressions.h"
-#include "llvm/Analysis/RegionIterator.h"
-#include "llvm/Assembly/Writer.h"
-#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/RegionIterator.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Assembly/Writer.h"
 #include "llvm/Support/CommandLine.h"
 
 #define DEBUG_TYPE "polly-scops"
 #include "llvm/Support/Debug.h"
 
-#include "isl/int.h"
 #include "isl/constraint.h"
 #include "isl/set.h"
 #include "isl/map.h"
@@ -45,6 +43,7 @@
 #include "isl/printer.h"
 #include "isl/local_space.h"
 #include "isl/options.h"
+#include "isl/val.h"
 #include <sstream>
 #include <string>
 #include <vector>
@@ -55,135 +54,160 @@ using namespace polly;
 STATISTIC(ScopFound, "Number of valid Scops");
 STATISTIC(RichScopFound, "Number of Scops containing a loop");
 
-/// Translate a SCEVExpression into an isl_pw_aff object.
+/// Translate a 'const SCEV *' expression in an isl_pw_aff.
 struct SCEVAffinator : public SCEVVisitor<SCEVAffinator, isl_pw_aff *> {
+public:
+
+  /// @brief Translate a 'const SCEV *' to an isl_pw_aff.
+  ///
+  /// @param Stmt The location at which the scalar evolution expression
+  ///             is evaluated.
+  /// @param Expr The expression that is translated.
+  static __isl_give isl_pw_aff *getPwAff(ScopStmt *Stmt, const SCEV *Expr);
+
 private:
   isl_ctx *Ctx;
   int NbLoopSpaces;
   const Scop *S;
 
-public:
-  static isl_pw_aff *getPwAff(ScopStmt *Stmt, const SCEV *Scev) {
-    Scop *S = Stmt->getParent();
-    const Region *Reg = &S->getRegion();
+  SCEVAffinator(const ScopStmt *Stmt);
+  int getLoopDepth(const Loop *L);
 
-    S->addParams(getParamsInAffineExpr(Reg, Scev, *S->getSE()));
+  __isl_give isl_pw_aff *visit(const SCEV *Expr);
+  __isl_give isl_pw_aff *visitConstant(const SCEVConstant *Expr);
+  __isl_give isl_pw_aff *visitTruncateExpr(const SCEVTruncateExpr *Expr);
+  __isl_give isl_pw_aff *visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr);
+  __isl_give isl_pw_aff *visitSignExtendExpr(const SCEVSignExtendExpr *Expr);
+  __isl_give isl_pw_aff *visitAddExpr(const SCEVAddExpr *Expr);
+  __isl_give isl_pw_aff *visitMulExpr(const SCEVMulExpr *Expr);
+  __isl_give isl_pw_aff *visitUDivExpr(const SCEVUDivExpr *Expr);
+  __isl_give isl_pw_aff *visitAddRecExpr(const SCEVAddRecExpr *Expr);
+  __isl_give isl_pw_aff *visitSMaxExpr(const SCEVSMaxExpr *Expr);
+  __isl_give isl_pw_aff *visitUMaxExpr(const SCEVUMaxExpr *Expr);
+  __isl_give isl_pw_aff *visitUnknown(const SCEVUnknown *Expr);
 
-    SCEVAffinator Affinator(Stmt);
-    return Affinator.visit(Scev);
-  }
+  friend struct SCEVVisitor<SCEVAffinator, isl_pw_aff *>;
+};
 
-  isl_pw_aff *visit(const SCEV *Scev) {
-    // In case the scev is a valid parameter, we do not further analyze this
-    // expression, but create a new parameter in the isl_pw_aff. This allows us
-    // to treat subexpressions that we cannot translate into an piecewise affine
-    // expression, as constant parameters of the piecewise affine expression.
-    if (isl_id *Id = S->getIdForParam(Scev)) {
-      isl_space *Space = isl_space_set_alloc(Ctx, 1, NbLoopSpaces);
-      Space = isl_space_set_dim_id(Space, isl_dim_param, 0, Id);
+SCEVAffinator::SCEVAffinator(const ScopStmt *Stmt)
+    : Ctx(Stmt->getIslCtx()), NbLoopSpaces(Stmt->getNumIterators()),
+      S(Stmt->getParent()) {}
 
-      isl_set *Domain = isl_set_universe(isl_space_copy(Space));
-      isl_aff *Affine =
-          isl_aff_zero_on_domain(isl_local_space_from_space(Space));
-      Affine = isl_aff_add_coefficient_si(Affine, isl_dim_param, 0, 1);
+__isl_give isl_pw_aff *SCEVAffinator::getPwAff(ScopStmt *Stmt,
+                                               const SCEV *Scev) {
+  Scop *S = Stmt->getParent();
+  const Region *Reg = &S->getRegion();
 
-      return isl_pw_aff_alloc(Domain, Affine);
-    }
+  S->addParams(getParamsInAffineExpr(Reg, Scev, *S->getSE()));
 
-    return SCEVVisitor<SCEVAffinator, isl_pw_aff *>::visit(Scev);
-  }
+  SCEVAffinator Affinator(Stmt);
+  return Affinator.visit(Scev);
+}
 
-  SCEVAffinator(const ScopStmt *Stmt)
-      : Ctx(Stmt->getIslCtx()), NbLoopSpaces(Stmt->getNumIterators()),
-        S(Stmt->getParent()) {}
+__isl_give isl_pw_aff *SCEVAffinator::visit(const SCEV *Expr) {
+  // In case the scev is a valid parameter, we do not further analyze this
+  // expression, but create a new parameter in the isl_pw_aff. This allows us
+  // to treat subexpressions that we cannot translate into an piecewise affine
+  // expression, as constant parameters of the piecewise affine expression.
+  if (isl_id *Id = S->getIdForParam(Expr)) {
+    isl_space *Space = isl_space_set_alloc(Ctx, 1, NbLoopSpaces);
+    Space = isl_space_set_dim_id(Space, isl_dim_param, 0, Id);
 
-  __isl_give isl_pw_aff *visitConstant(const SCEVConstant *Constant) {
-    ConstantInt *Value = Constant->getValue();
-    isl_int v;
-    isl_int_init(v);
-
-    // LLVM does not define if an integer value is interpreted as a signed or
-    // unsigned value. Hence, without further information, it is unknown how
-    // this value needs to be converted to GMP. At the moment, we only support
-    // signed operations. So we just interpret it as signed. Later, there are
-    // two options:
-    //
-    // 1. We always interpret any value as signed and convert the values on
-    //    demand.
-    // 2. We pass down the signedness of the calculation and use it to interpret
-    //    this constant correctly.
-    MPZ_from_APInt(v, Value->getValue(), /* isSigned */ true);
-
-    isl_space *Space = isl_space_set_alloc(Ctx, 0, NbLoopSpaces);
-    isl_local_space *ls = isl_local_space_from_space(isl_space_copy(Space));
-    isl_aff *Affine = isl_aff_zero_on_domain(ls);
-    isl_set *Domain = isl_set_universe(Space);
-
-    Affine = isl_aff_add_constant(Affine, v);
-    isl_int_clear(v);
+    isl_set *Domain = isl_set_universe(isl_space_copy(Space));
+    isl_aff *Affine = isl_aff_zero_on_domain(isl_local_space_from_space(Space));
+    Affine = isl_aff_add_coefficient_si(Affine, isl_dim_param, 0, 1);
 
     return isl_pw_aff_alloc(Domain, Affine);
   }
 
-  __isl_give isl_pw_aff *visitTruncateExpr(const SCEVTruncateExpr *Expr) {
-    llvm_unreachable("SCEVTruncateExpr not yet supported");
+  return SCEVVisitor<SCEVAffinator, isl_pw_aff *>::visit(Expr);
+}
+
+__isl_give isl_pw_aff *SCEVAffinator::visitConstant(const SCEVConstant *Expr) {
+  ConstantInt *Value = Expr->getValue();
+  isl_val *v;
+
+  // LLVM does not define if an integer value is interpreted as a signed or
+  // unsigned value. Hence, without further information, it is unknown how
+  // this value needs to be converted to GMP. At the moment, we only support
+  // signed operations. So we just interpret it as signed. Later, there are
+  // two options:
+  //
+  // 1. We always interpret any value as signed and convert the values on
+  //    demand.
+  // 2. We pass down the signedness of the calculation and use it to interpret
+  //    this constant correctly.
+  v = isl_valFromAPInt(Ctx, Value->getValue(), /* isSigned */ true);
+
+  isl_space *Space = isl_space_set_alloc(Ctx, 0, NbLoopSpaces);
+  isl_local_space *ls = isl_local_space_from_space(isl_space_copy(Space));
+  isl_aff *Affine = isl_aff_zero_on_domain(ls);
+  isl_set *Domain = isl_set_universe(Space);
+
+  Affine = isl_aff_add_constant_val(Affine, v);
+
+  return isl_pw_aff_alloc(Domain, Affine);
+}
+
+__isl_give isl_pw_aff *
+SCEVAffinator::visitTruncateExpr(const SCEVTruncateExpr *Expr) {
+  llvm_unreachable("SCEVTruncateExpr not yet supported");
+}
+
+__isl_give isl_pw_aff *
+SCEVAffinator::visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
+  llvm_unreachable("SCEVZeroExtendExpr not yet supported");
+}
+
+__isl_give isl_pw_aff *
+SCEVAffinator::visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
+  // Assuming the value is signed, a sign extension is basically a noop.
+  // TODO: Reconsider this as soon as we support unsigned values.
+  return visit(Expr->getOperand());
+}
+
+__isl_give isl_pw_aff *SCEVAffinator::visitAddExpr(const SCEVAddExpr *Expr) {
+  isl_pw_aff *Sum = visit(Expr->getOperand(0));
+
+  for (int i = 1, e = Expr->getNumOperands(); i < e; ++i) {
+    isl_pw_aff *NextSummand = visit(Expr->getOperand(i));
+    Sum = isl_pw_aff_add(Sum, NextSummand);
   }
 
-  __isl_give isl_pw_aff *visitZeroExtendExpr(const SCEVZeroExtendExpr *Expr) {
-    llvm_unreachable("SCEVZeroExtendExpr not yet supported");
-  }
+  // TODO: Check for NSW and NUW.
 
-  __isl_give isl_pw_aff *visitSignExtendExpr(const SCEVSignExtendExpr *Expr) {
-    // Assuming the value is signed, a sign extension is basically a noop.
-    // TODO: Reconsider this as soon as we support unsigned values.
-    return visit(Expr->getOperand());
-  }
+  return Sum;
+}
 
-  __isl_give isl_pw_aff *visitAddExpr(const SCEVAddExpr *Expr) {
-    isl_pw_aff *Sum = visit(Expr->getOperand(0));
+__isl_give isl_pw_aff *SCEVAffinator::visitMulExpr(const SCEVMulExpr *Expr) {
+  isl_pw_aff *Product = visit(Expr->getOperand(0));
 
-    for (int i = 1, e = Expr->getNumOperands(); i < e; ++i) {
-      isl_pw_aff *NextSummand = visit(Expr->getOperand(i));
-      Sum = isl_pw_aff_add(Sum, NextSummand);
+  for (int i = 1, e = Expr->getNumOperands(); i < e; ++i) {
+    isl_pw_aff *NextOperand = visit(Expr->getOperand(i));
+
+    if (!isl_pw_aff_is_cst(Product) && !isl_pw_aff_is_cst(NextOperand)) {
+      isl_pw_aff_free(Product);
+      isl_pw_aff_free(NextOperand);
+      return NULL;
     }
 
-    // TODO: Check for NSW and NUW.
-
-    return Sum;
+    Product = isl_pw_aff_mul(Product, NextOperand);
   }
 
-  __isl_give isl_pw_aff *visitMulExpr(const SCEVMulExpr *Expr) {
-    isl_pw_aff *Product = visit(Expr->getOperand(0));
+  // TODO: Check for NSW and NUW.
+  return Product;
+}
 
-    for (int i = 1, e = Expr->getNumOperands(); i < e; ++i) {
-      isl_pw_aff *NextOperand = visit(Expr->getOperand(i));
+__isl_give isl_pw_aff *SCEVAffinator::visitUDivExpr(const SCEVUDivExpr *Expr) {
+  llvm_unreachable("SCEVUDivExpr not yet supported");
+}
 
-      if (!isl_pw_aff_is_cst(Product) && !isl_pw_aff_is_cst(NextOperand)) {
-        isl_pw_aff_free(Product);
-        isl_pw_aff_free(NextOperand);
-        return NULL;
-      }
+__isl_give isl_pw_aff *
+SCEVAffinator::visitAddRecExpr(const SCEVAddRecExpr *Expr) {
+  assert(Expr->isAffine() && "Only affine AddRecurrences allowed");
 
-      Product = isl_pw_aff_mul(Product, NextOperand);
-    }
-
-    // TODO: Check for NSW and NUW.
-    return Product;
-  }
-
-  __isl_give isl_pw_aff *visitUDivExpr(const SCEVUDivExpr *Expr) {
-    llvm_unreachable("SCEVUDivExpr not yet supported");
-  }
-
-  int getLoopDepth(const Loop *L) {
-    Loop *outerLoop =
-        S->getRegion().outermostLoopInRegion(const_cast<Loop *>(L));
-    assert(outerLoop && "Scop does not contain this loop");
-    return L->getLoopDepth() - outerLoop->getLoopDepth();
-  }
-
-  __isl_give isl_pw_aff *visitAddRecExpr(const SCEVAddRecExpr *Expr) {
-    assert(Expr->isAffine() && "Only affine AddRecurrences allowed");
+  // Directly generate isl_pw_aff for Expr if 'start' is zero.
+  if (Expr->getStart()->isZero()) {
     assert(S->getRegion().contains(Expr->getLoop()) &&
            "Scop does not contain the loop referenced in this AddRec");
 
@@ -202,25 +226,43 @@ public:
     return isl_pw_aff_add(Start, isl_pw_aff_mul(Step, LPwAff));
   }
 
-  __isl_give isl_pw_aff *visitSMaxExpr(const SCEVSMaxExpr *Expr) {
-    isl_pw_aff *Max = visit(Expr->getOperand(0));
+  // Translate AddRecExpr from '{start, +, inc}' into 'start + {0, +, inc}'
+  // if 'start' is not zero.
+  ScalarEvolution &SE = *S->getSE();
+  const SCEV *ZeroStartExpr = SE.getAddRecExpr(
+      SE.getConstant(Expr->getStart()->getType(), 0),
+      Expr->getStepRecurrence(SE), Expr->getLoop(), SCEV::FlagAnyWrap);
 
-    for (int i = 1, e = Expr->getNumOperands(); i < e; ++i) {
-      isl_pw_aff *NextOperand = visit(Expr->getOperand(i));
-      Max = isl_pw_aff_max(Max, NextOperand);
-    }
+  isl_pw_aff *ZeroStartResult = visit(ZeroStartExpr);
+  isl_pw_aff *Start = visit(Expr->getStart());
 
-    return Max;
+  return isl_pw_aff_add(ZeroStartResult, Start);
+}
+
+__isl_give isl_pw_aff *SCEVAffinator::visitSMaxExpr(const SCEVSMaxExpr *Expr) {
+  isl_pw_aff *Max = visit(Expr->getOperand(0));
+
+  for (int i = 1, e = Expr->getNumOperands(); i < e; ++i) {
+    isl_pw_aff *NextOperand = visit(Expr->getOperand(i));
+    Max = isl_pw_aff_max(Max, NextOperand);
   }
 
-  __isl_give isl_pw_aff *visitUMaxExpr(const SCEVUMaxExpr *Expr) {
-    llvm_unreachable("SCEVUMaxExpr not yet supported");
-  }
+  return Max;
+}
 
-  __isl_give isl_pw_aff *visitUnknown(const SCEVUnknown *Expr) {
-    llvm_unreachable("Unknowns are always parameters");
-  }
-};
+__isl_give isl_pw_aff *SCEVAffinator::visitUMaxExpr(const SCEVUMaxExpr *Expr) {
+  llvm_unreachable("SCEVUMaxExpr not yet supported");
+}
+
+__isl_give isl_pw_aff *SCEVAffinator::visitUnknown(const SCEVUnknown *Expr) {
+  llvm_unreachable("Unknowns are always parameters");
+}
+
+int SCEVAffinator::getLoopDepth(const Loop *L) {
+  Loop *outerLoop = S->getRegion().outermostLoopInRegion(const_cast<Loop *>(L));
+  assert(outerLoop && "Scop does not contain this loop");
+  return L->getLoopDepth() - outerLoop->getLoopDepth();
+}
 
 //===----------------------------------------------------------------------===//
 
@@ -229,8 +271,8 @@ MemoryAccess::~MemoryAccess() {
   isl_map_free(newAccessRelation);
 }
 
-static void
-replace(std::string &str, const std::string &find, const std::string &replace) {
+static void replace(std::string &str, const std::string &find,
+                    const std::string &replace) {
   size_t pos = 0;
   while ((pos = str.find(find, pos)) != std::string::npos) {
     str.replace(pos, find.length(), replace);
@@ -279,17 +321,22 @@ MemoryAccess::MemoryAccess(const IRAccess &Access, const Instruction *AccInst,
                            ScopStmt *Statement)
     : Inst(AccInst) {
   newAccessRelation = NULL;
-  Type = Access.isRead() ? Read : Write;
   statement = Statement;
 
   BaseAddr = Access.getBase();
   setBaseName();
 
   if (!Access.isAffine()) {
-    Type = (Type == Read) ? Read : MayWrite;
+    // We overapproximate non-affine accesses with a possible access to the
+    // whole array. For read accesses it does not make a difference, if an
+    // access must or may happen. However, for write accesses it is important to
+    // differentiate between writes that must happen and writes that may happen.
     AccessRelation = isl_map_from_basic_map(createBasicAccessMap(Statement));
+    Type = Access.isRead() ? READ : MAY_WRITE;
     return;
   }
+
+  Type = Access.isRead() ? READ : MUST_WRITE;
 
   isl_pw_aff *Affine = SCEVAffinator::getPwAff(Statement, Access.getOffset());
 
@@ -300,11 +347,10 @@ MemoryAccess::MemoryAccess(const IRAccess &Access, const Instruction *AccInst,
   // subsequent values of 'i' index two values that are stored next to each
   // other in memory. By this division we make this characteristic obvious
   // again.
-  isl_int v;
-  isl_int_init(v);
-  isl_int_set_si(v, Access.getElemSizeInBytes());
-  Affine = isl_pw_aff_scale_down(Affine, v);
-  isl_int_clear(v);
+  isl_val *v;
+  v = isl_val_int_from_si(isl_pw_aff_get_ctx(Affine),
+                          Access.getElemSizeInBytes());
+  Affine = isl_pw_aff_scale_down_val(Affine, v);
 
   AccessRelation = isl_map_from_pw_aff(Affine);
   isl_space *Space = Statement->getDomainSpace();
@@ -323,7 +369,7 @@ void MemoryAccess::realignParams() {
 MemoryAccess::MemoryAccess(const Value *BaseAddress, ScopStmt *Statement) {
   newAccessRelation = NULL;
   BaseAddr = BaseAddress;
-  Type = Read;
+  Type = READ;
   statement = Statement;
 
   isl_basic_map *BasicAccessMap = createBasicAccessMap(Statement);
@@ -333,7 +379,17 @@ MemoryAccess::MemoryAccess(const Value *BaseAddress, ScopStmt *Statement) {
 }
 
 void MemoryAccess::print(raw_ostream &OS) const {
-  OS.indent(12) << (isRead() ? "Read" : "Write") << "Access := \n";
+  switch (Type) {
+  case READ:
+    OS.indent(12) << "ReadAccess := \n";
+    break;
+  case MUST_WRITE:
+    OS.indent(12) << "MustWriteAccess := \n";
+    break;
+  case MAY_WRITE:
+    OS.indent(12) << "MayWriteAccess := \n";
+    break;
+  }
   OS.indent(16) << getAccessRelationStr() << ";\n";
 }
 
@@ -355,12 +411,13 @@ static isl_map *getEqualAndLarger(isl_space *setDomain) {
   isl_space *Space = isl_space_map_from_set(setDomain);
   isl_map *Map = isl_map_universe(isl_space_copy(Space));
   isl_local_space *MapLocalSpace = isl_local_space_from_space(Space);
+  unsigned lastDimension = isl_map_dim(Map, isl_dim_in) - 1;
 
   // Set all but the last dimension to be equal for the input and output
   //
   //   input[i0, i1, ..., iX] -> output[o0, o1, ..., oX]
   //     : i0 = o0, i1 = o1, ..., i(X-1) = o(X-1)
-  for (unsigned i = 0; i < isl_map_dim(Map, isl_dim_in) - 1; ++i)
+  for (unsigned i = 0; i < lastDimension; ++i)
     Map = isl_map_equate(Map, isl_dim_in, i, isl_dim_out, i);
 
   // Set the last dimension of the input to be strict smaller than the
@@ -368,17 +425,15 @@ static isl_map *getEqualAndLarger(isl_space *setDomain) {
   //
   //   input[?,?,?,...,iX] -> output[?,?,?,...,oX] : iX < oX
   //
-  unsigned lastDimension = isl_map_dim(Map, isl_dim_in) - 1;
-  isl_int v;
-  isl_int_init(v);
+  isl_val *v;
+  isl_ctx *Ctx = isl_map_get_ctx(Map);
   isl_constraint *c = isl_inequality_alloc(isl_local_space_copy(MapLocalSpace));
-  isl_int_set_si(v, -1);
-  isl_constraint_set_coefficient(c, isl_dim_in, lastDimension, v);
-  isl_int_set_si(v, 1);
-  isl_constraint_set_coefficient(c, isl_dim_out, lastDimension, v);
-  isl_int_set_si(v, -1);
-  isl_constraint_set_constant(c, v);
-  isl_int_clear(v);
+  v = isl_val_int_from_si(Ctx, -1);
+  c = isl_constraint_set_coefficient_val(c, isl_dim_in, lastDimension, v);
+  v = isl_val_int_from_si(Ctx, 1);
+  c = isl_constraint_set_coefficient_val(c, isl_dim_out, lastDimension, v);
+  v = isl_val_int_from_si(Ctx, -1);
+  c = isl_constraint_set_constant_val(c, v);
 
   Map = isl_map_add_constraint(Map, c);
 
@@ -475,6 +530,8 @@ void ScopStmt::buildAccesses(TempScop &tempScop, const Region &CurRegion) {
                                       E = AccFuncs->end();
        I != E; ++I) {
     MemAccs.push_back(new MemoryAccess(I->first, I->second, this));
+    assert(!InstructionToAccess.count(I->second) &&
+           "Unexpected 1-to-N mapping on instruction to access map!");
     InstructionToAccess[I->second] = MemAccs.back();
   }
 }
@@ -543,8 +600,9 @@ __isl_give isl_set *ScopStmt::addLoopBoundsToDomain(__isl_take isl_set *Domain,
   return Domain;
 }
 
-__isl_give isl_set *ScopStmt::addConditionsToDomain(
-    __isl_take isl_set *Domain, TempScop &tempScop, const Region &CurRegion) {
+__isl_give isl_set *ScopStmt::addConditionsToDomain(__isl_take isl_set *Domain,
+                                                    TempScop &tempScop,
+                                                    const Region &CurRegion) {
   const Region *TopRegion = tempScop.getMaxRegion().getParent(),
                *CurrentRegion = &CurRegion;
   const BasicBlock *BranchingBB = BB;
@@ -566,8 +624,8 @@ __isl_give isl_set *ScopStmt::addConditionsToDomain(
   return Domain;
 }
 
-__isl_give isl_set *
-ScopStmt::buildDomain(TempScop &tempScop, const Region &CurRegion) {
+__isl_give isl_set *ScopStmt::buildDomain(TempScop &tempScop,
+                                          const Region &CurRegion) {
   isl_space *Space;
   isl_set *Domain;
   isl_id *Id;
@@ -736,7 +794,7 @@ void Scop::buildContext() {
 
 void Scop::addParameterBounds() {
   for (unsigned i = 0; i < isl_set_dim(Context, isl_dim_param); ++i) {
-    isl_int V;
+    isl_val *V;
     isl_id *Id;
     const SCEV *Scev;
     const IntegerType *T;
@@ -749,19 +807,15 @@ void Scop::addParameterBounds() {
     assert(T && "Not an integer type");
     int Width = T->getBitWidth();
 
-    isl_int_init(V);
+    V = isl_val_int_from_si(IslCtx, Width - 1);
+    V = isl_val_2exp(V);
+    V = isl_val_neg(V);
+    Context = isl_set_lower_bound_val(Context, isl_dim_param, i, V);
 
-    isl_int_set_si(V, 1);
-    isl_int_mul_2exp(V, V, Width - 1);
-    isl_int_neg(V, V);
-    isl_set_lower_bound(Context, isl_dim_param, i, V);
-
-    isl_int_set_si(V, 1);
-    isl_int_mul_2exp(V, V, Width - 1);
-    isl_int_sub_ui(V, V, 1);
-    isl_set_upper_bound(Context, isl_dim_param, i, V);
-
-    isl_int_clear(V);
+    V = isl_val_int_from_si(IslCtx, Width - 1);
+    V = isl_val_2exp(V);
+    V = isl_val_sub_ui(V, 1);
+    Context = isl_set_upper_bound_val(Context, isl_dim_param, i, V);
   }
 }
 

@@ -14,6 +14,7 @@
 // C++ Includes
 #include <list>
 #include <map>
+#include <set>
 #include <vector>
 
 // Other libraries and framework includes
@@ -74,7 +75,7 @@ public:
     static void
     Terminate();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
 
     static const char *
@@ -106,7 +107,7 @@ public:
     virtual size_t          ParseVariablesForContext (const lldb_private::SymbolContext& sc);
 
     virtual lldb_private::Type* ResolveTypeUID(lldb::user_id_t type_uid);
-    virtual lldb::clang_type_t ResolveClangOpaqueTypeDefinition (lldb::clang_type_t clang_opaque_type);
+    virtual bool            ResolveClangOpaqueTypeDefinition (lldb_private::ClangASTType& clang_type);
 
     virtual lldb_private::Type* ResolveType (DWARFCompileUnit* dwarf_cu, const DWARFDebugInfoEntry* type_die, bool assert_not_being_parsed = true);
     virtual clang::DeclContext* GetClangDeclContextContainingTypeUID (lldb::user_id_t type_uid);
@@ -121,6 +122,10 @@ public:
     virtual uint32_t        FindTypes (const lldb_private::SymbolContext& sc, const lldb_private::ConstString &name, const lldb_private::ClangNamespaceDecl *namespace_decl, bool append, uint32_t max_matches, lldb_private::TypeList& types);
     virtual lldb_private::TypeList *
                             GetTypeList ();
+    virtual size_t          GetTypes (lldb_private::SymbolContextScope *sc_scope,
+                                      uint32_t type_mask,
+                                      lldb_private::TypeList &type_list);
+
     virtual lldb_private::ClangASTContext &
                             GetClangASTContext ();
 
@@ -181,11 +186,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -273,7 +275,7 @@ public:
     }
 
     bool
-    HasForwardDeclForClangType (lldb::clang_type_t clang_type);
+    HasForwardDeclForClangType (const lldb_private::ClangASTType &clang_type);
 
 protected:
 
@@ -345,7 +347,7 @@ protected:
                                 const lldb_private::SymbolContext& sc,
                                 DWARFCompileUnit* dwarf_cu,
                                 const DWARFDebugInfoEntry *die,
-                                lldb::clang_type_t class_clang_type,
+                                lldb_private::ClangASTType &class_clang_type,
                                 const lldb::LanguageType class_language,
                                 std::vector<clang::CXXBaseSpecifier *>& base_classes,
                                 std::vector<int>& member_accessibilities,
@@ -363,14 +365,14 @@ protected:
                                 bool skip_artificial,
                                 bool &is_static,
                                 lldb_private::TypeList* type_list,
-                                std::vector<lldb::clang_type_t>& function_args,
+                                std::vector<lldb_private::ClangASTType>& function_args,
                                 std::vector<clang::ParmVarDecl*>& function_param_decls,
                                 unsigned &type_quals,
                                 lldb_private::ClangASTContext::TemplateParameterInfos &template_param_infos);
 
     size_t                  ParseChildEnumerators(
                                 const lldb_private::SymbolContext& sc,
-                                lldb::clang_type_t enumerator_qual_type,
+                                lldb_private::ClangASTType &clang_type,
                                 bool is_signed,
                                 uint32_t enumerator_byte_size,
                                 DWARFCompileUnit* dwarf_cu,
@@ -547,6 +549,16 @@ protected:
 
     bool
     FixupAddress (lldb_private::Address &addr);
+
+    typedef std::set<lldb_private::Type *> TypeSet;
+
+    void
+    GetTypes (DWARFCompileUnit* dwarf_cu,
+              const DWARFDebugInfoEntry *die,
+              dw_offset_t min_die_offset,
+              dw_offset_t max_die_offset,
+              uint32_t type_mask,
+              TypeSet &type_set);
 
     lldb::ModuleWP                  m_debug_map_module_wp;
     SymbolFileDWARFDebugMap *       m_debug_map_symfile;

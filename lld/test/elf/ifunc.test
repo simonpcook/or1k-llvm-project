@@ -1,14 +1,21 @@
-RUN: lld -flavor gnu -target x86_64-linux -emit-yaml -r \
+# This test checks that IRELATIVE relocations are created for symbols that 
+# need relocation even for static links. 
+RUN: lld -flavor gnu -target x86_64-linux --output-filetype=yaml -r \
 RUN:   %p/Inputs/ifunc.x86-64  | FileCheck %s
 
-RUN: lld -flavor gnu -target x86_64-linux -emit-yaml --noinhibit-exec \
+RUN: lld -flavor gnu -target x86_64-linux --output-filetype=yaml --noinhibit-exec \
 RUN:   %p/Inputs/ifunc.x86-64 %p/Inputs/ifunc.cpp.x86-64 \
 RUN: | FileCheck %s --check-prefix=PLT
 
 RUN: lld -flavor gnu -target x86_64-linux -o %t %p/Inputs/ifunc.x86-64 \
-RUN:   -e main -static %p/Inputs/ifunc.cpp.x86-64 \
-RUN: && llvm-objdump -d -s %t| FileCheck %s --check-prefix=BIN
+RUN:   -e main -static %p/Inputs/ifunc.cpp.x86-64
+RUN: llvm-objdump -d -s %t| FileCheck %s --check-prefix=BIN
+RUN: llvm-readobj -r %t | FileCheck %s --check-prefix=RELATIVEADDEND
 
+# Test that STT_GNU_IFUNC symbols have type Code in SharedLibraryAtom.
+RUN: lld -flavor gnu -target x86_64-linux --output-filetype=yaml \
+RUN:   --noinhibit-exec %p/Inputs/ifunc.cpp.x86-64 -L%p/Inputs -lifunc.x86-64 \
+RUN: | FileCheck %s --check-prefix=SHARED
 
 PLT: defined-atoms:
 
@@ -25,6 +32,7 @@ PLT:   kind:   R_X86_64_PC32
 PLT:   target: [[PLTNAME:[-a-zA-Z0-9_]+]]
 PLT:   kind: layout-before
 PLT:   target: __hey_1
+
 PLT: name: main
 PLT: scope: global
 PLT: references:
@@ -49,3 +57,13 @@ CHECK: type: resolver
 BIN: {{[0-9a-f]+}}: ff 25 {{[0-9a-f]+}} {{[0-9a-f]+}} 00 00 jmpq *{{[0-9]+}}(%rip)
 BIN: .got.plt:
 BIN-NEXT: {{[0-9a-f]+}} 00000000 00000000
+
+RELATIVEADDEND:      Relocations [
+RELATIVEADDEND-NEXT:   Section (1) .rela.plt {
+RELATIVEADDEND-NEXT:     0x401000 R_X86_64_IRELATIVE - 0x4000E0
+RELATIVEADDEND-NEXT:   }
+RELATIVEADDEND-NEXT: ]
+
+SHARED: shared-library-atoms
+SHARED: name: hey
+SHARED-NOT: data

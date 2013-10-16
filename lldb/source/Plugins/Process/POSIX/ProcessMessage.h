@@ -23,12 +23,14 @@ public:
     enum Kind
     {
         eInvalidMessage,
+        eAttachMessage,
         eExitMessage,
         eLimboMessage,
         eSignalMessage,
         eSignalDeliveredMessage,
         eTraceMessage,
         eBreakpointMessage,
+        eWatchpointMessage,
         eCrashMessage,
         eNewThreadMessage
     };
@@ -78,6 +80,11 @@ public:
 
     lldb::tid_t GetTID() const { return m_tid; }
 
+    /// Indicates that the process @p pid has successfully attached.
+    static ProcessMessage Attach(lldb::pid_t pid) {
+        return ProcessMessage(pid, eAttachMessage);
+    }
+
     /// Indicates that the thread @p tid is about to exit with status @p status.
     static ProcessMessage Limbo(lldb::tid_t tid, int status) {
         return ProcessMessage(tid, eLimboMessage, status);
@@ -104,6 +111,10 @@ public:
         return ProcessMessage(tid, eBreakpointMessage);
     }
 
+    static ProcessMessage Watch(lldb::tid_t tid, lldb::addr_t wp_addr) {
+        return ProcessMessage(tid, eWatchpointMessage, 0, wp_addr);
+    }
+
     /// Indicates that the thread @p tid crashed.
     static ProcessMessage Crash(lldb::pid_t pid, CrashReason reason,
                                 int signo, lldb::addr_t fault_addr) {
@@ -112,9 +123,14 @@ public:
         return message;
     }
 
-    /// Indicates that the thread @p tid was spawned.
+    /// Indicates that the thread @p child_tid was spawned.
     static ProcessMessage NewThread(lldb::tid_t parent_tid, lldb::tid_t child_tid) {
         return ProcessMessage(parent_tid, eNewThreadMessage, child_tid);
+    }
+
+    /// Indicates that the thread @p tid is about to exit with status @p status.
+    static ProcessMessage Exit(lldb::tid_t tid, int status) {
+        return ProcessMessage(tid, eExitMessage, status);
     }
 
     int GetExitStatus() const {
@@ -143,13 +159,18 @@ public:
         return m_addr;
     }
 
+    lldb::addr_t GetHWAddress() const {
+        assert(GetKind() == eWatchpointMessage || GetKind() == eTraceMessage);
+        return m_addr;
+    }
+
     lldb::tid_t GetChildTID() const {
         assert(GetKind() == eNewThreadMessage);
         return m_child_tid;
     }
 
     static const char *
-    GetCrashReasonString(CrashReason reason);
+    GetCrashReasonString(CrashReason reason, lldb::addr_t fault_addr);
 
     const char *
     PrintCrashReason() const;

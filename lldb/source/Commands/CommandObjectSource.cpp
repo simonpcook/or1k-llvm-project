@@ -26,6 +26,7 @@
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/Function.h"
+#include "lldb/Symbol/Symbol.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/TargetList.h"
 #include "lldb/Interpreter/CommandCompletions.h"
@@ -136,8 +137,8 @@ protected:
 OptionDefinition
 CommandObjectSourceInfo::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_1, false, "line",       'l', required_argument, NULL, 0, eArgTypeLineNum,    "The line number at which to start the display source."},
-{ LLDB_OPT_SET_1, false, "file",       'f', required_argument, NULL, CommandCompletions::eSourceFileCompletion, eArgTypeFilename,    "The file from which to display source."},
+{ LLDB_OPT_SET_1, false, "line",       'l', OptionParser::eRequiredArgument, NULL, 0, eArgTypeLineNum,    "The line number at which to start the display source."},
+{ LLDB_OPT_SET_1, false, "file",       'f', OptionParser::eRequiredArgument, NULL, CommandCompletions::eSourceFileCompletion, eArgTypeFilename,    "The file from which to display source."},
 { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -296,6 +297,216 @@ public:
     }
 
 protected:
+
+    struct SourceInfo
+    {
+        ConstString function;
+        LineEntry line_entry;
+        
+        SourceInfo (const ConstString &name, const LineEntry &line_entry) :
+            function(name),
+            line_entry(line_entry)
+        {
+        }
+        
+        SourceInfo () :
+            function(),
+            line_entry()
+        {
+        }
+        
+        bool
+        IsValid () const
+        {
+            return (bool)function && line_entry.IsValid();
+        }
+        
+        bool
+        operator == (const SourceInfo &rhs) const
+        {
+            return function == rhs.function &&
+            line_entry.file == rhs.line_entry.file &&
+            line_entry.line == rhs.line_entry.line;
+        }
+        
+        bool
+        operator != (const SourceInfo &rhs) const
+        {
+            return function != rhs.function ||
+            line_entry.file != rhs.line_entry.file ||
+            line_entry.line != rhs.line_entry.line;
+        }
+        
+        bool
+        operator < (const SourceInfo &rhs) const
+        {
+            if (function.GetCString() < rhs.function.GetCString())
+                return true;
+            if (line_entry.file.GetDirectory().GetCString() < rhs.line_entry.file.GetDirectory().GetCString())
+                return true;
+            if (line_entry.file.GetFilename().GetCString() < rhs.line_entry.file.GetFilename().GetCString())
+                return true;
+            if (line_entry.line < rhs.line_entry.line)
+                return true;
+            return false;
+        }
+    };
+
+    size_t
+    DisplayFunctionSource (const SymbolContext &sc,
+                           SourceInfo &source_info,
+                           CommandReturnObject &result)
+    {
+        if (!source_info.IsValid())
+        {
+            source_info.function = sc.GetFunctionName();
+            source_info.line_entry = sc.GetFunctionStartLineEntry();
+        }
+    
+        if (sc.function)
+        {
+            Target *target = m_exe_ctx.GetTargetPtr();
+
+            FileSpec start_file;
+            uint32_t start_line;
+            uint32_t end_line;
+            FileSpec end_file;
+            
+            if (sc.block == NULL)
+            {
+                // Not an inlined function
+                sc.function->GetStartLineSourceInfo (start_file, start_line);
+                if (start_line == 0)
+                {
+                    result.AppendErrorWithFormat("Could not find line information for start of function: \"%s\".\n", source_info.function.GetCString());
+                    result.SetStatus (eReturnStatusFailed);
+                    return 0;
+                }
+                sc.function->GetEndLineSourceInfo (end_file, end_line);
+            }
+            else
+            {
+                // We have an inlined function
+                start_file = source_info.line_entry.file;
+                start_line = source_info.line_entry.line;
+                end_line = start_line + m_options.num_lines;
+            }
+
+            // This is a little hacky, but the first line table entry for a function points to the "{" that
+            // starts the function block.  It would be nice to actually get the function
+            // declaration in there too.  So back up a bit, but not further than what you're going to display.
+            uint32_t extra_lines;
+            if (m_options.num_lines >= 10)
+                extra_lines = 5;
+            else
+                extra_lines = m_options.num_lines/2;
+            uint32_t line_no;
+            if (start_line <= extra_lines)
+                line_no = 1;
+            else
+                line_no = start_line - extra_lines;
+            
+            // For fun, if the function is shorter than the number of lines we're supposed to display,
+            // only display the function...
+            if (end_line != 0)
+            {
+                if (m_options.num_lines > end_line - line_no)
+                    m_options.num_lines = end_line - line_no + extra_lines;
+            }
+            
+            m_breakpoint_locations.Clear();
+
+            if (m_options.show_bp_locs)
+            {
+                const bool show_inlines = true;
+                m_breakpoint_locations.Reset (start_file, 0, show_inlines);
+                SearchFilter target_search_filter (m_exe_ctx.GetTargetSP());
+                target_search_filter.Search (m_breakpoint_locations);
+            }
+            
+            result.AppendMessageWithFormat("File: %s\n", start_file.GetPath().c_str());
+            return target->GetSourceManager().DisplaySourceLinesWithLineNumbers (start_file,
+                                                                                 line_no,
+                                                                                 0,
+                                                                                 m_options.num_lines,
+                                                                                 "",
+                                                                                 &result.GetOutputStream(),
+                                                                                 GetBreakpointLocations ());
+        }
+        else
+        {
+            result.AppendErrorWithFormat("Could not find function info for: \"%s\".\n", m_options.symbol_name.c_str());
+        }
+        return 0;
+    }
+
+    // From Jim: The FindMatchingFunctions / FindMatchingFunctionSymbols functions 
+    // "take a possibly empty vector of strings which are names of modules, and
+    // run the two search functions on the subset of the full module list that
+    // matches the strings in the input vector". If we wanted to put these somewhere,
+    // there should probably be a module-filter-list that can be passed to the
+    // various ModuleList::Find* calls, which would either be a vector of string
+    // names or a ModuleSpecList.
+    size_t FindMatchingFunctions (Target *target, const ConstString &name, SymbolContextList& sc_list)
+    {
+        // Displaying the source for a symbol:
+        bool include_inlines = true;
+        bool append = true;
+        bool include_symbols = false;
+        size_t num_matches = 0;
+        
+        if (m_options.num_lines == 0)
+            m_options.num_lines = 10;
+
+        const size_t num_modules = m_options.modules.size();
+        if (num_modules > 0)
+        {
+            ModuleList matching_modules;
+            for (size_t i = 0; i < num_modules; ++i)
+            {
+                FileSpec module_file_spec(m_options.modules[i].c_str(), false);
+                if (module_file_spec)
+                {
+                    ModuleSpec module_spec (module_file_spec);
+                    matching_modules.Clear();
+                    target->GetImages().FindModules (module_spec, matching_modules);
+                    num_matches += matching_modules.FindFunctions (name, eFunctionNameTypeAuto, include_symbols, include_inlines, append, sc_list);
+                }
+            }
+        }
+        else
+        {
+            num_matches = target->GetImages().FindFunctions (name, eFunctionNameTypeAuto, include_symbols, include_inlines, append, sc_list);
+        }
+        return num_matches;
+    }
+
+    size_t FindMatchingFunctionSymbols (Target *target, const ConstString &name, SymbolContextList& sc_list)
+    {
+        size_t num_matches = 0;
+        const size_t num_modules = m_options.modules.size();
+        if (num_modules > 0)
+        {
+            ModuleList matching_modules;
+            for (size_t i = 0; i < num_modules; ++i)
+            {
+                FileSpec module_file_spec(m_options.modules[i].c_str(), false);
+                if (module_file_spec)
+                {
+                    ModuleSpec module_spec (module_file_spec);
+                    matching_modules.Clear();
+                    target->GetImages().FindModules (module_spec, matching_modules);
+                    num_matches += matching_modules.FindFunctionSymbols (name, eFunctionNameTypeAuto, sc_list);
+                }
+            }
+        }
+        else
+        {
+            num_matches = target->GetImages().FindFunctionSymbols (name, eFunctionNameTypeAuto, sc_list);
+        }
+        return num_matches;
+    }
+
     bool
     DoExecute (Args& command, CommandReturnObject &result)
     {
@@ -310,41 +521,36 @@ protected:
 
         Target *target = m_exe_ctx.GetTargetPtr();
 
-        SymbolContextList sc_list;
         if (!m_options.symbol_name.empty())
         {
-            // Displaying the source for a symbol:
+            SymbolContextList sc_list;
             ConstString name(m_options.symbol_name.c_str());
-            bool include_symbols = false;
-            bool include_inlines = true;
-            bool append = true;
-            size_t num_matches = 0;
-            
-            if (m_options.num_lines == 0)
-                m_options.num_lines = 10;
 
-            const size_t num_modules = m_options.modules.size();
-            if (num_modules > 0)
+            // Displaying the source for a symbol. Search for function named name.
+            size_t num_matches = FindMatchingFunctions (target, name, sc_list);
+            if (!num_matches)
             {
-                ModuleList matching_modules;
-                for (size_t i = 0; i < num_modules; ++i)
+                // If we didn't find any functions with that name, try searching for symbols
+                // that line up exactly with function addresses.
+                SymbolContextList sc_list_symbols;
+                size_t num_symbol_matches = FindMatchingFunctionSymbols (target, name, sc_list_symbols);
+                for (size_t i = 0; i < num_symbol_matches; i++)
                 {
-                    FileSpec module_file_spec(m_options.modules[i].c_str(), false);
-                    if (module_file_spec)
+                    SymbolContext sc;
+                    sc_list_symbols.GetContextAtIndex (i, sc);
+                    if (sc.symbol)
                     {
-                        ModuleSpec module_spec (module_file_spec);
-                        matching_modules.Clear();
-                        target->GetImages().FindModules (module_spec, matching_modules);
-                        num_matches += matching_modules.FindFunctions (name, eFunctionNameTypeAuto, include_symbols, include_inlines, append, sc_list);
+                        const Address &base_address = sc.symbol->GetAddress();
+                        Function *function = base_address.CalculateSymbolContextFunction();
+                        if (function)
+                        {
+                            sc_list.Append (SymbolContext(function));
+                            num_matches++;
+                            break;
+                        }
                     }
                 }
             }
-            else
-            {
-                num_matches = target->GetImages().FindFunctions (name, eFunctionNameTypeAuto, include_symbols, include_inlines, append, sc_list);
-            }
-            
-            SymbolContext sc;
 
             if (num_matches == 0)
             {
@@ -352,130 +558,57 @@ protected:
                 result.SetStatus (eReturnStatusFailed);
                 return false;
             }
-            
-            sc_list.GetContextAtIndex (0, sc);
-            FileSpec start_file;
-            uint32_t start_line;
-            uint32_t end_line;
-            FileSpec end_file;
-            if (sc.function != NULL)
-            {
-                sc.function->GetStartLineSourceInfo (start_file, start_line);
-                if (start_line == 0)
-                {
-                    result.AppendErrorWithFormat("Could not find line information for start of function: \"%s\".\n", m_options.symbol_name.c_str());
-                    result.SetStatus (eReturnStatusFailed);
-                    return false;
-                }
-                sc.function->GetEndLineSourceInfo (end_file, end_line);
-            }
-            else
-            {
-                result.AppendErrorWithFormat("Could not find function info for: \"%s\".\n", m_options.symbol_name.c_str());
-                result.SetStatus (eReturnStatusFailed);
-                return false;
-            }
 
             if (num_matches > 1)
             {
-                // This could either be because there are multiple functions of this name, in which case
-                // we'll have to specify this further...  Or it could be because there are multiple inlined instances
-                // of one function.  So run through the matches and if they all have the same file & line then we can just
-                // list one.
+                std::set<SourceInfo> source_match_set;
                 
-                bool found_multiple = false;
-                
-                for (size_t i = 1; i < num_matches; i++)
+                bool displayed_something = false;
+                for (size_t i = 0; i < num_matches; i++)
                 {
-                    SymbolContext scratch_sc;
-                    sc_list.GetContextAtIndex (i, scratch_sc);
-                    if (scratch_sc.function != NULL)
+                    SymbolContext sc;
+                    sc_list.GetContextAtIndex (i, sc);
+                    SourceInfo source_info (sc.GetFunctionName(),
+                                            sc.GetFunctionStartLineEntry());
+                    
+                    if (source_info.IsValid())
                     {
-                        FileSpec scratch_file;
-                        uint32_t scratch_line;
-                        scratch_sc.function->GetStartLineSourceInfo (scratch_file, scratch_line);
-                        if (scratch_file != start_file 
-                            || scratch_line != start_line)
+                        if (source_match_set.find(source_info) == source_match_set.end())
                         {
-                            found_multiple = true;
-                            break;
+                            source_match_set.insert(source_info);
+                            if (DisplayFunctionSource (sc, source_info, result))
+                                displayed_something = true;
                         }
                     }
                 }
-                if (found_multiple)
-                {
-                    StreamString s;
-                    for (size_t i = 0; i < num_matches; i++)
-                    {
-                        SymbolContext scratch_sc;
-                        sc_list.GetContextAtIndex (i, scratch_sc);
-                        if (scratch_sc.function != NULL)
-                        {
-                            s.Printf("\n%lu: ", i); 
-                            scratch_sc.function->Dump (&s, true);
-                        }
-                    }
-                    result.AppendErrorWithFormat("Multiple functions found matching: %s: \n%s\n", 
-                                                 m_options.symbol_name.c_str(),
-                                                 s.GetData());
+                
+                if (displayed_something)
+                    result.SetStatus (eReturnStatusSuccessFinishResult);
+                else
                     result.SetStatus (eReturnStatusFailed);
-                    return false;
+            }
+            else
+            {
+                SymbolContext sc;
+                sc_list.GetContextAtIndex (0, sc);
+                SourceInfo source_info;
+                
+                if (DisplayFunctionSource (sc, source_info, result))
+                {
+                    result.SetStatus (eReturnStatusSuccessFinishResult);
+                }
+                else
+                {
+                    result.SetStatus (eReturnStatusFailed);
                 }
             }
-            
-            // This is a little hacky, but the first line table entry for a function points to the "{" that 
-            // starts the function block.  It would be nice to actually get the function
-            // declaration in there too.  So back up a bit, but not further than what you're going to display.
-            uint32_t extra_lines;
-            if (m_options.num_lines >= 10)
-                extra_lines = 5;
-            else
-                extra_lines = m_options.num_lines/2;
-            uint32_t line_no;
-            if (start_line <= extra_lines)
-                line_no = 1;
-            else
-                line_no = start_line - extra_lines;
-                
-            // For fun, if the function is shorter than the number of lines we're supposed to display, 
-            // only display the function...
-            if (end_line != 0)
-            {
-                if (m_options.num_lines > end_line - line_no)
-                    m_options.num_lines = end_line - line_no + extra_lines;
-            }
-            
-            char path_buf[PATH_MAX];
-            start_file.GetPath(path_buf, sizeof(path_buf));
-            
-            if (m_options.show_bp_locs)
-            {
-                const bool show_inlines = true;
-                m_breakpoint_locations.Reset (start_file, 0, show_inlines);
-                SearchFilter target_search_filter (m_exe_ctx.GetTargetSP());
-                target_search_filter.Search (m_breakpoint_locations);
-            }
-            else
-                m_breakpoint_locations.Clear();
-
-            result.AppendMessageWithFormat("File: %s\n", path_buf);
-            target->GetSourceManager().DisplaySourceLinesWithLineNumbers (start_file,
-                                                                          line_no,
-                                                                          0,
-                                                                          m_options.num_lines,
-                                                                          "",
-                                                                          &result.GetOutputStream(),
-                                                                          GetBreakpointLocations ());
-            
-            result.SetStatus (eReturnStatusSuccessFinishResult);
-            return true;
-
+            return result.Succeeded();
         }
         else if (m_options.address != LLDB_INVALID_ADDRESS)
         {
-            SymbolContext sc;
             Address so_addr;
             StreamString error_strm;
+            SymbolContextList sc_list;
 
             if (target->GetSectionLoadList().IsEmpty())
             {
@@ -488,6 +621,7 @@ protected:
                     ModuleSP module_sp (module_list.GetModuleAtIndex(i));
                     if (module_sp && module_sp->ResolveFileAddress(m_options.address, so_addr))
                     {
+                        SymbolContext sc;
                         sc.Clear(true);
                         if (module_sp->ResolveSymbolContextForAddress (so_addr, eSymbolContextEverything, sc) & eSymbolContextLineEntry)
                             sc_list.Append(sc);
@@ -511,6 +645,7 @@ protected:
                     ModuleSP module_sp (so_addr.GetModule());
                     if (module_sp)
                     {
+                        SymbolContext sc;
                         sc.Clear(true);
                         if (module_sp->ResolveSymbolContextForAddress (so_addr, eSymbolContextEverything, sc) & eSymbolContextLineEntry)
                         {
@@ -537,6 +672,7 @@ protected:
             uint32_t num_matches = sc_list.GetSize();
             for (uint32_t i=0; i<num_matches; ++i)
             {
+                SymbolContext sc;
                 sc_list.GetContextAtIndex(i, sc);
                 if (sc.comp_unit)
                 {
@@ -670,12 +806,12 @@ protected:
             
             if (num_matches > 1)
             {
-                SymbolContext sc;
                 bool got_multiple = false;
                 FileSpec *test_cu_spec = NULL;
 
                 for (unsigned i = 0; i < num_matches; i++)
                 {
+                    SymbolContext sc;
                     sc_list.GetContextAtIndex(i, sc);
                     if (sc.comp_unit)
                     {
@@ -754,15 +890,15 @@ protected:
 OptionDefinition
 CommandObjectSourceList::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_ALL, false, "count",  'c', required_argument, NULL, 0, eArgTypeCount,   "The number of source lines to display."},
+{ LLDB_OPT_SET_ALL, false, "count",  'c', OptionParser::eRequiredArgument, NULL, 0, eArgTypeCount,   "The number of source lines to display."},
 { LLDB_OPT_SET_1  |
-  LLDB_OPT_SET_2  , false, "shlib",  's', required_argument, NULL, CommandCompletions::eModuleCompletion, eArgTypeShlibName, "Look up the source file in the given shared library."},
-{ LLDB_OPT_SET_ALL, false, "show-breakpoints", 'b', no_argument, NULL, 0, eArgTypeNone, "Show the line table locations from the debug information that indicate valid places to set source level breakpoints."},
-{ LLDB_OPT_SET_1  , false, "file",   'f', required_argument, NULL, CommandCompletions::eSourceFileCompletion, eArgTypeFilename,    "The file from which to display source."},
-{ LLDB_OPT_SET_1  , false, "line",   'l', required_argument, NULL, 0, eArgTypeLineNum,    "The line number at which to start the display source."},
-{ LLDB_OPT_SET_2  , false, "name",   'n', required_argument, NULL, CommandCompletions::eSymbolCompletion, eArgTypeSymbol,    "The name of a function whose source to display."},
-{ LLDB_OPT_SET_3  , false, "address",'a', required_argument, NULL, 0, eArgTypeAddressOrExpression, "Lookup the address and display the source information for the corresponding file and line."},
-{ LLDB_OPT_SET_4, false, "reverse", 'r', no_argument, NULL, 0, eArgTypeNone, "Reverse the listing to look backwards from the last displayed block of source."},
+  LLDB_OPT_SET_2  , false, "shlib",  's', OptionParser::eRequiredArgument, NULL, CommandCompletions::eModuleCompletion, eArgTypeShlibName, "Look up the source file in the given shared library."},
+{ LLDB_OPT_SET_ALL, false, "show-breakpoints", 'b', OptionParser::eNoArgument, NULL, 0, eArgTypeNone, "Show the line table locations from the debug information that indicate valid places to set source level breakpoints."},
+{ LLDB_OPT_SET_1  , false, "file",   'f', OptionParser::eRequiredArgument, NULL, CommandCompletions::eSourceFileCompletion, eArgTypeFilename,    "The file from which to display source."},
+{ LLDB_OPT_SET_1  , false, "line",   'l', OptionParser::eRequiredArgument, NULL, 0, eArgTypeLineNum,    "The line number at which to start the display source."},
+{ LLDB_OPT_SET_2  , false, "name",   'n', OptionParser::eRequiredArgument, NULL, CommandCompletions::eSymbolCompletion, eArgTypeSymbol,    "The name of a function whose source to display."},
+{ LLDB_OPT_SET_3  , false, "address",'a', OptionParser::eRequiredArgument, NULL, 0, eArgTypeAddressOrExpression, "Lookup the address and display the source information for the corresponding file and line."},
+{ LLDB_OPT_SET_4, false, "reverse", 'r', OptionParser::eNoArgument, NULL, 0, eArgTypeNone, "Reverse the listing to look backwards from the last displayed block of source."},
 { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 

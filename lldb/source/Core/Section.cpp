@@ -16,6 +16,7 @@ using namespace lldb;
 using namespace lldb_private;
 
 Section::Section (const ModuleSP &module_sp,
+                  ObjectFile *obj_file,
                   user_id_t sect_id,
                   const ConstString &name,
                   SectionType sect_type,
@@ -27,9 +28,10 @@ Section::Section (const ModuleSP &module_sp,
     ModuleChild     (module_sp),
     UserID          (sect_id),
     Flags           (flags),
+    m_obj_file      (obj_file),
+    m_type          (sect_type),
     m_parent_wp     (),
     m_name          (name),
-    m_type          (sect_type),
     m_file_addr     (file_addr),
     m_byte_size     (byte_size),
     m_file_offset   (file_offset),
@@ -45,6 +47,7 @@ Section::Section (const ModuleSP &module_sp,
 
 Section::Section (const lldb::SectionSP &parent_section_sp,
                   const ModuleSP &module_sp,
+                  ObjectFile *obj_file,
                   user_id_t sect_id,
                   const ConstString &name,
                   SectionType sect_type,
@@ -56,9 +59,10 @@ Section::Section (const lldb::SectionSP &parent_section_sp,
     ModuleChild     (module_sp),
     UserID          (sect_id),
     Flags           (flags),
+    m_obj_file      (obj_file),
+    m_type          (sect_type),
     m_parent_wp     (),
     m_name          (name),
-    m_type          (sect_type),
     m_file_addr     (file_addr),
     m_byte_size     (byte_size),
     m_file_offset   (file_offset),
@@ -92,6 +96,24 @@ Section::GetFileAddress () const
     }
     // This section has no parent, so m_file_addr is the file base address
     return m_file_addr;
+}
+
+bool
+Section::SetFileAddress (lldb::addr_t file_addr)
+{
+    SectionSP parent_sp (GetParent ());
+    if (parent_sp)
+    {
+        if (m_file_addr >= file_addr)
+            return parent_sp->SetFileAddress (m_file_addr - file_addr);
+        return false;
+    }
+    else
+    {
+        // This section has no parent, so m_file_addr is the file base address
+        m_file_addr = file_addr;
+        return true;
+    }
 }
 
 lldb::addr_t
@@ -242,13 +264,16 @@ Section::DumpName (Stream *s) const
     else
     {
         // The top most section prints the module basename
+        const char * name = NULL;
         ModuleSP module_sp (GetModule());
-        if (module_sp)
-        {
-            const char *module_basename = module_sp->GetFileSpec().GetFilename().AsCString();
-            if (module_basename && module_basename[0])
-                s->Printf("%s.", module_basename);
-        }
+        const FileSpec &file_spec = m_obj_file->GetFileSpec();
+
+        if (m_obj_file)
+            name = file_spec.GetFilename().AsCString();
+        if ((!name || !name[0]) && module_sp)
+            name = module_sp->GetFileSpec().GetFilename().AsCString();
+        if (name && name[0])
+            s->Printf("%s.", name);
     }
     m_name.Dump(s);
 }
@@ -294,6 +319,14 @@ SectionList::~SectionList ()
 {
 }
 
+SectionList &
+SectionList::operator = (const SectionList& rhs)
+{
+    if (this != &rhs)
+        m_sections = rhs.m_sections;
+    return *this;
+}
+
 size_t
 SectionList::AddSection (const lldb::SectionSP& section_sp)
 {
@@ -301,6 +334,18 @@ SectionList::AddSection (const lldb::SectionSP& section_sp)
     size_t section_index = m_sections.size();
     m_sections.push_back(section_sp);
     return section_index;
+}
+
+// Warning, this can be slow as it's removing items from a std::vector.
+bool
+SectionList::DeleteSection (size_t idx)
+{
+    if (idx < m_sections.size())
+    {
+        m_sections.erase (m_sections.begin() + idx);
+        return true; 
+    }
+    return false;
 }
 
 size_t
@@ -325,10 +370,11 @@ SectionList::AddUniqueSection (const lldb::SectionSP& sect_sp)
 {
     size_t sect_idx = FindSectionIndex (sect_sp.get());
     if (sect_idx == UINT32_MAX)
+    {
         sect_idx = AddSection (sect_sp);
+    }
     return sect_idx;
 }
-
 
 bool
 SectionList::ReplaceSection (user_id_t sect_id, const lldb::SectionSP& sect_sp, uint32_t depth)
@@ -349,7 +395,6 @@ SectionList::ReplaceSection (user_id_t sect_id, const lldb::SectionSP& sect_sp, 
     }
     return false;
 }
-
 
 size_t
 SectionList::GetNumSections (uint32_t depth) const
@@ -515,17 +560,3 @@ SectionList::Slide (addr_t slide_amount, bool slide_children)
     }
     return count;
 }
-
-void
-SectionList::Finalize ()
-{
-    for (const_iterator si = m_sections.begin(), se = m_sections.end();
-         si != se;
-         ++si)
-    {
-        Section *sect = si->get();
-        
-        sect->GetChildren().Finalize();
-    }
-}
-

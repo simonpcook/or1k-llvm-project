@@ -27,10 +27,10 @@ using namespace lldb_private;
 Symtab::Symtab(ObjectFile *objfile) :
     m_objfile (objfile),
     m_symbols (),
-    m_addr_indexes (),
+    m_file_addr_to_index (),
     m_name_to_index (),
     m_mutex (Mutex::eMutexTypeRecursive),
-    m_addr_indexes_computed (false),
+    m_file_addr_to_index_computed (false),
     m_name_indexes_computed (false)
 {
 }
@@ -63,9 +63,9 @@ Symtab::AddSymbol(const Symbol& symbol)
     // when calling this function to avoid performance issues.
     uint32_t symbol_idx = m_symbols.size();
     m_name_to_index.Clear();
-    m_addr_indexes.clear();
+    m_file_addr_to_index.Clear();
     m_symbols.push_back(symbol);
-    m_addr_indexes_computed = false;
+    m_file_addr_to_index_computed = false;
     m_name_indexes_computed = false;
     return symbol_idx;
 }
@@ -90,9 +90,8 @@ Symtab::Dump (Stream *s, Target *target, SortOrder sort_order)
         object_name = m_objfile->GetModule()->GetObjectName().GetCString();
 
     if (file_spec)
-        s->Printf("Symtab, file = %s/%s%s%s%s, num_symbols = %lu",
-        file_spec.GetDirectory().AsCString(),
-        file_spec.GetFilename().AsCString(),
+        s->Printf("Symtab, file = %s%s%s%s, num_symbols = %lu",
+        file_spec.GetPath().c_str(),
         object_name ? "(" : "",
         object_name ? object_name : "",
         object_name ? ")" : "",
@@ -145,19 +144,14 @@ Symtab::Dump (Stream *s, Target *target, SortOrder sort_order)
         case eSortOrderByAddress:
             s->PutCString (" (sorted by address):\n");
             DumpSymbolHeader (s);
-            if (!m_addr_indexes_computed)
+            if (!m_file_addr_to_index_computed)
                 InitAddressIndexes();
-            const size_t num_symbols = GetNumSymbols();
-            std::vector<uint32_t>::const_iterator pos;
-            std::vector<uint32_t>::const_iterator end = m_addr_indexes.end();
-            for (pos = m_addr_indexes.begin(); pos != end; ++pos)
+            const size_t num_entries = m_file_addr_to_index.GetSize();
+            for (size_t i=0; i<num_entries; ++i)
             {
-                size_t idx = *pos;
-                if (idx < num_symbols)
-                {
-                    s->Indent();
-                    m_symbols[idx].Dump(s, target, idx);
-                }
+                s->Indent();
+                const uint32_t symbol_idx = m_file_addr_to_index.GetEntryRef(i).data;
+                m_symbols[symbol_idx].Dump(s, target, symbol_idx);
             }
             break;
         }
@@ -321,7 +315,7 @@ Symtab::InitNameIndexes()
                          entry.cstring[2] != 'Z'))  // named local entities (if we eventually handle eSymbolTypeData, we will want this back)
                     {
                         CPPLanguageRuntime::MethodName cxx_method (mangled.GetDemangledName());
-                        entry.cstring = cxx_method.GetBasename ().GetCString();
+                        entry.cstring = ConstString(cxx_method.GetBasename()).GetCString();
                         if (entry.cstring && entry.cstring[0])
                         {
                             // ConstString objects permanently store the string in the pool so calling
@@ -688,7 +682,7 @@ Symtab::AppendSymbolIndexesWithNameAndType (const ConstString& symbol_name, Symb
             if (symbol_type == eSymbolTypeAny || m_symbols[*pos].GetType() == symbol_type)
                 ++pos;
             else
-                indexes.erase(pos);
+                pos = indexes.erase(pos);
         }
     }
     return indexes.size();
@@ -707,7 +701,7 @@ Symtab::AppendSymbolIndexesWithNameAndType (const ConstString& symbol_name, Symb
             if (symbol_type == eSymbolTypeAny || m_symbols[*pos].GetType() == symbol_type)
                 ++pos;
             else
-                indexes.erase(pos);
+                pos = indexes.erase(pos);
         }
     }
     return indexes.size();
@@ -722,7 +716,7 @@ Symtab::AppendSymbolIndexesMatchingRegExAndType (const RegularExpression &regexp
     uint32_t prev_size = indexes.size();
     uint32_t sym_end = m_symbols.size();
 
-    for (int i = 0; i < sym_end; i++)
+    for (uint32_t i = 0; i < sym_end; i++)
     {
         if (symbol_type == eSymbolTypeAny || m_symbols[i].GetType() == symbol_type)
         {
@@ -746,7 +740,7 @@ Symtab::AppendSymbolIndexesMatchingRegExAndType (const RegularExpression &regexp
     uint32_t prev_size = indexes.size();
     uint32_t sym_end = m_symbols.size();
 
-    for (int i = 0; i < sym_end; i++)
+    for (uint32_t i = 0; i < sym_end; i++)
     {
         if (symbol_type == eSymbolTypeAny || m_symbols[i].GetType() == symbol_type)
         {
@@ -944,99 +938,94 @@ void
 Symtab::InitAddressIndexes()
 {
     // Protected function, no need to lock mutex...
-    if (!m_addr_indexes_computed && !m_symbols.empty())
+    if (!m_file_addr_to_index_computed && !m_symbols.empty())
     {
-        m_addr_indexes_computed = true;
+        m_file_addr_to_index_computed = true;
 
+        FileRangeToIndexMap::Entry entry;
         const_iterator begin = m_symbols.begin();
         const_iterator end = m_symbols.end();
         for (const_iterator pos = m_symbols.begin(); pos != end; ++pos)
         {
             if (pos->ValueIsAddress())
-                m_addr_indexes.push_back (std::distance(begin, pos));
-        }
-
-        SortSymbolIndexesByValue (m_addr_indexes, false);
-        m_addr_indexes.push_back (UINT32_MAX);   // Terminator for bsearch since we might need to look at the next symbol
-    }
-}
-
-size_t
-Symtab::CalculateSymbolSize (Symbol *symbol)
-{
-    Mutex::Locker locker (m_mutex);
-
-    if (m_symbols.empty())
-        return 0;
-
-    // Make sure this symbol is from this symbol table...
-    if (symbol < &m_symbols.front() || symbol > &m_symbols.back())
-        return 0;
-
-    // See if this symbol already has a byte size?
-    size_t byte_size = symbol->GetByteSize();
-
-    if (byte_size)
-    {
-        // It does, just return it
-        return byte_size;
-    }
-
-    // Else if this is an address based symbol, figure out the delta between
-    // it and the next address based symbol
-    if (symbol->ValueIsAddress())
-    {
-        if (!m_addr_indexes_computed)
-            InitAddressIndexes();
-        const size_t num_addr_indexes = m_addr_indexes.size();
-        const lldb::addr_t symbol_file_addr = symbol->GetAddress().GetFileAddress();
-        SymbolSearchInfo info = FindIndexPtrForSymbolContainingAddress (this,
-                                                                        symbol_file_addr,
-                                                                        &m_addr_indexes.front(),
-                                                                        num_addr_indexes);
-        if (info.match_index_ptr != NULL)
-        {
-            // We can figure out the address range of all symbols except the
-            // last one by taking the delta between the current symbol and
-            // the next symbol
-
-            for (uint32_t addr_index = info.match_index_ptr - &m_addr_indexes.front() + 1;
-                 addr_index < num_addr_indexes;
-                 ++addr_index)
             {
-                Symbol *next_symbol = SymbolAtIndex(m_addr_indexes[addr_index]);
-                if (next_symbol == NULL)
+                entry.SetRangeBase(pos->GetAddress().GetFileAddress());
+                entry.SetByteSize(pos->GetByteSize());
+                entry.data = std::distance(begin, pos);
+                m_file_addr_to_index.Append(entry);
+            }
+        }
+        const size_t num_entries = m_file_addr_to_index.GetSize();
+        if (num_entries > 0)
+        {
+            m_file_addr_to_index.Sort();
+            m_file_addr_to_index.CalculateSizesOfZeroByteSizeRanges();
+        
+            // Now our last symbols might not have had sizes because there
+            // was no subsequent symbol to calculate the size from. If this is
+            // the case, then calculate the size by capping it at the end of the
+            // section in which the symbol resides
+            for (int i = num_entries - 1; i >= 0; --i)
+            {
+                const FileRangeToIndexMap::Entry &entry = m_file_addr_to_index.GetEntryRef(i);
+                // As we iterate backwards, as soon as we find a symbol with a valid
+                // byte size, we are done
+                if (entry.GetByteSize() > 0)
+                    break;
+
+                // Cap the size to the end of the section in which the symbol resides
+                SectionSP section_sp (m_objfile->GetSectionList()->FindSectionContainingFileAddress (entry.GetRangeBase()));
+                if (section_sp)
                 {
-                    // No next symbol take the size to be the remaining bytes in the section
-                    // in which the symbol resides
-                    SectionSP section_sp (m_objfile->GetSectionList()->FindSectionContainingFileAddress (symbol_file_addr));
-                    if (section_sp)
+                    const lldb::addr_t end_section_file_addr = section_sp->GetFileAddress() + section_sp->GetByteSize();
+                    const lldb::addr_t symbol_file_addr = entry.GetRangeBase();
+                    if (end_section_file_addr > symbol_file_addr)
                     {
-                        const lldb::addr_t end_section_file_addr = section_sp->GetFileAddress() + section_sp->GetByteSize();
-                        if (end_section_file_addr > symbol_file_addr)
-                        {
-                            byte_size = end_section_file_addr - symbol_file_addr;
-                            symbol->SetByteSize(byte_size);
-                            symbol->SetSizeIsSynthesized(true);
-                            break;
-                        }
-                    }
-                }
-                else
-                {
-                    const lldb::addr_t next_file_addr = next_symbol->GetAddress().GetFileAddress();
-                    if (next_file_addr > symbol_file_addr)
-                    {
-                        byte_size = next_file_addr - symbol_file_addr;
-                        symbol->SetByteSize(byte_size);
-                        symbol->SetSizeIsSynthesized(true);
-                        break;
+                        Symbol &symbol = m_symbols[entry.data];
+
+                        symbol.SetByteSize(end_section_file_addr - symbol_file_addr);
+                        symbol.SetSizeIsSynthesized(true);
                     }
                 }
             }
+            // Sort again in case the range size changes the ordering
+            m_file_addr_to_index.Sort();
         }
     }
-    return byte_size;
+}
+
+void
+Symtab::CalculateSymbolSizes ()
+{
+    Mutex::Locker locker (m_mutex);
+
+    if (!m_symbols.empty())
+    {
+        if (!m_file_addr_to_index_computed)
+            InitAddressIndexes();
+        
+        const size_t num_entries = m_file_addr_to_index.GetSize();
+
+        for (size_t i = 0; i < num_entries; ++i)
+        {
+            // The entries in the m_file_addr_to_index have calculated the sizes already
+            // so we will use this size if we need to.
+            const FileRangeToIndexMap::Entry &entry = m_file_addr_to_index.GetEntryRef(i);
+            
+            Symbol &symbol = m_symbols[entry.data];
+
+            // If the symbol size is already valid, no need to do anything
+            if (symbol.GetByteSizeIsValid())
+                continue;
+            
+            const addr_t range_size = entry.GetByteSize();
+            if (range_size > 0)
+            {
+                symbol.SetByteSize(range_size);
+                symbol.SetSizeIsSynthesized(true);
+            }
+        }
+    }
 }
 
 Symbol *
@@ -1044,6 +1033,7 @@ Symtab::FindSymbolContainingFileAddress (addr_t file_addr, const uint32_t* index
 {
     Mutex::Locker locker (m_mutex);
 
+    
     SymbolSearchInfo info = { this, file_addr, NULL, NULL, 0 };
 
     ::bsearch (&info, 
@@ -1082,10 +1072,13 @@ Symtab::FindSymbolContainingFileAddress (addr_t file_addr)
 {
     Mutex::Locker locker (m_mutex);
 
-    if (!m_addr_indexes_computed)
+    if (!m_file_addr_to_index_computed)
         InitAddressIndexes();
 
-    return FindSymbolContainingFileAddress (file_addr, &m_addr_indexes[0], m_addr_indexes.size());
+    const FileRangeToIndexMap::Entry *entry = m_file_addr_to_index.FindEntryThatContains(file_addr);
+    if (entry)
+        return SymbolAtIndex(entry->data);
+    return NULL;
 }
 
 void
@@ -1125,7 +1118,31 @@ Symtab::FindFunctionSymbols (const ConstString &name,
 
     if (name_type_mask & (eFunctionNameTypeBase | eFunctionNameTypeFull))
     {
-        FindAllSymbolsWithNameAndType (name, eSymbolTypeCode, symbol_indexes);
+        std::vector<uint32_t> temp_symbol_indexes;
+        FindAllSymbolsWithNameAndType (name, eSymbolTypeAny, temp_symbol_indexes);
+
+        unsigned temp_symbol_indexes_size = temp_symbol_indexes.size();
+        if (temp_symbol_indexes_size > 0)
+        {
+            Mutex::Locker locker (m_mutex);
+            for (unsigned i = 0; i < temp_symbol_indexes_size; i++)
+            {
+                SymbolContext sym_ctx;
+                sym_ctx.symbol = SymbolAtIndex (temp_symbol_indexes[i]);
+                if (sym_ctx.symbol)
+                {
+                    switch (sym_ctx.symbol->GetType())
+                    {
+                    case eSymbolTypeCode:
+                    case eSymbolTypeResolver:
+                        symbol_indexes.push_back(temp_symbol_indexes[i]);
+                        break;
+                    default:
+                        break;
+                    }
+                }
+            }
+        }
     }
     
     if (name_type_mask & eFunctionNameTypeBase)

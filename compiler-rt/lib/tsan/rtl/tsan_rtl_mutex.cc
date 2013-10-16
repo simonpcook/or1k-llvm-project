@@ -79,9 +79,10 @@ void MutexDestroy(ThreadState *thr, uptr pc, uptr addr) {
   DestroyAndFree(s);
 }
 
-void MutexLock(ThreadState *thr, uptr pc, uptr addr) {
+void MutexLock(ThreadState *thr, uptr pc, uptr addr, int rec) {
   CHECK_GT(thr->in_rtl, 0);
-  DPrintf("#%d: MutexLock %zx\n", thr->tid, addr);
+  DPrintf("#%d: MutexLock %zx rec=%d\n", thr->tid, addr, rec);
+  CHECK_GT(rec, 0);
   if (IsAppMem(addr))
     MemoryReadAtomic(thr, pc, addr, kSizeLog1);
   SyncVar *s = CTX()->synctab.GetOrCreateAndLock(thr, pc, addr, true);
@@ -94,7 +95,7 @@ void MutexLock(ThreadState *thr, uptr pc, uptr addr) {
   } else if (s->owner_tid == thr->tid) {
     CHECK_GT(s->recursion, 0);
   } else {
-    Printf("ThreadSanitizer WARNING: double lock\n");
+    Printf("ThreadSanitizer WARNING: double lock of mutex %p\n", addr);
     PrintCurrentStack(thr, pc);
   }
   if (s->recursion == 0) {
@@ -107,33 +108,36 @@ void MutexLock(ThreadState *thr, uptr pc, uptr addr) {
   } else if (!s->is_recursive) {
     StatInc(thr, StatMutexRecLock);
   }
-  s->recursion++;
+  s->recursion += rec;
   thr->mset.Add(s->GetId(), true, thr->fast_state.epoch());
   s->mtx.Unlock();
 }
 
-void MutexUnlock(ThreadState *thr, uptr pc, uptr addr) {
+int MutexUnlock(ThreadState *thr, uptr pc, uptr addr, bool all) {
   CHECK_GT(thr->in_rtl, 0);
-  DPrintf("#%d: MutexUnlock %zx\n", thr->tid, addr);
+  DPrintf("#%d: MutexUnlock %zx all=%d\n", thr->tid, addr, all);
   if (IsAppMem(addr))
     MemoryReadAtomic(thr, pc, addr, kSizeLog1);
   SyncVar *s = CTX()->synctab.GetOrCreateAndLock(thr, pc, addr, true);
   thr->fast_state.IncrementEpoch();
   TraceAddEvent(thr, thr->fast_state, EventTypeUnlock, s->GetId());
+  int rec = 0;
   if (s->recursion == 0) {
     if (!s->is_broken) {
       s->is_broken = true;
-      Printf("ThreadSanitizer WARNING: unlock of unlocked mutex\n");
+      Printf("ThreadSanitizer WARNING: unlock of unlocked mutex %p\n", addr);
       PrintCurrentStack(thr, pc);
     }
   } else if (s->owner_tid != thr->tid) {
     if (!s->is_broken) {
       s->is_broken = true;
-      Printf("ThreadSanitizer WARNING: mutex unlock by another thread\n");
+      Printf("ThreadSanitizer WARNING: mutex %p is unlocked by wrong thread\n",
+             addr);
       PrintCurrentStack(thr, pc);
     }
   } else {
-    s->recursion--;
+    rec = all ? s->recursion : 1;
+    s->recursion -= rec;
     if (s->recursion == 0) {
       StatInc(thr, StatMutexUnlock);
       s->owner_tid = SyncVar::kInvalidTid;
@@ -147,6 +151,7 @@ void MutexUnlock(ThreadState *thr, uptr pc, uptr addr) {
   }
   thr->mset.Del(s->GetId(), true);
   s->mtx.Unlock();
+  return rec;
 }
 
 void MutexReadLock(ThreadState *thr, uptr pc, uptr addr) {
@@ -159,7 +164,8 @@ void MutexReadLock(ThreadState *thr, uptr pc, uptr addr) {
   thr->fast_state.IncrementEpoch();
   TraceAddEvent(thr, thr->fast_state, EventTypeRLock, s->GetId());
   if (s->owner_tid != SyncVar::kInvalidTid) {
-    Printf("ThreadSanitizer WARNING: read lock of a write locked mutex\n");
+    Printf("ThreadSanitizer WARNING: read lock of a write locked mutex %p\n",
+           addr);
     PrintCurrentStack(thr, pc);
   }
   thr->clock.set(thr->tid, thr->fast_state.epoch());
@@ -180,8 +186,8 @@ void MutexReadUnlock(ThreadState *thr, uptr pc, uptr addr) {
   thr->fast_state.IncrementEpoch();
   TraceAddEvent(thr, thr->fast_state, EventTypeRUnlock, s->GetId());
   if (s->owner_tid != SyncVar::kInvalidTid) {
-    Printf("ThreadSanitizer WARNING: read unlock of a write "
-               "locked mutex\n");
+    Printf("ThreadSanitizer WARNING: read unlock of a write locked mutex %p\n",
+           addr);
     PrintCurrentStack(thr, pc);
   }
   thr->clock.set(thr->tid, thr->fast_state.epoch());
@@ -231,7 +237,8 @@ void MutexReadOrWriteUnlock(ThreadState *thr, uptr pc, uptr addr) {
     }
   } else if (!s->is_broken) {
     s->is_broken = true;
-    Printf("ThreadSanitizer WARNING: mutex unlock by another thread\n");
+    Printf("ThreadSanitizer WARNING: mutex %p is unlock by wrong thread\n",
+           addr);
     PrintCurrentStack(thr, pc);
   }
   thr->mset.Del(s->GetId(), write);

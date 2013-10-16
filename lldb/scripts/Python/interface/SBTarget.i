@@ -515,6 +515,9 @@ public:
                const char *uuid_cstr,
                const char *symfile);
 
+    lldb::SBModule
+    AddModule (const SBModuleSpec &module_spec);
+
     uint32_t
     GetNumModules () const;
 
@@ -741,6 +744,12 @@ public:
     
     lldb::addr_t
     GetStackRedZoneSize();
+
+    bool
+    operator == (const lldb::SBTarget &rhs) const;
+
+    bool
+    operator != (const lldb::SBTarget &rhs) const;
 
     lldb::SBValue
     EvaluateExpression (const char *expr, const lldb::SBExpressionOptions &options);

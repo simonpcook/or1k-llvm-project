@@ -24,12 +24,11 @@
 ///        start of an ELF executable file.
 namespace lld {
 namespace elf {
-template<class ELFT>
-class Header : public Chunk<ELFT> {
+template <class ELFT> class ELFHeader : public Chunk<ELFT> {
 public:
   typedef llvm::object::Elf_Ehdr_Impl<ELFT> Elf_Ehdr;
 
-  Header(const ELFTargetInfo &);
+  ELFHeader(const ELFLinkingContext &);
 
   void e_ident(int I, unsigned char C) { _eh.e_ident[I] = C; }
   void e_type(uint16_t type)           { _eh.e_type = type; }
@@ -48,8 +47,10 @@ public:
   uint64_t  fileSize()                 { return sizeof (Elf_Ehdr); }
 
   static inline bool classof(const Chunk<ELFT> *c) {
-    return c->Kind() == Chunk<ELFT>::K_Header;
+    return c->Kind() == Chunk<ELFT>::Kind::ELFHeader;
   }
+
+  inline int getContentType() const { return Chunk<ELFT>::ContentType::Header; }
 
   void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer);
 
@@ -62,8 +63,8 @@ private:
 };
 
 template <class ELFT>
-Header<ELFT>::Header(const ELFTargetInfo &ti)
-    : Chunk<ELFT>("elfhdr", Chunk<ELFT>::K_Header, ti) {
+ELFHeader<ELFT>::ELFHeader(const ELFLinkingContext &context)
+    : Chunk<ELFT>("elfhdr", Chunk<ELFT>::Kind::ELFHeader, context) {
   this->_align2 = ELFT::Is64Bits ? 8 : 4;
   this->_fsize = sizeof(Elf_Ehdr);
   this->_msize = sizeof(Elf_Ehdr);
@@ -77,7 +78,7 @@ Header<ELFT>::Header(const ELFTargetInfo &ti)
 }
 
 template <class ELFT>
-void Header<ELFT>::write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
+void ELFHeader<ELFT>::write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
   uint8_t *chunkBuffer = buffer.getBufferStart();
   uint8_t *atomContent = chunkBuffer + this->fileOffset();
   memcpy(atomContent, &_eh, fileSize());
@@ -113,8 +114,8 @@ public:
     uint64_t _flagsClear;
   };
 
-  ProgramHeader(const ELFTargetInfo &ti)
-      : Chunk<ELFT>("elfphdr", Chunk<ELFT>::K_ProgramHeader, ti) {
+  ProgramHeader(const ELFLinkingContext &context)
+      : Chunk<ELFT>("elfphdr", Chunk<ELFT>::Kind::ProgramHeader, context) {
     this->_align2 = ELFT::Is64Bits ? 8 : 4;
     resetProgramHeaders();
   }
@@ -128,7 +129,7 @@ public:
   }
 
   static inline bool classof(const Chunk<ELFT> *c) {
-    return c->Kind() == Chunk<ELFT>::K_ProgramHeader;
+    return c->Kind() == Chunk<ELFT>::Kind::ProgramHeader;
   }
 
   void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer);
@@ -162,21 +163,21 @@ public:
     return _ph.size();
   }
 
+  inline int getContentType() const { return Chunk<ELFT>::ContentType::Header; }
+
 private:
-  std::pair<Elf_Phdr *, bool> allocateProgramHeader() {
+  Elf_Phdr *allocateProgramHeader(bool &allocatedNew) {
     Elf_Phdr *phdr;
-    bool ret = false;
     if (_phi == _ph.end()) {
       phdr = new (_allocator) Elf_Phdr;
       _ph.push_back(phdr);
       _phi = _ph.end();
-      ret = true;
+      allocatedNew = true;
     } else {
       phdr = (*_phi);
       ++_phi;
     }
-
-    return std::make_pair(phdr, ret);
+    return phdr;
   }
 
   std::vector<Elf_Phdr *> _ph;
@@ -187,21 +188,20 @@ private:
 template <class ELFT>
 bool ProgramHeader<ELFT>::addSegment(Segment<ELFT> *segment) {
   bool allocatedNew = false;
+  ELFLinkingContext::OutputMagic outputMagic = this->_context.getOutputMagic();
   // For segments that are not a loadable segment, we
   // just pick the values directly from the segment as there
   // wouldnt be any slices within that
   if (segment->segmentType() != llvm::ELF::PT_LOAD) {
-    auto phdr = allocateProgramHeader();
-    if (phdr.second)
-      allocatedNew = true;
-    phdr.first->p_type = segment->segmentType();
-    phdr.first->p_offset = segment->fileOffset();
-    phdr.first->p_vaddr = segment->virtualAddr();
-    phdr.first->p_paddr = segment->virtualAddr();
-    phdr.first->p_filesz = segment->fileSize();
-    phdr.first->p_memsz = segment->memSize();
-    phdr.first->p_flags = segment->flags();
-    phdr.first->p_align = segment->align2();
+    Elf_Phdr *phdr = allocateProgramHeader(allocatedNew);
+    phdr->p_type = segment->segmentType();
+    phdr->p_offset = segment->fileOffset();
+    phdr->p_vaddr = segment->virtualAddr();
+    phdr->p_paddr = segment->virtualAddr();
+    phdr->p_filesz = segment->fileSize();
+    phdr->p_memsz = segment->memSize();
+    phdr->p_flags = segment->flags();
+    phdr->p_align = segment->align2();
     this->_fsize = fileSize();
     this->_msize = this->_fsize;
     return allocatedNew;
@@ -209,18 +209,20 @@ bool ProgramHeader<ELFT>::addSegment(Segment<ELFT> *segment) {
   // For all other segments, use the slice
   // to derive program headers
   for (auto slice : segment->slices()) {
-    auto phdr = allocateProgramHeader();
-    if (phdr.second)
-      allocatedNew = true;
-    phdr.first->p_type = segment->segmentType();
-    phdr.first->p_offset = slice->fileOffset();
-    phdr.first->p_vaddr = slice->virtualAddr();
-    phdr.first->p_paddr = slice->virtualAddr();
-    phdr.first->p_filesz = slice->fileSize();
-    phdr.first->p_memsz = slice->memSize();
-    phdr.first->p_flags = segment->flags();
-    phdr.first->p_align = (phdr.first->p_type == llvm::ELF::PT_LOAD) ?
-                          segment->pageSize() : slice->align2();
+    Elf_Phdr *phdr = allocateProgramHeader(allocatedNew);
+    phdr->p_type = segment->segmentType();
+    phdr->p_offset = slice->fileOffset();
+    phdr->p_vaddr = slice->virtualAddr();
+    phdr->p_paddr = slice->virtualAddr();
+    phdr->p_filesz = slice->fileSize();
+    phdr->p_memsz = slice->memSize();
+    phdr->p_flags = segment->flags();
+    if (outputMagic != ELFLinkingContext::OutputMagic::NMAGIC &&
+        outputMagic != ELFLinkingContext::OutputMagic::OMAGIC)
+      phdr->p_align = (phdr->p_type == llvm::ELF::PT_LOAD) ? segment->pageSize()
+                                                           : slice->align2();
+    else
+      phdr->p_align = slice->align2();
   }
   this->_fsize = fileSize();
   this->_msize = this->_fsize;
@@ -246,14 +248,14 @@ class SectionHeader : public Chunk<ELFT> {
 public:
   typedef llvm::object::Elf_Shdr_Impl<ELFT> Elf_Shdr;
 
-  SectionHeader(const ELFTargetInfo &, int32_t order);
+  SectionHeader(const ELFLinkingContext &, int32_t order);
 
   void appendSection(MergedSections<ELFT> *section);
 
   void updateSection(Section<ELFT> *section);
 
   static inline bool classof(const Chunk<ELFT> *c) {
-    return c->getChunkKind() == Chunk<ELFT>::K_SectionHeader;
+    return c->getChunkKind() == Chunk<ELFT>::Kind::SectionHeader;
   }
 
   void setStringSection(StringTable<ELFT> *s) {
@@ -272,6 +274,8 @@ public:
     return sizeof(Elf_Shdr);
   }
 
+  inline int getContentType() const { return Chunk<ELFT>::ContentType::Header; }
+
   inline uint64_t numHeaders() {
     return _sectionInfo.size();
   }
@@ -283,8 +287,9 @@ private:
 };
 
 template <class ELFT>
-SectionHeader<ELFT>::SectionHeader(const ELFTargetInfo &ti, int32_t order)
-    : Chunk<ELFT>("shdr", Chunk<ELFT>::K_SectionHeader, ti) {
+SectionHeader<ELFT>::SectionHeader(const ELFLinkingContext &context,
+                                   int32_t order)
+    : Chunk<ELFT>("shdr", Chunk<ELFT>::Kind::SectionHeader, context) {
   this->_fsize = 0;
   this->_align2 = 8;
   this->setOrder(order);
@@ -304,8 +309,11 @@ SectionHeader<ELFT>::appendSection(MergedSections<ELFT> *section) {
   shdr->sh_flags  = section->flags();
   shdr->sh_offset = section->fileOffset();
   shdr->sh_addr   = section->virtualAddr();
-  shdr->sh_size   = section->memSize();
-  shdr->sh_link   = section->link();
+  if (section->isLoadableSection())
+    shdr->sh_size = section->memSize();
+  else
+    shdr->sh_size = section->fileSize();
+  shdr->sh_link = section->link();
   shdr->sh_info   = section->shinfo();
   shdr->sh_addralign = section->align2();
   shdr->sh_entsize = section->entsize();

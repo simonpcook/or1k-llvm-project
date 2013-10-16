@@ -24,12 +24,10 @@ namespace lldb_private
 class Error;
 class Module;
 class Scalar;
-
 } // End lldb_private namespace.
 
 class ProcessLinux;
 class Operation;
-class ProcessPOSIX;
 
 /// @class ProcessMonitor
 /// @brief Manages communication with the inferior (debugee) process.
@@ -64,6 +62,11 @@ public:
                    lldb_private::Error &error);
 
     ~ProcessMonitor();
+
+    enum ResumeSignals 
+    {
+        eResumeSignalNone = 0
+    };
 
     /// Provides the process number of debugee.
     lldb::pid_t
@@ -107,7 +110,7 @@ public:
     ///
     /// This method is provided for use by RegisterContextLinux derivatives.
     bool
-    ReadRegisterValue(lldb::tid_t tid, unsigned offset,
+    ReadRegisterValue(lldb::tid_t tid, unsigned offset, const char *reg_name,
                       unsigned size, lldb_private::RegisterValue &value);
 
     /// Writes the given value to the register identified by the given
@@ -115,7 +118,7 @@ public:
     ///
     /// This method is provided for use by RegisterContextLinux derivatives.
     bool
-    WriteRegisterValue(lldb::tid_t tid, unsigned offset,
+    WriteRegisterValue(lldb::tid_t tid, unsigned offset, const char *reg_name,
                        const lldb_private::RegisterValue &value);
 
     /// Reads all general purpose registers into the specified buffer.
@@ -172,8 +175,19 @@ public:
     BringProcessIntoLimbo();
 
     lldb_private::Error
-    Detach();
+    Detach(lldb::tid_t tid);
 
+    /// Stops the monitoring the child process thread.
+    void
+    StopMonitor();
+
+    /// Stops the requested thread and waits for the stop signal.
+    bool
+    StopThread(lldb::tid_t tid);
+
+    // Waits for the initial stop message from a new thread.
+    bool
+    WaitForInitialTIDStop(lldb::tid_t tid);
 
 private:
     ProcessLinux *m_process;
@@ -183,10 +197,15 @@ private:
     lldb::pid_t m_pid;
     int m_terminal_fd;
 
+    // current operation which must be executed on the priviliged thread
+    Operation *m_operation;
+    lldb_private::Mutex m_operation_mutex;
 
-    lldb_private::Mutex m_server_mutex;
-    int m_client_fd;
-    int m_server_fd;
+    // semaphores notified when Operation is ready to be processed and when
+    // the operation is complete.
+    sem_t m_operation_pending;
+    sem_t m_operation_done;
+
 
     struct OperationArgs
     {
@@ -234,9 +253,6 @@ private:
     static bool
     Launch(LaunchArgs *args);
 
-    bool
-    EnableIPC();
-
     struct AttachArgs : OperationArgs
     {
         AttachArgs(ProcessMonitor *monitor,
@@ -255,6 +271,9 @@ private:
 
     static bool
     Attach(AttachArgs *args);
+
+    static bool
+    SetDefaultPtraceOpts(const lldb::pid_t);
 
     static void
     ServeOperation(OperationArgs *args);
@@ -293,15 +312,9 @@ private:
     void
     StopMonitoringChildProcess();
 
-    void 
-    StopMonitor();
-
     /// Stops the operation thread used to attach/launch a process.
     void
     StopOpThread();
-
-    void
-    CloseFD(int &fd);
 };
 
 #endif // #ifndef liblldb_ProcessMonitor_H_

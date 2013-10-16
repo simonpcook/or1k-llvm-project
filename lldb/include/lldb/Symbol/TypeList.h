@@ -13,6 +13,7 @@
 #include "lldb/lldb-private.h"
 #include "lldb/Symbol/Type.h"
 #include <map>
+#include <functional>
 
 namespace lldb_private {
 
@@ -50,6 +51,12 @@ public:
 
     lldb::TypeSP
     GetTypeAtIndex(uint32_t idx);
+
+    void
+    ForEach (std::function <bool(const lldb::TypeSP &type_sp)> const &callback) const;
+
+    void
+    ForEach (std::function <bool(lldb::TypeSP &type_sp)> const &callback);
 
     bool
     RemoveTypeWithUID (lldb::user_id_t uid);

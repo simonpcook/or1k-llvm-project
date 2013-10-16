@@ -80,7 +80,7 @@ ThreadPlanStepUntil::ThreadPlanStepUntil
         m_stack_id = m_thread.GetStackFrameAtIndex(frame_idx)->GetStackID();
 
         // Now set breakpoints on all our return addresses:
-        for (int i = 0; i < num_addresses; i++)
+        for (size_t i = 0; i < num_addresses; i++)
         {
             Breakpoint *until_bp = target_sp->CreateBreakpoint (address_list[i], true).get();
             if (until_bp != NULL)
@@ -176,7 +176,7 @@ ThreadPlanStepUntil::AnalyzeStop()
     if (m_ran_analyze)
         return;
         
-    StopInfoSP stop_info_sp = GetPrivateStopReason();
+    StopInfoSP stop_info_sp = GetPrivateStopInfo ();
     m_should_stop = true;
     m_explains_stop = false;
     
@@ -305,7 +305,7 @@ ThreadPlanStepUntil::AnalyzeStop()
 }
 
 bool
-ThreadPlanStepUntil::PlanExplainsStop (Event *event_ptr)
+ThreadPlanStepUntil::DoPlanExplainsStop (Event *event_ptr)
 {
     // We don't explain signals or breakpoints (breakpoints that handle stepping in or
     // out will be handled by a child plan.
@@ -320,7 +320,7 @@ ThreadPlanStepUntil::ShouldStop (Event *event_ptr)
     // do so here.  Otherwise, as long as this thread has stopped for a reason,
     // we will stop.
 
-    StopInfoSP stop_info_sp = GetPrivateStopReason();
+    StopInfoSP stop_info_sp = GetPrivateStopInfo ();
     if (!stop_info_sp || stop_info_sp->GetStopReason() == eStopReasonNone)
         return false;
 
@@ -341,9 +341,8 @@ ThreadPlanStepUntil::GetPlanRunState ()
 }
 
 bool
-ThreadPlanStepUntil::WillResume (StateType resume_state, bool current_plan)
+ThreadPlanStepUntil::DoWillResume (StateType resume_state, bool current_plan)
 {
-    ThreadPlan::WillResume (resume_state, current_plan);
     if (current_plan)
     {
         TargetSP target_sp (m_thread.CalculateTarget());

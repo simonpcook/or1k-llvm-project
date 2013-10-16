@@ -23,6 +23,8 @@
 #include "lldb/DataFormatters/TypeCategory.h"
 #include "lldb/DataFormatters/TypeCategoryMap.h"
 
+#include "lldb/Host/Atomic.h"
+
 namespace lldb_private {
     
 // this file (and its. cpp) contain the low-level implementation of LLDB Data Visualization
@@ -191,7 +193,7 @@ public:
     void
     Changed ()
     {
-        __sync_add_and_fetch(&m_last_revision, +1);
+        AtomicIncrement((cas_flag*)&m_last_revision);
         m_format_cache.Clear ();
     }
     

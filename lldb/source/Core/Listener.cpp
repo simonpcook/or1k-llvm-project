@@ -44,7 +44,7 @@ Listener::~Listener()
     
     size_t num_managers = m_broadcaster_managers.size();
     
-    for (int i = 0; i < num_managers; i++)
+    for (size_t i = 0; i < num_managers; i++)
         m_broadcaster_managers[i]->RemoveListener(*this);
         
     if (log)
@@ -533,6 +533,9 @@ uint32_t
 Listener::StartListeningForEventSpec (BroadcasterManager &manager, 
                              const BroadcastEventSpec &event_spec)
 {
+    // The BroadcasterManager mutex must be locked before m_broadcasters_mutex 
+    // to avoid violating the lock hierarchy (manager before broadcasters).
+    Mutex::Locker manager_locker(manager.m_manager_mutex);
     Mutex::Locker locker(m_broadcasters_mutex);
 
     uint32_t bits_acquired = manager.RegisterListenerForEvents(*this, event_spec);

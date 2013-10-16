@@ -88,10 +88,22 @@ WithRSAIndex(llvm::StringRef &Arg)
 // Return true if wp_ids is successfully populated with the watch ids.
 // False otherwise.
 bool
-CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(Args &args, std::vector<uint32_t> &wp_ids)
+CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(Target *target, Args &args, std::vector<uint32_t> &wp_ids)
 {
     // Pre-condition: args.GetArgumentCount() > 0.
-    assert(args.GetArgumentCount() > 0);
+    if (args.GetArgumentCount() == 0)
+    {
+        if (target == NULL)
+            return false;
+        WatchpointSP watch_sp = target->GetLastCreatedWatchpoint();
+        if (watch_sp)
+        {
+            wp_ids.push_back(watch_sp->GetID());
+            return true;
+        }
+        else
+            return false;
+    }
 
     llvm::StringRef Minus("-");
     std::vector<llvm::StringRef> StrRefArgs;
@@ -292,7 +304,7 @@ protected:
         {
             // Particular watchpoints selected; enable them.
             std::vector<uint32_t> wp_ids;
-            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(command, wp_ids))
+            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(target, command, wp_ids))
             {
                 result.AppendError("Invalid watchpoints specification.");
                 result.SetStatus(eReturnStatusFailed);
@@ -323,13 +335,13 @@ private:
 OptionDefinition
 CommandObjectWatchpointList::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_1, false, "brief",    'b', no_argument, NULL, 0, eArgTypeNone,
+    { LLDB_OPT_SET_1, false, "brief",    'b', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,
         "Give a brief description of the watchpoint (no location info)."},
 
-    { LLDB_OPT_SET_2, false, "full",    'f', no_argument, NULL, 0, eArgTypeNone,
+    { LLDB_OPT_SET_2, false, "full",    'f', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,
         "Give a full description of the watchpoint and its locations."},
 
-    { LLDB_OPT_SET_3, false, "verbose", 'v', no_argument, NULL, 0, eArgTypeNone,
+    { LLDB_OPT_SET_3, false, "verbose", 'v', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,
         "Explain everything we know about the watchpoint (for debugging debugger bugs)." },
 
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
@@ -392,7 +404,7 @@ protected:
         {
             // Particular watchpoints selected; enable them.
             std::vector<uint32_t> wp_ids;
-            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(command, wp_ids))
+            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(target, command, wp_ids))
             {
                 result.AppendError("Invalid watchpoints specification.");
                 result.SetStatus(eReturnStatusFailed);
@@ -477,7 +489,7 @@ protected:
         {
             // Particular watchpoints selected; disable them.
             std::vector<uint32_t> wp_ids;
-            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(command, wp_ids))
+            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(target, command, wp_ids))
             {
                 result.AppendError("Invalid watchpoints specification.");
                 result.SetStatus(eReturnStatusFailed);
@@ -560,7 +572,7 @@ protected:
         {
             // Particular watchpoints selected; delete them.
             std::vector<uint32_t> wp_ids;
-            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(command, wp_ids))
+            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(target, command, wp_ids))
             {
                 result.AppendError("Invalid watchpoints specification.");
                 result.SetStatus(eReturnStatusFailed);
@@ -701,7 +713,7 @@ protected:
         {
             // Particular watchpoints selected; ignore them.
             std::vector<uint32_t> wp_ids;
-            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(command, wp_ids))
+            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(target, command, wp_ids))
             {
                 result.AppendError("Invalid watchpoints specification.");
                 result.SetStatus(eReturnStatusFailed);
@@ -728,7 +740,7 @@ private:
 OptionDefinition
 CommandObjectWatchpointIgnore::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, true, "ignore-count", 'i', required_argument, NULL, 0, eArgTypeCount, "Set the number of times this watchpoint is skipped before stopping." },
+    { LLDB_OPT_SET_ALL, true, "ignore-count", 'i', OptionParser::eRequiredArgument, NULL, 0, eArgTypeCount, "Set the number of times this watchpoint is skipped before stopping." },
     { 0,                false, NULL,            0 , 0,                 NULL, 0,    eArgTypeNone, NULL }
 };
 
@@ -858,7 +870,7 @@ protected:
         {
             // Particular watchpoints selected; set condition on them.
             std::vector<uint32_t> wp_ids;
-            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(command, wp_ids))
+            if (!CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(target, command, wp_ids))
             {
                 result.AppendError("Invalid watchpoints specification.");
                 result.SetStatus(eReturnStatusFailed);
@@ -891,7 +903,7 @@ private:
 OptionDefinition
 CommandObjectWatchpointModify::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_ALL, false, "condition",    'c', required_argument, NULL, 0, eArgTypeExpression, "The watchpoint stops only if this condition expression evaluates to true."},
+{ LLDB_OPT_SET_ALL, false, "condition",    'c', OptionParser::eRequiredArgument, NULL, 0, eArgTypeExpression, "The watchpoint stops only if this condition expression evaluates to true."},
 { 0,                false, NULL,            0 , 0,                 NULL, 0,    eArgTypeNone, NULL }
 };
 
@@ -1038,7 +1050,7 @@ protected:
                 valobj_sp = valobj_list.GetValueObjectAtIndex(0);
         }
         
-        ClangASTType type;
+        ClangASTType clang_type;
         
         if (valobj_sp)
         {
@@ -1051,7 +1063,7 @@ protected:
                 size = m_option_watchpoint.watch_size == 0 ? valobj_sp->GetByteSize()
                                                            : m_option_watchpoint.watch_size;
             }
-            type.SetClangType(valobj_sp->GetClangAST(), valobj_sp->GetClangType());
+            clang_type = valobj_sp->GetClangType();
         }
         else
         {
@@ -1066,8 +1078,9 @@ protected:
 
         // Now it's time to create the watchpoint.
         uint32_t watch_type = m_option_watchpoint.watch_type;
+        
         error.Clear();
-        Watchpoint *wp = target->CreateWatchpoint(addr, size, &type, watch_type, error).get();
+        Watchpoint *wp = target->CreateWatchpoint(addr, size, &clang_type, watch_type, error).get();
         if (wp)
         {
             wp->SetWatchSpec(command.GetArgumentAtIndex(0));
@@ -1172,6 +1185,8 @@ protected:
     virtual bool
     DoExecute (const char *raw_command, CommandReturnObject &result)
     {
+        m_option_group.NotifyOptionParsingStarting(); // This is a raw command, so notify the option group
+        
         Target *target = m_interpreter.GetDebugger().GetSelectedTarget().get();
         StackFrame *frame = m_exe_ctx.GetFramePtr();
 
@@ -1221,16 +1236,13 @@ protected:
         // If no argument is present, issue an error message.  There's no way to set a watchpoint.
         if (command.GetArgumentCount() == 0)
         {
-            result.GetErrorStream().Printf("error: required argument missing; specify an expression to evaulate into the addres to watch for\n");
+            result.GetErrorStream().Printf("error: required argument missing; specify an expression to evaulate into the address to watch for\n");
             result.SetStatus(eReturnStatusFailed);
             return false;
         }
 
-        bool with_dash_w = m_option_watchpoint.watch_type_specified;
-        bool with_dash_x = (m_option_watchpoint.watch_size != 0);
-
         // If no '-w' is specified, default to '-w write'.
-        if (!with_dash_w)
+        if (!m_option_watchpoint.watch_type_specified)
         {
             m_option_watchpoint.watch_type = OptionGroupWatchpoint::eWatchWrite;
         }
@@ -1271,20 +1283,21 @@ protected:
             result.SetStatus(eReturnStatusFailed);
             return false;
         }
-        size = with_dash_x ? m_option_watchpoint.watch_size
-                           : target->GetArchitecture().GetAddressByteSize();
+        
+        if (m_option_watchpoint.watch_size != 0)
+            size = m_option_watchpoint.watch_size;
+        else
+            size = target->GetArchitecture().GetAddressByteSize();
 
         // Now it's time to create the watchpoint.
         uint32_t watch_type = m_option_watchpoint.watch_type;
         
         // Fetch the type from the value object, the type of the watched object is the pointee type
         /// of the expression, so convert to that if we  found a valid type.
-        ClangASTType type(valobj_sp->GetClangAST(), valobj_sp->GetClangType());
-        if (type.IsValid())
-            type.SetClangType(type.GetASTContext(), type.GetPointeeType());
+        ClangASTType clang_type(valobj_sp->GetClangType());
         
         Error error;
-        Watchpoint *wp = target->CreateWatchpoint(addr, size, &type, watch_type, error).get();
+        Watchpoint *wp = target->CreateWatchpoint(addr, size, &clang_type, watch_type, error).get();
         if (wp)
         {
             Stream &output_stream = result.GetOutputStream();

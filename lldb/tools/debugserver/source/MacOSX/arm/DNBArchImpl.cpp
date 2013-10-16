@@ -118,15 +118,6 @@ DNBArchProtocol *
 DNBArchMachARM::Create (MachThread *thread)
 {
     DNBArchMachARM *obj = new DNBArchMachARM (thread);
-
-    // When new thread comes along, it tries to inherit from the global debug state, if it is valid.
-    if (Valid_Global_Debug_State)
-    {
-        obj->m_state.dbg = Global_Debug_State;
-        kern_return_t kret = obj->SetDBGState();
-        DNBLogThreadedIf(LOG_WATCHPOINTS,
-                         "DNBArchMachARM::Create() Inherit and SetDBGState() => 0x%8.8x.", kret);
-    }
     return obj;
 }
 
@@ -323,10 +314,17 @@ DNBArchMachARM::SetEXCState()
 }
 
 kern_return_t
-DNBArchMachARM::SetDBGState()
+DNBArchMachARM::SetDBGState(bool also_set_on_task)
 {
     int set = e_regSetDBG;
     kern_return_t kret = ::thread_set_state (m_thread->MachPortNumber(), ARM_DEBUG_STATE, (thread_state_t)&m_state.dbg, ARM_DEBUG_STATE_COUNT);
+    if (also_set_on_task)
+    {
+        kern_return_t task_kret = ::task_set_state (m_thread->Process()->Task().TaskPort(), ARM_DEBUG_STATE, (thread_state_t)&m_state.dbg, ARM_DEBUG_STATE_COUNT);
+        if (task_kret != KERN_SUCCESS)
+             DNBLogThreadedIf(LOG_WATCHPOINTS, "DNBArchMachARM::SetDBGState failed to set debug control register state: 0x%8.8x.", kret);
+    }
+
     m_state.SetError(set, Write, kret);         // Set the current write error for this register set
     m_state.InvalidateRegisterSetState(set);    // Invalidate the current register state in case registers are read back differently
     return kret;                                // Return the error code
@@ -363,7 +361,7 @@ DNBArchMachARM::ThreadWillResume()
                 return;
             }
 
-            DisableHardwareWatchpoint0(m_watchpoint_hw_index, true);
+            DisableHardwareWatchpoint0(m_watchpoint_hw_index, true, false);
             DNBLogThreadedIf(LOG_WATCHPOINTS, "DNBArchMachARM::ThreadWillResume() DisableHardwareWatchpoint(%d) called",
                              m_watchpoint_hw_index);
 
@@ -400,7 +398,7 @@ DNBArchMachARM::ThreadDidStop()
         {
             if (m_watchpoint_did_occur && m_watchpoint_hw_index >= 0)
             {
-                EnableHardwareWatchpoint0(m_watchpoint_hw_index, true);
+                EnableHardwareWatchpoint0(m_watchpoint_hw_index, true, false);
                 m_watchpoint_resume_single_step_enabled = false;
                 m_watchpoint_did_occur = false;
                 m_watchpoint_hw_index = -1;
@@ -422,51 +420,7 @@ DNBArchMachARM::ThreadDidStop()
         // We are single stepping, was this the primary thread?
         if (m_thread->IsStepping())
         {
-            // Are we software single stepping?
-            if (NUB_BREAK_ID_IS_VALID(m_sw_single_step_break_id) || m_sw_single_step_itblock_break_count)
-            {
-                // Remove any software single stepping breakpoints that we have set
-
-                // Do we have a normal software single step breakpoint?
-                if (NUB_BREAK_ID_IS_VALID(m_sw_single_step_break_id))
-                {
-                    DNBLogThreadedIf(LOG_STEP, "%s: removing software single step breakpoint (breakID=%d)", __FUNCTION__, m_sw_single_step_break_id);
-                    success = m_thread->Process()->DisableBreakpoint(m_sw_single_step_break_id, true);
-                    m_sw_single_step_break_id = INVALID_NUB_BREAK_ID;
-                }
-
-                // Do we have any Thumb IT breakpoints?
-                if (m_sw_single_step_itblock_break_count > 0)
-                {
-                    // See if we hit one of our Thumb IT breakpoints?
-                    DNBBreakpoint *step_bp = m_thread->Process()->Breakpoints().FindByAddress(m_state.context.gpr.__pc);
-
-                    if (step_bp)
-                    {
-                        // We did hit our breakpoint, tell the breakpoint it was
-                        // hit so that it can run its callback routine and fixup
-                        // the PC.
-                        DNBLogThreadedIf(LOG_STEP, "%s: IT software single step breakpoint hit (breakID=%u)", __FUNCTION__, step_bp->GetID());
-                        step_bp->BreakpointHit(m_thread->Process()->ProcessID(), m_thread->ThreadID());
-                    }
-
-                    // Remove all Thumb IT breakpoints
-                    for (int i = 0; i < m_sw_single_step_itblock_break_count; i++)
-                    {
-                        if (NUB_BREAK_ID_IS_VALID(m_sw_single_step_itblock_break_id[i]))
-                        {
-                            DNBLogThreadedIf(LOG_STEP, "%s: removing IT software single step breakpoint (breakID=%d)", __FUNCTION__, m_sw_single_step_itblock_break_id[i]);
-                            success = m_thread->Process()->DisableBreakpoint(m_sw_single_step_itblock_break_id[i], true);
-                            m_sw_single_step_itblock_break_id[i] = INVALID_NUB_BREAK_ID;
-                        }
-                    }
-                    m_sw_single_step_itblock_break_count = 0;
-
-                }
-
-            }
-            else
-                success = EnableHardwareSingleStep(false) == KERN_SUCCESS;
+            success = EnableHardwareSingleStep(false) == KERN_SUCCESS;
         }
         else
         {
@@ -623,7 +577,7 @@ DNBArchMachARM::EnableHardwareSingleStep (bool enable)
         m_state.dbg = m_dbg_save;
     }
 
-    return SetDBGState();
+    return SetDBGState(false);
 }
 
 // return 1 if bit "BIT" is set in "value"
@@ -699,18 +653,6 @@ DNBArchMachARM::ConditionPassed(uint8_t condition, uint32_t cpsr)
     }
 
     return false;
-}
-
-nub_bool_t
-DNBArchMachARM::BreakpointHit (nub_process_t pid, nub_thread_t tid, nub_break_t breakID, void *baton)
-{
-    nub_addr_t bkpt_pc = (nub_addr_t)baton;
-    DNBLogThreadedIf(LOG_STEP | LOG_VERBOSE, "%s(pid = %i, tid = %4.4x, breakID = %u, baton = %p): Setting PC to 0x%8.8x", __FUNCTION__, pid, tid, breakID, baton, bkpt_pc);
-    
-    DNBRegisterValue pc_value;
-    DNBThreadGetRegisterValueByID (pid, tid, REGISTER_SET_GENERIC, GENERIC_REGNUM_PC, &pc_value);
-    pc_value.value.uint32 = bkpt_pc;
-    return DNBThreadSetRegisterValueByID (pid, tid, REGISTER_SET_GENERIC, GENERIC_REGNUM_PC, &pc_value);
 }
 
 uint32_t
@@ -888,7 +830,7 @@ DNBArchMachARM::EnableHardwareBreakpoint (nub_addr_t addr, nub_size_t size)
                                   m_state.dbg.__bcr[i]);
             }
 
-            kret = SetDBGState();
+            kret = SetDBGState(false);
             DNBLogThreadedIf(LOG_BREAKPOINTS, "DNBArchMachARM::EnableHardwareBreakpoint() SetDBGState() => 0x%8.8x.", kret);
 
             if (kret == KERN_SUCCESS)
@@ -921,7 +863,7 @@ DNBArchMachARM::DisableHardwareBreakpoint (uint32_t hw_index)
                     hw_index,
                     m_state.dbg.__bcr[hw_index]);
 
-            kret = SetDBGState();
+            kret = SetDBGState(false);
 
             if (kret == KERN_SUCCESS)
                 return true;
@@ -935,7 +877,7 @@ DNBArchMachARM::DisableHardwareBreakpoint (uint32_t hw_index)
 static uint32_t LoHi[16] = { 0 };
 
 uint32_t
-DNBArchMachARM::EnableHardwareWatchpoint (nub_addr_t addr, nub_size_t size, bool read, bool write)
+DNBArchMachARM::EnableHardwareWatchpoint (nub_addr_t addr, nub_size_t size, bool read, bool write, bool also_set_on_task)
 {
     DNBLogThreadedIf(LOG_WATCHPOINTS, "DNBArchMachARM::EnableHardwareWatchpoint(addr = 0x%8.8llx, size = %llu, read = %u, write = %u)", (uint64_t)addr, (uint64_t)size, read, write);
 
@@ -952,13 +894,13 @@ DNBArchMachARM::EnableHardwareWatchpoint (nub_addr_t addr, nub_size_t size, bool
     // Divide-and-conquer for size == 8.
     if (size == 8)
     {
-        uint32_t lo = EnableHardwareWatchpoint(addr, 4, read, write);
+        uint32_t lo = EnableHardwareWatchpoint(addr, 4, read, write, also_set_on_task);
         if (lo == INVALID_NUB_HW_INDEX)
             return INVALID_NUB_HW_INDEX;
-        uint32_t hi = EnableHardwareWatchpoint(addr+4, 4, read, write);
+        uint32_t hi = EnableHardwareWatchpoint(addr+4, 4, read, write, also_set_on_task);
         if (hi == INVALID_NUB_HW_INDEX)
         {
-            DisableHardwareWatchpoint(lo);
+            DisableHardwareWatchpoint(lo, also_set_on_task);
             return INVALID_NUB_HW_INDEX;
         }
         // Tag this lo->hi mapping in our database.
@@ -998,7 +940,7 @@ DNBArchMachARM::EnableHardwareWatchpoint (nub_addr_t addr, nub_size_t size, bool
         return INVALID_NUB_HW_INDEX;
 
     // Read the debug state
-    kern_return_t kret = GetDBGState(false);
+    kern_return_t kret = GetDBGState(true);
 
     if (kret == KERN_SUCCESS)
     {
@@ -1028,7 +970,7 @@ DNBArchMachARM::EnableHardwareWatchpoint (nub_addr_t addr, nub_size_t size, bool
 
             DNBLogThreadedIf(LOG_WATCHPOINTS, "DNBArchMachARM::EnableHardwareWatchpoint() adding watchpoint on address 0x%llx with control register value 0x%x", (uint64_t) m_state.dbg.__wvr[i], (uint32_t) m_state.dbg.__wcr[i]);
 
-            kret = SetDBGState();
+            kret = SetDBGState(also_set_on_task);
             //DumpDBGState(m_state.dbg);
 
             DNBLogThreadedIf(LOG_WATCHPOINTS, "DNBArchMachARM::EnableHardwareWatchpoint() SetDBGState() => 0x%8.8x.", kret);
@@ -1045,7 +987,7 @@ DNBArchMachARM::EnableHardwareWatchpoint (nub_addr_t addr, nub_size_t size, bool
 }
 
 bool
-DNBArchMachARM::EnableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate)
+DNBArchMachARM::EnableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate, bool also_set_on_task)
 {
     kern_return_t kret = GetDBGState(false);
     if (kret != KERN_SUCCESS)
@@ -1057,8 +999,8 @@ DNBArchMachARM::EnableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate)
 
     if (Delegate && LoHi[hw_index]) {
         // Enable lo and hi watchpoint hardware indexes.
-        return EnableHardwareWatchpoint0(hw_index, false) &&
-            EnableHardwareWatchpoint0(LoHi[hw_index], false);
+        return EnableHardwareWatchpoint0(hw_index, false, also_set_on_task) &&
+            EnableHardwareWatchpoint0(LoHi[hw_index], false, also_set_on_task);
     }
 
     m_state.dbg.__wcr[hw_index] |= (nub_addr_t)WCR_ENABLE;
@@ -1069,18 +1011,18 @@ DNBArchMachARM::EnableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate)
                      hw_index,
                      m_state.dbg.__wcr[hw_index]);
 
-    kret = SetDBGState();
+    kret = SetDBGState(false);
 
     return (kret == KERN_SUCCESS);
 }
 
 bool
-DNBArchMachARM::DisableHardwareWatchpoint (uint32_t hw_index)
+DNBArchMachARM::DisableHardwareWatchpoint (uint32_t hw_index, bool also_set_on_task)
 {
-    return DisableHardwareWatchpoint0(hw_index, true);
+        return DisableHardwareWatchpoint0(hw_index, true, also_set_on_task);
 }
 bool
-DNBArchMachARM::DisableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate)
+DNBArchMachARM::DisableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate, bool also_set_on_task)
 {
     kern_return_t kret = GetDBGState(false);
     if (kret != KERN_SUCCESS)
@@ -1092,8 +1034,8 @@ DNBArchMachARM::DisableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate)
 
     if (Delegate && LoHi[hw_index]) {
         // Disable lo and hi watchpoint hardware indexes.
-        return DisableHardwareWatchpoint0(hw_index, false) &&
-            DisableHardwareWatchpoint0(LoHi[hw_index], false);
+        return DisableHardwareWatchpoint0(hw_index, false, also_set_on_task) &&
+            DisableHardwareWatchpoint0(LoHi[hw_index], false, also_set_on_task);
     }
 
     m_state.dbg.__wcr[hw_index] &= ~((nub_addr_t)WCR_ENABLE);
@@ -1104,23 +1046,9 @@ DNBArchMachARM::DisableHardwareWatchpoint0 (uint32_t hw_index, bool Delegate)
                      hw_index,
                      m_state.dbg.__wcr[hw_index]);
 
-    kret = SetDBGState();
+    kret = SetDBGState(also_set_on_task);
 
     return (kret == KERN_SUCCESS);
-}
-
-// {0} -> __bvr[16], {0} -> __bcr[16], {0} --> __wvr[16], {0} -> __wcr{16}
-DNBArchMachARM::DBG DNBArchMachARM::Global_Debug_State = {{0},{0},{0},{0}};
-bool DNBArchMachARM::Valid_Global_Debug_State = false;
-
-// Use this callback from MachThread, which in turn was called from MachThreadList, to update
-// the global view of the hardware watchpoint state, so that when new thread comes along, they
-// get to inherit the existing hardware watchpoint state.
-void
-DNBArchMachARM::HardwareWatchpointStateChanged ()
-{
-    Global_Debug_State = m_state.dbg;
-    Valid_Global_Debug_State = true;
 }
 
 // Returns -1 if the trailing bit patterns are not one of:
@@ -1809,11 +1737,11 @@ DNBArchMachARM::SetRegisterState(int set)
     case e_regSetALL:   return SetGPRState() |
                                SetVFPState() |
                                SetEXCState() |
-                               SetDBGState();
+                               SetDBGState(false);
     case e_regSetGPR:   return SetGPRState();
     case e_regSetVFP:   return SetVFPState();
     case e_regSetEXC:   return SetEXCState();
-    case e_regSetDBG:   return SetDBGState();
+    case e_regSetDBG:   return SetDBGState(false);
     default: break;
     }
     return KERN_INVALID_ARGUMENT;

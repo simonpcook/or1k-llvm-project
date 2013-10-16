@@ -34,7 +34,7 @@ public:
     static void
     Terminate();
     
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
     
     static const char *
@@ -52,11 +52,8 @@ public:
     //------------------------------------------------------------------
     // lldb_private::PluginInterface Methods
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-    
-    virtual const char *
-    GetShortPluginName();
     
     virtual uint32_t
     GetPluginVersion();
@@ -65,7 +62,8 @@ public:
     // lldb_private::OperatingSystem Methods
     //------------------------------------------------------------------
     virtual bool
-    UpdateThreadList (lldb_private::ThreadList &old_thread_list, 
+    UpdateThreadList (lldb_private::ThreadList &old_thread_list,
+                      lldb_private::ThreadList &real_thread_list,
                       lldb_private::ThreadList &new_thread_list);
     
     virtual void

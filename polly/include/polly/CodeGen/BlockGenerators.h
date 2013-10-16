@@ -106,6 +106,19 @@ protected:
   Value *getNewValue(const Value *Old, ValueMapT &BBMap, ValueMapT &GlobalMap,
                      LoopToScevMapT &LTS, Loop *L);
 
+  /// @brief Get the new version of a Value if it is available.
+  ///
+  /// @param Old       The old Value.
+  /// @param BBMap     A mapping from old values to their new values
+  ///                  (for values recalculated within this basic block).
+  /// @param GlobalMap A mapping from old values to their new values
+  ///                  (for values recalculated in the new ScoP, but not
+  ///                   within this basic block).
+  ///
+  /// @returns  The new value, if available.
+  Value *lookupAvailableValue(const Value *Old, ValueMapT &BBMap,
+                              ValueMapT &GlobalMap) const;
+
   void copyInstScalar(const Instruction *Inst, ValueMapT &BBMap,
                       ValueMapT &GlobalMap, LoopToScevMapT &LTS);
 
@@ -119,18 +132,21 @@ protected:
   ///
   /// @param L The loop that surrounded the instruction that referenced this
   ///          memory subscript in the original code.
-  std::vector<Value *> getMemoryAccessIndex(
-      __isl_keep isl_map *AccessRelation, Value *BaseAddress, ValueMapT &BBMap,
-      ValueMapT &GlobalMap, LoopToScevMapT &LTS, Loop *L);
+  std::vector<Value *> getMemoryAccessIndex(__isl_keep isl_map *AccessRelation,
+                                            Value *BaseAddress,
+                                            ValueMapT &BBMap,
+                                            ValueMapT &GlobalMap,
+                                            LoopToScevMapT &LTS, Loop *L);
 
   /// @brief Get the new operand address according to the changed access in
   ///        JSCOP file.
   ///
   /// @param L The loop that surrounded the instruction that used this operand
   ///          in the original code.
-  Value *getNewAccessOperand(
-      __isl_keep isl_map *NewAccessRelation, Value *BaseAddress,
-      ValueMapT &BBMap, ValueMapT &GlobalMap, LoopToScevMapT &LTS, Loop *L);
+  Value *getNewAccessOperand(__isl_keep isl_map *NewAccessRelation,
+                             Value *BaseAddress, ValueMapT &BBMap,
+                             ValueMapT &GlobalMap, LoopToScevMapT &LTS,
+                             Loop *L);
 
   /// @brief Generate the operand address
   Value *generateLocationAccessed(const Instruction *Inst, const Value *Pointer,
@@ -192,10 +208,10 @@ public:
   ///                   loop containing the statemenet.
   /// @param P          A reference to the pass this function is called from.
   ///                   The pass is needed to update other analysis.
-  static void
-  generate(IRBuilder<> &B, ScopStmt &Stmt, VectorValueMapT &GlobalMaps,
-           std::vector<LoopToScevMapT> &VLTS, __isl_keep isl_map *Schedule,
-           Pass *P) {
+  static void generate(IRBuilder<> &B, ScopStmt &Stmt,
+                       VectorValueMapT &GlobalMaps,
+                       std::vector<LoopToScevMapT> &VLTS,
+                       __isl_keep isl_map *Schedule, Pass *P) {
     VectorBlockGenerator Generator(B, GlobalMaps, VLTS, Stmt, Schedule, P);
     Generator.copyBB();
   }
@@ -274,8 +290,8 @@ private:
   /// %scalar 2 = load double* %p_2
   /// %vec_2 = insertelement <2 x double> %vec_1, double %scalar_1, i32 1
   ///
-  Value *
-  generateUnknownStrideLoad(const LoadInst *Load, VectorValueMapT &ScalarMaps);
+  Value *generateUnknownStrideLoad(const LoadInst *Load,
+                                   VectorValueMapT &ScalarMaps);
 
   void generateLoad(const LoadInst *Load, ValueMapT &VectorMap,
                     VectorValueMapT &ScalarMaps);
@@ -302,6 +318,5 @@ private:
 
   void copyBB();
 };
-
 }
 #endif

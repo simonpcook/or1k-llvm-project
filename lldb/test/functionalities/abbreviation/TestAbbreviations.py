@@ -14,7 +14,7 @@ class AbbreviationsTestCase(TestBase):
 
     def test_nonrunning_command_abbreviations (self):
         self.expect("ap script",
-                    startstr = "The following commands may relate to 'script':",
+                    startstr = "The following built-in commands may relate to 'script':",
                     substrs = ['breakpoint command add',
                                'breakpoint command list',
                                'breakpoint list',
@@ -90,7 +90,10 @@ class AbbreviationsTestCase(TestBase):
 
     def running_abbreviations (self):
         exe = os.path.join (os.getcwd(), "a.out")
-        self.expect("fil " + exe,
+        # Use "file", i.e., no abbreviation.  We're exactly matching the command
+        # verbatim when dealing with remote testsuite execution.
+        # For more details, see TestBase.runCmd().
+        self.expect("file " + exe,
                     patterns = [ "Current executable set to .*a.out.*" ])
 
         # By default, the setting interpreter.expand-regex-aliases is false.
@@ -122,10 +125,10 @@ class AbbreviationsTestCase(TestBase):
         self.expect("break list",
                     substrs = ["1: name = 'product', locations = 1",
                                "2: name = 'sum', locations = 1",
-                               "3: file ='main.cpp', line = 32, locations = 1"])
+                               "3: file = 'main.cpp', line = 32, locations = 1"])
         self.expect("br cl -l 32 -f main.cpp",
                     startstr = "1 breakpoints cleared:",
-                    substrs = ["3: file ='main.cpp', line = 32, locations = 1"])
+                    substrs = ["3: file = 'main.cpp', line = 32, locations = 1"])
 
         # Add a future to terminate the current process being debugged.
         #

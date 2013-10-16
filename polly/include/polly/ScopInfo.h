@@ -12,7 +12,7 @@
 // The pass creates a polyhedral description of the Scops detected by the Scop
 // detection derived from their LLVM-IR code.
 //
-// This represantation is shared among several tools in the polyhedral
+// This representation is shared among several tools in the polyhedral
 // community, which are e.g. CLooG, Pluto, Loopo, Graphite.
 //
 //===----------------------------------------------------------------------===//
@@ -60,11 +60,6 @@ class Comparison;
 //===----------------------------------------------------------------------===//
 /// @brief Represent memory accesses in statements.
 class MemoryAccess {
-  // DO NOT IMPLEMENT
-  MemoryAccess(const MemoryAccess &);
-  // DO NOT IMPLEMENT
-  const MemoryAccess &operator=(const MemoryAccess &);
-
 public:
   /// @brief The access type of a memory access
   ///
@@ -75,24 +70,27 @@ public:
   /// A certain set of memory locations are read and may be used for internal
   /// calculations.
   ///
-  /// * A write access
+  /// * A must-write access
   ///
-  /// A certain set of memory locactions is definitely written. The old value is
+  /// A certain set of memory locations is definitely written. The old value is
   /// replaced by a newly calculated value. The old value is not read or used at
   /// all.
   ///
-  /// * A may write access
+  /// * A may-write access
   ///
-  /// A certain set of memory locactions may be written. The memory location may
+  /// A certain set of memory locations may be written. The memory location may
   /// contain a new value if there is actually a write or the old value may
   /// remain, if no write happens.
   enum AccessType {
-    Read,
-    Write,
-    MayWrite
+    READ,
+    MUST_WRITE,
+    MAY_WRITE
   };
 
 private:
+  MemoryAccess(const MemoryAccess &) LLVM_DELETED_FUNCTION;
+  const MemoryAccess &operator=(const MemoryAccess &) LLVM_DELETED_FUNCTION;
+
   isl_map *AccessRelation;
   enum AccessType Type;
 
@@ -124,11 +122,22 @@ public:
 
   ~MemoryAccess();
 
+  /// @brief Get the type of a memory access.
+  enum AccessType getType() { return Type; }
+
   /// @brief Is this a read memory access?
-  bool isRead() const { return Type == MemoryAccess::Read; }
+  bool isRead() const { return Type == MemoryAccess::READ; }
+
+  /// @brief Is this a must-write memory access?
+  bool isMustWrite() const { return Type == MemoryAccess::MUST_WRITE; }
+
+  /// @brief Is this a may-write memory access?
+  bool isMayWrite() const { return Type == MemoryAccess::MAY_WRITE; }
 
   /// @brief Is this a write memory access?
-  bool isWrite() const { return Type == MemoryAccess::Write; }
+  bool isWrite() const {
+    return Type == MemoryAccess::MUST_WRITE || Type == MemoryAccess::MAY_WRITE;
+  }
 
   isl_map *getAccessRelation() const;
 
@@ -146,24 +155,24 @@ public:
 
   /// Get the stride of this memory access in the specified Schedule. Schedule
   /// is a map from the statement to a schedule where the innermost dimension is
-  /// the dimension of the innermost loop containing the statemenet.
+  /// the dimension of the innermost loop containing the statement.
   isl_set *getStride(__isl_take const isl_map *Schedule) const;
 
   /// Is the stride of the access equal to a certain width? Schedule is a map
   /// from the statement to a schedule where the innermost dimension is the
-  /// dimension of the innermost loop containing the statemenet.
+  /// dimension of the innermost loop containing the statement.
   bool isStrideX(__isl_take const isl_map *Schedule, int StrideWidth) const;
 
   /// Is consecutive memory accessed for a given statement instance set?
   /// Schedule is a map from the statement to a schedule where the innermost
   /// dimension is the dimension of the innermost loop containing the
-  /// statemenet.
+  /// statement.
   bool isStrideOne(__isl_take const isl_map *Schedule) const;
 
   /// Is always the same memory accessed for a given statement instance set?
   /// Schedule is a map from the statement to a schedule where the innermost
   /// dimension is the dimension of the innermost loop containing the
-  /// statemenet.
+  /// statement.
   bool isStrideZero(__isl_take const isl_map *Schedule) const;
 
   /// @brief Get the statement that contains this memory access.
@@ -194,10 +203,8 @@ public:
 /// At the moment every statement represents a single basic block of LLVM-IR.
 class ScopStmt {
   //===-------------------------------------------------------------------===//
-  // DO NOT IMPLEMENT
-  ScopStmt(const ScopStmt &);
-  // DO NOT IMPLEMENT
-  const ScopStmt &operator=(const ScopStmt &);
+  ScopStmt(const ScopStmt &) LLVM_DELETED_FUNCTION;
+  const ScopStmt &operator=(const ScopStmt &) LLVM_DELETED_FUNCTION;
 
   /// Polyhedral description
   //@{
@@ -222,7 +229,7 @@ class ScopStmt {
   ///     Domain: 0 <= i <= 100 + b
   ///             0 <= j <= i
   ///
-  /// A pair of statment and iteration vector (S, (5,3)) is called statment
+  /// A pair of statement and iteration vector (S, (5,3)) is called statement
   /// instance.
   isl_set *Domain;
 
@@ -276,13 +283,14 @@ class ScopStmt {
 
   std::string BaseName;
 
-  /// Build the statment.
+  /// Build the statement.
   //@{
   __isl_give isl_set *buildConditionSet(const Comparison &Cmp);
-  __isl_give isl_set *addConditionsToDomain(
-      __isl_take isl_set *Domain, TempScop &tempScop, const Region &CurRegion);
-  __isl_give isl_set *
-  addLoopBoundsToDomain(__isl_take isl_set *Domain, TempScop &tempScop);
+  __isl_give isl_set *addConditionsToDomain(__isl_take isl_set *Domain,
+                                            TempScop &tempScop,
+                                            const Region &CurRegion);
+  __isl_give isl_set *addLoopBoundsToDomain(__isl_take isl_set *Domain,
+                                            TempScop &tempScop);
   __isl_give isl_set *buildDomain(TempScop &tempScop, const Region &CurRegion);
   void buildScattering(SmallVectorImpl<unsigned> &Scatter);
   void buildAccesses(TempScop &tempScop, const Region &CurRegion);
@@ -333,8 +341,10 @@ public:
   /// @return The BasicBlock represented by this ScopStmt.
   BasicBlock *getBasicBlock() const { return BB; }
 
-  MemoryAccess &getAccessFor(const Instruction *Inst) {
-    return *InstructionToAccess[Inst];
+  const MemoryAccess &getAccessFor(const Instruction *Inst) const {
+    MemoryAccess *A = lookupAccessFor(Inst);
+    assert(A && "Cannot get memory access because it does not exist!");
+    return *A;
   }
 
   MemoryAccess *lookupAccessFor(const Instruction *Inst) const {
@@ -407,10 +417,8 @@ static inline raw_ostream &operator<<(raw_ostream &O, const ScopStmt &S) {
 ///   can take and relations between different parameters.
 class Scop {
   //===-------------------------------------------------------------------===//
-  // DO NOT IMPLEMENT
-  Scop(const Scop &);
-  // DO NOT IMPLEMENT
-  const Scop &operator=(const Scop &);
+  Scop(const Scop &) LLVM_DELETED_FUNCTION;
+  const Scop &operator=(const Scop &) LLVM_DELETED_FUNCTION;
 
   ScalarEvolution *SE;
 
@@ -421,7 +429,7 @@ class Scop {
   unsigned MaxLoopDepth;
 
   typedef std::vector<ScopStmt *> StmtSet;
-  /// The Statments in this Scop.
+  /// The statements in this Scop.
   StmtSet Stmts;
 
   /// Parameters of this Scop
@@ -432,7 +440,7 @@ class Scop {
   typedef std::map<const SCEV *, int> ParamIdType;
   ParamIdType ParameterIds;
 
-  // Isl context.
+  /// Isl context.
   isl_ctx *IslCtx;
 
   /// Constraints on parameters.
@@ -459,7 +467,7 @@ class Scop {
   /// @brief Add the bounds of the parameters to the context.
   void addParameterBounds();
 
-  /// Build the Scop and Statement with precalculate scop information.
+  /// Build the Scop and Statement with precalculated scop information.
   void buildScop(TempScop &TempScop, const Region &CurRegion,
                  // Loops in Scop containing CurRegion
                  SmallVectorImpl<Loop *> &NestLoops,
@@ -602,10 +610,8 @@ static inline raw_ostream &operator<<(raw_ostream &O, const Scop &scop) {
 ///
 class ScopInfo : public RegionPass {
   //===-------------------------------------------------------------------===//
-  // DO NOT IMPLEMENT
-  ScopInfo(const ScopInfo &);
-  // DO NOT IMPLEMENT
-  const ScopInfo &operator=(const ScopInfo &);
+  ScopInfo(const ScopInfo &) LLVM_DELETED_FUNCTION;
+  const ScopInfo &operator=(const ScopInfo &) LLVM_DELETED_FUNCTION;
 
   // The Scop
   Scop *scop;
@@ -646,7 +652,7 @@ public:
   //@}
 };
 
-} //end namespace polly
+} // end namespace polly
 
 namespace llvm {
 class PassRegistry;

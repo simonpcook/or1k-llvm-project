@@ -9,6 +9,9 @@
 
 #include "SymbolFileDWARFDebugMap.h"
 
+#include "DWARFDebugAranges.h"
+
+#include "lldb/Core/RangeMap.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleList.h"
 #include "lldb/Core/PluginManager.h"
@@ -54,18 +57,16 @@ SymbolFileDWARFDebugMap::CompileUnitInfo::GetFileRangeMap(SymbolFileDWARFDebugMa
         return file_range_map;
     
     ObjectFile *oso_objfile = oso_module->GetObjectFile();
+    if (!oso_objfile)
+        return file_range_map;
     
     Log *log (LogChannelDWARF::GetLogIfAll(DWARF_LOG_DEBUG_MAP));
     if (log)
     {
         ConstString object_name (oso_module->GetObjectName());
-        log->Printf("%p: SymbolFileDWARFDebugMap::CompileUnitInfo::GetFileRangeMap ('%s/%s%s%s%s')",
+        log->Printf("%p: SymbolFileDWARFDebugMap::CompileUnitInfo::GetFileRangeMap ('%s')",
                     this,
-                    oso_module->GetFileSpec().GetDirectory().GetCString(),
-                    oso_module->GetFileSpec().GetFilename().GetCString(),
-                    object_name ? "(" : "",
-                    object_name ? object_name.GetCString() : "",
-                    object_name ? ")" : "");
+                    oso_module->GetSpecificationDescription().c_str());
     }
     
 
@@ -183,8 +184,9 @@ public:
                     const FileSpec& file_spec,
                     const ArchSpec& arch,
                     const ConstString *object_name,
-                    off_t object_offset) :
-        Module (file_spec, arch, object_name, object_offset),
+                    off_t object_offset,
+                    const TimeValue *object_mod_time_ptr) :
+        Module (file_spec, arch, object_name, object_offset, object_mod_time_ptr),
         m_exe_module_wp (exe_module_sp),
         m_cu_idx (cu_idx)
     {
@@ -217,7 +219,7 @@ public:
                     // Set a a pointer to this class to set our OSO DWARF file know
                     // that the DWARF is being used along with a debug map and that
                     // it will have the remapped sections that we do below.
-                    SymbolFileDWARF *oso_symfile = (SymbolFileDWARF *)symbol_vendor->GetSymbolFile();
+                    SymbolFileDWARF *oso_symfile = SymbolFileDWARFDebugMap::GetSymbolFileAsSymbolFileDWARF(symbol_vendor->GetSymbolFile());
                     
                     if (!oso_symfile)
                         return NULL;
@@ -267,10 +269,11 @@ SymbolFileDWARFDebugMap::Terminate()
 }
 
 
-const char *
+lldb_private::ConstString
 SymbolFileDWARFDebugMap::GetPluginNameStatic()
 {
-    return "dwarf-debugmap";
+    static ConstString g_name("dwarf-debugmap");
+    return g_name;
 }
 
 const char *
@@ -322,6 +325,30 @@ SymbolFileDWARFDebugMap::InitOSO()
         return;
     
     m_flags.set(kHaveInitializedOSOs);
+    
+    // If the object file has been stripped, there is no sense in looking further
+    // as all of the debug symbols for the debug map will not be available
+    if (m_obj_file->IsStripped())
+        return;
+    
+    // Also make sure the file type is some sort of executable. Core files, debug
+    // info files (dSYM), object files (.o files), and stub libraries all can
+    switch (m_obj_file->GetType())
+    {
+        case ObjectFile::eTypeInvalid:
+        case ObjectFile::eTypeCoreFile:
+        case ObjectFile::eTypeDebugInfo:
+        case ObjectFile::eTypeObjectFile:
+        case ObjectFile::eTypeStubLibrary:
+        case ObjectFile::eTypeUnknown:
+            return;
+            
+        case ObjectFile::eTypeExecutable:
+        case ObjectFile::eTypeDynamicLinker:
+        case ObjectFile::eTypeSharedLibrary:
+            break;
+    }
+
     // In order to get the abilities of this plug-in, we look at the list of
     // N_OSO entries (object files) from the symbol table and make sure that
     // these files exist and also contain valid DWARF. If we get any of that
@@ -385,6 +412,9 @@ SymbolFileDWARFDebugMap::InitOSO()
                 {
                     m_compile_unit_infos[i].so_file.SetFile(so_symbol->GetName().AsCString(), false);
                     m_compile_unit_infos[i].oso_path = oso_symbol->GetName();
+                    TimeValue oso_mod_time;
+                    oso_mod_time.OffsetWithSeconds(oso_symbol->GetAddress().GetOffset());
+                    m_compile_unit_infos[i].oso_mod_time = oso_mod_time;
                     uint32_t sibling_idx = so_symbol->GetSiblingIndex();
                     // The sibling index can't be less that or equal to the current index "i"
                     if (sibling_idx <= i)
@@ -440,12 +470,26 @@ SymbolFileDWARFDebugMap::GetModuleByCompUnitInfo (CompileUnitInfo *comp_unit_inf
         }
         else
         {
+            ObjectFile *obj_file = GetObjectFile();
             comp_unit_info->oso_sp.reset (new OSOInfo());
             m_oso_map[comp_unit_info->oso_path] = comp_unit_info->oso_sp;
             const char *oso_path = comp_unit_info->oso_path.GetCString();
             FileSpec oso_file (oso_path, false);
             ConstString oso_object;
-            if (!oso_file.Exists())
+            if (oso_file.Exists())
+            {
+                TimeValue oso_mod_time (oso_file.GetModificationTime());
+                if (oso_mod_time != comp_unit_info->oso_mod_time)
+                {
+                    obj_file->GetModule()->ReportError ("debug map object file '%s' has changed (actual time is 0x%" PRIx64 ", debug map time is 0x%" PRIx64 ") since this executable was linked, file will be ignored",
+                                                        oso_file.GetPath().c_str(),
+                                                        oso_mod_time.GetAsSecondsSinceJan1_1970(),
+                                                        comp_unit_info->oso_mod_time.GetAsSecondsSinceJan1_1970());
+                    return NULL;
+                }
+
+            }
+            else
             {
                 const bool must_exist = true;
 
@@ -454,7 +498,6 @@ SymbolFileDWARFDebugMap::GetModuleByCompUnitInfo (CompileUnitInfo *comp_unit_inf
                                                              oso_object,
                                                              must_exist))
                 {
-                    comp_unit_info->oso_sp->symbol_file_supported = false;
                     return NULL;
                 }
             }
@@ -462,12 +505,13 @@ SymbolFileDWARFDebugMap::GetModuleByCompUnitInfo (CompileUnitInfo *comp_unit_inf
             // use the debug map, to add new sections to each .o file and
             // even though a .o file might not have changed, the sections
             // that get added to the .o file can change.
-            comp_unit_info->oso_sp->module_sp.reset (new DebugMapModule (GetObjectFile()->GetModule(),
+            comp_unit_info->oso_sp->module_sp.reset (new DebugMapModule (obj_file->GetModule(),
                                                                          GetCompUnitInfoIndex(comp_unit_info),
                                                                          oso_file,
                                                                          m_obj_file->GetModule()->GetArchitecture(),
                                                                          oso_object ? &oso_object : NULL,
-                                                                         0));
+                                                                         0,
+                                                                         oso_object ? &comp_unit_info->oso_mod_time : NULL));
         }
     }
     if (comp_unit_info->oso_sp)
@@ -542,6 +586,14 @@ SymbolFileDWARFDebugMap::GetSymbolFileByOSOIndex (uint32_t oso_idx)
 }
 
 SymbolFileDWARF *
+SymbolFileDWARFDebugMap::GetSymbolFileAsSymbolFileDWARF (SymbolFile *sym_file)
+{
+    if (sym_file && sym_file->GetPluginName() == SymbolFileDWARF::GetPluginNameStatic())
+        return (SymbolFileDWARF *)sym_file;
+    return NULL;
+}
+
+SymbolFileDWARF *
 SymbolFileDWARFDebugMap::GetSymbolFileByCompUnitInfo (CompileUnitInfo *comp_unit_info)
 {
     Module *oso_module = GetModuleByCompUnitInfo (comp_unit_info);
@@ -549,7 +601,7 @@ SymbolFileDWARFDebugMap::GetSymbolFileByCompUnitInfo (CompileUnitInfo *comp_unit
     {
         SymbolVendor *sym_vendor = oso_module->GetSymbolVendor();
         if (sym_vendor)
-            return (SymbolFileDWARF *)sym_vendor->GetSymbolFile();
+            return GetSymbolFileAsSymbolFileDWARF (sym_vendor->GetSymbolFile());
     }
     return NULL;
 }
@@ -565,27 +617,17 @@ SymbolFileDWARFDebugMap::CalculateAbilities ()
     const uint32_t oso_index_count = GetNumCompileUnits();
     if (oso_index_count > 0)
     {
-        const uint32_t dwarf_abilities = SymbolFile::CompileUnits |
-                                         SymbolFile::Functions |
-                                         SymbolFile::Blocks |
-                                         SymbolFile::GlobalVariables |
-                                         SymbolFile::LocalVariables |
-                                         SymbolFile::VariableTypes |
-                                         SymbolFile::LineTables;
-
         InitOSO();
         if (!m_compile_unit_infos.empty())
-            return dwarf_abilities;
-//        for (uint32_t oso_idx=0; oso_idx<oso_index_count; ++oso_idx)
-//        {
-//            SymbolFileDWARF *oso_dwarf = GetSymbolFileByOSOIndex (oso_idx);
-//            if (oso_dwarf)
-//            {
-//                uint32_t oso_abilities = oso_dwarf->GetAbilities();
-//                if ((oso_abilities & dwarf_abilities) == dwarf_abilities)
-//                    return oso_abilities;
-//            }
-//        }
+        {
+            return SymbolFile::CompileUnits    |
+                   SymbolFile::Functions       |
+                   SymbolFile::Blocks          |
+                   SymbolFile::GlobalVariables |
+                   SymbolFile::LocalVariables  |
+                   SymbolFile::VariableTypes   |
+                   SymbolFile::LineTables      ;
+        }
     }
     return 0;
 }
@@ -738,11 +780,11 @@ SymbolFileDWARFDebugMap::ResolveTypeUID(lldb::user_id_t type_uid)
     return NULL;
 }
 
-lldb::clang_type_t
-SymbolFileDWARFDebugMap::ResolveClangOpaqueTypeDefinition (lldb::clang_type_t clang_type)
+bool
+SymbolFileDWARFDebugMap::ResolveClangOpaqueTypeDefinition (ClangASTType& clang_type)
 {
     // We have a struct/union/class/enum that needs to be fully resolved.
-    return NULL;
+    return false;
 }
 
 uint32_t
@@ -805,7 +847,7 @@ SymbolFileDWARFDebugMap::ResolveSymbolContext (const FileSpec& file_spec, uint32
             if (GetFileSpecForSO (i, so_file_spec))
             {
                 // Match the full path if the incoming file_spec has a directory (not just a basename)
-                const bool full_match = file_spec.GetDirectory();
+                const bool full_match = (bool)file_spec.GetDirectory();
                 resolve = FileSpec::Equal (file_spec, so_file_spec, full_match);
             }
         }
@@ -1095,6 +1137,43 @@ SymbolFileDWARFDebugMap::FindFunctions (const RegularExpression& regex, bool inc
     return sc_list.GetSize() - initial_size;
 }
 
+size_t
+SymbolFileDWARFDebugMap::GetTypes (SymbolContextScope *sc_scope,
+                                   uint32_t type_mask,
+                                   TypeList &type_list)
+{
+    Timer scoped_timer (__PRETTY_FUNCTION__,
+                        "SymbolFileDWARFDebugMap::GetTypes (type_mask = 0x%8.8x)",
+                        type_mask);
+    
+    
+    uint32_t initial_size = type_list.GetSize();
+    SymbolFileDWARF *oso_dwarf = NULL;
+    if (sc_scope)
+    {
+        SymbolContext sc;
+        sc_scope->CalculateSymbolContext(&sc);
+        
+        CompileUnitInfo *cu_info = GetCompUnitInfo (sc);
+        if (cu_info)
+        {
+            oso_dwarf = GetSymbolFileByCompUnitInfo (cu_info);
+            if (oso_dwarf)
+                oso_dwarf->GetTypes (sc_scope, type_mask, type_list);
+        }
+    }
+    else
+    {
+        uint32_t oso_idx = 0;
+        while ((oso_dwarf = GetSymbolFileByOSOIndex (oso_idx++)) != NULL)
+        {
+            oso_dwarf->GetTypes (sc_scope, type_mask, type_list);
+        }
+    }
+    return type_list.GetSize() - initial_size;
+}
+
+
 TypeSP
 SymbolFileDWARFDebugMap::FindDefinitionTypeForDWARFDeclContext (const DWARFDeclContext &die_decl_ctx)
 {
@@ -1223,14 +1302,8 @@ SymbolFileDWARFDebugMap::FindNamespace (const lldb_private::SymbolContext& sc,
 //------------------------------------------------------------------
 // PluginInterface protocol
 //------------------------------------------------------------------
-const char *
+lldb_private::ConstString
 SymbolFileDWARFDebugMap::GetPluginName()
-{
-    return "SymbolFileDWARFDebugMap";
-}
-
-const char *
-SymbolFileDWARFDebugMap::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }
@@ -1312,7 +1385,7 @@ void
 SymbolFileDWARFDebugMap::CompleteTagDecl (void *baton, clang::TagDecl *decl)
 {
     SymbolFileDWARFDebugMap *symbol_file_dwarf = (SymbolFileDWARFDebugMap *)baton;
-    clang_type_t clang_type = symbol_file_dwarf->GetClangASTContext().GetTypeForDecl (decl);
+    ClangASTType clang_type = symbol_file_dwarf->GetClangASTContext().GetTypeForDecl (decl);
     if (clang_type)
     {
         SymbolFileDWARF *oso_dwarf;
@@ -1332,7 +1405,7 @@ void
 SymbolFileDWARFDebugMap::CompleteObjCInterfaceDecl (void *baton, clang::ObjCInterfaceDecl *decl)
 {
     SymbolFileDWARFDebugMap *symbol_file_dwarf = (SymbolFileDWARFDebugMap *)baton;
-    clang_type_t clang_type = symbol_file_dwarf->GetClangASTContext().GetTypeForDecl (decl);
+    ClangASTType clang_type = symbol_file_dwarf->GetClangASTContext().GetTypeForDecl (decl);
     if (clang_type)
     {
         SymbolFileDWARF *oso_dwarf;
@@ -1395,12 +1468,10 @@ SymbolFileDWARFDebugMap::AddOSOFileRange (CompileUnitInfo *cu_info,
                                           lldb::addr_t oso_file_addr,
                                           lldb::addr_t oso_byte_size)
 {
-    assert (cu_info);// REMOVE THIS PRIOR TO CHECKIN
     const uint32_t debug_map_idx = m_debug_map.FindEntryIndexThatContains(exe_file_addr);
     if (debug_map_idx != UINT32_MAX)
     {
         DebugMap::Entry *debug_map_entry = m_debug_map.FindEntryThatContains(exe_file_addr);
-        assert (debug_map_entry);// REMOVE THIS PRIOR TO CHECKIN
         debug_map_entry->data.SetOSOFileAddress(oso_file_addr);
         cu_info->file_range_map.Append(FileRangeMap::Entry(oso_file_addr, oso_byte_size, exe_file_addr));
         return true;
@@ -1415,10 +1486,9 @@ SymbolFileDWARFDebugMap::FinalizeOSOFileRanges (CompileUnitInfo *cu_info)
 #if defined(DEBUG_OSO_DMAP)
     const FileRangeMap &oso_file_range_map = cu_info->GetFileRangeMap(this);
     const size_t n = oso_file_range_map.GetSize();
-    printf ("SymbolFileDWARFDebugMap::FinalizeOSOFileRanges (cu_info = %p) %s/%s\n",
+    printf ("SymbolFileDWARFDebugMap::FinalizeOSOFileRanges (cu_info = %p) %s\n",
             cu_info,
-            cu_info->oso_sp->module_sp->GetFileSpec().GetDirectory().GetCString(),
-            cu_info->oso_sp->module_sp->GetFileSpec().GetFilename().GetCString());
+            cu_info->oso_sp->module_sp->GetFileSpec().GetPath().c_str());
     for (size_t i=0; i<n; ++i)
     {
         const FileRangeMap::Entry &entry = oso_file_range_map.GetEntryRef(i);
@@ -1459,7 +1529,7 @@ SymbolFileDWARFDebugMap::LinkOSOAddress (Address &addr)
     if (addr_module == exe_module)
         return true; // Address is already in terms of the main executable module
 
-    CompileUnitInfo *cu_info = GetCompileUnitInfo ((SymbolFileDWARF *)addr_module->GetSymbolVendor()->GetSymbolFile());
+    CompileUnitInfo *cu_info = GetCompileUnitInfo (GetSymbolFileAsSymbolFileDWARF(addr_module->GetSymbolVendor()->GetSymbolFile()));
     if (cu_info)
     {
         const lldb::addr_t oso_file_addr = addr.GetFileAddress();
@@ -1487,4 +1557,30 @@ SymbolFileDWARFDebugMap::LinkOSOLineTable (SymbolFileDWARF *oso_dwarf, LineTable
     return NULL;
 }
 
+size_t
+SymbolFileDWARFDebugMap::AddOSOARanges (SymbolFileDWARF* dwarf2Data, DWARFDebugAranges* debug_aranges)
+{
+    size_t num_line_entries_added = 0;
+    if (debug_aranges && dwarf2Data)
+    {
+        CompileUnitInfo *compile_unit_info = GetCompileUnitInfo(dwarf2Data);
+        if (compile_unit_info)
+        {
+            const FileRangeMap &file_range_map = compile_unit_info->GetFileRangeMap(this);
+            for (size_t idx = 0;
+                 idx < file_range_map.GetSize();
+                 idx++)
+            {
+                const FileRangeMap::Entry* entry = file_range_map.GetEntryAtIndex(idx);
+                if (entry)
+                {
+                    printf ("[0x%16.16" PRIx64 " - 0x%16.16" PRIx64 ")\n", entry->GetRangeBase(), entry->GetRangeEnd());
+                    debug_aranges->AppendRange(dwarf2Data->GetID(), entry->GetRangeBase(), entry->GetRangeEnd());
+                    num_line_entries_added++;
+                }
+            }
+        }
+    }
+    return num_line_entries_added;
+}
 

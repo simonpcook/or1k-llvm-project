@@ -52,11 +52,16 @@ static ScriptInterpreter::SWIGPythonCalculateNumChildren g_swig_calc_children = 
 static ScriptInterpreter::SWIGPythonGetChildAtIndex g_swig_get_child_index = NULL;
 static ScriptInterpreter::SWIGPythonGetIndexOfChildWithName g_swig_get_index_child = NULL;
 static ScriptInterpreter::SWIGPythonCastPyObjectToSBValue g_swig_cast_to_sbvalue  = NULL;
+static ScriptInterpreter::SWIGPythonGetValueObjectSPFromSBValue g_swig_get_valobj_sp_from_sbvalue = NULL;
 static ScriptInterpreter::SWIGPythonUpdateSynthProviderInstance g_swig_update_provider = NULL;
 static ScriptInterpreter::SWIGPythonMightHaveChildrenSynthProviderInstance g_swig_mighthavechildren_provider = NULL;
 static ScriptInterpreter::SWIGPythonCallCommand g_swig_call_command = NULL;
 static ScriptInterpreter::SWIGPythonCallModuleInit g_swig_call_module_init = NULL;
 static ScriptInterpreter::SWIGPythonCreateOSPlugin g_swig_create_os_plugin = NULL;
+static ScriptInterpreter::SWIGPythonScriptKeyword_Process g_swig_run_script_keyword_process = NULL;
+static ScriptInterpreter::SWIGPythonScriptKeyword_Thread g_swig_run_script_keyword_thread = NULL;
+static ScriptInterpreter::SWIGPythonScriptKeyword_Target g_swig_run_script_keyword_target = NULL;
+static ScriptInterpreter::SWIGPythonScriptKeyword_Frame g_swig_run_script_keyword_frame = NULL;
 
 // these are the Pythonic implementations of the required callbacks
 // these are scripting-language specific, which is why they belong here
@@ -100,6 +105,9 @@ LLDBSwigPython_GetIndexOfChildWithName (void *implementor, const char* child_nam
 extern "C" void *
 LLDBSWIGPython_CastPyObjectToSBValue (void* data);
 
+extern lldb::ValueObjectSP
+LLDBSWIGPython_GetValueObjectSPFromSBValue (void* data);
+
 extern "C" bool
 LLDBSwigPython_UpdateSynthProviderInstance (void* implementor);
 
@@ -111,8 +119,7 @@ LLDBSwigPythonCallCommand (const char *python_function_name,
                            const char *session_dictionary_name,
                            lldb::DebuggerSP& debugger,
                            const char* args,
-                           std::string& err_msg,
-                           lldb_private::CommandReturnObject& cmd_retobj);
+                           lldb_private::CommandReturnObject &cmd_retobj);
 
 extern "C" bool
 LLDBSwigPythonCallModuleInit (const char *python_module_name,
@@ -123,6 +130,30 @@ extern "C" void*
 LLDBSWIGPythonCreateOSPlugin (const char *python_class_name,
                               const char *session_dictionary_name,
                               const lldb::ProcessSP& process_sp);
+
+extern "C" bool
+LLDBSWIGPythonRunScriptKeywordProcess (const char* python_function_name,
+                                       const char* session_dictionary_name,
+                                       lldb::ProcessSP& process,
+                                       std::string& output);
+
+extern "C" bool
+LLDBSWIGPythonRunScriptKeywordThread (const char* python_function_name,
+                                      const char* session_dictionary_name,
+                                      lldb::ThreadSP& thread,
+                                      std::string& output);
+
+extern "C" bool
+LLDBSWIGPythonRunScriptKeywordTarget (const char* python_function_name,
+                                      const char* session_dictionary_name,
+                                      lldb::TargetSP& target,
+                                      std::string& output);
+
+extern "C" bool
+LLDBSWIGPythonRunScriptKeywordFrame (const char* python_function_name,
+                                     const char* session_dictionary_name,
+                                     lldb::StackFrameSP& frame,
+                                     std::string& output);
 
 static int
 _check_and_flush (FILE *stream)
@@ -276,8 +307,6 @@ ScriptInterpreterPython::PythonInputReaderManager::InputReaderCallback (void *ba
     
     if (script_interpreter->m_script_lang != eScriptLanguagePython)
         return 0;
-    
-    StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
     
     switch (notification)
     {
@@ -541,7 +570,7 @@ ScriptInterpreterPython::~ScriptInterpreterPython ()
         Locker locker(this,
                       ScriptInterpreterPython::Locker::AcquireLock,
                       ScriptInterpreterPython::Locker::FreeLock);
-        Py_DECREF ((PyObject*)m_new_sysout);
+        Py_XDECREF ((PyObject*)m_new_sysout);
     }
 }
 
@@ -790,10 +819,10 @@ ScriptInterpreterPython::ExecuteOneLine (const char *command, CommandReturnObjec
                                 PythonInputReaderManager py_input(options.GetEnableIO() ? this : NULL);
                                 pvalue = PyObject_CallObject (pfunc, pargs);
                             }
-                            Py_DECREF (pargs);
+                            Py_XDECREF (pargs);
                             if (pvalue != NULL)
                             {
-                                Py_DECREF (pvalue);
+                                Py_XDECREF (pvalue);
                                 success = true;
                             }
                             else if (options.GetMaskoutErrors() && PyErr_Occurred ())
@@ -843,13 +872,12 @@ ScriptInterpreterPython::InputReaderCallback
     if (script_interpreter->m_script_lang != eScriptLanguagePython)
         return 0;
     
-    StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
-    bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
-    
     switch (notification)
     {
     case eInputReaderActivate:
         {
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
             if (!batch_mode)
             {
                 out_stream->Printf ("Python Interactive Interpreter. To exit, type 'quit()', 'exit()' or Ctrl-D.\n");
@@ -1062,7 +1090,7 @@ ScriptInterpreterPython::ExecuteOneLineWithReturn (const char *in_string,
 
         if (locals != NULL
             && should_decrement_locals)
-            Py_DECREF (locals);
+            Py_XDECREF (locals);
 
         if (py_return != NULL)
         {
@@ -1153,7 +1181,7 @@ ScriptInterpreterPython::ExecuteOneLineWithReturn (const char *in_string,
                     break;
                 }
             }
-            Py_DECREF (py_return);
+            Py_XDECREF (py_return);
             if (success)
                 ret_success = true;
             else
@@ -1226,10 +1254,10 @@ ScriptInterpreterPython::ExecuteMultipleLines (const char *in_string, const Exec
                 if (py_return != NULL)
                 {
                     success = true;
-                    Py_DECREF (py_return);
+                    Py_XDECREF (py_return);
                 }
                 if (locals && should_decrement_locals)
-                    Py_DECREF (locals);
+                    Py_XDECREF (locals);
             }
         }
     }
@@ -1251,6 +1279,12 @@ ScriptInterpreterPython::ExecuteMultipleLines (const char *in_string, const Exec
 
 static const char *g_reader_instructions = "Enter your Python command(s). Type 'DONE' to end.";
 
+static const char *g_bkpt_command_reader_instructions = "Enter your Python command(s). Type 'DONE' to end.\n"
+                                                        "def function(frame,bp_loc,internal_dict):\n"
+                                                        "    \"\"\"frame: the SBFrame for the location at which you stopped\n"
+                                                        "       bp_loc: an SBBreakpointLocation for the breakpoint location information\n"
+                                                        "       internal_dict: an LLDB support object not to be used\"\"\"";
+
 size_t
 ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
 (
@@ -1263,17 +1297,17 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
 {
     static StringList commands_in_progress;
     
-    StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
-    bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
-    
     switch (notification)
     {
     case eInputReaderActivate:
         {
+            
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
             commands_in_progress.Clear();
             if (!batch_mode)
             {
-                out_stream->Printf ("%s\n", g_reader_instructions);
+                out_stream->Printf ("%s\n", g_bkpt_command_reader_instructions);
                 if (reader.GetPrompt())
                     out_stream->Printf ("%s", reader.GetPrompt());
                 out_stream->Flush ();
@@ -1285,10 +1319,14 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
         break;
 
     case eInputReaderReactivate:
-        if (reader.GetPrompt() && !batch_mode)
         {
-            out_stream->Printf ("%s", reader.GetPrompt());
-            out_stream->Flush ();
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
+            if (reader.GetPrompt() && !batch_mode)
+            {
+                out_stream->Printf ("%s", reader.GetPrompt());
+                out_stream->Flush ();
+            }
         }
         break;
 
@@ -1297,6 +1335,8 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
         
     case eInputReaderGotToken:
         {
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
             std::string temp_string (bytes, bytes_len);
             commands_in_progress.AppendString (temp_string.c_str());
             if (!reader.IsDone() && reader.GetPrompt() && !batch_mode)
@@ -1320,6 +1360,9 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
 
     case eInputReaderDone:
         {
+            bool batch_mode = notification == eInputReaderDone ? 
+                reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode() :
+                true;
             BreakpointOptions *bp_options = (BreakpointOptions *)baton;
             std::unique_ptr<BreakpointOptions::CommandData> data_ap(new BreakpointOptions::CommandData());
             data_ap->user_source.AppendList (commands_in_progress);
@@ -1336,6 +1379,7 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
                     }
                     else if (!batch_mode)
                     {
+                        StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
                         out_stream->Printf ("Warning: No command attached to breakpoint.\n");
                         out_stream->Flush();
                     }
@@ -1344,6 +1388,7 @@ ScriptInterpreterPython::GenerateBreakpointOptionsCommandCallback
                 {
 		            if (!batch_mode)
                     {
+                        StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
                         out_stream->Printf ("Warning:  Unable to find script intepreter; no command attached to breakpoint.\n");
                         out_stream->Flush();
                     }
@@ -1369,13 +1414,13 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
 {
     static StringList commands_in_progress;
     
-    StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
-    bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
-    
     switch (notification)
     {
     case eInputReaderActivate:
         {
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
+            
             commands_in_progress.Clear();
             if (!batch_mode)
             {
@@ -1391,10 +1436,14 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
         break;
 
     case eInputReaderReactivate:
-        if (reader.GetPrompt() && !batch_mode)
         {
-            out_stream->Printf ("%s", reader.GetPrompt());
-            out_stream->Flush ();
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
+            if (reader.GetPrompt() && !batch_mode)
+            {
+                out_stream->Printf ("%s", reader.GetPrompt());
+                out_stream->Flush ();
+            }
         }
         break;
 
@@ -1403,6 +1452,8 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
         
     case eInputReaderGotToken:
         {
+            StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
+            bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
             std::string temp_string (bytes, bytes_len);
             commands_in_progress.AppendString (temp_string.c_str());
             if (!reader.IsDone() && reader.GetPrompt() && !batch_mode)
@@ -1426,6 +1477,9 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
 
     case eInputReaderDone:
         {
+            bool batch_mode = notification == eInputReaderDone ?
+                reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode() :
+                true;
             WatchpointOptions *wp_options = (WatchpointOptions *)baton;
             std::unique_ptr<WatchpointOptions::CommandData> data_ap(new WatchpointOptions::CommandData());
             data_ap->user_source.AppendList (commands_in_progress);
@@ -1442,6 +1496,7 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
                     }
                     else if (!batch_mode)
                     {
+                        StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
                         out_stream->Printf ("Warning: No command attached to breakpoint.\n");
                         out_stream->Flush();
                     }
@@ -1450,6 +1505,7 @@ ScriptInterpreterPython::GenerateWatchpointOptionsCommandCallback
                 {
 		            if (!batch_mode)
                     {
+                        StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
                         out_stream->Printf ("Warning:  Unable to find script intepreter; no command attached to breakpoint.\n");
                         out_stream->Flush();
                     }
@@ -1478,7 +1534,7 @@ ScriptInterpreterPython::CollectDataForBreakpointCommandCallback (BreakpointOpti
                 bp_options,                 // baton
                 eInputReaderGranularityLine, // token size, for feeding data to callback function
                 "DONE",                     // end token
-                "> ",                       // prompt
+                "    ",                     // prompt
                 true);                      // echo input
     
         if (err.Success())
@@ -2399,20 +2455,18 @@ ScriptInterpreterPython::GetChildAtIndex (const lldb::ScriptInterpreterObjectSP&
     if (!g_swig_get_child_index || !g_swig_cast_to_sbvalue)
         return lldb::ValueObjectSP();
     
-    void* child_ptr = NULL;
-    lldb::SBValue* value_sb = NULL;
     lldb::ValueObjectSP ret_val;
     
     {
         Locker py_lock(this);
-        child_ptr = g_swig_get_child_index (implementor,idx);
+        void* child_ptr = g_swig_get_child_index (implementor,idx);
         if (child_ptr != NULL && child_ptr != Py_None)
         {
-            value_sb = (lldb::SBValue*)g_swig_cast_to_sbvalue(child_ptr);
-            if (value_sb == NULL)
+            lldb::SBValue* sb_value_ptr = (lldb::SBValue*)g_swig_cast_to_sbvalue(child_ptr);
+            if (sb_value_ptr == NULL)
                 Py_XDECREF(child_ptr);
             else
-                ret_val = value_sb->GetSP();
+                ret_val = g_swig_get_valobj_sp_from_sbvalue (sb_value_ptr);
         }
         else
         {
@@ -2553,6 +2607,147 @@ ReadPythonBacktrace (PyObject* py_backtrace)
 }
 
 bool
+ScriptInterpreterPython::RunScriptFormatKeyword (const char* impl_function,
+                                                 Process* process,
+                                                 std::string& output,
+                                                 Error& error)
+{
+    bool ret_val;
+    if (!process)
+    {
+        error.SetErrorString("no process");
+        return false;
+    }
+    if (!impl_function || !impl_function[0])
+    {
+        error.SetErrorString("no function to execute");
+        return false;
+    }
+    if (!g_swig_run_script_keyword_process)
+    {
+        error.SetErrorString("internal helper function missing");
+        return false;
+    }
+    {
+        ProcessSP process_sp(process->shared_from_this());
+        Locker py_lock(this);
+        ret_val = g_swig_run_script_keyword_process (impl_function, m_dictionary_name.c_str(), process_sp, output);
+        if (!ret_val)
+            error.SetErrorString("python script evaluation failed");
+    }
+    return ret_val;
+}
+
+bool
+ScriptInterpreterPython::RunScriptFormatKeyword (const char* impl_function,
+                                                 Thread* thread,
+                                                 std::string& output,
+                                                 Error& error)
+{
+    bool ret_val;
+    if (!thread)
+    {
+        error.SetErrorString("no thread");
+        return false;
+    }
+    if (!impl_function || !impl_function[0])
+    {
+        error.SetErrorString("no function to execute");
+        return false;
+    }
+    if (!g_swig_run_script_keyword_thread)
+    {
+        error.SetErrorString("internal helper function missing");
+        return false;
+    }
+    {
+        ThreadSP thread_sp(thread->shared_from_this());
+        Locker py_lock(this);
+        ret_val = g_swig_run_script_keyword_thread (impl_function, m_dictionary_name.c_str(), thread_sp, output);
+        if (!ret_val)
+            error.SetErrorString("python script evaluation failed");
+    }
+    return ret_val;
+}
+
+bool
+ScriptInterpreterPython::RunScriptFormatKeyword (const char* impl_function,
+                                                 Target* target,
+                                                 std::string& output,
+                                                 Error& error)
+{
+    bool ret_val;
+    if (!target)
+    {
+        error.SetErrorString("no thread");
+        return false;
+    }
+    if (!impl_function || !impl_function[0])
+    {
+        error.SetErrorString("no function to execute");
+        return false;
+    }
+    if (!g_swig_run_script_keyword_target)
+    {
+        error.SetErrorString("internal helper function missing");
+        return false;
+    }
+    {
+        TargetSP target_sp(target->shared_from_this());
+        Locker py_lock(this);
+        ret_val = g_swig_run_script_keyword_target (impl_function, m_dictionary_name.c_str(), target_sp, output);
+        if (!ret_val)
+            error.SetErrorString("python script evaluation failed");
+    }
+    return ret_val;
+}
+
+bool
+ScriptInterpreterPython::RunScriptFormatKeyword (const char* impl_function,
+                                                 StackFrame* frame,
+                                                 std::string& output,
+                                                 Error& error)
+{
+    bool ret_val;
+    if (!frame)
+    {
+        error.SetErrorString("no frame");
+        return false;
+    }
+    if (!impl_function || !impl_function[0])
+    {
+        error.SetErrorString("no function to execute");
+        return false;
+    }
+    if (!g_swig_run_script_keyword_frame)
+    {
+        error.SetErrorString("internal helper function missing");
+        return false;
+    }
+    {
+        StackFrameSP frame_sp(frame->shared_from_this());
+        Locker py_lock(this);
+        ret_val = g_swig_run_script_keyword_frame (impl_function, m_dictionary_name.c_str(), frame_sp, output);
+        if (!ret_val)
+            error.SetErrorString("python script evaluation failed");
+    }
+    return ret_val;
+}
+
+uint64_t replace_all(std::string& str, const std::string& oldStr, const std::string& newStr)
+{
+    size_t pos = 0;
+    uint64_t matches = 0;
+    while((pos = str.find(oldStr, pos)) != std::string::npos)
+    {
+        matches++;
+        str.replace(pos, oldStr.length(), newStr);
+        pos += newStr.length();
+    }
+    return matches;
+}
+
+bool
 ScriptInterpreterPython::LoadScriptingModule (const char* pathname,
                                               bool can_reload,
                                               bool init_session,
@@ -2574,55 +2769,83 @@ ScriptInterpreterPython::LoadScriptingModule (const char* pathname,
 
     {
         FileSpec target_file(pathname, true);
-        
-        // TODO: would we want to reject any other value?
-        if (target_file.GetFileType() == FileSpec::eFileTypeInvalid ||
-            target_file.GetFileType() == FileSpec::eFileTypeUnknown)
-        {
-            error.SetErrorString("invalid pathname");
-            return false;
-        }
-        
-        const char* directory = target_file.GetDirectory().GetCString();
         std::string basename(target_file.GetFilename().GetCString());
+        
+        StreamString command_stream;
 
         // Before executing Pyton code, lock the GIL.
         Locker py_lock (this,
                         Locker::AcquireLock      | (init_session ? Locker::InitSession     : 0),
                         Locker::FreeAcquiredLock | (init_session ? Locker::TearDownSession : 0));
         
-        // now make sure that Python has "directory" in the search path
-        StreamString command_stream;
-        command_stream.Printf("if not (sys.path.__contains__('%s')):\n    sys.path.insert(1,'%s');\n\n",
-                              directory,
-                              directory);
-        bool syspath_retval = ExecuteMultipleLines(command_stream.GetData(), ScriptInterpreter::ExecuteScriptOptions().SetEnableIO(false).SetSetLLDBGlobals(false));
-        if (!syspath_retval)
+        if (target_file.GetFileType() == FileSpec::eFileTypeInvalid ||
+            target_file.GetFileType() == FileSpec::eFileTypeUnknown)
         {
-            error.SetErrorString("Python sys.path handling failed");
-            return false;
+            // if not a valid file of any sort, check if it might be a filename still
+            // dot can't be used but / and \ can, and if either is found, reject
+            if (strchr(pathname,'\\') || strchr(pathname,'/'))
+            {
+                error.SetErrorString("invalid pathname");
+                return false;
+            }
+            basename = pathname; // not a filename, probably a package of some sort, let it go through
         }
-        
-        // strip .py or .pyc extension
-        ConstString extension = target_file.GetFileNameExtension();
-        if (extension)
+        else if (target_file.GetFileType() == FileSpec::eFileTypeDirectory ||
+                 target_file.GetFileType() == FileSpec::eFileTypeRegular ||
+                 target_file.GetFileType() == FileSpec::eFileTypeSymbolicLink)
         {
-            if (::strcmp(extension.GetCString(), "py") == 0)
-                basename.resize(basename.length()-3);
-            else if(::strcmp(extension.GetCString(), "pyc") == 0)
-                basename.resize(basename.length()-4);
+            std::string directory(target_file.GetDirectory().GetCString());
+            replace_all(directory,"'","\\'");
+            
+            // now make sure that Python has "directory" in the search path
+            StreamString command_stream;
+            command_stream.Printf("if not (sys.path.__contains__('%s')):\n    sys.path.insert(1,'%s');\n\n",
+                                  directory.c_str(),
+                                  directory.c_str());
+            bool syspath_retval = ExecuteMultipleLines(command_stream.GetData(), ScriptInterpreter::ExecuteScriptOptions().SetEnableIO(false).SetSetLLDBGlobals(false));
+            if (!syspath_retval)
+            {
+                error.SetErrorString("Python sys.path handling failed");
+                return false;
+            }
+            
+            // strip .py or .pyc extension
+            ConstString extension = target_file.GetFileNameExtension();
+            if (extension)
+            {
+                if (::strcmp(extension.GetCString(), "py") == 0)
+                    basename.resize(basename.length()-3);
+                else if(::strcmp(extension.GetCString(), "pyc") == 0)
+                    basename.resize(basename.length()-4);
+            }
+        }
+        else
+        {
+            error.SetErrorString("no known way to import this module specification");
+            return false;
         }
         
         // check if the module is already import-ed
         command_stream.Clear();
-        command_stream.Printf("sys.getrefcount(%s)",basename.c_str());
+        command_stream.Printf("sys.modules.__contains__('%s')",basename.c_str());
+        bool does_contain = false;
         int refcount = 0;
-        // this call will fail if the module does not exist (because the parameter to it is not a string
-        // but an actual Python module object, which is non-existant if the module was not imported before)
-        bool was_imported = (ExecuteOneLineWithReturn(command_stream.GetData(),
-                                                      ScriptInterpreterPython::eScriptReturnTypeInt,
-                                                      &refcount,
-                                                      ScriptInterpreter::ExecuteScriptOptions().SetEnableIO(false).SetSetLLDBGlobals(false)) && refcount > 0);
+        // this call will succeed if the module was ever imported in any Debugger in the lifetime of the process
+        // in which this LLDB framework is living
+        bool was_imported_globally = (ExecuteOneLineWithReturn(command_stream.GetData(),
+                                                               ScriptInterpreterPython::eScriptReturnTypeBool,
+                                                               &does_contain,
+                                                               ScriptInterpreter::ExecuteScriptOptions().SetEnableIO(false).SetSetLLDBGlobals(false)) && does_contain);
+        // this call will fail if the module was not imported in this Debugger before
+        command_stream.Clear();
+        command_stream.Printf("sys.getrefcount(%s)",basename.c_str());
+        bool was_imported_locally = (ExecuteOneLineWithReturn(command_stream.GetData(),
+                                                              ScriptInterpreterPython::eScriptReturnTypeInt,
+                                                              &refcount,
+                                                              ScriptInterpreter::ExecuteScriptOptions().SetEnableIO(false).SetSetLLDBGlobals(false)) && refcount > 0);
+        
+        bool was_imported = (was_imported_globally || was_imported_locally);
+        
         if (was_imported == true && can_reload == false)
         {
             error.SetErrorString("module already imported");
@@ -2631,7 +2854,17 @@ ScriptInterpreterPython::LoadScriptingModule (const char* pathname,
 
         // now actually do the import
         command_stream.Clear();
-        command_stream.Printf("import %s",basename.c_str());
+        
+        if (was_imported)
+        {
+            if (!was_imported_locally)
+                command_stream.Printf("import %s ; reload(%s)",basename.c_str(),basename.c_str());
+            else
+                command_stream.Printf("reload(%s)",basename.c_str());
+        }
+        else
+            command_stream.Printf("import %s",basename.c_str());
+        
         bool import_retval = ExecuteMultipleLines(command_stream.GetData(), ScriptInterpreter::ExecuteScriptOptions().SetEnableIO(false).SetSetLLDBGlobals(false).SetMaskoutErrors(false));
         PyObject* py_error = PyErr_Occurred(); // per Python docs: "you do not need to Py_DECREF()" the return of this function
         
@@ -2731,25 +2964,25 @@ ScriptInterpreterPython::RunScriptBasedCommand(const char* impl_function,
     }
     
     lldb::DebuggerSP debugger_sp = m_interpreter.GetDebugger().shared_from_this();
-
+    
     if (!debugger_sp.get())
     {
         error.SetErrorString("invalid Debugger pointer");
         return false;
     }
     
-    bool ret_val;
+    bool ret_val = false;
     
     std::string err_msg;
-
+    
     {
         Locker py_lock(this,
                        Locker::AcquireLock | Locker::InitSession,
                        Locker::FreeLock    | Locker::TearDownSession);
-
+        
         SynchronicityHandler synch_handler(debugger_sp,
                                            synchronicity);
-
+        
         // we need to save the thread state when we first start the command
         // because we might decide to interrupt it while some action is taking
         // place outside of Python (e.g. printing to screen, waiting for the network, ...)
@@ -2763,12 +2996,11 @@ ScriptInterpreterPython::RunScriptBasedCommand(const char* impl_function,
                                              m_dictionary_name.c_str(),
                                              debugger_sp,
                                              args,
-                                             err_msg,
                                              cmd_retobj);
     }
-
+    
     if (!ret_val)
-        error.SetErrorString(err_msg.c_str());
+        error.SetErrorString("unable to execute script function");
     else
         error.Clear();
     
@@ -2828,11 +3060,16 @@ ScriptInterpreterPython::InitializeInterpreter (SWIGInitCallback python_swig_ini
     g_swig_get_child_index = LLDBSwigPython_GetChildAtIndex;
     g_swig_get_index_child = LLDBSwigPython_GetIndexOfChildWithName;
     g_swig_cast_to_sbvalue = LLDBSWIGPython_CastPyObjectToSBValue;
+    g_swig_get_valobj_sp_from_sbvalue = LLDBSWIGPython_GetValueObjectSPFromSBValue;
     g_swig_update_provider = LLDBSwigPython_UpdateSynthProviderInstance;
     g_swig_mighthavechildren_provider = LLDBSwigPython_MightHaveChildrenSynthProviderInstance;
     g_swig_call_command = LLDBSwigPythonCallCommand;
     g_swig_call_module_init = LLDBSwigPythonCallModuleInit;
     g_swig_create_os_plugin = LLDBSWIGPythonCreateOSPlugin;
+    g_swig_run_script_keyword_process = LLDBSWIGPythonRunScriptKeywordProcess;
+    g_swig_run_script_keyword_thread = LLDBSWIGPythonRunScriptKeywordThread;
+    g_swig_run_script_keyword_target = LLDBSWIGPythonRunScriptKeywordTarget;
+    g_swig_run_script_keyword_frame = LLDBSWIGPythonRunScriptKeywordFrame;
 }
 
 void

@@ -28,7 +28,7 @@ public:
     static void
     Terminate();
     
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
     
     static const char *
@@ -47,6 +47,15 @@ public:
                           lldb::DataBufferSP& data_sp, 
                           const lldb::ProcessSP &process_sp, 
                           lldb::addr_t header_addr);
+    
+    static size_t
+    GetModuleSpecifications (const lldb_private::FileSpec& file,
+                             lldb::DataBufferSP& data_sp,
+                             lldb::offset_t data_offset,
+                             lldb::offset_t file_offset,
+                             lldb::offset_t length,
+                             lldb_private::ModuleSpecList &specs);
+
     static bool
     MagicBytesMatch (lldb::DataBufferSP& data_sp);
     
@@ -77,10 +86,13 @@ public:
 //    GetAddressClass (lldb::addr_t file_addr);
 //    
     virtual lldb_private::Symtab *
-    GetSymtab();
+    GetSymtab ();
     
-    virtual lldb_private::SectionList *
-    GetSectionList();
+    virtual bool
+    IsStripped ();
+
+    virtual void
+    CreateSections (lldb_private::SectionList &unified_section_list);
     
     virtual void
     Dump (lldb_private::Stream *s);
@@ -97,11 +109,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-    
-    virtual const char *
-    GetShortPluginName();
     
     virtual uint32_t
     GetPluginVersion();
@@ -190,6 +199,12 @@ protected:
         //    uint32_t	num_data_dir_entries;
 		std::vector<data_directory> data_dirs;	// will contain num_data_dir_entries entries
 	} coff_opt_header_t;
+
+    typedef enum coff_data_dir_type
+    {
+        coff_data_dir_export_table = 0,
+        coff_data_dir_import_table = 1,
+    } coff_data_dir_type;
     
 	typedef struct section_header {
 		char		name[8];
@@ -212,6 +227,20 @@ protected:
 		uint8_t		storage;
 		uint8_t		naux;		
 	} coff_symbol_t;
+
+    typedef struct export_directory_entry {
+        uint32_t   characteristics;
+        uint32_t   time_date_stamp;
+        uint16_t   major_version;
+        uint16_t   minor_version;
+        uint32_t   name;
+        uint32_t   base;
+        uint32_t   number_of_functions;
+        uint32_t   number_of_names;
+        uint32_t   address_of_functions;
+        uint32_t   address_of_names;
+        uint32_t   address_of_name_ordinals;
+    } export_directory_entry;
     
 	bool ParseDOSHeader ();
 	bool ParseCOFFHeader (lldb::offset_t *offset_ptr);

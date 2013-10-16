@@ -364,7 +364,9 @@ MachTask::GetProfileData (DNBProfileDataScanType scanType)
     mach_vm_size_t vprvt = 0;
     mach_vm_size_t vsize = 0;
     mach_vm_size_t dirty_size = 0;
-    if (m_vm_memory.GetMemoryProfile(scanType, task, task_info, m_process->GetCPUType(), m_process->ProcessID(), vm_stats, physical_memory, rprvt, rsize, vprvt, vsize, dirty_size))
+    mach_vm_size_t purgeable = 0;
+    mach_vm_size_t anonymous = 0;
+    if (m_vm_memory.GetMemoryProfile(scanType, task, task_info, m_process->GetCPUType(), m_process->ProcessID(), vm_stats, physical_memory, rprvt, rsize, vprvt, vsize, dirty_size, purgeable, anonymous))
     {
         std::ostringstream profile_data_stream;
         
@@ -439,6 +441,12 @@ MachTask::GetProfileData (DNBProfileDataScanType scanType)
             
             if (scanType & eProfileMemoryDirtyPage)
                 profile_data_stream << "dirty:" << dirty_size << ';';
+
+            if (scanType & eProfileMemoryAnonymous)
+            {
+                profile_data_stream << "purgeable:" << purgeable << ';';
+                profile_data_stream << "anonymous:" << anonymous << ';';
+            }
         }
         
         profile_data_stream << "--end--;";
@@ -1023,7 +1031,7 @@ MachTask::EnumerateMallocFrames (MachMallocEventId event_id,
     
     __mach_stack_logging_frames_for_uniqued_stack(m_task, event_id, &function_addresses_buffer[0], buffer_size, count);
     *count -= 1;
-    if (function_addresses_buffer[*count-1] < vm_page_size)
+    if (function_addresses_buffer[*count-1] < PageSize())
         *count -= 1;
     return (*count > 0);
 }

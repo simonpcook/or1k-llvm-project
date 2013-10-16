@@ -12,13 +12,10 @@
 #include "lldb/Core/Section.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Symbol/ClangASTType.h"
-#include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/LineTable.h"
 #include "lldb/Symbol/SymbolFile.h"
 #include "lldb/Symbol/SymbolVendor.h"
-#include "clang/AST/Type.h"
-#include "clang/AST/CanonicalType.h"
 #include "llvm/Support/Casting.h"
 
 using namespace lldb;
@@ -315,11 +312,9 @@ Function::GetBlock (bool can_create)
         else
         {
             Host::SystemLog (Host::eSystemLogError, 
-                             "error: unable to find module shared pointer for function '%s' in %s%s%s\n", 
+                             "error: unable to find module shared pointer for function '%s' in %s\n", 
                              GetName().GetCString(),
-                             m_comp_unit->GetDirectory().GetCString(),
-                             m_comp_unit->GetDirectory() ? "/" : "",
-                             m_comp_unit->GetFilename().GetCString());
+                             m_comp_unit->GetPath().c_str());
         }
         m_block.SetBlockInfoHasBeenParsed (true, true);
     }
@@ -486,64 +481,13 @@ Function::GetType() const
     return m_type;
 }
 
-clang_type_t
-Function::GetReturnClangType ()
+ClangASTType
+Function::GetClangType()
 {
-    Type *type = GetType();
-    if (type)
-    {
-        clang::QualType clang_type (clang::QualType::getFromOpaquePtr(type->GetClangFullType()));
-        const clang::FunctionType *function_type = llvm::dyn_cast<clang::FunctionType> (clang_type);
-        if (function_type)
-            return function_type->getResultType().getAsOpaquePtr();
-    }
-    return NULL;
-}
-
-int
-Function::GetArgumentCount ()
-{
-    clang::QualType clang_type (clang::QualType::getFromOpaquePtr(GetType()->GetClangFullType()));
-    assert (clang_type->isFunctionType());
-    if (!clang_type->isFunctionProtoType())
-        return -1;
-
-    const clang::FunctionProtoType *function_proto_type = llvm::dyn_cast<clang::FunctionProtoType>(clang_type);
-    if (function_proto_type != NULL)
-        return function_proto_type->getNumArgs();
-
-    return 0;
-}
-
-clang_type_t
-Function::GetArgumentTypeAtIndex (size_t idx)
-{
-    clang::QualType clang_type (clang::QualType::getFromOpaquePtr(GetType()->GetClangFullType()));
-    const clang::FunctionProtoType *function_proto_type = llvm::dyn_cast<clang::FunctionProtoType>(clang_type);
-    if (function_proto_type)
-    {
-        unsigned num_args = function_proto_type->getNumArgs();
-        if (idx >= num_args)
-            return NULL;
-        
-        return (function_proto_type->arg_type_begin())[idx].getAsOpaquePtr();
-    }
-    return NULL;
-}
-
-bool
-Function::IsVariadic ()
-{
-   const clang::Type *clang_type = static_cast<clang::QualType *>(GetType()->GetClangFullType())->getTypePtr();
-   assert (clang_type->isFunctionType());
-   if (!clang_type->isFunctionProtoType())
-        return false;
-
-    const clang::FunctionProtoType *function_proto_type = llvm::dyn_cast<clang::FunctionProtoType>(clang_type);
-    if (function_proto_type)
-        return function_proto_type->isVariadic();
-
-    return false;
+    Type *function_type = GetType();
+    if (function_type)
+        return function_type->GetClangFullType();
+    return ClangASTType();
 }
 
 uint32_t
@@ -570,9 +514,9 @@ Function::GetPrologueByteSize ()
                     // Check the first few instructions and look for one that has
                     // is_prologue_end set to true.
                     const uint32_t last_line_entry_idx = first_line_entry_idx + 6;
-                    LineEntry line_entry;
                     for (uint32_t idx = first_line_entry_idx + 1; idx < last_line_entry_idx; ++idx)
                     {
+                        LineEntry line_entry;
                         if (line_table->GetLineEntryAtIndex (idx, line_entry))
                         {
                             if (line_entry.is_prologue_end)
@@ -583,12 +527,31 @@ Function::GetPrologueByteSize ()
                         }
                     }
                 }
-                
+
                 // If we didn't find the end of the prologue in the line tables,
                 // then just use the end address of the first line table entry
                 if (prologue_end_file_addr == LLDB_INVALID_ADDRESS)
                 {
-                    prologue_end_file_addr = first_line_entry.range.GetBaseAddress().GetFileAddress() + first_line_entry.range.GetByteSize();
+                    // Check the first few instructions and look for one that has
+                    // a line number that's different than the first entry.
+                    const uint32_t last_line_entry_idx = first_line_entry_idx + 6;
+                    for (uint32_t idx = first_line_entry_idx + 1; idx < last_line_entry_idx; ++idx)
+                    {
+                        LineEntry line_entry;
+                        if (line_table->GetLineEntryAtIndex (idx, line_entry))
+                        {
+                            if (line_entry.line != first_line_entry.line)
+                            {
+                                prologue_end_file_addr = line_entry.range.GetBaseAddress().GetFileAddress();
+                                break;
+                            }
+                        }
+                    }
+
+                    if (prologue_end_file_addr == LLDB_INVALID_ADDRESS)
+                    {
+                        prologue_end_file_addr = first_line_entry.range.GetBaseAddress().GetFileAddress() + first_line_entry.range.GetByteSize();
+                    }
                 }
                 const addr_t func_start_file_addr = m_range.GetBaseAddress().GetFileAddress();
                 const addr_t func_end_file_addr = func_start_file_addr + m_range.GetByteSize();

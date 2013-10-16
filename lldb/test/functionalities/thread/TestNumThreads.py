@@ -19,6 +19,7 @@ class NumberOfThreadsTestCase(TestBase):
         self.buildDsym()
         self.number_of_threads_test()
 
+    @expectedFailureFreeBSD("llvm.org/pr16696") # threaded inferior not yet implemented on FreeBSD
     @dwarf_test
     def test_with_dwarf(self):
         """Test number of threads."""
@@ -41,7 +42,7 @@ class NumberOfThreadsTestCase(TestBase):
 
         # The breakpoint list should show 3 locations.
         self.expect("breakpoint list -f", "Breakpoint location shown correctly",
-            substrs = ["1: file ='main.c', line = %d, locations = 1" % self.line])
+            substrs = ["1: file = 'main.c', line = %d, locations = 1" % self.line])
 
         # Run the program.
         self.runCmd("run", RUN_SUCCEEDED)

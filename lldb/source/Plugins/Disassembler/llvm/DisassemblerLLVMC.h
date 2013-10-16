@@ -47,6 +47,7 @@ class DisassemblerLLVMC : public lldb_private::Disassembler
         
         uint64_t GetMCInst (const uint8_t *opcode_data, size_t opcode_data_len, lldb::addr_t pc, llvm::MCInst &mc_inst);
         uint64_t PrintMCInst (llvm::MCInst &mc_inst, char *output_buffer, size_t out_buffer_len);
+        void     SetStyle (bool use_hex_immed, HexImmediateStyle hex_style);
         bool     CanBranch (llvm::MCInst &mc_inst);
         bool     IsValid()
         {
@@ -54,7 +55,7 @@ class DisassemblerLLVMC : public lldb_private::Disassembler
         }
         
     private:
-        bool                                    m_is_valid;
+        bool                                     m_is_valid;
         std::unique_ptr<llvm::MCContext>         m_context_ap;
         std::unique_ptr<llvm::MCAsmInfo>         m_asm_info_ap;
         std::unique_ptr<llvm::MCSubtargetInfo>   m_subtarget_info_ap;
@@ -74,11 +75,8 @@ public:
     static void
     Terminate();
     
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
-    
-    static const char *
-    GetPluginDescriptionStatic();
     
     static lldb_private::Disassembler *
     CreateInstance(const lldb_private::ArchSpec &arch, const char *flavor);
@@ -99,11 +97,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-    
-    virtual const char *
-    GetShortPluginName();
     
     virtual uint32_t
     GetPluginVersion();

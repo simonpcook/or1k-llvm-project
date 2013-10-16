@@ -20,26 +20,27 @@ DIRS := ABI/MacOSX-arm ABI/MacOSX-i386 ABI/SysV-x86_64 Disassembler/llvm \
 	LanguageRuntime/CPlusPlus/ItaniumABI \
 	LanguageRuntime/ObjC/AppleObjCRuntime \
 	DynamicLoader/POSIX-DYLD \
-	OperatingSystem/Python
+	OperatingSystem/Python \
+	SymbolVendor/ELF
 
 ifeq ($(HOST_OS),Darwin)
 DIRS += Process/MacOSX-Kernel
 DIRS += DynamicLoader/MacOSX-DYLD DynamicLoader/Darwin-Kernel
 DIRS +=	ObjectContainer/Universal-Mach-O ObjectFile/Mach-O
 DIRS += SymbolVendor/MacOSX
-DIRS += OperatingSystem/Darwin-Kernel
 #DIRS += Process/MacOSX-User
 DIRS += Process/mach-core
 endif
 
 ifeq ($(HOST_OS),Linux)
-DIRS += DynamicLoader/MacOSX-DYLD DynamicLoader/Darwin-Kernel
-DIRS += OperatingSystem/Darwin-Kernel
+DIRS += DynamicLoader/MacOSX-DYLD
 DIRS += Process/Linux Process/POSIX
+DIRS += Process/elf-core
 endif
 
-ifeq ($(HOST_OS),FreeBSD)
+ifneq (,$(filter $(HOST_OS), FreeBSD GNU/kFreeBSD))
 DIRS += Process/FreeBSD Process/POSIX
+DIRS += Process/elf-core
 endif
 
 include $(LLDB_LEVEL)/Makefile

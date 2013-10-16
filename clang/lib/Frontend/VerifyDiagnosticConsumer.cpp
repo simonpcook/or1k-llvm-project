@@ -111,8 +111,13 @@ void VerifyDiagnosticConsumer::EndSourceFile() {
 
 void VerifyDiagnosticConsumer::HandleDiagnostic(
       DiagnosticsEngine::Level DiagLevel, const Diagnostic &Info) {
-  if (Info.hasSourceManager())
+  if (Info.hasSourceManager()) {
+    // If this diagnostic is for a different source manager, ignore it.
+    if (SrcManager && &Info.getSourceManager() != SrcManager)
+      return;
+
     setSourceManager(Info.getSourceManager());
+  }
 
 #ifndef NDEBUG
   // Debug build tracks unparsed files for possible
@@ -366,7 +371,7 @@ static bool ParseDirective(StringRef S, ExpectedData *ED, SourceManager &SM,
 
         // Lookup file via Preprocessor, like a #include.
         const DirectoryLookup *CurDir;
-        const FileEntry *FE = PP->LookupFile(Filename, false, NULL, CurDir,
+        const FileEntry *FE = PP->LookupFile(Pos, Filename, false, NULL, CurDir,
                                              NULL, NULL, 0);
         if (!FE) {
           Diags.Report(Pos.getLocWithOffset(PH.C-PH.Begin),
@@ -476,6 +481,11 @@ static bool ParseDirective(StringRef S, ExpectedData *ED, SourceManager &SM,
 bool VerifyDiagnosticConsumer::HandleComment(Preprocessor &PP,
                                              SourceRange Comment) {
   SourceManager &SM = PP.getSourceManager();
+
+  // If this comment is for a different source manager, ignore it.
+  if (SrcManager && &SM != SrcManager)
+    return false;
+
   SourceLocation CommentBegin = Comment.getBegin();
 
   const char *CommentRaw = SM.getCharacterData(CommentBegin);
@@ -545,7 +555,7 @@ static bool findDirectives(SourceManager &SM, FileID FID,
   VerifyDiagnosticConsumer::DirectiveStatus Status =
     VerifyDiagnosticConsumer::HasNoDirectives;
   while (Tok.isNot(tok::eof)) {
-    RawLex.Lex(Tok);
+    RawLex.LexFromRawLexer(Tok);
     if (!Tok.is(tok::comment)) continue;
 
     std::string Comment = RawLex.getSpelling(Tok, SM, LangOpts);
@@ -618,11 +628,11 @@ static bool IsFromSameFile(SourceManager &SM, SourceLocation DirectiveLoc,
   while (DiagnosticLoc.isMacroID())
     DiagnosticLoc = SM.getImmediateMacroCallerLoc(DiagnosticLoc);
 
-  if (SM.isFromSameFile(DirectiveLoc, DiagnosticLoc))
+  if (SM.isWrittenInSameFile(DirectiveLoc, DiagnosticLoc))
     return true;
 
   const FileEntry *DiagFile = SM.getFileEntryForID(SM.getFileID(DiagnosticLoc));
-  if (!DiagFile && SM.isFromMainFile(DirectiveLoc))
+  if (!DiagFile && SM.isWrittenInMainFile(DirectiveLoc))
     return true;
 
   return (DiagFile == SM.getFileEntryForID(SM.getFileID(DirectiveLoc)));
@@ -808,14 +818,6 @@ void VerifyDiagnosticConsumer::CheckDiagnostics() {
   ED.Errors.clear();
   ED.Warnings.clear();
   ED.Notes.clear();
-}
-
-DiagnosticConsumer *
-VerifyDiagnosticConsumer::clone(DiagnosticsEngine &Diags) const {
-  if (!Diags.getClient())
-    Diags.setClient(PrimaryClient->clone(Diags));
-  
-  return new VerifyDiagnosticConsumer(Diags);
 }
 
 Directive *Directive::create(bool RegexKind, SourceLocation DirectiveLoc,

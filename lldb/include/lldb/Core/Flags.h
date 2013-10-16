@@ -13,7 +13,6 @@
 
 
 #include <stdint.h>
-#include <unistd.h>
 
 namespace lldb_private {
 
@@ -61,10 +60,7 @@ public:
 
     //----------------------------------------------------------------------
     /// Destructor.
-    ///
-    /// The destructor is virtual in case this class is subclassed.
     //----------------------------------------------------------------------
-    virtual
     ~Flags ()
     {
     }

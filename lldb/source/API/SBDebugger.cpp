@@ -480,7 +480,7 @@ SBDebugger::GetScriptingLanguage (const char *script_language_name)
 const char *
 SBDebugger::GetVersionString ()
 {
-    return GetVersion();
+    return lldb_private::GetVersion();
 }
 
 const char *
@@ -711,7 +711,7 @@ SBDebugger::GetIndexOfTarget (lldb::SBTarget target)
 }
 
 SBTarget
-SBDebugger::FindTargetWithProcessID (pid_t pid)
+SBDebugger::FindTargetWithProcessID (lldb::pid_t pid)
 {
     SBTarget sb_target;
     if (m_opaque_sp)
@@ -1053,6 +1053,22 @@ SBDebugger::GetUseExternalEditor ()
 {
     if (m_opaque_sp)
         return m_opaque_sp->GetUseExternalEditor ();
+    return false;
+}
+
+bool
+SBDebugger::SetUseColor (bool value)
+{
+    if (m_opaque_sp)
+        return m_opaque_sp->SetUseColor (value);
+    return false;
+}
+
+bool
+SBDebugger::GetUseColor () const
+{
+    if (m_opaque_sp)
+        return m_opaque_sp->GetUseColor ();
     return false;
 }
 

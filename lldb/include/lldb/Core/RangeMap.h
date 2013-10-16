@@ -592,7 +592,7 @@ namespace lldb_private {
         void
         Reserve (typename Collection::size_type size)
         {
-            m_entries.resize (size);
+            m_entries.reserve (size);
         }
 
         bool
@@ -1138,6 +1138,39 @@ namespace lldb_private {
             }
         }
         
+        // Calculate the byte size of ranges with zero byte sizes by finding
+        // the next entry with a base address > the current base address
+        void
+        CalculateSizesOfZeroByteSizeRanges ()
+        {
+#ifdef ASSERT_RANGEMAP_ARE_SORTED
+            assert (IsSorted());
+#endif
+            typename Collection::iterator pos;
+            typename Collection::iterator end;
+            typename Collection::iterator next;
+            for (pos = m_entries.begin(), end = m_entries.end(); pos != end; ++pos)
+            {
+                if (pos->GetByteSize() == 0)
+                {
+                    // Watch out for multiple entries with same address and make sure
+                    // we find an entry that is greater than the current base address
+                    // before we use that for the size
+                    auto curr_base = pos->GetRangeBase();
+                    for (next = pos + 1; next != end; ++next)
+                    {
+                        auto next_base = next->GetRangeBase();
+                        if (next_base > curr_base)
+                        {
+                            pos->SetByteSize (next_base - curr_base);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+        }
+        
         void
         Clear ()
         {
@@ -1196,16 +1229,11 @@ namespace lldb_private {
                 typename Collection::const_iterator end = m_entries.end();
                 typename Collection::const_iterator pos = std::lower_bound (begin, end, entry, BaseLessThan);
                 
-                if (pos != end && pos->Contains(addr))
-                {
-                    return std::distance (begin, pos);
-                }
-                else if (pos != begin)
-                {
+                while(pos != begin && pos[-1].Contains(addr))
                     --pos;
-                    if (pos->Contains(addr))
-                        return std::distance (begin, pos);
-                }
+
+                if (pos != end && pos->Contains(addr))
+                    return std::distance (begin, pos);
             }
             return UINT32_MAX;
         }
@@ -1224,19 +1252,12 @@ namespace lldb_private {
                 typename Collection::iterator begin = m_entries.begin();
                 typename Collection::iterator end = m_entries.end();
                 typename Collection::iterator pos = std::lower_bound (begin, end, entry, BaseLessThan);
+
+                while(pos != begin && pos[-1].Contains(addr))
+                    --pos;
                 
                 if (pos != end && pos->Contains(addr))
-                {
                     return &(*pos);
-                }
-                else if (pos != begin)
-                {
-                    --pos;
-                    if (pos->Contains(addr))
-                    {
-                        return &(*pos);
-                    }
-                }
             }
             return NULL;
         }
@@ -1255,18 +1276,11 @@ namespace lldb_private {
                 typename Collection::const_iterator end = m_entries.end();
                 typename Collection::const_iterator pos = std::lower_bound (begin, end, entry, BaseLessThan);
                 
-                if (pos != end && pos->Contains(addr))
-                {
-                    return &(*pos); 
-                }
-                else if (pos != begin)
-                {
+                while(pos != begin && pos[-1].Contains(addr))
                     --pos;
-                    if (pos->Contains(addr))
-                    {
-                        return &(*pos); 
-                    }
-                }
+
+                if (pos != end && pos->Contains(addr))
+                    return &(*pos);
             }
             return NULL;
         }
@@ -1283,18 +1297,11 @@ namespace lldb_private {
                 typename Collection::const_iterator end = m_entries.end();
                 typename Collection::const_iterator pos = std::lower_bound (begin, end, range, BaseLessThan);
                 
-                if (pos != end && pos->Contains(range))
-                {
-                    return &(*pos); 
-                }
-                else if (pos != begin)
-                {
+                while(pos != begin && pos[-1].Contains(range))
                     --pos;
-                    if (pos->Contains(range))
-                    {
-                        return &(*pos); 
-                    }
-                }
+
+                if (pos != end && pos->Contains(range))
+                    return &(*pos);
             }
             return NULL;
         }
@@ -1468,12 +1475,15 @@ namespace lldb_private {
                 typename Collection::iterator end = m_entries.end();
                 typename Collection::iterator pos = std::lower_bound (begin, end, entry, BaseLessThan);
                 
+                while(pos != begin && pos[-1].addr == addr)
+                    --pos;
+
                 if (pos != end)
                 {
                     if (pos->addr == addr || !exact_match_only)
                         return &(*pos);
                 }
-           }
+            }
             return NULL;
         }
         

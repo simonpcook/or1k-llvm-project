@@ -95,6 +95,7 @@ public:
         query_vattachorwait_supported,  // 'qVAttachOrWaitSupported'
         query_sync_thread_state_supported,// 'QSyncThreadState'
         query_host_info,                // 'qHostInfo'
+        query_gdb_server_version,       // 'qGDBServerVersion'
         query_process_info,             // 'qProcessInfo'
         pass_signals_to_inferior,       // 'QPassSignals'
         start_noack_mode,               // 'QStartNoAckMode'
@@ -129,7 +130,7 @@ public:
 
     void            Initialize();
 
-    bool            InitializeRegisters ();
+    bool            InitializeRegisters (bool force = false);
 
     rnb_err_t       HandleAsyncPacket(PacketEnum *type = NULL);
     rnb_err_t       HandleReceivedPacket(PacketEnum *type = NULL);
@@ -178,6 +179,7 @@ public:
     rnb_err_t HandlePacket_qThreadExtraInfo (const char *p);
     rnb_err_t HandlePacket_qThreadStopInfo (const char *p);
     rnb_err_t HandlePacket_qHostInfo (const char *p);
+    rnb_err_t HandlePacket_qGDBServerVersion (const char *p);
     rnb_err_t HandlePacket_qProcessInfo (const char *p);
     rnb_err_t HandlePacket_QStartNoAckMode (const char *p);
     rnb_err_t HandlePacket_QThreadSuffixSupported (const char *p);
@@ -301,39 +303,6 @@ protected:
     nub_thread_t
     ExtractThreadIDFromThreadSuffix (const char *p);
 
-    // gdb can send multiple Z/z packets for the same address and
-    // these calls must be ref counted.
-    struct Breakpoint
-    {
-        Breakpoint(nub_break_t breakID) :
-            m_breakID(breakID),
-            m_refCount(1)
-        {
-        }
-
-        Breakpoint() :
-            m_breakID(INVALID_NUB_BREAK_ID),
-            m_refCount(0)
-        {
-        }
-
-        Breakpoint(const Breakpoint& rhs) :
-            m_breakID(rhs.m_breakID),
-            m_refCount(rhs.m_refCount)
-        {
-        }
-
-        nub_break_t BreakID() const { return m_breakID; }
-        uint32_t RefCount() const { return m_refCount; }
-        void Release() { if (m_refCount > 0) --m_refCount; }
-        void Retain() { ++m_refCount; }
-
-        nub_break_t m_breakID;
-        uint32_t m_refCount;
-    };
-    typedef std::map<nub_addr_t, Breakpoint> BreakpointMap;
-    typedef BreakpointMap::iterator          BreakpointMapIter;
-    typedef BreakpointMap::const_iterator    BreakpointMapConstIter;
     RNBContext      m_ctx;              // process context
     RNBSocket       m_comm;             // communication port
     std::string     m_arch;
@@ -345,8 +314,6 @@ protected:
     std::deque<std::string> m_rx_packets;
     std::string     m_rx_partial_data;  // For packets that may come in more than one batch, anything left over can be left here
     pthread_t       m_rx_pthread;
-    BreakpointMap   m_breakpoints;
-    BreakpointMap   m_watchpoints;
     uint32_t        m_max_payload_size;  // the maximum sized payload we should send to gdb
     bool            m_extended_mode;   // are we in extended mode?
     bool            m_noack_mode;      // are we in no-ack mode?

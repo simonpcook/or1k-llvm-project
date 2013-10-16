@@ -151,7 +151,10 @@ ModuleList::AppendIfNeeded (const ModuleList& module_list)
 {
     bool any_in = false;
     for (auto pos : module_list.m_modules)
-        any_in = AppendIfNeeded(pos) | any_in;
+    {
+        if (AppendIfNeeded(pos))
+            any_in = true;
+    }
     return any_in;
 }
 
@@ -386,7 +389,6 @@ ModuleList::FindFunctions (const ConstString &name,
     }
     else
     {
-    
         Mutex::Locker locker(m_modules_mutex);
         collection::const_iterator pos, end = m_modules.end();
         for (pos = m_modules.begin(); pos != end; ++pos)
@@ -394,6 +396,67 @@ ModuleList::FindFunctions (const ConstString &name,
             (*pos)->FindFunctions (name, NULL, name_type_mask, include_symbols, include_inlines, true, sc_list);
         }
     }
+    return sc_list.GetSize() - old_size;
+}
+
+size_t
+ModuleList::FindFunctionSymbols (const ConstString &name,
+                                 uint32_t name_type_mask,
+                                 SymbolContextList& sc_list)
+{
+    const size_t old_size = sc_list.GetSize();
+
+    if (name_type_mask & eFunctionNameTypeAuto)
+    {
+        ConstString lookup_name;
+        uint32_t lookup_name_type_mask = 0;
+        bool match_name_after_lookup = false;
+        Module::PrepareForFunctionNameLookup (name, name_type_mask,
+                                              lookup_name,
+                                              lookup_name_type_mask,
+                                              match_name_after_lookup);
+    
+        Mutex::Locker locker(m_modules_mutex);
+        collection::const_iterator pos, end = m_modules.end();
+        for (pos = m_modules.begin(); pos != end; ++pos)
+        {
+            (*pos)->FindFunctionSymbols (lookup_name,
+                                   lookup_name_type_mask,
+                                   sc_list);
+        }
+        
+        if (match_name_after_lookup)
+        {
+            SymbolContext sc;
+            size_t i = old_size;
+            while (i<sc_list.GetSize())
+            {
+                if (sc_list.GetContextAtIndex(i, sc))
+                {
+                    const char *func_name = sc.GetFunctionName().GetCString();
+                    if (func_name && strstr (func_name, name.GetCString()) == NULL)
+                    {
+                        // Remove the current context
+                        sc_list.RemoveContextAtIndex(i);
+                        // Don't increment i and continue in the loop
+                        continue;
+                    }
+                }
+                ++i;
+            }
+        }
+
+    }
+    else
+    {
+        Mutex::Locker locker(m_modules_mutex);
+        collection::const_iterator pos, end = m_modules.end();
+        for (pos = m_modules.begin(); pos != end; ++pos)
+        {
+            (*pos)->FindFunctionSymbols (name, name_type_mask, sc_list);
+        }
+    }
+
     return sc_list.GetSize() - old_size;
 }
 
@@ -600,7 +663,19 @@ ModuleList::FindSourceFile (const FileSpec &orig_spec, FileSpec &new_spec) const
     return false;
 }
 
-
+void
+ModuleList::FindAddressesForLine (const lldb::TargetSP target_sp,
+                                  const FileSpec &file, uint32_t line,
+                                  Function *function,
+                                  std::vector<Address> &output_local, std::vector<Address> &output_extern)
+{
+    Mutex::Locker locker(m_modules_mutex);
+    collection::const_iterator pos, end = m_modules.end();
+    for (pos = m_modules.begin(); pos != end; ++pos)
+    {
+        (*pos)->FindAddressesForLine(target_sp, file, line, function, output_local, output_extern);
+    }
+}
 
 ModuleSP
 ModuleList::FindFirstModule (const ModuleSpec &module_spec) const
@@ -651,20 +726,17 @@ ModuleList::LogUUIDAndPaths (Log *log, const char *prefix_cstr)
     if (log)
     {   
         Mutex::Locker locker(m_modules_mutex);
-        char uuid_cstr[256];
         collection::const_iterator pos, begin = m_modules.begin(), end = m_modules.end();
         for (pos = begin; pos != end; ++pos)
         {
             Module *module = pos->get();
-            module->GetUUID().GetAsCString (uuid_cstr, sizeof(uuid_cstr));
             const FileSpec &module_file_spec = module->GetFileSpec();
-            log->Printf ("%s[%u] %s (%s) \"%s/%s\"",
+            log->Printf ("%s[%u] %s (%s) \"%s\"",
                          prefix_cstr ? prefix_cstr : "",
                          (uint32_t)std::distance (begin, pos),
-                         uuid_cstr,
+                         module->GetUUID().GetAsString().c_str(),
                          module->GetArchitecture().GetArchitectureName(),
-                         module_file_spec.GetDirectory().GetCString(),
-                         module_file_spec.GetFilename().GetCString());
+                         module_file_spec.GetPath().c_str());
         }
     }
 }
@@ -807,7 +879,6 @@ ModuleList::GetSharedModule
     ModuleList &shared_module_list = GetSharedModuleList ();
     Mutex::Locker locker(shared_module_list.m_modules_mutex);
     char path[PATH_MAX];
-    char uuid_cstr[64];
 
     Error error;
 
@@ -907,16 +978,14 @@ ModuleList::GetSharedModule
                 module_file_spec.GetPath(path, sizeof(path));
             if (file_spec.Exists())
             {
+                std::string uuid_str;
                 if (uuid_ptr && uuid_ptr->IsValid())
-                    uuid_ptr->GetAsCString(uuid_cstr, sizeof (uuid_cstr));
-                else
-                    uuid_cstr[0] = '\0';
-
+                    uuid_str = uuid_ptr->GetAsString();
 
                 if (arch.IsValid())
                 {
-                    if (uuid_cstr[0])
-                        error.SetErrorStringWithFormat("'%s' does not contain the %s architecture and UUID %s", path, arch.GetArchitectureName(), uuid_cstr);
+                    if (!uuid_str.empty())
+                        error.SetErrorStringWithFormat("'%s' does not contain the %s architecture and UUID %s", path, arch.GetArchitectureName(), uuid_str.c_str());
                     else
                         error.SetErrorStringWithFormat("'%s' does not contain the %s architecture.", path, arch.GetArchitectureName());
                 }
@@ -986,13 +1055,12 @@ ModuleList::GetSharedModule
                 }
                 else
                 {
+                    std::string uuid_str;
                     if (uuid_ptr && uuid_ptr->IsValid())
-                        uuid_ptr->GetAsCString(uuid_cstr, sizeof (uuid_cstr));
-                    else
-                        uuid_cstr[0] = '\0';
+                        uuid_str = uuid_ptr->GetAsString();
 
-                    if (uuid_cstr[0])
-                        error.SetErrorStringWithFormat("cannot locate a module for UUID '%s'", uuid_cstr);
+                    if (!uuid_str.empty())
+                        error.SetErrorStringWithFormat("cannot locate a module for UUID '%s'", uuid_str.c_str());
                     else
                         error.SetErrorStringWithFormat("cannot locate a module");
                 }
@@ -1015,4 +1083,33 @@ ModuleList::RemoveSharedModuleIfOrphaned (const Module *module_ptr)
     return GetSharedModuleList ().RemoveIfOrphaned (module_ptr);
 }
 
-
+bool
+ModuleList::LoadScriptingResourcesInTarget (Target *target,
+                                            std::list<Error>& errors,
+                                            Stream *feedback_stream,
+                                            bool continue_on_error)
+{
+    if (!target)
+        return false;
+    Mutex::Locker locker(m_modules_mutex);
+    for (auto module : m_modules)
+    {
+        Error error;
+        if (module)
+        {
+            if (!module->LoadScriptingResourceInTarget(target, error, feedback_stream))
+            {
+                if (error.Fail() && error.AsCString())
+                {
+                    error.SetErrorStringWithFormat("unable to load scripting data for module %s - error reported was %s",
+                                                   module->GetFileSpec().GetFileNameStrippingExtension().GetCString(),
+                                                   error.AsCString());
+                    errors.push_back(error);
+                }
+                if (!continue_on_error)
+                    return false;
+            }
+        }
+    }
+    return errors.size() == 0;
+}

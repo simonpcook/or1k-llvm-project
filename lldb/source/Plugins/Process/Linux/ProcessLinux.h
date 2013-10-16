@@ -41,7 +41,7 @@ public:
     static void
     Terminate();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
 
     static const char *
@@ -51,18 +51,20 @@ public:
     // Constructors and destructors
     //------------------------------------------------------------------
     ProcessLinux(lldb_private::Target& target,
-                 lldb_private::Listener &listener);
+                 lldb_private::Listener &listener,
+                 lldb_private::FileSpec *core_file);
+
+    virtual lldb_private::Error
+    DoDetach(bool keep_stopped);
 
     virtual bool
     UpdateThreadList(lldb_private::ThreadList &old_thread_list, lldb_private::ThreadList &new_thread_list);
+
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -78,11 +80,36 @@ public:
     EnablePluginLogging(lldb_private::Stream *strm,
                         lldb_private::Args &command);
 
+    //------------------------------------------------------------------
+    // Plug-in process overrides
+    //------------------------------------------------------------------
+    virtual lldb_private::UnixSignals &
+    GetUnixSignals ()
+    {
+        return m_linux_signals;
+    }
+
+    virtual bool
+    CanDebug(lldb_private::Target &target, bool plugin_specified_by_name);
+
+    //------------------------------------------------------------------
+    // ProcessPOSIX overrides
+    //------------------------------------------------------------------
+    virtual void
+    StopAllThreads(lldb::tid_t stop_tid);
+
+    virtual POSIXThread *
+    CreateNewPOSIXThread(lldb_private::Process &process, lldb::tid_t tid);
+
 private:
 
     /// Linux-specific signal set.
     LinuxSignals m_linux_signals;
 
+    lldb_private::FileSpec *m_core_file;
+
+    // Flag to avoid recursion when stopping all threads.
+    bool m_stopping_threads;
 };
 
 #endif  // liblldb_MacOSXProcess_H_

@@ -45,7 +45,7 @@ class Module :
     public SymbolContextScope
 {
 public:
-	// Static functions that can track the lifetime of moodule objects.
+	// Static functions that can track the lifetime of module objects.
 	// This is handy because we might have Module objects that are in
 	// shared pointers that aren't in the global module list (from 
 	// ModuleList). If this is the case we need to know about it.
@@ -88,7 +88,8 @@ public:
     Module (const FileSpec& file_spec,
             const ArchSpec& arch,
             const ConstString *object_name = NULL,
-            off_t object_offset = 0);
+            off_t object_offset = 0,
+            const TimeValue *object_mod_time_ptr = NULL);
 
     Module (const ModuleSpec &module_spec);
     //------------------------------------------------------------------
@@ -149,6 +150,29 @@ public:
     void
     GetDescription (Stream *s,
                     lldb::DescriptionLevel level = lldb::eDescriptionLevelFull);
+
+    //------------------------------------------------------------------
+    /// Get the module path and object name.
+    ///
+    /// Modules can refer to object files. In this case the specification
+    /// is simple and would return the path to the file:
+    ///
+    ///     "/usr/lib/foo.dylib"
+    ///
+    /// Modules can be .o files inside of a BSD archive (.a file). In
+    /// this case, the object specification will look like:
+    ///
+    ///     "/usr/lib/foo.a(bar.o)"
+    ///
+    /// There are many places where logging wants to log this fully
+    /// qualified specification, so we centralize this functionality
+    /// here.
+    ///
+    /// @return
+    ///     The object path + object name if there is one.
+    //------------------------------------------------------------------
+    std::string
+    GetSpecificationDescription () const;
 
     //------------------------------------------------------------------
     /// Dump a description of this object to a Stream.
@@ -321,6 +345,32 @@ public:
                    bool inlines_ok,
                    bool append, 
                    SymbolContextList& sc_list);
+
+    //------------------------------------------------------------------
+    /// Find addresses by file/line
+    ///
+    /// @param[in] target_sp
+    ///     The target the addresses are desired for.
+    ///
+    /// @param[in] file
+    ///     Source file to locate.
+    ///
+    /// @param[in] line
+    ///     Source line to locate.
+    ///
+    /// @param[in] function
+    ///	    Optional filter function. Addresses within this function will be
+    ///     added to the 'local' list. All others will be added to the 'extern' list.
+    ///
+    /// @param[out] output_local
+    ///     All matching addresses within 'function'
+    ///
+    /// @param[out] output_extern
+    ///     All matching addresses not within 'function'
+    void FindAddressesForLine (const lldb::TargetSP target_sp,
+                               const FileSpec &file, uint32_t line,
+                               Function *function,
+                               std::vector<Address> &output_local, std::vector<Address> &output_extern);
 
     //------------------------------------------------------------------
     /// Find global and static variables by name.
@@ -529,8 +579,23 @@ public:
     SetSymbolFileFileSpec (const FileSpec &file);
 
     const TimeValue &
-    GetModificationTime () const;
-   
+    GetModificationTime () const
+    {
+        return m_mod_time;
+    }
+
+    const TimeValue &
+    GetObjectModificationTime () const
+    {
+        return m_object_mod_time;
+    }
+
+    void
+    SetObjectModificationTime (const TimeValue &mod_time)
+    {
+        m_mod_time = mod_time;
+    }
+
     //------------------------------------------------------------------
     /// Tells whether this module is capable of being the main executable
     /// for a process.
@@ -556,7 +621,9 @@ public:
     IsLoadedInTarget (Target *target);
 
     bool
-    LoadScriptingResourceInTarget (Target *target, Error& error);
+    LoadScriptingResourceInTarget (Target *target,
+                                   Error& error,
+                                   Stream* feedback_stream = NULL);
     
     //------------------------------------------------------------------
     /// Get the number of compile units for this module.
@@ -597,7 +664,21 @@ public:
     //------------------------------------------------------------------
     virtual ObjectFile *
     GetObjectFile ();
-    
+
+    //------------------------------------------------------------------
+    /// Get the unified section list for the module. This is the section
+    /// list created by the module's object file and any debug info and
+    /// symbol files created by the symbol vendor.
+    ///
+    /// If the symbol vendor has not been loaded yet, this function
+    /// will return the section list for the object file.
+    ///
+    /// @return
+    ///     Unified module section list.
+    //------------------------------------------------------------------
+    virtual SectionList *
+    GetSectionList ();
+
     uint32_t
     GetVersion (uint32_t *versions, uint32_t num_versions);
 
@@ -668,8 +749,49 @@ public:
     bool
     ResolveFileAddress (lldb::addr_t vm_addr, Address& so_addr);
 
+    //------------------------------------------------------------------
+    /// Resolve the symbol context for the given address.
+    ///
+    /// Tries to resolve the matching symbol context based on a lookup
+    /// from the current symbol vendor.  If the lazy lookup fails,
+    /// an attempt is made to parse the eh_frame section to handle 
+    /// stripped symbols.  If this fails, an attempt is made to resolve
+    /// the symbol to the previous address to handle the case of a 
+    /// function with a tail call.
+    ///
+    /// Use properties of the modified SymbolContext to inspect any
+    /// resolved target, module, compilation unit, symbol, function,
+    /// function block or line entry.  Use the return value to determine
+    /// which of these properties have been modified.
+    ///
+    /// @param[in] so_addr
+    ///     A load address to resolve.
+    ///
+    /// @param[in] resolve_scope
+    ///     The scope that should be resolved (see SymbolContext::Scope).
+    ///     A combination of flags from the enumeration SymbolContextItem
+    ///     requesting a resolution depth.  Note that the flags that are
+    ///     actually resolved may be a superset of the requested flags.
+    ///     For instance, eSymbolContextSymbol requires resolution of
+    ///     eSymbolContextModule, and eSymbolContextFunction requires
+    ///     eSymbolContextSymbol.
+    ///
+    /// @param[out] sc
+    ///     The SymbolContext that is modified based on symbol resolution.
+    ///
+    /// @param[in] resolve_tail_call_address
+    ///     Determines if so_addr should resolve to a symbol in the case
+    ///     of a function whose last instruction is a call.  In this case,
+    ///     the PC can be one past the address range of the function.
+    ///
+    /// @return
+    ///     The scope that has been resolved (see SymbolContext::Scope).
+    ///
+    /// @see SymbolContext::Scope
+    //------------------------------------------------------------------
     uint32_t
-    ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve_scope, SymbolContext& sc);
+    ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve_scope,
+                                    SymbolContext& sc, bool resolve_tail_call_address = false);
 
     //------------------------------------------------------------------
     /// Resolve items in the symbol context for a given file and line.
@@ -940,10 +1062,12 @@ protected:
     FileSpec                    m_symfile_spec; ///< If this path is valid, then this is the file that _will_ be used as the symbol file for this module
     ConstString                 m_object_name;  ///< The name an object within this module that is selected, or empty of the module is represented by \a m_file.
     uint64_t                    m_object_offset;
+    TimeValue                   m_object_mod_time;
     lldb::ObjectFileSP          m_objfile_sp;   ///< A shared pointer to the object file parser for this module as it may or may not be shared with the SymbolFile
     std::unique_ptr<SymbolVendor> m_symfile_ap;   ///< A pointer to the symbol vendor for this module.
     ClangASTContext             m_ast;          ///< The AST context for this module.
     PathMappingList             m_source_mappings; ///< Module specific source remappings for when you have debug info for a module that doesn't match where the sources currently are
+    std::unique_ptr<lldb_private::SectionList> m_sections_ap; ///< Unified section list for module that is used by the ObjectFile and and ObjectFile instances for the debug info
 
     bool                        m_did_load_objfile:1,
                                 m_did_load_symbol_vendor:1,
@@ -1002,9 +1126,12 @@ protected:
     bool
     SetArchitecture (const ArchSpec &new_arch);
     
-    
+    SectionList *
+    GetUnifiedSectionList();
+
     friend class ModuleList;
     friend class ObjectFile;
+    friend class SymbolFile;
 
 private:
 

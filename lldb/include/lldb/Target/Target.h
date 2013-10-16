@@ -12,6 +12,7 @@
 
 // C Includes
 // C++ Includes
+#include <list>
 
 // Other libraries and framework includes
 // Project includes
@@ -21,6 +22,7 @@
 #include "lldb/Breakpoint/WatchpointList.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/Broadcaster.h"
+#include "lldb/Core/Disassembler.h"
 #include "lldb/Core/Event.h"
 #include "lldb/Core/ModuleList.h"
 #include "lldb/Core/UserSettingsController.h"
@@ -45,6 +47,13 @@ typedef enum InlineStrategy
     eInlineBreakpointsHeaders,
     eInlineBreakpointsAlways
 } InlineStrategy;
+
+typedef enum LoadScriptFromSymFile
+{
+    eLoadScriptFromSymFileTrue,
+    eLoadScriptFromSymFileFalse,
+    eLoadScriptFromSymFileWarn
+} LoadScriptFromSymFile;
 
 //----------------------------------------------------------------------
 // TargetProperties
@@ -110,6 +119,9 @@ public:
     
     FileSpecList &
     GetExecutableSearchPaths ();
+
+    FileSpecList &
+    GetDebugFileSearchPaths ();
     
     bool
     GetEnableSyntheticValue () const;
@@ -119,6 +131,9 @@ public:
     
     uint32_t
     GetMaximumSizeOfStringSummary() const;
+
+    uint32_t
+    GetMaximumMemReadSize () const;
     
     FileSpec
     GetStandardInputPath () const;
@@ -143,10 +158,22 @@ public:
     
     const char *
     GetExpressionPrefixContentsAsCString ();
-    
+
+    bool
+    GetUseHexImmediates() const;
+
     bool
     GetUseFastStepping() const;
+
+    LoadScriptFromSymFile
+    GetLoadScriptFromSymbolFile() const;
+
+    Disassembler::HexImmediateStyle
+    GetHexImmediateStyle() const;
     
+    MemoryModuleLoadLevel
+    GetMemoryModuleLoadLevel() const;
+
 };
 
 typedef std::shared_ptr<TargetProperties> TargetPropertiesSP;
@@ -363,6 +390,9 @@ public:
 
     static FileSpecList
     GetDefaultExecutableSearchPaths ();
+
+    static FileSpecList
+    GetDefaultDebugFileSearchPaths ();
 
     static ArchSpec
     GetDefaultArchitecture ();
@@ -724,6 +754,14 @@ public:
     void
     SetExecutableModule (lldb::ModuleSP& module_sp, bool get_dependent_files);
 
+    bool
+    LoadScriptingResources (std::list<Error>& errors,
+                            Stream* feedback_stream = NULL,
+                            bool continue_on_error = true)
+    {
+        return m_images.LoadScriptingResourcesInTarget(this,errors,feedback_stream,continue_on_error);
+    }
+    
     //------------------------------------------------------------------
     /// Get accessor for the images for this process.
     ///
@@ -1057,21 +1095,7 @@ public:
     {
         return m_suppress_stop_hooks;
     }
-    
-    bool
-    SetSuppressSyntheticValue (bool suppress)
-    {
-        bool old_value = m_suppress_synthetic_value;
-        m_suppress_synthetic_value = suppress;
-        return old_value;
-    }
-    
-    bool
-    GetSuppressSyntheticValue ()
-    {
-        return m_suppress_synthetic_value;
-    }
-    
+
 //    StopHookSP &
 //    GetStopHookByIndex (size_t index);
 //    

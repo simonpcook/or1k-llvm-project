@@ -62,11 +62,11 @@ public:
     bool            SetPC(uint64_t value);                              // Set program counter
     uint64_t        GetSP(uint64_t failValue = INVALID_NUB_ADDRESS);    // Get stack pointer
 
-    nub_break_t     CurrentBreakpoint();
+    DNBBreakpoint * CurrentBreakpoint();
     uint32_t        EnableHardwareBreakpoint (const DNBBreakpoint *breakpoint);
-    uint32_t        EnableHardwareWatchpoint (const DNBBreakpoint *watchpoint);
+    uint32_t        EnableHardwareWatchpoint (const DNBBreakpoint *watchpoint, bool also_set_on_task);
     bool            DisableHardwareBreakpoint (const DNBBreakpoint *breakpoint);
-    bool            DisableHardwareWatchpoint (const DNBBreakpoint *watchpoint);
+    bool            DisableHardwareWatchpoint (const DNBBreakpoint *watchpoint, bool also_set_on_task);
     uint32_t        NumSupportedHardwareWatchpoints () const;
     bool            RollbackTransForHWP();
     bool            FinishTransForHWP();
@@ -125,7 +125,6 @@ protected:
     uint32_t                        m_seq_id;       // A Sequential ID that increments with each new thread
     nub_state_t                     m_state;        // The state of our process
     PThreadMutex                    m_state_mutex;  // Multithreaded protection for m_state
-    nub_break_t                     m_break_id;     // Breakpoint that this thread is (stopped)/was(running) at (NULL for none)
     struct thread_basic_info        m_basic_info;   // Basic information for a thread used to see if a thread is valid
     int32_t                         m_suspend_count; // The current suspend count > 0 means we have suspended m_suspendCount times,
                                                     //                           < 0 means we have resumed it m_suspendCount times.
@@ -139,7 +138,6 @@ protected:
 
 private:
     friend class MachThreadList;
-    void HardwareWatchpointStateChanged(); // Provide a chance to update the global view of the hardware watchpoint state
 };
 
 typedef std::shared_ptr<MachThread> MachThreadSP;

@@ -16,7 +16,6 @@
 
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopDetection.h"
-
 #include "llvm/Analysis/DOTGraphTraitsPass.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/RegionIterator.h"
@@ -150,8 +149,9 @@ struct DOTGraphTraits<ScopDetection *> : public DOTGraphTraits<RegionNode *> {
          BI != BE; ++BI)
       if (RI->getRegionFor(*BI) == R)
         O.indent(2 * (depth + 1))
-            << "Node" << static_cast<const void *>(
-                             RI->getTopLevelRegion()->getBBNode(*BI)) << ";\n";
+            << "Node"
+            << static_cast<void *>(RI->getTopLevelRegion()->getBBNode(*BI))
+            << ";\n";
 
     O.indent(2 * depth) << "}\n";
   }
@@ -163,7 +163,7 @@ struct DOTGraphTraits<ScopDetection *> : public DOTGraphTraits<RegionNode *> {
   }
 };
 
-} //end namespace llvm
+} // end namespace llvm
 
 struct ScopViewer : public DOTGraphTraitsViewer<ScopDetection, false> {
   static char ID;
@@ -191,15 +191,15 @@ struct ScopOnlyPrinter : public DOTGraphTraitsPrinter<ScopDetection, true> {
 };
 char ScopOnlyPrinter::ID = 0;
 
-static RegisterPass<ScopViewer>
-X("view-scops", "Polly - View Scops of function");
+static RegisterPass<ScopViewer> X("view-scops",
+                                  "Polly - View Scops of function");
 
 static RegisterPass<ScopOnlyViewer>
 Y("view-scops-only",
   "Polly - View Scops of function (with no function bodies)");
 
-static RegisterPass<ScopPrinter>
-M("dot-scops", "Polly - Print Scops of function");
+static RegisterPass<ScopPrinter> M("dot-scops",
+                                   "Polly - Print Scops of function");
 
 static RegisterPass<ScopOnlyPrinter>
 N("dot-scops-only",

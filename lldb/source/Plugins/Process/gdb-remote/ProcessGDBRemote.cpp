@@ -8,13 +8,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/lldb-python.h"
+#include "lldb/Host/Config.h"
 
 // C Includes
 #include <errno.h>
-#include <spawn.h>
 #include <stdlib.h>
+#ifndef LLDB_DISABLE_POSIX
+#include <spawn.h>
 #include <netinet/in.h>
 #include <sys/mman.h>       // for mmap
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -83,10 +86,67 @@ namespace lldb
     }
 }
 
-
 #define DEBUGSERVER_BASENAME    "debugserver"
 using namespace lldb;
 using namespace lldb_private;
+
+
+namespace {
+    
+    static PropertyDefinition
+    g_properties[] =
+    {
+        { "packet-timeout" , OptionValue::eTypeUInt64 , true , 1, NULL, NULL, "Specify the default packet timeout in seconds." },
+        {  NULL            , OptionValue::eTypeInvalid, false, 0, NULL, NULL, NULL  }
+    };
+    
+    enum
+    {
+        ePropertyPacketTimeout
+    };
+    
+    class PluginProperties : public Properties
+    {
+    public:
+        
+        static ConstString
+        GetSettingName ()
+        {
+            return ProcessGDBRemote::GetPluginNameStatic();
+        }
+        
+        PluginProperties() :
+        Properties ()
+        {
+            m_collection_sp.reset (new OptionValueProperties(GetSettingName()));
+            m_collection_sp->Initialize(g_properties);
+        }
+        
+        virtual
+        ~PluginProperties()
+        {
+        }
+        
+        uint64_t
+        GetPacketTimeout()
+        {
+            const uint32_t idx = ePropertyPacketTimeout;
+            return m_collection_sp->GetPropertyAtIndexAsUInt64(NULL, idx, g_properties[idx].default_uint_value);
+        }
+    };
+    
+    typedef std::shared_ptr<PluginProperties> ProcessKDPPropertiesSP;
+    
+    static const ProcessKDPPropertiesSP &
+    GetGlobalPluginProperties()
+    {
+        static ProcessKDPPropertiesSP g_settings_sp;
+        if (!g_settings_sp)
+            g_settings_sp.reset (new PluginProperties ());
+        return g_settings_sp;
+    }
+    
+} // anonymous namespace end
 
 static bool rand_initialized = false;
 
@@ -116,10 +176,11 @@ get_random_port ()
 }
 
 
-const char *
+lldb_private::ConstString
 ProcessGDBRemote::GetPluginNameStatic()
 {
-    return "gdb-remote";
+    static ConstString g_name("gdb-remote");
+    return g_name;
 }
 
 const char *
@@ -202,12 +263,14 @@ ProcessGDBRemote::ProcessGDBRemote(Target& target, Listener &listener) :
     m_thread_create_bp_sp (),
     m_waiting_for_attach (false),
     m_destroy_tried_resuming (false),
-    m_dyld_plugin_name(),
     m_command_sp ()
 {
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncThreadShouldExit,   "async thread should exit");
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncContinue,           "async thread continue");
     m_async_broadcaster.SetEventName (eBroadcastBitAsyncThreadDidExit,      "async thread did exit");
+    const uint64_t timeout_seconds = GetGlobalPluginProperties()->GetPacketTimeout();
+    if (timeout_seconds > 0)
+        m_gdb_comm.SetPacketTimeout(timeout_seconds);
 }
 
 //----------------------------------------------------------------------
@@ -233,14 +296,8 @@ ProcessGDBRemote::~ProcessGDBRemote()
 //----------------------------------------------------------------------
 // PluginInterface
 //----------------------------------------------------------------------
-const char *
+ConstString
 ProcessGDBRemote::GetPluginName()
-{
-    return "Process debugging plug-in that uses the GDB remote protocol";
-}
-
-const char *
-ProcessGDBRemote::GetShortPluginName()
 {
     return GetPluginNameStatic();
 }
@@ -266,7 +323,7 @@ ProcessGDBRemote::BuildDynamicRegisterInfo (bool force)
          ++reg_num)
     {
         const int packet_len = ::snprintf (packet, sizeof(packet), "qRegisterInfo%x", reg_num);
-        assert (packet_len < sizeof(packet));
+        assert (packet_len < (int)sizeof(packet));
         StringExtractorGDBRemote response;
         if (m_gdb_comm.SendPacketAndWaitForResponse(packet, packet_len, response, false))
         {
@@ -750,8 +807,14 @@ ProcessGDBRemote::ConnectToDebugserver (const char *connect_url)
                 m_gdb_comm.SetConnection (conn_ap.release());
                 break;
             }
+            else if (error.WasInterrupted())
+            {
+                // If we were interrupted, don't keep retrying.
+                break;
+            }
+            
             retry_count++;
-
+            
             if (retry_count >= max_retry_count)
                 break;
 
@@ -1010,16 +1073,6 @@ ProcessGDBRemote::DidAttach ()
 {
     DidLaunchOrAttach ();
 }
-
-void
-ProcessGDBRemote::DoDidExec ()
-{
-    // The process exec'ed itself, figure out the dynamic loader, etc...
-    BuildDynamicRegisterInfo (true);
-    m_gdb_comm.ResetDiscoverableSettings();
-    DidLaunchOrAttach ();
-}
-
 
 
 Error
@@ -1281,14 +1334,14 @@ ProcessGDBRemote::DoResume ()
 void
 ProcessGDBRemote::ClearThreadIDList ()
 {
-    Mutex::Locker locker(m_thread_list.GetMutex());
+    Mutex::Locker locker(m_thread_list_real.GetMutex());
     m_thread_ids.clear();
 }
 
 bool
 ProcessGDBRemote::UpdateThreadIDList ()
 {
-    Mutex::Locker locker(m_thread_list.GetMutex());
+    Mutex::Locker locker(m_thread_list_real.GetMutex());
     bool sequence_mutex_unavailable = false;
     m_gdb_comm.GetCurrentThreadIDs (m_thread_ids, sequence_mutex_unavailable);
     if (sequence_mutex_unavailable)
@@ -1322,9 +1375,26 @@ ProcessGDBRemote::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new
         for (size_t i=0; i<num_thread_ids; ++i)
         {
             tid_t tid = m_thread_ids[i];
-            ThreadSP thread_sp (old_thread_list_copy.RemoveThreadByID (tid, false));
+            ThreadSP thread_sp (old_thread_list_copy.RemoveThreadByProtocolID(tid, false));
             if (!thread_sp)
+            {
                 thread_sp.reset (new ThreadGDBRemote (*this, tid));
+                if (log && log->GetMask().Test(GDBR_LOG_VERBOSE))
+                    log->Printf(
+                            "ProcessGDBRemote::%s Making new thread: %p for thread ID: 0x%" PRIx64 ".\n",
+                            __FUNCTION__,
+                            thread_sp.get(),
+                            thread_sp->GetID());
+            }
+            else
+            {
+                if (log && log->GetMask().Test(GDBR_LOG_VERBOSE))
+                    log->Printf(
+                           "ProcessGDBRemote::%s Found old thread: %p for thread ID: 0x%" PRIx64 ".\n",
+                           __FUNCTION__,
+                           thread_sp.get(),
+                           thread_sp->GetID());
+            }
             new_thread_list.AddThread(thread_sp);
         }
     }
@@ -1337,7 +1407,7 @@ ProcessGDBRemote::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new
         ThreadSP old_thread_sp(old_thread_list_copy.GetThreadAtIndex (i, false));
         if (old_thread_sp)
         {
-            lldb::tid_t old_thread_id = old_thread_sp->GetID();
+            lldb::tid_t old_thread_id = old_thread_sp->GetProtocolID();
             m_thread_id_to_index_id_map.erase(old_thread_id);
         }
     }
@@ -1356,7 +1426,13 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
     case 'T':
     case 'S':
         {
-            if (GetStopID() == 0)
+            // This is a bit of a hack, but is is required. If we did exec, we
+            // need to clear our thread lists and also know to rebuild our dynamic
+            // register info before we lookup and threads and populate the expedited
+            // register values so we need to know this right away so we can cleanup
+            // and update our registers.
+            const uint32_t stop_id = GetStopID();
+            if (stop_id == 0)
             {
                 // Our first stop, make sure we have a process ID, and also make
                 // sure we know about our registers
@@ -1379,6 +1455,7 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
             std::vector<addr_t> exc_data;
             addr_t thread_dispatch_qaddr = LLDB_INVALID_ADDRESS;
             ThreadSP thread_sp;
+            ThreadGDBRemote *gdb_thread = NULL;
 
             while (stop_packet.GetNameColonValue(name, value))
             {
@@ -1396,44 +1473,31 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                 {
                     // thread in big endian hex
                     lldb::tid_t tid = Args::StringToUInt64 (value.c_str(), LLDB_INVALID_THREAD_ID, 16);
-                    // m_thread_list does have its own mutex, but we need to
-                    // hold onto the mutex between the call to m_thread_list.FindThreadByID(...)
-                    // and the m_thread_list.AddThread(...) so it doesn't change on us
-                    Mutex::Locker locker (m_thread_list.GetMutex ());
-                    thread_sp = m_thread_list.FindThreadByID(tid, false);
-                    if (!thread_sp)
-                    {
-                        // If there is an operating system plug-in it might hiding the actual API
-                        // thread inside a ThreadMemory...
-                        if (GetOperatingSystem())
-                        {
-                            bool found_backing_thread = false;
-                            const uint32_t num_threads = m_thread_list.GetSize();
-                            for (uint32_t thread_idx = 0; thread_idx < num_threads; ++thread_idx)
-                            {
-                                thread_sp = m_thread_list.GetThreadAtIndex(thread_idx)->GetBackingThread();
-                                if (thread_sp && thread_sp->GetID() == tid)
-                                {
-                                    found_backing_thread = true;
-                                    break;
-                                }
-                            }
-                            
-                            if (!found_backing_thread)
-                                thread_sp.reset();
-                        }
-                    }
-                    
+                    // m_thread_list_real does have its own mutex, but we need to
+                    // hold onto the mutex between the call to m_thread_list_real.FindThreadByID(...)
+                    // and the m_thread_list_real.AddThread(...) so it doesn't change on us
+                    Mutex::Locker locker (m_thread_list_real.GetMutex ());
+                    thread_sp = m_thread_list_real.FindThreadByProtocolID(tid, false);
+
                     if (!thread_sp)
                     {
                         // Create the thread if we need to
                         thread_sp.reset (new ThreadGDBRemote (*this, tid));
-                        m_thread_list.AddThread(thread_sp);
+                        Log *log (ProcessGDBRemoteLog::GetLogIfAllCategoriesSet (GDBR_LOG_THREAD));
+                        if (log && log->GetMask().Test(GDBR_LOG_VERBOSE))
+                            log->Printf ("ProcessGDBRemote::%s Adding new thread: %p for thread ID: 0x%" PRIx64 ".\n",
+                                         __FUNCTION__,
+                                         thread_sp.get(),
+                                         thread_sp->GetID());
+                                         
+                        m_thread_list_real.AddThread(thread_sp);
                     }
+                    gdb_thread = static_cast<ThreadGDBRemote *> (thread_sp.get());
+
                 }
                 else if (name.compare("threads") == 0)
                 {
-                    Mutex::Locker locker(m_thread_list.GetMutex());
+                    Mutex::Locker locker(m_thread_list_real.GetMutex());
                     m_thread_ids.clear();
                     // A comma separated list of all threads in the current
                     // process that includes the thread for this stop reply
@@ -1488,7 +1552,7 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                     // We have a register number that contains an expedited
                     // register value. Lets supply this register to our thread
                     // so it won't have to go and read it.
-                    if (thread_sp)
+                    if (gdb_thread)
                     {
                         uint32_t reg = Args::StringToUInt32 (name.c_str(), UINT32_MAX, 16);
 
@@ -1497,7 +1561,7 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                             StringExtractor reg_value_extractor;
                             // Swap "value" over into "reg_value_extractor"
                             reg_value_extractor.GetStringRef().swap(value);
-                            if (!static_cast<ThreadGDBRemote *> (thread_sp.get())->PrivateSetRegisterValue (reg, reg_value_extractor))
+                            if (!gdb_thread->PrivateSetRegisterValue (reg, reg_value_extractor))
                             {
                                 Host::SetCrashDescriptionWithFormat("Setting thread register '%s' (decoded to %u (0x%x)) with value '%s' for stop packet: '%s'", 
                                                                     name.c_str(), 
@@ -1513,7 +1577,8 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
 
             if (thread_sp)
             {
-                ThreadGDBRemote *gdb_thread = static_cast<ThreadGDBRemote *> (thread_sp.get());
+                // Clear the stop info just in case we don't set it to anything
+                thread_sp->SetStopInfo (StopInfoSP());
 
                 gdb_thread->SetThreadDispatchQAddr (thread_dispatch_qaddr);
                 gdb_thread->SetName (thread_name.empty() ? NULL : thread_name.c_str());
@@ -1521,41 +1586,42 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                 {
                     const size_t exc_data_size = exc_data.size();
 
-                    gdb_thread->SetStopInfo (StopInfoMachException::CreateStopReasonWithMachException (*thread_sp,
-                                                                                                       exc_type, 
-                                                                                                       exc_data_size,
-                                                                                                       exc_data_size >= 1 ? exc_data[0] : 0,
-                                                                                                       exc_data_size >= 2 ? exc_data[1] : 0,
-                                                                                                       exc_data_size >= 3 ? exc_data[2] : 0));
+                    thread_sp->SetStopInfo (StopInfoMachException::CreateStopReasonWithMachException (*thread_sp,
+                                                                                                      exc_type,
+                                                                                                      exc_data_size,
+                                                                                                      exc_data_size >= 1 ? exc_data[0] : 0,
+                                                                                                      exc_data_size >= 2 ? exc_data[1] : 0,
+                                                                                                      exc_data_size >= 3 ? exc_data[2] : 0));
                 }
                 else
                 {
                     bool handled = false;
+                    bool did_exec = false;
                     if (!reason.empty())
                     {
                         if (reason.compare("trace") == 0)
                         {
-                            gdb_thread->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
+                            thread_sp->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
                             handled = true;
                         }
                         else if (reason.compare("breakpoint") == 0)
                         {
-                            addr_t pc = gdb_thread->GetRegisterContext()->GetPC();
-                            lldb::BreakpointSiteSP bp_site_sp = gdb_thread->GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
+                            addr_t pc = thread_sp->GetRegisterContext()->GetPC();
+                            lldb::BreakpointSiteSP bp_site_sp = thread_sp->GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
                             if (bp_site_sp)
                             {
                                 // If the breakpoint is for this thread, then we'll report the hit, but if it is for another thread,
                                 // we can just report no reason.  We don't need to worry about stepping over the breakpoint here, that
                                 // will be taken care of when the thread resumes and notices that there's a breakpoint under the pc.
                                 handled = true;
-                                if (bp_site_sp->ValidForThisThread (gdb_thread))
+                                if (bp_site_sp->ValidForThisThread (thread_sp.get()))
                                 {
-                                    gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithBreakpointSiteID (*thread_sp, bp_site_sp->GetID()));
+                                    thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithBreakpointSiteID (*thread_sp, bp_site_sp->GetID()));
                                 }
                                 else
                                 {
                                     StopInfoSP invalid_stop_info_sp;
-                                    gdb_thread->SetStopInfo (invalid_stop_info_sp);
+                                    thread_sp->SetStopInfo (invalid_stop_info_sp);
                                 }
                             }
                             
@@ -1568,39 +1634,45 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                         {
                             break_id_t watch_id = LLDB_INVALID_WATCH_ID;
                             // TODO: locate the watchpoint somehow...
-                            gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithWatchpointID (*thread_sp, watch_id));
+                            thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithWatchpointID (*thread_sp, watch_id));
                             handled = true;
                         }
                         else if (reason.compare("exception") == 0)
                         {
-                            gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithException(*thread_sp, description.c_str()));
+                            thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithException(*thread_sp, description.c_str()));
+                            handled = true;
+                        }
+                        else if (reason.compare("exec") == 0)
+                        {
+                            did_exec = true;
+                            thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithExec(*thread_sp));
                             handled = true;
                         }
                     }
                     
-                    if (signo)
+                    if (signo && did_exec == false)
                     {
                         if (signo == SIGTRAP)
                         {
                             // Currently we are going to assume SIGTRAP means we are either
                             // hitting a breakpoint or hardware single stepping. 
                             handled = true;
-                            addr_t pc = gdb_thread->GetRegisterContext()->GetPC();
-                            lldb::BreakpointSiteSP bp_site_sp = gdb_thread->GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
+                            addr_t pc = thread_sp->GetRegisterContext()->GetPC();
+                            lldb::BreakpointSiteSP bp_site_sp = thread_sp->GetProcess()->GetBreakpointSiteList().FindByAddress(pc);
                             
                             if (bp_site_sp)
                             {
                                 // If the breakpoint is for this thread, then we'll report the hit, but if it is for another thread,
                                 // we can just report no reason.  We don't need to worry about stepping over the breakpoint here, that
                                 // will be taken care of when the thread resumes and notices that there's a breakpoint under the pc.
-                                if (bp_site_sp->ValidForThisThread (gdb_thread))
+                                if (bp_site_sp->ValidForThisThread (thread_sp.get()))
                                 {
-                                    gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithBreakpointSiteID (*thread_sp, bp_site_sp->GetID()));
+                                    thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithBreakpointSiteID (*thread_sp, bp_site_sp->GetID()));
                                 }
                                 else
                                 {
                                     StopInfoSP invalid_stop_info_sp;
-                                    gdb_thread->SetStopInfo (invalid_stop_info_sp);
+                                    thread_sp->SetStopInfo (invalid_stop_info_sp);
                                 }
                             }
                             else
@@ -1608,31 +1680,26 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
                                 // If we were stepping then assume the stop was the result of the trace.  If we were
                                 // not stepping then report the SIGTRAP.
                                 // FIXME: We are still missing the case where we single step over a trap instruction.
-                                if (gdb_thread->GetTemporaryResumeState() == eStateStepping)
-                                    gdb_thread->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
+                                if (thread_sp->GetTemporaryResumeState() == eStateStepping)
+                                    thread_sp->SetStopInfo (StopInfo::CreateStopReasonToTrace (*thread_sp));
                                 else
-                                    gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithSignal(*thread_sp, signo));
+                                    thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithSignal(*thread_sp, signo));
                             }
                         }
                         if (!handled)
-                            gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithSignal (*thread_sp, signo));
-                }
-                else
-                {
-                    StopInfoSP invalid_stop_info_sp;
-                    gdb_thread->SetStopInfo (invalid_stop_info_sp);
-                }
+                            thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithSignal (*thread_sp, signo));
+                    }
                     
                     if (!description.empty())
                     {
-                        lldb::StopInfoSP stop_info_sp (gdb_thread->GetStopInfo ());
+                        lldb::StopInfoSP stop_info_sp (thread_sp->GetStopInfo ());
                         if (stop_info_sp)
                         {
                             stop_info_sp->SetDescription (description.c_str());
                         }
                         else
                         {
-                            gdb_thread->SetStopInfo (StopInfo::CreateStopReasonWithException (*thread_sp, description.c_str()));
+                            thread_sp->SetStopInfo (StopInfo::CreateStopReasonWithException (*thread_sp, description.c_str()));
                         }
                     }
                 }
@@ -1654,7 +1721,7 @@ ProcessGDBRemote::SetThreadStopInfo (StringExtractor& stop_packet)
 void
 ProcessGDBRemote::RefreshStateAfterStop ()
 {
-    Mutex::Locker locker(m_thread_list.GetMutex());
+    Mutex::Locker locker(m_thread_list_real.GetMutex());
     m_thread_ids.clear();
     // Set the thread stop info. It might have a "threads" key whose value is
     // a list of all thread IDs in the current process, so m_thread_ids might
@@ -1669,7 +1736,7 @@ ProcessGDBRemote::RefreshStateAfterStop ()
 
     // Let all threads recover from stopping and do any clean up based
     // on the previous thread state (if any).
-    m_thread_list.RefreshStateAfterStop();
+    m_thread_list_real.RefreshStateAfterStop();
     
 }
 
@@ -1703,25 +1770,29 @@ ProcessGDBRemote::DoHalt (bool &caused_stop)
 }
 
 Error
-ProcessGDBRemote::DoDetach()
+ProcessGDBRemote::DoDetach(bool keep_stopped)
 {
     Error error;
     Log *log (ProcessGDBRemoteLog::GetLogIfAllCategoriesSet(GDBR_LOG_PROCESS));
     if (log)
-        log->Printf ("ProcessGDBRemote::DoDetach()");
-
+        log->Printf ("ProcessGDBRemote::DoDetach(keep_stopped: %i)", keep_stopped);
+ 
     DisableAllBreakpointSites ();
 
     m_thread_list.DiscardThreadPlans();
 
-    bool success = m_gdb_comm.Detach ();
+    error = m_gdb_comm.Detach (keep_stopped);
     if (log)
     {
-        if (success)
+        if (error.Success())
             log->PutCString ("ProcessGDBRemote::DoDetach() detach packet sent successfully");
         else
-            log->PutCString ("ProcessGDBRemote::DoDetach() detach packet send failed");
+            log->Printf ("ProcessGDBRemote::DoDetach() detach packet send failed: %s", error.AsCString() ? error.AsCString() : "<unknown error>");
     }
+    
+    if (!error.Success())
+        return error;
+
     // Sleep for one second to let the process get all detached...
     StopAsyncThread ();
 
@@ -1765,7 +1836,7 @@ ProcessGDBRemote::DoDestroy ()
         // FIXME: These should be ConstStrings so we aren't doing strcmp'ing.
         if (platform_sp
             && platform_sp->GetName()
-            && strcmp (platform_sp->GetName(), PlatformRemoteiOS::GetShortPluginNameStatic()) == 0)
+            && platform_sp->GetName() == PlatformRemoteiOS::GetPluginNameStatic())
         {
             if (m_destroy_tried_resuming)
             {
@@ -1789,7 +1860,7 @@ ProcessGDBRemote::DoDestroy ()
                     for (size_t i = 0; i < num_threads; i++)
                     {
                         ThreadSP thread_sp = threads.GetThreadAtIndex(i);
-                        StopInfoSP stop_info_sp = thread_sp->GetPrivateStopReason();
+                        StopInfoSP stop_info_sp = thread_sp->GetPrivateStopInfo();
                         StopReason reason = eStopReasonInvalid;
                         if (stop_info_sp)
                             reason = stop_info_sp->GetStopReason();
@@ -1797,8 +1868,8 @@ ProcessGDBRemote::DoDestroy ()
                             || reason == eStopReasonException)
                         {
                             if (log)
-                                log->Printf ("ProcessGDBRemote::DoDestroy() - thread: %" PRId64 " stopped with reason: %s.",
-                                             thread_sp->GetID(),
+                                log->Printf ("ProcessGDBRemote::DoDestroy() - thread: 0x%4.4" PRIx64 " stopped with reason: %s.",
+                                             thread_sp->GetProtocolID(),
                                              stop_info_sp->GetDescription());
                             stop_looks_like_crash = true;
                             break;
@@ -1824,7 +1895,7 @@ ProcessGDBRemote::DoDestroy ()
                         for (size_t i = 0; i < num_threads; i++)
                         {
                             ThreadSP thread_sp = threads.GetThreadAtIndex(i);
-                            StopInfoSP stop_info_sp = thread_sp->GetPrivateStopReason();
+                            StopInfoSP stop_info_sp = thread_sp->GetPrivateStopInfo();
                             StopReason reason = eStopReasonInvalid;
                             if (stop_info_sp)
                                 reason = stop_info_sp->GetStopReason();
@@ -1832,8 +1903,8 @@ ProcessGDBRemote::DoDestroy ()
                                 && reason != eStopReasonException)
                             {
                                 if (log)
-                                    log->Printf ("ProcessGDBRemote::DoDestroy() - Suspending thread: %" PRId64 " before running.",
-                                                 thread_sp->GetID());
+                                    log->Printf ("ProcessGDBRemote::DoDestroy() - Suspending thread: 0x%4.4" PRIx64 " before running.",
+                                                 thread_sp->GetProtocolID());
                                 thread_sp->SetResumeState(eStateSuspended);
                             }
                         }
@@ -1906,6 +1977,26 @@ ProcessGDBRemote::DoDestroy ()
     return error;
 }
 
+void
+ProcessGDBRemote::SetLastStopPacket (const StringExtractorGDBRemote &response)
+{
+    lldb_private::Mutex::Locker locker (m_last_stop_packet_mutex);
+    const bool did_exec = response.GetStringRef().find(";reason:exec;") != std::string::npos;
+    if (did_exec)
+    {
+        Log *log (ProcessGDBRemoteLog::GetLogIfAllCategoriesSet(GDBR_LOG_PROCESS));
+        if (log)
+            log->Printf ("ProcessGDBRemote::SetLastStopPacket () - detected exec");
+
+        m_thread_list_real.Clear();
+        m_thread_list.Clear();
+        BuildDynamicRegisterInfo (true);
+        m_gdb_comm.ResetDiscoverableSettings();
+    }
+    m_last_stop_packet = response;
+}
+
+
 //------------------------------------------------------------------
 // Process Queries
 //------------------------------------------------------------------
@@ -1938,7 +2029,7 @@ ProcessGDBRemote::DoReadMemory (addr_t addr, void *buf, size_t size, Error &erro
 
     char packet[64];
     const int packet_len = ::snprintf (packet, sizeof(packet), "m%" PRIx64 ",%" PRIx64, (uint64_t)addr, (uint64_t)size);
-    assert (packet_len + 1 < sizeof(packet));
+    assert (packet_len + 1 < (int)sizeof(packet));
     StringExtractorGDBRemote response;
     if (m_gdb_comm.SendPacketAndWaitForResponse(packet, packet_len, response, true))
     {
@@ -1956,7 +2047,7 @@ ProcessGDBRemote::DoReadMemory (addr_t addr, void *buf, size_t size, Error &erro
     }
     else
     {
-        error.SetErrorStringWithFormat("failed to sent packet: '%s'", packet);
+        error.SetErrorStringWithFormat("failed to send packet: '%s'", packet);
     }
     return 0;
 }
@@ -1992,7 +2083,7 @@ ProcessGDBRemote::DoWriteMemory (addr_t addr, const void *buf, size_t size, Erro
     }
     else
     {
-        error.SetErrorStringWithFormat("failed to sent packet: '%s'", packet.GetString().c_str());
+        error.SetErrorStringWithFormat("failed to send packet: '%s'", packet.GetString().c_str());
     }
     return 0;
 }
@@ -2333,6 +2424,7 @@ void
 ProcessGDBRemote::Clear()
 {
     m_flags = 0;
+    m_thread_list_real.Clear();
     m_thread_list.Clear();
 }
 
@@ -2598,7 +2690,7 @@ ProcessGDBRemote::KillDebugserverProcess ()
 {
     if (m_debugserver_pid != LLDB_INVALID_PROCESS_ID)
     {
-        ::kill (m_debugserver_pid, SIGINT);
+        Host::Kill (m_debugserver_pid, SIGINT);
         m_debugserver_pid = LLDB_INVALID_PROCESS_ID;
     }
 }
@@ -2613,7 +2705,8 @@ ProcessGDBRemote::Initialize()
         g_initialized = true;
         PluginManager::RegisterPlugin (GetPluginNameStatic(),
                                        GetPluginDescriptionStatic(),
-                                       CreateInstance);
+                                       CreateInstance,
+                                       DebuggerInitialize);
 
         Log::Callbacks log_callbacks = {
             ProcessGDBRemoteLog::DisableLog,
@@ -2622,6 +2715,19 @@ ProcessGDBRemote::Initialize()
         };
 
         Log::RegisterLogChannel (ProcessGDBRemote::GetPluginNameStatic(), log_callbacks);
+    }
+}
+
+void
+ProcessGDBRemote::DebuggerInitialize (lldb_private::Debugger &debugger)
+{
+    if (!PluginManager::GetSettingForProcessPlugin(debugger, PluginProperties::GetSettingName()))
+    {
+        const bool is_global_setting = true;
+        PluginManager::CreateSettingForProcessPlugin (debugger,
+                                                      GetGlobalPluginProperties()->GetValueProperties(),
+                                                      ConstString ("Properties for the gdb-remote process plug-in."),
+                                                      is_global_setting);
     }
 }
 
@@ -2691,7 +2797,7 @@ ProcessGDBRemote::StopAsyncThread ()
 }
 
 
-void *
+thread_result_t
 ProcessGDBRemote::AsyncThread (void *arg)
 {
     ProcessGDBRemote *process = (ProcessGDBRemote*) arg;
@@ -2985,7 +3091,7 @@ lldb_private::DynamicLoader *
 ProcessGDBRemote::GetDynamicLoader ()
 {
     if (m_dyld_ap.get() == NULL)
-        m_dyld_ap.reset (DynamicLoader::FindPlugin(this, m_dyld_plugin_name.empty() ? NULL : m_dyld_plugin_name.c_str()));
+        m_dyld_ap.reset (DynamicLoader::FindPlugin(this, NULL));
     return m_dyld_ap.get();
 }
 
@@ -3073,7 +3179,7 @@ public:
                 output_strm.Printf ("  packet: %s\n", packet_cstr);
                 std::string &response_str = response.GetStringRef();
                 
-                if (strcmp(packet_cstr, "qGetProfileData") == 0)
+                if (strstr(packet_cstr, "qGetProfileData") != NULL)
                 {
                     response_str = process->GetGDBRemote().HarmonizeThreadIdsForProfileData(process, response);
                 }

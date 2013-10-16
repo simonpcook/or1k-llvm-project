@@ -179,7 +179,7 @@ public:
     }
     
     static bool
-    AddSummary(const ConstString& type_name,
+    AddSummary(ConstString type_name,
                lldb::TypeSummaryImplSP entry,
                SummaryFormatType type,
                std::string category,
@@ -324,7 +324,7 @@ public:
     }
     
     static bool
-    AddSynth(const ConstString& type_name,
+    AddSynth(ConstString type_name,
              lldb::SyntheticChildrenSP entry,
              SynthFormatType type,
              std::string category_name,
@@ -532,9 +532,9 @@ protected:
 OptionDefinition
 CommandObjectTypeFormatAdd::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "cascade", 'C', required_argument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
-    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
-    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "cascade", 'C', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
+    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
 };
 
 
@@ -744,7 +744,9 @@ CommandObjectTypeFormatList_LoopCallback (
 //-------------------------------------------------------------------------
 
 static const char *g_summary_addreader_instructions = "Enter your Python command(s). Type 'DONE' to end.\n"
-                                                       "def function (valobj,internal_dict):";
+                                                       "def function (valobj,internal_dict):\n"
+                                                       "     \"\"\"valobj: an SBValue which you want to provide a summary for\n"
+                                                       "        internal_dict: an LLDB support object not to be used\"\"\"";
 
 class TypeScriptAddInputReader : public InputReaderEZ
 {
@@ -1338,7 +1340,7 @@ CommandObjectTypeSummaryAdd::DoExecute (Args& command, CommandReturnObject &resu
 }
 
 bool
-CommandObjectTypeSummaryAdd::AddSummary(const ConstString& type_name,
+CommandObjectTypeSummaryAdd::AddSummary(ConstString type_name,
                                         TypeSummaryImplSP entry,
                                         SummaryFormatType type,
                                         std::string category_name,
@@ -1346,6 +1348,21 @@ CommandObjectTypeSummaryAdd::AddSummary(const ConstString& type_name,
 {
     lldb::TypeCategoryImplSP category;
     DataVisualization::Categories::GetCategory(ConstString(category_name.c_str()), category);
+    
+    if (type == eRegularSummary)
+    {
+        std::string type_name_str(type_name.GetCString());
+        if (type_name_str.compare(type_name_str.length() - 2, 2, "[]") == 0)
+        {
+            type_name_str.resize(type_name_str.length()-2);
+            if (type_name_str.back() != ' ')
+                type_name_str.append(" \\[[0-9]+\\]");
+            else
+                type_name_str.append("\\[[0-9]+\\]");
+            type_name.SetCString(type_name_str.c_str());
+            type = eRegexSummary;
+        }
+    }
     
     if (type == eRegexSummary)
     {
@@ -1378,20 +1395,20 @@ CommandObjectTypeSummaryAdd::AddSummary(const ConstString& type_name,
 OptionDefinition
 CommandObjectTypeSummaryAdd::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "category", 'w', required_argument, NULL, 0, eArgTypeName,    "Add this to the given category instead of the default one."},
-    { LLDB_OPT_SET_ALL, false, "cascade", 'C', required_argument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
-    { LLDB_OPT_SET_ALL, false, "no-value", 'v', no_argument, NULL, 0, eArgTypeNone,         "Don't show the value, just show the summary, for this type."},
-    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
-    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
-    { LLDB_OPT_SET_ALL, false,  "regex", 'x', no_argument, NULL, 0, eArgTypeNone,    "Type names are actually regular expressions."},
-    { LLDB_OPT_SET_1  , true, "inline-children", 'c', no_argument, NULL, 0, eArgTypeNone,    "If true, inline all child values into summary string."},
-    { LLDB_OPT_SET_1  , false, "omit-names", 'O', no_argument, NULL, 0, eArgTypeNone,    "If true, omit value names in the summary display."},
-    { LLDB_OPT_SET_2  , true, "summary-string", 's', required_argument, NULL, 0, eArgTypeSummaryString,    "Summary string used to display text and object contents."},
-    { LLDB_OPT_SET_3, false, "python-script", 'o', required_argument, NULL, 0, eArgTypePythonScript, "Give a one-liner Python script as part of the command."},
-    { LLDB_OPT_SET_3, false, "python-function", 'F', required_argument, NULL, 0, eArgTypePythonFunction, "Give the name of a Python function to use for this type."},
-    { LLDB_OPT_SET_3, false, "input-python", 'P', no_argument, NULL, 0, eArgTypeNone, "Input Python code to use for this type manually."},
-    { LLDB_OPT_SET_2 | LLDB_OPT_SET_3,   false, "expand", 'e', no_argument, NULL, 0, eArgTypeNone,    "Expand aggregate data types to show children on separate lines."},
-    { LLDB_OPT_SET_2 | LLDB_OPT_SET_3,   false, "name", 'n', required_argument, NULL, 0, eArgTypeName,    "A name for this summary string."},
+    { LLDB_OPT_SET_ALL, false, "category", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,    "Add this to the given category instead of the default one."},
+    { LLDB_OPT_SET_ALL, false, "cascade", 'C', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
+    { LLDB_OPT_SET_ALL, false, "no-value", 'v', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't show the value, just show the summary, for this type."},
+    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
+    { LLDB_OPT_SET_ALL, false,  "regex", 'x', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "Type names are actually regular expressions."},
+    { LLDB_OPT_SET_1  , true, "inline-children", 'c', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "If true, inline all child values into summary string."},
+    { LLDB_OPT_SET_1  , false, "omit-names", 'O', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "If true, omit value names in the summary display."},
+    { LLDB_OPT_SET_2  , true, "summary-string", 's', OptionParser::eRequiredArgument, NULL, 0, eArgTypeSummaryString,    "Summary string used to display text and object contents."},
+    { LLDB_OPT_SET_3, false, "python-script", 'o', OptionParser::eRequiredArgument, NULL, 0, eArgTypePythonScript, "Give a one-liner Python script as part of the command."},
+    { LLDB_OPT_SET_3, false, "python-function", 'F', OptionParser::eRequiredArgument, NULL, 0, eArgTypePythonFunction, "Give the name of a Python function to use for this type."},
+    { LLDB_OPT_SET_3, false, "input-python", 'P', OptionParser::eNoArgument, NULL, 0, eArgTypeNone, "Input Python code to use for this type manually."},
+    { LLDB_OPT_SET_2 | LLDB_OPT_SET_3,   false, "expand", 'e', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "Expand aggregate data types to show children on separate lines."},
+    { LLDB_OPT_SET_2 | LLDB_OPT_SET_3,   false, "name", 'n', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,    "A name for this summary string."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -1557,8 +1574,8 @@ protected:
 OptionDefinition
 CommandObjectTypeSummaryDelete::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_1, false, "all", 'a', no_argument, NULL, 0, eArgTypeNone,  "Delete from every category."},
-    { LLDB_OPT_SET_2, false, "category", 'w', required_argument, NULL, 0, eArgTypeName,  "Delete from given category."},
+    { LLDB_OPT_SET_1, false, "all", 'a', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,  "Delete from every category."},
+    { LLDB_OPT_SET_2, false, "category", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,  "Delete from given category."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -1684,7 +1701,7 @@ protected:
 OptionDefinition
 CommandObjectTypeSummaryClear::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "all", 'a', no_argument, NULL, 0, eArgTypeNone,  "Clear every category."},
+    { LLDB_OPT_SET_ALL, false, "all", 'a', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,  "Clear every category."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -1856,7 +1873,7 @@ private:
             return true;
         
         // if we have a regex and this category does not match it, just skip it
-        if(param->cate_regex != NULL && param->cate_regex->Execute(cate_name) == false)
+        if(param->cate_regex != NULL && strcmp(cate_name,param->cate_regex->GetText()) != 0 && param->cate_regex->Execute(cate_name) == false)
             return true;
         
         result->GetOutputStream().Printf("-----------------------\nCategory: %s (%s)\n-----------------------\n",
@@ -1880,7 +1897,7 @@ private:
                   RegularExpression* regex,
                   CommandReturnObject *result)
     {
-        if (regex == NULL || regex->Execute(type)) 
+        if (regex == NULL || strcmp(type,regex->GetText()) == 0 || regex->Execute(type))
                 result->GetOutputStream().Printf ("%s: %s\n", type, entry->GetDescription().c_str());
         return true;
     }
@@ -1912,7 +1929,7 @@ CommandObjectTypeRXSummaryList_LoopCallback (
 OptionDefinition
 CommandObjectTypeSummaryList::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "category-regex", 'w', required_argument, NULL, 0, eArgTypeName,  "Only show categories matching this filter."},
+    { LLDB_OPT_SET_ALL, false, "category-regex", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,  "Only show categories matching this filter."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -2191,7 +2208,7 @@ private:
         
         const char* cate_name = cate->GetName();
         
-        if (regex == NULL || regex->Execute(cate_name))
+        if (regex == NULL || strcmp(cate_name, regex->GetText()) == 0 || regex->Execute(cate_name))
             result->GetOutputStream().Printf("Category %s is%s enabled\n",
                                        cate_name,
                                        (cate->IsEnabled() ? "" : " not"));
@@ -2404,7 +2421,7 @@ private:
             return true;
         
         // if we have a regex and this category does not match it, just skip it
-        if(param->cate_regex != NULL && param->cate_regex->Execute(cate_name) == false)
+        if(param->cate_regex != NULL && strcmp(cate_name,param->cate_regex->GetText()) != 0 && param->cate_regex->Execute(cate_name) == false)
             return true;
         
         result->GetOutputStream().Printf("-----------------------\nCategory: %s (%s)\n-----------------------\n",
@@ -2459,7 +2476,7 @@ CommandObjectTypeFilterRXList_LoopCallback (void* pt2self,
 OptionDefinition
 CommandObjectTypeFilterList::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "category-regex", 'w', required_argument, NULL, 0, eArgTypeName,  "Only show categories matching this filter."},
+    { LLDB_OPT_SET_ALL, false, "category-regex", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,  "Only show categories matching this filter."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -2618,7 +2635,7 @@ private:
             return true;
         
         // if we have a regex and this category does not match it, just skip it
-        if(param->cate_regex != NULL && param->cate_regex->Execute(cate_name) == false)
+        if(param->cate_regex != NULL && strcmp(cate_name,param->cate_regex->GetText()) != 0 && param->cate_regex->Execute(cate_name) == false)
             return true;
         
         result->GetOutputStream().Printf("-----------------------\nCategory: %s (%s)\n-----------------------\n",
@@ -2673,7 +2690,7 @@ CommandObjectTypeSynthRXList_LoopCallback (void* pt2self,
 OptionDefinition
 CommandObjectTypeSynthList::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "category-regex", 'w', required_argument, NULL, 0, eArgTypeName,  "Only show categories matching this filter."},
+    { LLDB_OPT_SET_ALL, false, "category-regex", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,  "Only show categories matching this filter."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -2837,8 +2854,8 @@ protected:
 OptionDefinition
 CommandObjectTypeFilterDelete::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_1, false, "all", 'a', no_argument, NULL, 0, eArgTypeNone,  "Delete from every category."},
-    { LLDB_OPT_SET_2, false, "category", 'w', required_argument, NULL, 0, eArgTypeName,  "Delete from given category."},
+    { LLDB_OPT_SET_1, false, "all", 'a', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,  "Delete from every category."},
+    { LLDB_OPT_SET_2, false, "category", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,  "Delete from given category."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -3003,8 +3020,8 @@ protected:
 OptionDefinition
 CommandObjectTypeSynthDelete::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_1, false, "all", 'a', no_argument, NULL, 0, eArgTypeNone,  "Delete from every category."},
-    { LLDB_OPT_SET_2, false, "category", 'w', required_argument, NULL, 0, eArgTypeName,  "Delete from given category."},
+    { LLDB_OPT_SET_1, false, "all", 'a', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,  "Delete from every category."},
+    { LLDB_OPT_SET_2, false, "category", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,  "Delete from given category."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -3134,7 +3151,7 @@ protected:
 OptionDefinition
 CommandObjectTypeFilterClear::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "all", 'a', no_argument, NULL, 0, eArgTypeNone,  "Clear every category."},
+    { LLDB_OPT_SET_ALL, false, "all", 'a', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,  "Clear every category."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -3263,7 +3280,7 @@ protected:
 OptionDefinition
 CommandObjectTypeSynthClear::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "all", 'a', no_argument, NULL, 0, eArgTypeNone,  "Clear every category."},
+    { LLDB_OPT_SET_ALL, false, "all", 'a', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,  "Clear every category."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -3573,14 +3590,29 @@ CommandObjectTypeSynthAdd::CommandObjectTypeSynthAdd (CommandInterpreter &interp
 }
 
 bool
-CommandObjectTypeSynthAdd::AddSynth(const ConstString& type_name,
-         SyntheticChildrenSP entry,
-         SynthFormatType type,
-         std::string category_name,
-         Error* error)
+CommandObjectTypeSynthAdd::AddSynth(ConstString type_name,
+                                    SyntheticChildrenSP entry,
+                                    SynthFormatType type,
+                                    std::string category_name,
+                                    Error* error)
 {
     lldb::TypeCategoryImplSP category;
     DataVisualization::Categories::GetCategory(ConstString(category_name.c_str()), category);
+    
+    if (type == eRegularSynth)
+    {
+        std::string type_name_str(type_name.GetCString());
+        if (type_name_str.compare(type_name_str.length() - 2, 2, "[]") == 0)
+        {
+            type_name_str.resize(type_name_str.length()-2);
+            if (type_name_str.back() != ' ')
+                type_name_str.append(" \\[[0-9]+\\]");
+            else
+                type_name_str.append("\\[[0-9]+\\]");
+            type_name.SetCString(type_name_str.c_str());
+            type = eRegularSynth;
+        }
+    }
     
     if (category->AnyMatches(type_name,
                              eFormatCategoryItemFilter | eFormatCategoryItemRegexFilter,
@@ -3631,13 +3663,13 @@ CommandObjectTypeSynthAdd::DoExecute (Args& command, CommandReturnObject &result
 OptionDefinition
 CommandObjectTypeSynthAdd::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "cascade", 'C', required_argument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
-    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
-    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
-    { LLDB_OPT_SET_ALL, false, "category", 'w', required_argument, NULL, 0, eArgTypeName,         "Add this to the given category instead of the default one."},
-    { LLDB_OPT_SET_2, false, "python-class", 'l', required_argument, NULL, 0, eArgTypePythonClass,    "Use this Python class to produce synthetic children."},
-    { LLDB_OPT_SET_3, false, "input-python", 'P', no_argument, NULL, 0, eArgTypeNone,    "Type Python code to generate a class that provides synthetic children."},
-    { LLDB_OPT_SET_ALL, false,  "regex", 'x', no_argument, NULL, 0, eArgTypeNone,    "Type names are actually regular expressions."},
+    { LLDB_OPT_SET_ALL, false, "cascade", 'C', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
+    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "category", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,         "Add this to the given category instead of the default one."},
+    { LLDB_OPT_SET_2, false, "python-class", 'l', OptionParser::eRequiredArgument, NULL, 0, eArgTypePythonClass,    "Use this Python class to produce synthetic children."},
+    { LLDB_OPT_SET_3, false, "input-python", 'P', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "Type Python code to generate a class that provides synthetic children."},
+    { LLDB_OPT_SET_ALL, false,  "regex", 'x', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "Type names are actually regular expressions."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -3752,7 +3784,7 @@ private:
     };
     
     bool
-    AddFilter(const ConstString& type_name,
+    AddFilter(ConstString type_name,
               SyntheticChildrenSP entry,
               FilterFormatType type,
               std::string category_name,
@@ -3760,6 +3792,21 @@ private:
     {
         lldb::TypeCategoryImplSP category;
         DataVisualization::Categories::GetCategory(ConstString(category_name.c_str()), category);
+        
+        if (type == eRegularFilter)
+        {
+            std::string type_name_str(type_name.GetCString());
+            if (type_name_str.compare(type_name_str.length() - 2, 2, "[]") == 0)
+            {
+                type_name_str.resize(type_name_str.length()-2);
+                if (type_name_str.back() != ' ')
+                    type_name_str.append(" \\[[0-9]+\\]");
+                else
+                    type_name_str.append("\\[[0-9]+\\]");
+                type_name.SetCString(type_name_str.c_str());
+                type = eRegexFilter;
+            }
+        }
         
         if (category->AnyMatches(type_name,
                                  eFormatCategoryItemSynth | eFormatCategoryItemRegexSynth,
@@ -3920,12 +3967,12 @@ protected:
 OptionDefinition
 CommandObjectTypeFilterAdd::CommandOptions::g_option_table[] =
 {
-    { LLDB_OPT_SET_ALL, false, "cascade", 'C', required_argument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
-    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
-    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', no_argument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
-    { LLDB_OPT_SET_ALL, false, "category", 'w', required_argument, NULL, 0, eArgTypeName,         "Add this to the given category instead of the default one."},
-    { LLDB_OPT_SET_ALL, false, "child", 'c', required_argument, NULL, 0, eArgTypeExpressionPath,    "Include this expression path in the synthetic view."},
-    { LLDB_OPT_SET_ALL, false,  "regex", 'x', no_argument, NULL, 0, eArgTypeNone,    "Type names are actually regular expressions."},
+    { LLDB_OPT_SET_ALL, false, "cascade", 'C', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean,    "If true, cascade through typedef chains."},
+    { LLDB_OPT_SET_ALL, false, "skip-pointers", 'p', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for pointers-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "skip-references", 'r', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,         "Don't use this format for references-to-type objects."},
+    { LLDB_OPT_SET_ALL, false, "category", 'w', OptionParser::eRequiredArgument, NULL, 0, eArgTypeName,         "Add this to the given category instead of the default one."},
+    { LLDB_OPT_SET_ALL, false, "child", 'c', OptionParser::eRequiredArgument, NULL, 0, eArgTypeExpressionPath,    "Include this expression path in the synthetic view."},
+    { LLDB_OPT_SET_ALL, false,  "regex", 'x', OptionParser::eNoArgument, NULL, 0, eArgTypeNone,    "Type names are actually regular expressions."},
     { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 

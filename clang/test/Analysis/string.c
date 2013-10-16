@@ -430,11 +430,12 @@ void strcat_unknown_src_length(char *src, int offset) {
 // length for the "before" strlen, we won't be able to set one for "after".
 
 void strcat_too_big(char *dst, char *src) {
+  // We assume this can never actually happen, so we don't get a warning.
 	if (strlen(dst) != (((size_t)0) - 2))
 		return;
 	if (strlen(src) != 2)
 		return;
-	strcat(dst, src); // expected-warning{{This expression will create a string whose length is too big to be represented as a size_t}}
+	strcat(dst, src);
 }
 
 
@@ -653,11 +654,12 @@ void strncat_unknown_limit(float limit) {
 }
 
 void strncat_too_big(char *dst, char *src) {
+  // We assume this will never actually happen, so we don't get a warning.
   if (strlen(dst) != (((size_t)0) - 2))
     return;
   if (strlen(src) != 2)
     return;
-  strncat(dst, src, 2); // expected-warning{{This expression will create a string whose length is too big to be represented as a size_t}}
+  strncat(dst, src, 2);
 }
 
 void strncat_zero(char *src) {
@@ -1025,6 +1027,57 @@ void strncasecmp_diff_length_6() {
 
 void strncasecmp_embedded_null () {
 	clang_analyzer_eval(strncasecmp("ab\0zz", "ab\0yy", 4) == 0); // expected-warning{{TRUE}}
+}
+
+//===----------------------------------------------------------------------===
+// strsep()
+//===----------------------------------------------------------------------===
+
+char *strsep(char **stringp, const char *delim);
+
+void strsep_null_delim(char *s) {
+  strsep(&s, NULL); // expected-warning{{Null pointer argument in call to strsep()}}
+}
+
+void strsep_null_search() {
+  strsep(NULL, ""); // expected-warning{{Null pointer argument in call to strsep()}}
+}
+
+void strsep_return_original_pointer(char *s) {
+  char *original = s;
+  char *result = strsep(&s, ""); // no-warning
+  clang_analyzer_eval(original == result); // expected-warning{{TRUE}}
+}
+
+void strsep_null_string() {
+  char *s = NULL;
+  char *result = strsep(&s, ""); // no-warning
+  clang_analyzer_eval(result == NULL); // expected-warning{{TRUE}}
+}
+
+void strsep_changes_input_pointer(char *s) {
+  char *original = s;
+  strsep(&s, ""); // no-warning
+  clang_analyzer_eval(s == original); // expected-warning{{UNKNOWN}}
+  clang_analyzer_eval(s == NULL); // expected-warning{{UNKNOWN}}
+
+  // Check that the value is symbolic.
+  if (s == NULL) {
+    clang_analyzer_eval(s == NULL); // expected-warning{{TRUE}}
+  }
+}
+
+void strsep_changes_input_string() {
+  char str[] = "abc";
+
+  clang_analyzer_eval(str[1] == 'b'); // expected-warning{{TRUE}}
+
+  char *s = str;
+  strsep(&s, "b"); // no-warning
+
+  // The real strsep will change the first delimiter it finds into a NUL
+  // character. For now, we just model the invalidation.
+  clang_analyzer_eval(str[1] == 'b'); // expected-warning{{UNKNOWN}}
 }
 
 //===----------------------------------------------------------------------===

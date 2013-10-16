@@ -12,6 +12,8 @@
 #include "CommandObjectMemory.h"
 
 // C Includes
+#include <inttypes.h>
+
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
@@ -21,6 +23,7 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/ValueObjectMemory.h"
+#include "lldb/DataFormatters/ValueObjectPrinter.h"
 #include "lldb/Interpreter/Args.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
@@ -39,12 +42,12 @@ using namespace lldb_private;
 static OptionDefinition
 g_option_table[] =
 {
-    { LLDB_OPT_SET_1, false, "num-per-line" ,'l', required_argument, NULL, 0, eArgTypeNumberPerLine ,"The number of items per line to display."},
-    { LLDB_OPT_SET_2, false, "binary"       ,'b', no_argument      , NULL, 0, eArgTypeNone          ,"If true, memory will be saved as binary. If false, the memory is saved save as an ASCII dump that uses the format, size, count and number per line settings."},
-    { LLDB_OPT_SET_3, true , "type"         ,'t', required_argument, NULL, 0, eArgTypeNone          ,"The name of a type to view memory as."}, 
+    { LLDB_OPT_SET_1, false, "num-per-line" ,'l', OptionParser::eRequiredArgument, NULL, 0, eArgTypeNumberPerLine ,"The number of items per line to display."},
+    { LLDB_OPT_SET_2, false, "binary"       ,'b', OptionParser::eNoArgument      , NULL, 0, eArgTypeNone          ,"If true, memory will be saved as binary. If false, the memory is saved save as an ASCII dump that uses the format, size, count and number per line settings."},
+    { LLDB_OPT_SET_3, true , "type"         ,'t', OptionParser::eRequiredArgument, NULL, 0, eArgTypeNone          ,"The name of a type to view memory as."},
     { LLDB_OPT_SET_1|
       LLDB_OPT_SET_2|
-      LLDB_OPT_SET_3, false, "force"        ,'r', no_argument,       NULL, 0, eArgTypeNone          ,"Necessary if reading over 1024 bytes of memory."},
+      LLDB_OPT_SET_3, false, "force"        ,'r', OptionParser::eNoArgument,       NULL, 0, eArgTypeNone          ,"Necessary if reading over target.max-memory-read-size bytes."},
 };
 
 
@@ -119,6 +122,7 @@ public:
         m_num_per_line.Clear();
         m_output_as_binary = false;
         m_view_as_type.Clear();
+        m_force = false;
     }
     
     Error
@@ -520,23 +524,37 @@ protected:
                                                type_list);
             }
             
-            if (type_list.GetSize() == 0)
+            if (type_list.GetSize() == 0 && lookup_type_name.GetCString() && *lookup_type_name.GetCString() == '$')
             {
-                result.AppendErrorWithFormat ("unable to find any types that match the raw type '%s' for full type '%s'\n", 
-                                              lookup_type_name.GetCString(), 
-                                              view_as_type_cstr);
-                result.SetStatus(eReturnStatusFailed);
-                return false;
+                clang::TypeDecl *tdecl = target->GetPersistentVariables().GetPersistentType(ConstString(lookup_type_name));
+                if (tdecl)
+                {
+                    clang_ast_type.SetClangType(&tdecl->getASTContext(),(lldb::clang_type_t)tdecl->getTypeForDecl());
+                }
             }
             
-            TypeSP type_sp (type_list.GetTypeAtIndex(0));
-            clang_ast_type.SetClangType (type_sp->GetClangAST(), type_sp->GetClangFullType());
+            if (clang_ast_type.IsValid() == false)
+            {
+                if (type_list.GetSize() == 0)
+                {
+                    result.AppendErrorWithFormat ("unable to find any types that match the raw type '%s' for full type '%s'\n",
+                                                  lookup_type_name.GetCString(),
+                                                  view_as_type_cstr);
+                    result.SetStatus(eReturnStatusFailed);
+                    return false;
+                }
+                else
+                {
+                    TypeSP type_sp (type_list.GetTypeAtIndex(0));
+                    clang_ast_type = type_sp->GetClangFullType();
+                }
+            }
             
             while (pointer_count > 0)
             {
-                clang_type_t pointer_type = ClangASTContext::CreatePointerType (clang_ast_type.GetASTContext(), clang_ast_type.GetOpaqueQualType());
-                if (pointer_type)
-                    clang_ast_type.SetClangType (clang_ast_type.GetASTContext(), pointer_type);
+                ClangASTType pointer_type = clang_ast_type.GetPointerType();
+                if (pointer_type.IsValid())
+                    clang_ast_type = pointer_type;
                 else
                 {
                     result.AppendError ("unable make a pointer type\n");
@@ -546,7 +564,7 @@ protected:
                 --pointer_count;
             }
 
-            m_format_options.GetByteSizeValue() = clang_ast_type.GetClangTypeByteSize();
+            m_format_options.GetByteSizeValue() = clang_ast_type.GetByteSize();
             
             if (m_format_options.GetByteSizeValue() == 0)
             {
@@ -642,14 +660,15 @@ protected:
             item_count = total_byte_size / item_byte_size;
         }
         
-        if (total_byte_size > 1024 && !m_memory_options.m_force)
+        uint32_t max_unforced_size = target->GetMaximumMemReadSize();
+        
+        if (total_byte_size > max_unforced_size && !m_memory_options.m_force)
         {
-            result.AppendErrorWithFormat("Normally, \'memory read\' will not read over 1Kbyte of data.\n");
-            result.AppendErrorWithFormat("Please use --force to override this restriction.\n");
+            result.AppendErrorWithFormat("Normally, \'memory read\' will not read over %" PRIu32 " bytes of data.\n",max_unforced_size);
+            result.AppendErrorWithFormat("Please use --force to override this restriction just once.\n");
+            result.AppendErrorWithFormat("or set target.max-memory-read-size if you will often need a larger limit.\n");
             return false;
         }
-        
-        
         
         DataBufferSP data_sp;
         size_t bytes_read = 0;
@@ -659,11 +678,18 @@ protected:
             if (m_format_options.GetFormatValue().OptionWasSet() == false)
                 m_format_options.GetFormatValue().SetCurrentValue(eFormatDefault);
 
-            bytes_read = clang_ast_type.GetTypeByteSize() * m_format_options.GetCountValue().GetCurrentValue();
+            bytes_read = clang_ast_type.GetByteSize() * m_format_options.GetCountValue().GetCurrentValue();
         }
         else if (m_format_options.GetFormatValue().GetCurrentValue() != eFormatCString)
         {
             data_sp.reset (new DataBufferHeap (total_byte_size, '\0'));
+            if (data_sp->GetBytes() == NULL)
+            {
+                result.AppendErrorWithFormat ("can't allocate 0x%zx bytes for the memory read buffer, specify a smaller size to read", total_byte_size);
+                result.SetStatus(eReturnStatusFailed);
+                return false;
+            }
+
             Address address(addr, NULL);
             bytes_read = target->ReadMemory(address, false, data_sp->GetBytes (), data_sp->GetByteSize(), error);
             if (bytes_read == 0)
@@ -694,6 +720,12 @@ protected:
             if (!m_format_options.GetCountValue().OptionWasSet())
                 item_count = 1;
             data_sp.reset (new DataBufferHeap ((item_byte_size+1) * item_count, '\0')); // account for NULLs as necessary
+            if (data_sp->GetBytes() == NULL)
+            {
+                result.AppendErrorWithFormat ("can't allocate 0x%" PRIx64 " bytes for the memory read buffer, specify a smaller size to read", (uint64_t)((item_byte_size+1) * item_count));
+                result.SetStatus(eReturnStatusFailed);
+                return false;
+            }
             uint8_t *data_ptr = data_sp->GetBytes();
             auto data_addr = addr;
             auto count = item_count;
@@ -805,11 +837,9 @@ protected:
                     if (format != eFormatDefault)
                         valobj_sp->SetFormat (format);
 
-                    ValueObject::DumpValueObjectOptions options(m_varobj_options.GetAsDumpOptions(false,format));
+                    DumpValueObjectOptions options(m_varobj_options.GetAsDumpOptions(eLanguageRuntimeDescriptionDisplayVerbosityFull,format));
                     
-                    ValueObject::DumpValueObject (*output_stream,
-                                                  valobj_sp.get(),
-                                                  options);
+                    valobj_sp->Dump(*output_stream,options);
                 }
                 else
                 {
@@ -827,12 +857,25 @@ protected:
         DataExtractor data (data_sp, 
                             target->GetArchitecture().GetByteOrder(), 
                             target->GetArchitecture().GetAddressByteSize());
-
+        
+        Format format = m_format_options.GetFormat();
+        if ( ( (format == eFormatChar) || (format == eFormatCharPrintable) )
+            && (item_byte_size != 1)
+            && (item_count == 1))
+        {
+            // this turns requests such as
+            // memory read -fc -s10 -c1 *charPtrPtr
+            // which make no sense (what is a char of size 10?)
+            // into a request for fetching 10 chars of size 1 from the same memory location
+            format = eFormatCharArray;
+            item_count = item_byte_size;
+            item_byte_size = 1;
+        }
 
         assert (output_stream);
         size_t bytes_dumped = data.Dump (output_stream,
                                          0,
-                                         m_format_options.GetFormat(),
+                                         format,
                                          item_byte_size,
                                          item_count,
                                          num_per_line,
@@ -863,8 +906,8 @@ protected:
 OptionDefinition
 g_memory_write_option_table[] =
 {
-{ LLDB_OPT_SET_1, true,  "infile", 'i', required_argument, NULL, 0, eArgTypeFilename, "Write memory using the contents of a file."},
-{ LLDB_OPT_SET_1, false, "offset", 'o', required_argument, NULL, 0, eArgTypeOffset,   "Start writng bytes from an offset within the input file."},
+{ LLDB_OPT_SET_1, true,  "infile", 'i', OptionParser::eRequiredArgument, NULL, 0, eArgTypeFilename, "Write memory using the contents of a file."},
+{ LLDB_OPT_SET_1, false, "offset", 'o', OptionParser::eRequiredArgument, NULL, 0, eArgTypeOffset,   "Start writng bytes from an offset within the input file."},
 };
 
 

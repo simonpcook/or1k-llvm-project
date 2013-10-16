@@ -17,6 +17,7 @@
 #include <mach/mach_vm.h>
 #include <mach/shared_region.h>
 #include <sys/sysctl.h>
+#include <dlfcn.h>
 
 MachVMMemory::MachVMMemory() :
     m_page_size    (kInvalidPageSize),
@@ -206,9 +207,7 @@ MachVMMemory::GetStolenPages(task_t task)
 			if(stolen >= mb128)
             {
                 stolen = (stolen & ~((128 * 1024 * 1024ULL) - 1)); // rounding down
-                vm_size_t pagesize = vm_page_size;
-                pagesize = PageSize (task);
-                stolenPages = stolen/pagesize;
+                stolenPages = stolen / PageSize (task);
 			}
 		}
 	}
@@ -236,6 +235,22 @@ static uint64_t GetPhysicalMemory()
 void 
 MachVMMemory::GetRegionSizes(task_t task, mach_vm_size_t &rsize, mach_vm_size_t &dirty_size)
 {
+#if defined (TASK_VM_INFO) && TASK_VM_INFO >= 22
+    
+    task_vm_info_data_t vm_info;
+    mach_msg_type_number_t info_count;
+    kern_return_t kr;
+    
+    info_count = TASK_VM_INFO_COUNT;
+#ifdef TASK_VM_INFO_PURGEABLE
+    kr = task_info(task, TASK_VM_INFO_PURGEABLE, (task_info_t)&vm_info, &info_count);
+#else
+    kr = task_info(task, TASK_VM_INFO, (task_info_t)&vm_info, &info_count);
+#endif
+    if (kr == KERN_SUCCESS)
+        dirty_size = vm_info.internal;
+    
+#else
     mach_vm_address_t address = 0;
     mach_vm_size_t size;
     kern_return_t err = 0;
@@ -283,16 +298,11 @@ MachVMMemory::GetRegionSizes(task_t task, mach_vm_size_t &rsize, mach_vm_size_t 
         }
     }
     
-    static vm_size_t pagesize;
-    static bool calculated = false;
-    if (!calculated)
-    {
-        calculated = true;
-        pagesize = PageSize (task);
-    }
-    
+    vm_size_t pagesize = PageSize (task);
     rsize = pages_resident * pagesize;
     dirty_size = pages_dirtied * pagesize;
+    
+#endif
 }
 
 // Test whether the virtual address is within the architecture's shared region.
@@ -335,14 +345,7 @@ MachVMMemory::GetMemorySizes(task_t task, cpu_type_t cputype, nub_process_t pid,
     
     mach_vm_size_t aliased = 0;
     bool global_shared_text_data_mapped = false;
-    
-    static vm_size_t pagesize;
-    static bool calculated = false;
-    if (!calculated)
-    {
-        calculated = true;
-        pagesize = PageSize (task);
-    }
+    vm_size_t pagesize = PageSize (task);
     
     for (mach_vm_address_t addr=0, size=0; ; addr += size)
     {
@@ -432,8 +435,85 @@ MachVMMemory::GetMemorySizes(task_t task, cpu_type_t cputype, nub_process_t pid,
     rprvt += aliased;
 }
 
+#if defined (TASK_VM_INFO) && TASK_VM_INFO >= 22
+#ifndef TASK_VM_INFO_PURGEABLE
+// cribbed from sysmond
+static uint64_t
+SumVMPurgeableInfo(const vm_purgeable_info_t info)
+{
+    uint64_t sum = 0;
+    int i;
+    
+    for (i = 0; i < 8; i++)
+    {
+        sum += info->fifo_data[i].size;
+    }
+    sum += info->obsolete_data.size;
+    for (i = 0; i < 8; i++)
+    {
+        sum += info->lifo_data[i].size;
+    }
+    
+    return sum;
+}
+#endif /* !TASK_VM_INFO_PURGEABLE */
+#endif
+
+static void
+GetPurgeableAndAnonymous(task_t task, uint64_t &purgeable, uint64_t &anonymous)
+{
+#if defined (TASK_VM_INFO) && TASK_VM_INFO >= 22
+
+    kern_return_t kr;
+#ifndef TASK_VM_INFO_PURGEABLE
+    task_purgable_info_t purgeable_info;
+    uint64_t purgeable_sum = 0;
+#endif /* !TASK_VM_INFO_PURGEABLE */
+    mach_msg_type_number_t info_count;
+    task_vm_info_data_t vm_info;
+    
+#ifndef TASK_VM_INFO_PURGEABLE
+    typedef kern_return_t (*task_purgable_info_type) (task_t, task_purgable_info_t *);
+    task_purgable_info_type task_purgable_info_ptr = NULL;
+    task_purgable_info_ptr = (task_purgable_info_type)dlsym(RTLD_NEXT, "task_purgable_info");
+    if (task_purgable_info_ptr != NULL)
+    {
+        kr = (*task_purgable_info_ptr)(task, &purgeable_info);
+        if (kr == KERN_SUCCESS) {
+            purgeable_sum = SumVMPurgeableInfo(&purgeable_info);
+            purgeable = purgeable_sum;
+        }
+    }
+#endif /* !TASK_VM_INFO_PURGEABLE */
+
+    info_count = TASK_VM_INFO_COUNT;
+#ifdef TASK_VM_INFO_PURGEABLE
+    kr = task_info(task, TASK_VM_INFO_PURGEABLE, (task_info_t)&vm_info, &info_count);
+#else
+    kr = task_info(task, TASK_VM_INFO, (task_info_t)&vm_info, &info_count);
+#endif
+    if (kr == KERN_SUCCESS)
+    {
+#ifdef TASK_VM_INFO_PURGEABLE
+        purgeable = vm_info.purgeable_volatile_resident;
+        anonymous = vm_info.internal - vm_info.purgeable_volatile_pmap;
+#else
+        if (purgeable_sum < vm_info.internal)
+        {
+            anonymous = vm_info.internal - purgeable_sum;
+        }
+        else
+        {
+            anonymous = 0;
+        }
+#endif
+    }
+
+#endif
+}
+
 nub_bool_t
-MachVMMemory::GetMemoryProfile(DNBProfileDataScanType scanType, task_t task, struct task_basic_info ti, cpu_type_t cputype, nub_process_t pid, vm_statistics_data_t &vm_stats, uint64_t &physical_memory, mach_vm_size_t &rprvt, mach_vm_size_t &rsize, mach_vm_size_t &vprvt, mach_vm_size_t &vsize, mach_vm_size_t &dirty_size)
+MachVMMemory::GetMemoryProfile(DNBProfileDataScanType scanType, task_t task, struct task_basic_info ti, cpu_type_t cputype, nub_process_t pid, vm_statistics_data_t &vm_stats, uint64_t &physical_memory, mach_vm_size_t &rprvt, mach_vm_size_t &rsize, mach_vm_size_t &vprvt, mach_vm_size_t &vsize, mach_vm_size_t &dirty_size, mach_vm_size_t &purgeable, mach_vm_size_t &anonymous)
 {
     if (scanType & eProfileHostMemory)
         physical_memory = GetPhysicalMemory();
@@ -454,6 +534,11 @@ MachVMMemory::GetMemoryProfile(DNBProfileDataScanType scanType, task_t task, str
         {
             // This uses vmmap strategy. We don't use the returned rsize for now. We prefer to match top's version since that's what we do for the rest of the metrics.
             GetRegionSizes(task, rsize, dirty_size);
+        }
+        
+        if (scanType & eProfileMemoryAnonymous)
+        {
+            GetPurgeableAndAnonymous(task, purgeable, anonymous);
         }
     }
     

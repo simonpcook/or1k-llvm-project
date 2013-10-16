@@ -35,7 +35,7 @@ public:
     static void
     Terminate();
 
-    static const char *
+    static lldb_private::ConstString
     GetPluginNameStatic();
 
     static const char *
@@ -54,6 +54,14 @@ public:
                           lldb::DataBufferSP& data_sp, 
                           const lldb::ProcessSP &process_sp, 
                           lldb::addr_t header_addr);
+
+    static size_t
+    GetModuleSpecifications (const lldb_private::FileSpec& file,
+                             lldb::DataBufferSP& data_sp,
+                             lldb::offset_t data_offset,
+                             lldb::offset_t file_offset,
+                             lldb::offset_t length,
+                             lldb_private::ModuleSpecList &specs);
 
     static bool
     MagicBytesMatch (lldb::DataBufferSP& data_sp,
@@ -96,8 +104,11 @@ public:
     virtual lldb_private::Symtab *
     GetSymtab();
 
-    virtual lldb_private::SectionList *
-    GetSectionList();
+    virtual bool
+    IsStripped ();
+    
+    virtual void
+    CreateSections (lldb_private::SectionList &unified_section_list);
 
     virtual void
     Dump (lldb_private::Stream *s);
@@ -114,11 +125,8 @@ public:
     //------------------------------------------------------------------
     // PluginInterface protocol
     //------------------------------------------------------------------
-    virtual const char *
+    virtual lldb_private::ConstString
     GetPluginName();
-
-    virtual const char *
-    GetShortPluginName();
 
     virtual uint32_t
     GetPluginVersion();
@@ -146,7 +154,19 @@ public:
 
 protected:
 
-    // Intended for same-host arm device debugging where lldb needs to 
+    static bool
+    ParseHeader (lldb_private::DataExtractor &data,
+                 lldb::offset_t *data_offset_ptr,
+                 llvm::MachO::mach_header &header);
+    
+    
+    static bool
+    GetUUID (const llvm::MachO::mach_header &header,
+             const lldb_private::DataExtractor &data,
+             lldb::offset_t lc_offset, // Offset to the first load command
+             lldb_private::UUID& uuid);
+    
+    // Intended for same-host arm device debugging where lldb needs to
     // detect libraries in the shared cache and augment the nlist entries
     // with an on-disk dyld_shared_cache file.  The process will record
     // the shared cache UUID so the on-disk cache can be matched or rejected
@@ -178,10 +198,7 @@ protected:
     bool m_thread_context_offsets_valid;
 
     size_t
-    ParseSections ();
-
-    size_t
-    ParseSymtab (bool minimize);
+    ParseSymtab ();
 
 };
 

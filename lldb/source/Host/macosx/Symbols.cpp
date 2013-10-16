@@ -62,8 +62,8 @@ SkinnyMachOFileContainsArchAndUUID
     const uint32_t magic
 )
 {
-    assert(magic == HeaderMagic32 || magic == HeaderMagic32Swapped || magic == HeaderMagic64 || magic == HeaderMagic64Swapped);
-    if (magic == HeaderMagic32 || magic == HeaderMagic64)
+    assert(magic == MH_MAGIC || magic == MH_CIGAM || magic == MH_MAGIC_64 || magic == MH_CIGAM_64);
+    if (magic == MH_MAGIC || magic == MH_MAGIC_64)
         data.SetByteOrder (lldb::endian::InlHostByteOrder());
     else if (lldb::endian::InlHostByteOrder() == eByteOrderBig)
         data.SetByteOrder (eByteOrderLittle);
@@ -93,11 +93,11 @@ SkinnyMachOFileContainsArchAndUUID
     if (uuid == NULL)
         return true;
 
-    if (magic == HeaderMagic64Swapped || magic == HeaderMagic64)
+    if (magic == MH_CIGAM_64 || magic == MH_MAGIC_64)
         data_offset += 4;   // Skip reserved field for in mach_header_64
 
     // Make sure we have enough data for all the load commands
-    if (magic == HeaderMagic64Swapped || magic == HeaderMagic64)
+    if (magic == MH_CIGAM_64 || magic == MH_MAGIC_64)
     {
         if (data.GetByteSize() < sizeof(struct mach_header_64) + sizeofcmds)
         {
@@ -119,7 +119,7 @@ SkinnyMachOFileContainsArchAndUUID
         const lldb::offset_t cmd_offset = data_offset;    // Save this data_offset in case parsing of the segment goes awry!
         uint32_t cmd        = data.GetU32(&data_offset);
         uint32_t cmd_size   = data.GetU32(&data_offset);
-        if (cmd == LoadCommandUUID)
+        if (cmd == LC_UUID)
         {
             lldb_private::UUID file_uuid (data.GetData(&data_offset, 16), 16);
             if (file_uuid == *uuid)
@@ -143,7 +143,7 @@ UniversalMachOFileContainsArchAndUUID
     const uint32_t magic
 )
 {
-    assert(magic == UniversalMagic || magic == UniversalMagicSwapped);
+    assert(magic == FAT_MAGIC || magic == FAT_CIGAM);
 
     // Universal mach-o files always have their headers encoded as BIG endian
     data.SetByteOrder(eByteOrderBig);
@@ -182,10 +182,10 @@ UniversalMachOFileContainsArchAndUUID
 
         switch (arch_magic)
         {
-        case HeaderMagic32:
-        case HeaderMagic32Swapped:
-        case HeaderMagic64:
-        case HeaderMagic64Swapped:
+        case MH_MAGIC:
+        case MH_CIGAM:
+        case MH_MAGIC_64:
+        case MH_CIGAM_64:
             if (SkinnyMachOFileContainsArchAndUUID (file_spec, arch, uuid, file_offset + arch_offset, arch_data, arch_data_offset, arch_magic))
                 return true;
             break;
@@ -216,15 +216,15 @@ FileAtPathContainsArchAndUUID
         switch (magic)
         {
         // 32 bit mach-o file
-        case HeaderMagic32:
-        case HeaderMagic32Swapped:
-        case HeaderMagic64:
-        case HeaderMagic64Swapped:
+        case MH_MAGIC:
+        case MH_CIGAM:
+        case MH_MAGIC_64:
+        case MH_CIGAM_64:
             return SkinnyMachOFileContainsArchAndUUID (file_spec, arch, uuid, file_offset, data, data_offset, magic);
 
         // fat mach-o file
-        case UniversalMagic:
-        case UniversalMagicSwapped:
+        case FAT_MAGIC:
+        case FAT_CIGAM:
             return UniversalMachOFileContainsArchAndUUID (file_spec, arch, uuid, file_offset, data, data_offset, magic);
 
         default:
@@ -364,9 +364,7 @@ LocateMacOSXFilesUsingDebugSymbols
                     CFDictionaryRef uuid_dict = NULL;
                     if (dict.get())
                     {
-                        char uuid_cstr_buf[64];
-                        const char *uuid_cstr = uuid->GetAsCString (uuid_cstr_buf, sizeof(uuid_cstr_buf));
-                        CFCString uuid_cfstr (uuid_cstr);
+                        CFCString uuid_cfstr (uuid->GetAsString().c_str());
                         uuid_dict = static_cast<CFDictionaryRef>(::CFDictionaryGetValue (dict.get(), uuid_cfstr.get()));
                         if (uuid_dict)
                         {
@@ -719,21 +717,19 @@ Symbols::DownloadObjectAndSymbolFile (ModuleSpec &module_spec, bool force_lookup
         }
         if (g_dsym_for_uuid_exe_exists)
         {
-            char uuid_cstr_buffer[64];
+            std::string uuid_str;
             char file_path[PATH_MAX];
-            uuid_cstr_buffer[0] = '\0';
             file_path[0] = '\0';
-            const char *uuid_cstr = NULL;
 
             if (uuid_ptr)
-                uuid_cstr = uuid_ptr->GetAsCString(uuid_cstr_buffer, sizeof(uuid_cstr_buffer));
+                uuid_str = uuid_ptr->GetAsString();
 
             if (file_spec_ptr)
                 file_spec_ptr->GetPath(file_path, sizeof(file_path));
             
             StreamString command;
-            if (uuid_cstr)
-                command.Printf("%s --ignoreNegativeCache --copyExecutable %s", g_dsym_for_uuid_exe_path, uuid_cstr);
+            if (!uuid_str.empty())
+                command.Printf("%s --ignoreNegativeCache --copyExecutable %s", g_dsym_for_uuid_exe_path, uuid_str.c_str());
             else if (file_path && file_path[0])
                 command.Printf("%s --ignoreNegativeCache --copyExecutable %s", g_dsym_for_uuid_exe_path, file_path);
             
@@ -760,9 +756,9 @@ Symbols::DownloadObjectAndSymbolFile (ModuleSpec &module_spec, bool force_lookup
                     
                     if (plist.get() && CFGetTypeID (plist.get()) == CFDictionaryGetTypeID ())
                     {
-                        if (uuid_cstr)
+                        if (!uuid_str.empty())
                         {
-                            CFCString uuid_cfstr(uuid_cstr);
+                            CFCString uuid_cfstr(uuid_str.c_str());
                             CFDictionaryRef uuid_dict = (CFDictionaryRef)CFDictionaryGetValue (plist.get(), uuid_cfstr.get());
                             success = GetModuleSpecInfoFromUUIDDictionary (uuid_dict, module_spec);
                         }

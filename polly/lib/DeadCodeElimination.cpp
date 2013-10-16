@@ -20,10 +20,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/Dependences.h"
+#include "isl/aff_type.h"
+#include "isl/union_map.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopInfo.h"
-
-#include "isl/union_map.h"
 
 using namespace llvm;
 using namespace polly;

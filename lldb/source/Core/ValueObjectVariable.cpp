@@ -15,6 +15,7 @@
 // Other libraries and framework includes
 // Project includes
 #include "lldb/Core/Module.h"
+#include "lldb/Core/RegisterValue.h"
 #include "lldb/Core/ValueObjectList.h"
 #include "lldb/Core/Value.h"
 
@@ -53,13 +54,13 @@ ValueObjectVariable::~ValueObjectVariable()
 {
 }
 
-lldb::clang_type_t
+ClangASTType
 ValueObjectVariable::GetClangTypeImpl ()
 {
     Type *var_type = m_variable_sp->GetType();
     if (var_type)
         return var_type->GetClangForwardType();
-    return NULL;
+    return ClangASTType();
 }
 
 ConstString
@@ -83,34 +84,24 @@ ValueObjectVariable::GetQualifiedTypeName()
 size_t
 ValueObjectVariable::CalculateNumChildren()
 {    
-    ClangASTType type(GetClangAST(),
-                      GetClangType());
+    ClangASTType type(GetClangType());
     
     if (!type.IsValid())
         return 0;
     
     const bool omit_empty_base_classes = true;
-    return ClangASTContext::GetNumChildren(type.GetASTContext(), type.GetOpaqueQualType(), omit_empty_base_classes);
-}
-
-clang::ASTContext *
-ValueObjectVariable::GetClangASTImpl ()
-{
-    Type *var_type = m_variable_sp->GetType();
-    if (var_type)
-        return var_type->GetClangAST();
-    return 0;
+    return type.GetNumChildren(omit_empty_base_classes);
 }
 
 uint64_t
 ValueObjectVariable::GetByteSize()
 {
-    ClangASTType type(GetClangAST(), GetClangType());
+    ClangASTType type(GetClangType());
     
     if (!type.IsValid())
         return 0;
     
-    return type.GetClangTypeByteSize();
+    return type.GetByteSize();
 }
 
 lldb::ValueType
@@ -138,6 +129,8 @@ ValueObjectVariable::UpdateValue ()
             m_value.SetContext(Value::eContextTypeVariable, variable);
         else
             m_error.SetErrorString ("empty constant data");
+        // constant bytes can't be edited - sorry
+        m_resolved_value.SetContext(Value::eContextTypeInvalid, NULL);
     }
     else
     {
@@ -159,8 +152,9 @@ ValueObjectVariable::UpdateValue ()
                 loclist_base_load_addr = sc.function->GetAddressRange().GetBaseAddress().GetLoadAddress (target);
         }
         Value old_value(m_value);
-        if (expr.Evaluate (&exe_ctx, GetClangAST(), NULL, NULL, NULL, loclist_base_load_addr, NULL, m_value, &m_error))
+        if (expr.Evaluate (&exe_ctx, NULL, NULL, NULL, loclist_base_load_addr, NULL, m_value, &m_error))
         {
+            m_resolved_value = m_value;
             m_value.SetContext(Value::eContextTypeVariable, variable);
 
             Value::ValueType value_type = m_value.GetValueType();
@@ -182,14 +176,12 @@ ValueObjectVariable::UpdateValue ()
 
             switch (value_type)
             {
-            default:
-                assert(!"Unhandled expression result value kind...");
-                break;
-
+            case Value::eValueTypeVector:
+                    // fall through
             case Value::eValueTypeScalar:
                 // The variable value is in the Scalar value inside the m_value.
                 // We can point our m_data right to it.
-                m_error = m_value.GetValueAsData (&exe_ctx, GetClangAST(), m_data, 0, GetModule().get());
+                m_error = m_value.GetValueAsData (&exe_ctx, m_data, 0, GetModule().get());
                 break;
 
             case Value::eValueTypeFileAddress:
@@ -229,7 +221,7 @@ ValueObjectVariable::UpdateValue ()
                     }
                 }
 
-                if (ClangASTContext::IsAggregateType (GetClangType()))
+                if (GetClangType().IsAggregateType())
                 {
                     // this value object represents an aggregate type whose
                     // children have values, but this object does not. So we
@@ -242,12 +234,17 @@ ValueObjectVariable::UpdateValue ()
                     // so it can extract read its value into m_data appropriately
                     Value value(m_value);
                     value.SetContext(Value::eContextTypeVariable, variable);
-                    m_error = value.GetValueAsData(&exe_ctx, GetClangAST(), m_data, 0, GetModule().get());
+                    m_error = value.GetValueAsData(&exe_ctx, m_data, 0, GetModule().get());
                 }
                 break;
             }
 
             SetValueIsValid (m_error.Success());
+        }
+        else
+        {
+            // could not find location, won't allow editing
+            m_resolved_value.SetContext(Value::eContextTypeInvalid, NULL);
         }
     }
     return m_error.Success();
@@ -312,4 +309,78 @@ ValueObjectVariable::GetDeclaration (Declaration &decl)
         return true;
     }
     return false;
+}
+
+const char *
+ValueObjectVariable::GetLocationAsCString ()
+{
+    if (m_resolved_value.GetContextType() == Value::eContextTypeRegisterInfo)
+        return GetLocationAsCStringImpl(m_resolved_value,
+                                        m_data);
+    else
+        return ValueObject::GetLocationAsCString();
+}
+
+bool
+ValueObjectVariable::SetValueFromCString (const char *value_str, Error& error)
+{
+    if (m_resolved_value.GetContextType() == Value::eContextTypeRegisterInfo)
+    {
+        RegisterInfo *reg_info = m_resolved_value.GetRegisterInfo();
+        ExecutionContext exe_ctx(GetExecutionContextRef());
+        RegisterContext *reg_ctx = exe_ctx.GetRegisterContext();
+        RegisterValue reg_value;
+        if (!reg_info || !reg_ctx)
+        {
+            error.SetErrorString("unable to retrieve register info");
+            return false;
+        }
+        error = reg_value.SetValueFromCString(reg_info, value_str);
+        if (error.Fail())
+            return false;
+        if (reg_ctx->WriteRegister (reg_info, reg_value))
+        {
+            SetNeedsUpdate();
+            return true;
+        }
+        else
+        {
+            error.SetErrorString("unable to write back to register");
+            return false;
+        }
+    }
+    else
+        return ValueObject::SetValueFromCString(value_str, error);
+}
+
+bool
+ValueObjectVariable::SetData (DataExtractor &data, Error &error)
+{
+    if (m_resolved_value.GetContextType() == Value::eContextTypeRegisterInfo)
+    {
+        RegisterInfo *reg_info = m_resolved_value.GetRegisterInfo();
+        ExecutionContext exe_ctx(GetExecutionContextRef());
+        RegisterContext *reg_ctx = exe_ctx.GetRegisterContext();
+        RegisterValue reg_value;
+        if (!reg_info || !reg_ctx)
+        {
+            error.SetErrorString("unable to retrieve register info");
+            return false;
+        }
+        error = reg_value.SetValueFromData(reg_info, data, 0, false);
+        if (error.Fail())
+            return false;
+        if (reg_ctx->WriteRegister (reg_info, reg_value))
+        {
+            SetNeedsUpdate();
+            return true;
+        }
+        else
+        {
+            error.SetErrorString("unable to write back to register");
+            return false;
+        }
+    }
+    else
+        return ValueObject::SetData(data, error);
 }

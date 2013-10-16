@@ -26,6 +26,7 @@
 #define DEBUG_TYPE "polly-codegen"
 #include "polly/Dependences.h"
 #include "polly/LinkAllPasses.h"
+#include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/TempScopInfo.h"
 #include "polly/CodeGen/CodeGeneration.h"
@@ -41,7 +42,6 @@
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolutionExpander.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -63,18 +63,19 @@ struct isl_set;
 namespace polly {
 static cl::opt<bool>
 OpenMP("enable-polly-openmp", cl::desc("Generate OpenMP parallel code"),
-       cl::Hidden, cl::value_desc("OpenMP code generation enabled if true"),
-       cl::init(false), cl::ZeroOrMore);
+       cl::value_desc("OpenMP code generation enabled if true"),
+       cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 #ifdef GPU_CODEGEN
 static cl::opt<bool>
 GPGPU("enable-polly-gpgpu", cl::desc("Generate GPU parallel code"), cl::Hidden,
       cl::value_desc("GPGPU code generation enabled if true"), cl::init(false),
-      cl::ZeroOrMore);
+      cl::ZeroOrMore, cl::cat(PollyCategory));
 
-static cl::opt<std::string> GPUTriple(
-    "polly-gpgpu-triple", cl::desc("Target triple for GPU code generation"),
-    cl::Hidden, cl::init(""));
+static cl::opt<std::string>
+GPUTriple("polly-gpgpu-triple",
+          cl::desc("Target triple for GPU code generation"), cl::Hidden,
+          cl::init(""), cl::cat(PollyCategory));
 #endif /* GPU_CODEGEN */
 
 typedef DenseMap<const char *, Value *> CharMapT;
@@ -168,7 +169,8 @@ Value *ClastExpCodeGen::codegen(const clast_binary *e, Type *Ty) {
 
 Value *ClastExpCodeGen::codegen(const clast_reduction *r, Type *Ty) {
   assert((r->type == clast_red_min || r->type == clast_red_max ||
-          r->type == clast_red_sum) && "Clast reduction type not supported");
+          r->type == clast_red_sum) &&
+         "Clast reduction type not supported");
   Value *old = codegen(r->elts[0], Ty);
 
   for (int i = 1; i < r->n; ++i) {
@@ -262,10 +264,10 @@ private:
 
   void codegen(const clast_assignment *a);
 
-  void
-  codegen(const clast_assignment *a, ScopStmt *Statement, unsigned Dimension,
-          int vectorDim, std::vector<ValueMapT> *VectorVMap = 0,
-          std::vector<LoopToScevMapT> *VLTS = 0);
+  void codegen(const clast_assignment *a, ScopStmt *Statement,
+               unsigned Dimension, int vectorDim,
+               std::vector<ValueMapT> *VectorVMap = 0,
+               std::vector<LoopToScevMapT> *VLTS = 0);
 
   void codegenSubstitutions(const clast_stmt *Assignment, ScopStmt *Statement,
                             int vectorDim = 0,
@@ -273,7 +275,8 @@ private:
                             std::vector<LoopToScevMapT> *VLTS = 0);
 
   void codegen(const clast_user_stmt *u, std::vector<Value *> *IVS = NULL,
-               const char *iterator = NULL, isl_set *scatteringDomain = 0);
+               const char *iterator = NULL,
+               __isl_take isl_set *scatteringDomain = 0);
 
   void codegen(const clast_block *b);
 
@@ -312,9 +315,10 @@ private:
   void codegenForGPGPU(const clast_for *F);
 
   /// @brief Get innermost for loop.
-  const clast_stmt *
-  getScheduleInfo(const clast_for *F, std::vector<int> &NumIters,
-                  unsigned &LoopDepth, unsigned &NonPLoopDepth);
+  const clast_stmt *getScheduleInfo(const clast_for *F,
+                                    std::vector<int> &NumIters,
+                                    unsigned &LoopDepth,
+                                    unsigned &NonPLoopDepth);
 #endif /* GPU_CODEGEN */
 
   /// @brief Check if a loop is parallel
@@ -368,9 +372,10 @@ void ClastStmtCodeGen::codegen(const clast_assignment *a) {
   ClastVars[a->LHS] = V;
 }
 
-void ClastStmtCodeGen::codegen(
-    const clast_assignment *A, ScopStmt *Stmt, unsigned Dim, int VectorDim,
-    std::vector<ValueMapT> *VectorVMap, std::vector<LoopToScevMapT> *VLTS) {
+void ClastStmtCodeGen::codegen(const clast_assignment *A, ScopStmt *Stmt,
+                               unsigned Dim, int VectorDim,
+                               std::vector<ValueMapT> *VectorVMap,
+                               std::vector<LoopToScevMapT> *VLTS) {
   Value *RHS;
 
   assert(!A->LHS && "Statement assignments do not have left hand side");
@@ -393,9 +398,10 @@ void ClastStmtCodeGen::codegen(
   }
 }
 
-void ClastStmtCodeGen::codegenSubstitutions(
-    const clast_stmt *Assignment, ScopStmt *Statement, int vectorDim,
-    std::vector<ValueMapT> *VectorVMap, std::vector<LoopToScevMapT> *VLTS) {
+void ClastStmtCodeGen::codegenSubstitutions(const clast_stmt *Assignment,
+                                            ScopStmt *Statement, int vectorDim,
+                                            std::vector<ValueMapT> *VectorVMap,
+                                            std::vector<LoopToScevMapT> *VLTS) {
   int Dimension = 0;
 
   while (Assignment) {
@@ -411,20 +417,22 @@ void ClastStmtCodeGen::codegenSubstitutions(
 // Takes the cloog specific domain and translates it into a map Statement ->
 // PartialSchedule, where the PartialSchedule contains all the dimensions that
 // have been code generated up to this point.
-static __isl_give isl_map *
-extractPartialSchedule(ScopStmt *Statement, isl_set *Domain) {
+static __isl_give isl_map *extractPartialSchedule(ScopStmt *Statement,
+                                                  __isl_take isl_set *Domain) {
   isl_map *Schedule = Statement->getScattering();
   int ScheduledDimensions = isl_set_dim(Domain, isl_dim_set);
   int UnscheduledDimensions =
       isl_map_dim(Schedule, isl_dim_out) - ScheduledDimensions;
 
+  isl_set_free(Domain);
+
   return isl_map_project_out(Schedule, isl_dim_out, ScheduledDimensions,
                              UnscheduledDimensions);
 }
 
-void
-ClastStmtCodeGen::codegen(const clast_user_stmt *u, std::vector<Value *> *IVS,
-                          const char *iterator, isl_set *Domain) {
+void ClastStmtCodeGen::codegen(const clast_user_stmt *u,
+                               std::vector<Value *> *IVS, const char *iterator,
+                               __isl_take isl_set *Domain) {
   ScopStmt *Statement = (ScopStmt *)u->statement->usr;
 
   if (u->substitutions)
@@ -464,14 +472,14 @@ void ClastStmtCodeGen::codegen(const clast_block *b) {
 
 void ClastStmtCodeGen::codegenForSequential(const clast_for *f) {
   Value *LowerBound, *UpperBound, *IV, *Stride;
-  BasicBlock *AfterBB;
+  BasicBlock *ExitBlock;
   Type *IntPtrTy = getIntPtrTy();
 
   LowerBound = ExpGen.codegen(f->LB, IntPtrTy);
   UpperBound = ExpGen.codegen(f->UB, IntPtrTy);
   Stride = Builder.getInt(APInt_from_MPZ(f->stride));
 
-  IV = createLoop(LowerBound, UpperBound, Stride, Builder, P, AfterBB,
+  IV = createLoop(LowerBound, UpperBound, Stride, Builder, P, ExitBlock,
                   CmpInst::ICMP_SLE);
 
   // Add loop iv to symbols.
@@ -482,7 +490,7 @@ void ClastStmtCodeGen::codegenForSequential(const clast_for *f) {
 
   // Loop is finished, so remove its iv from the live symbols.
   ClastVars.erase(f->iterator);
-  Builder.SetInsertPoint(AfterBB->begin());
+  Builder.SetInsertPoint(ExitBlock->begin());
 }
 
 // Helper class to determine all scalar parameters used in the basic blocks of a
@@ -661,9 +669,10 @@ SetVector<Value *> ClastStmtCodeGen::getGPUValues(unsigned &OutputBytes) {
   return Values;
 }
 
-const clast_stmt *ClastStmtCodeGen::getScheduleInfo(
-    const clast_for *F, std::vector<int> &NumIters, unsigned &LoopDepth,
-    unsigned &NonPLoopDepth) {
+const clast_stmt *ClastStmtCodeGen::getScheduleInfo(const clast_for *F,
+                                                    std::vector<int> &NumIters,
+                                                    unsigned &LoopDepth,
+                                                    unsigned &NonPLoopDepth) {
   clast_stmt *Stmt = (clast_stmt *)F;
   const clast_for *Result;
   bool NonParaFlag = false;
@@ -813,7 +822,7 @@ void ClastStmtCodeGen::codegenForVector(const clast_for *F) {
   for (int i = 1; i < VectorWidth; i++)
     IVS[i] = Builder.CreateAdd(IVS[i - 1], StrideValue, "p_vector_iv");
 
-  isl_set *Domain = isl_set_from_cloog_domain(F->domain);
+  isl_set *Domain = isl_set_copy(isl_set_from_cloog_domain(F->domain));
 
   // Add loop iv to symbols.
   ClastVars[F->iterator] = LB;
@@ -832,12 +841,12 @@ void ClastStmtCodeGen::codegenForVector(const clast_for *F) {
 }
 
 bool ClastStmtCodeGen::isParallelFor(const clast_for *f) {
-  isl_set *Domain = isl_set_from_cloog_domain(f->domain);
+  isl_set *Domain = isl_set_copy(isl_set_from_cloog_domain(f->domain));
   assert(Domain && "Cannot access domain of loop");
 
   Dependences &D = P->getAnalysis<Dependences>();
 
-  return D.isParallelDimension(isl_set_copy(Domain), isl_set_n_dim(Domain));
+  return D.isParallelDimension(Domain, isl_set_n_dim(Domain));
 }
 
 void ClastStmtCodeGen::codegen(const clast_for *f) {
@@ -919,6 +928,11 @@ void ClastStmtCodeGen::codegen(const clast_guard *g) {
   Builder.CreateBr(MergeBB);
   Builder.SetInsertPoint(ThenBB->begin());
 
+  LoopInfo &LI = P->getAnalysis<LoopInfo>();
+  Loop *L = LI.getLoopFor(CondBB);
+  if (L)
+    L->addBasicBlockToLoop(ThenBB, LI.getBase());
+
   codegen(g->then);
 
   Builder.SetInsertPoint(MergeBB->begin());
@@ -986,8 +1000,8 @@ public:
   bool runOnScop(Scop &S) {
     ParallelLoops.clear();
 
-    assert(!S.getRegion().isTopLevelRegion()
-           && "Top level regions are not supported");
+    assert(!S.getRegion().isTopLevelRegion() &&
+           "Top level regions are not supported");
 
     simplifyRegion(&S, this);
 
@@ -1025,8 +1039,6 @@ public:
 
     AU.addPreserved<CloogInfo>();
     AU.addPreserved<Dependences>();
-
-    // FIXME: We do not create LoopInfo for the newly generated loops.
     AU.addPreserved<LoopInfo>();
     AU.addPreserved<DominatorTree>();
     AU.addPreserved<ScopDetection>();

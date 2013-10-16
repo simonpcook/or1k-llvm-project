@@ -34,12 +34,14 @@ public:
 
     virtual void GetDescription (Stream *s, lldb::DescriptionLevel level);
     virtual bool ShouldStop (Event *event_ptr);
-    virtual bool PlanExplainsStop (Event *event_ptr);
-    virtual bool WillResume (lldb::StateType resume_state, bool current_plan);
     
 protected:
+    virtual bool DoPlanExplainsStop (Event *event_ptr);
+    virtual bool DoWillResume (lldb::StateType resume_state, bool current_plan);
 
 private:
+
+    bool IsEquivalentContext(const SymbolContext &context);
 
     bool m_first_resume;
 

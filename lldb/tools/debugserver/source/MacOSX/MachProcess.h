@@ -18,7 +18,6 @@
 #include "DNBBreakpoint.h"
 #include "DNBError.h"
 #include "DNBThreadResumeActions.h"
-//#include "MachDYLD.h"
 #include "MachException.h"
 #include "MachVMMemory.h"
 #include "MachTask.h"
@@ -115,22 +114,20 @@ public:
     //----------------------------------------------------------------------
     // Breakpoint functions
     //----------------------------------------------------------------------
-    nub_break_t             CreateBreakpoint (nub_addr_t addr, nub_size_t length, bool hardware, thread_t thread);
-    bool                    DisableBreakpoint (nub_break_t breakID, bool remove);
-    nub_size_t              DisableAllBreakpoints (bool remove);
-    bool                    EnableBreakpoint (nub_break_t breakID);
-    void                    DumpBreakpoint(nub_break_t breakID) const;
+    DNBBreakpoint *         CreateBreakpoint (nub_addr_t addr, nub_size_t length, bool hardware);
+    bool                    DisableBreakpoint (nub_addr_t addr, bool remove);
+    void                    DisableAllBreakpoints (bool remove);
+    bool                    EnableBreakpoint (nub_addr_t addr);
     DNBBreakpointList&      Breakpoints() { return m_breakpoints; }
     const DNBBreakpointList& Breakpoints() const { return m_breakpoints; }
 
     //----------------------------------------------------------------------
     // Watchpoint functions
     //----------------------------------------------------------------------
-    nub_watch_t             CreateWatchpoint (nub_addr_t addr, nub_size_t length, uint32_t watch_type, bool hardware, thread_t thread);
-    bool                    DisableWatchpoint (nub_watch_t watchID, bool remove);
-    nub_size_t              DisableAllWatchpoints (bool remove);
-    bool                    EnableWatchpoint (nub_watch_t watchID);
-    void                    DumpWatchpoint(nub_watch_t watchID) const;
+    DNBBreakpoint *         CreateWatchpoint (nub_addr_t addr, nub_size_t length, uint32_t watch_type, bool hardware);
+    bool                    DisableWatchpoint (nub_addr_t addr, bool remove);
+    void                    DisableAllWatchpoints (bool remove);
+    bool                    EnableWatchpoint (nub_addr_t addr);
     uint32_t                GetNumSupportedHardwareWatchpoints () const;
     DNBBreakpointList&      Watchpoints() { return m_watchpoints; }
     const DNBBreakpointList& Watchpoints() const { return m_watchpoints; }
@@ -179,7 +176,7 @@ public:
     nub_thread_t            GetCurrentThreadMachPort ();
     nub_thread_t            SetCurrentThread (nub_thread_t tid);
     MachThreadList &        GetThreadList() { return m_thread_list; }
-    bool                    GetThreadStoppedReason(nub_thread_t tid, struct DNBThreadStopInfo *stop_info) const;
+    bool                    GetThreadStoppedReason(nub_thread_t tid, struct DNBThreadStopInfo *stop_info);
     void                    DumpThreadStoppedReason(nub_thread_t tid) const;
     const char *            GetThreadInfo (nub_thread_t tid) const;
 
@@ -264,7 +261,6 @@ private:
     void                    Clear ();
     void                    ReplyToAllExceptions ();
     void                    PrivateResume ();
-    nub_size_t              RemoveTrapsFromBuffer (nub_addr_t addr, nub_size_t size, uint8_t *buf) const;
 
     uint32_t                Flags () const { return m_flags; }
     nub_state_t             DoSIGSTOP (bool clear_bps_and_wps, bool allow_running, uint32_t *thread_idx_ptr);
@@ -300,6 +296,7 @@ private:
     nub_state_t                 m_state;                    // The state of our process
     PThreadMutex                m_state_mutex;              // Multithreaded protection for m_state
     PThreadEvent                m_events;                   // Process related events in the child processes lifetime can be waited upon
+    PThreadEvent                m_private_events;           // Used to coordinate running and stopping the process without affecting m_events
     DNBBreakpointList           m_breakpoints;              // Breakpoint list for this process
     DNBBreakpointList           m_watchpoints;              // Watchpoint list for this process
     DNBCallbackNameToAddress    m_name_to_addr_callback;
@@ -307,6 +304,7 @@ private:
     DNBCallbackCopyExecutableImageInfos
                                 m_image_infos_callback;
     void *                      m_image_infos_baton;
+    bool                        m_did_exec;
 };
 
 

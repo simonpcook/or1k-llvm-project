@@ -17,11 +17,13 @@
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Event.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/State.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/OptionGroupPlatform.h"
+#include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/TargetList.h"
@@ -80,8 +82,68 @@ TargetList::CreateTarget (Debugger &debugger,
             return error;
         }
     }
-
+    
     ArchSpec platform_arch(arch);
+
+    
+    if (user_exe_path && user_exe_path[0])
+    {
+        ModuleSpecList module_specs;
+        ModuleSpec module_spec;
+        module_spec.GetFileSpec().SetFile(user_exe_path, true);
+        lldb::offset_t file_offset = 0;
+        lldb::offset_t file_size = 0;
+        const size_t num_specs = ObjectFile::GetModuleSpecifications (module_spec.GetFileSpec(), file_offset, file_size, module_specs);
+        if (num_specs > 0)
+        {
+            ModuleSpec matching_module_spec;
+
+            if (num_specs == 1)
+            {
+                if (module_specs.GetModuleSpecAtIndex(0, matching_module_spec))
+                {
+                    if (platform_arch.IsValid())
+                    {
+                        if (!platform_arch.IsCompatibleMatch(matching_module_spec.GetArchitecture()))
+                        {
+                            error.SetErrorStringWithFormat("the specified architecture '%s' is not compatible with '%s' in '%s'",
+                                                           platform_arch.GetTriple().str().c_str(),
+                                                           matching_module_spec.GetArchitecture().GetTriple().str().c_str(),
+                                                           module_spec.GetFileSpec().GetPath().c_str());
+                            return error;
+                        }
+                    }
+                    else
+                    {
+                        // Only one arch and none was specified
+                        platform_arch = matching_module_spec.GetArchitecture();
+                    }
+                }
+            }
+            else
+            {
+                if (arch.IsValid())
+                {
+                    module_spec.GetArchitecture() = arch;
+                    if (module_specs.FindMatchingModuleSpec(module_spec, matching_module_spec))
+                    {
+                        platform_arch = matching_module_spec.GetArchitecture();
+                    }
+                }
+                // Don't just select the first architecture, we want to let the platform select
+                // the best architecture first when there are multiple archs.
+//                else
+//                {
+//                    // No arch specified, select the first arch
+//                    if (module_specs.GetModuleSpecAtIndex(0, matching_module_spec))
+//                    {
+//                        platform_arch = matching_module_spec.GetArchitecture();
+//                    }
+//                }
+            }
+        }
+    }
+
     CommandInterpreter &interpreter = debugger.GetCommandInterpreter();
     if (platform_options)
     {
@@ -160,8 +222,19 @@ TargetList::CreateTarget (Debugger &debugger,
     FileSpec file (user_exe_path, false);
     if (!file.Exists() && user_exe_path && user_exe_path[0] == '~')
     {
-        file = FileSpec(user_exe_path, true);
+        // we want to expand the tilde but we don't want to resolve any symbolic links
+        // so we can't use the FileSpec constructor's resolve flag
+        char unglobbed_path[PATH_MAX];
+        unglobbed_path[0] = '\0';
+
+        size_t return_count = FileSpec::ResolveUsername(user_exe_path, unglobbed_path, sizeof(unglobbed_path));
+
+        if (return_count == 0 || return_count >= sizeof(unglobbed_path))
+            ::snprintf (unglobbed_path, sizeof(unglobbed_path), "%s", user_exe_path);
+
+        file = FileSpec(unglobbed_path, false);
     }
+
     bool user_exe_path_is_bundle = false;
     char resolved_bundle_exe_path[PATH_MAX];
     resolved_bundle_exe_path[0] = '\0';
@@ -205,18 +278,14 @@ TargetList::CreateTarget (Debugger &debugger,
             {
                 if (arch.IsValid())
                 {
-                    error.SetErrorStringWithFormat("\"%s%s%s\" doesn't contain architecture %s",
-                                                   file.GetDirectory().AsCString(),
-                                                   file.GetDirectory() ? "/" : "",
-                                                   file.GetFilename().AsCString(),
+                    error.SetErrorStringWithFormat("\"%s\" doesn't contain architecture %s",
+                                                   file.GetPath().c_str(),
                                                    arch.GetArchitectureName());
                 }
                 else
                 {
-                    error.SetErrorStringWithFormat("unsupported file type \"%s%s%s\"",
-                                                   file.GetDirectory().AsCString(),
-                                                   file.GetDirectory() ? "/" : "",
-                                                   file.GetFilename().AsCString());
+                    error.SetErrorStringWithFormat("unsupported file type \"%s\"",
+                                                   file.GetPath().c_str());
                 }
                 return error;
             }
@@ -247,8 +316,8 @@ TargetList::CreateTarget (Debugger &debugger,
             }
             else
             {
-                // Just use what the user typed
-                target_sp->SetArg0 (user_exe_path);
+                // Use resolved path
+                target_sp->SetArg0 (file.GetPath().c_str());
             }
         }
         if (file.GetDirectory())
@@ -294,7 +363,7 @@ TargetList::FindTargetWithExecutableAndArchitecture
 {
     Mutex::Locker locker (m_target_list_mutex);
     TargetSP target_sp;
-    bool full_match = exe_file_spec.GetDirectory();
+    bool full_match = (bool)exe_file_spec.GetDirectory();
 
     collection::const_iterator pos, end = m_target_list.end();
     for (pos = m_target_list.begin(); pos != end; ++pos)

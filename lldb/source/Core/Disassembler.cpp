@@ -56,7 +56,8 @@ Disassembler::FindPlugin (const ArchSpec &arch, const char *flavor, const char *
     
     if (plugin_name)
     {
-        create_callback = PluginManager::GetDisassemblerCreateCallbackForPluginName (plugin_name);
+        ConstString const_plugin_name (plugin_name);
+        create_callback = PluginManager::GetDisassemblerCreateCallbackForPluginName (const_plugin_name);
         if (create_callback)
         {
             DisassemblerSP disassembler_sp(create_callback(arch, flavor));
@@ -193,10 +194,7 @@ Disassembler::Disassemble
         {
             module->FindFunctions (name,
                                    NULL,
-                                   eFunctionNameTypeBase | 
-                                   eFunctionNameTypeFull | 
-                                   eFunctionNameTypeMethod | 
-                                   eFunctionNameTypeSelector, 
+                                   eFunctionNameTypeAuto, 
                                    include_symbols,
                                    include_inlines,
                                    true,
@@ -205,10 +203,7 @@ Disassembler::Disassemble
         else if (exe_ctx.GetTargetPtr())
         {
             exe_ctx.GetTargetPtr()->GetImages().FindFunctions (name, 
-                                                               eFunctionNameTypeBase | 
-                                                               eFunctionNameTypeFull | 
-                                                               eFunctionNameTypeMethod | 
-                                                               eFunctionNameTypeSelector,
+                                                               eFunctionNameTypeAuto,
                                                                include_symbols,
                                                                include_inlines,
                                                                false,
@@ -240,7 +235,8 @@ Disassembler::DisassembleRange
     const char *plugin_name,
     const char *flavor,
     const ExecutionContext &exe_ctx,
-    const AddressRange &range
+    const AddressRange &range,
+    bool prefer_file_cache
 )
 {
     lldb::DisassemblerSP disasm_sp;
@@ -250,7 +246,6 @@ Disassembler::DisassembleRange
 
         if (disasm_sp)
         {
-            const bool prefer_file_cache = false;
             size_t bytes_disassembled = disasm_sp->ParseInstructions (&exe_ctx, range, NULL, prefer_file_cache);
             if (bytes_disassembled == 0)
                 disasm_sp.reset();
@@ -321,14 +316,19 @@ Disassembler::Disassemble
             if (bytes_disassembled == 0)
                 return false;
 
-            return PrintInstructions (disasm_sp.get(),
-                                      debugger,
-                                      arch,
-                                      exe_ctx,
-                                      num_instructions,
-                                      num_mixed_context_lines,
-                                      options,
-                                      strm);
+            bool result = PrintInstructions (disasm_sp.get(),
+                                             debugger,
+                                             arch,
+                                             exe_ctx,
+                                             num_instructions,
+                                             num_mixed_context_lines,
+                                             options,
+                                             strm);
+            
+            // FIXME: The DisassemblerLLVMC has a reference cycle and won't go away if it has any active instructions.
+            // I'll fix that but for now, just clear the list and it will go away nicely.
+            disasm_sp->GetInstructionList().Clear();
+            return result;
         }
     }
     return false;
@@ -366,14 +366,19 @@ Disassembler::Disassemble
                                                                       prefer_file_cache);
             if (bytes_disassembled == 0)
                 return false;
-            return PrintInstructions (disasm_sp.get(),
-                                      debugger,
-                                      arch,
-                                      exe_ctx,
-                                      num_instructions,
-                                      num_mixed_context_lines,
-                                      options,
-                                      strm);
+            bool result = PrintInstructions (disasm_sp.get(),
+                                             debugger,
+                                             arch,
+                                             exe_ctx,
+                                             num_instructions,
+                                             num_mixed_context_lines,
+                                             options,
+                                             strm);
+            
+            // FIXME: The DisassemblerLLVMC has a reference cycle and won't go away if it has any active instructions.
+            // I'll fix that but for now, just clear the list and it will go away nicely.
+            disasm_sp->GetInstructionList().Clear();
+            return result;
         }
     }
     return false;
@@ -406,6 +411,9 @@ Disassembler::PrintInstructions
     const Address *pc_addr_ptr = NULL;
     ExecutionContextScope *exe_scope = exe_ctx.GetBestExecutionContextScope();
     StackFrame *frame = exe_ctx.GetFramePtr();
+
+    TargetSP target_sp (exe_ctx.GetTargetSP());
+    SourceManager &source_manager = target_sp ? target_sp->GetSourceManager() : debugger.GetSourceManager();
 
     if (frame)
         pc_addr_ptr = &frame->GetFrameCodeAddress();
@@ -443,12 +451,12 @@ Disassembler::PrintInstructions
                                 
                                 if (sc.comp_unit && sc.line_entry.IsValid())
                                 {
-                                    debugger.GetSourceManager().DisplaySourceLinesWithLineNumbers (sc.line_entry.file,
-                                                                                                   sc.line_entry.line,
-                                                                                                   num_mixed_context_lines,
-                                                                                                   num_mixed_context_lines,
-                                                                                                   ((inst_is_at_pc && (options & eOptionMarkPCSourceLine)) ? "->" : ""),
-                                                                                                   &strm);
+                                    source_manager.DisplaySourceLinesWithLineNumbers (sc.line_entry.file,
+                                                                                      sc.line_entry.line,
+                                                                                      num_mixed_context_lines,
+                                                                                      num_mixed_context_lines,
+                                                                                      ((inst_is_at_pc && (options & eOptionMarkPCSourceLine)) ? "->" : ""),
+                                                                                      &strm);
                                 }
                             }
                         }

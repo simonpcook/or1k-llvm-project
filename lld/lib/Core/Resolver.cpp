@@ -10,10 +10,11 @@
 #include "lld/Core/Atom.h"
 #include "lld/Core/File.h"
 #include "lld/Core/InputFiles.h"
+#include "lld/Core/Instrumentation.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Resolver.h"
 #include "lld/Core/SymbolTable.h"
-#include "lld/Core/TargetInfo.h"
+#include "lld/Core/LinkingContext.h"
 #include "lld/Core/UndefinedAtom.h"
 
 #include "llvm/Support/Debug.h"
@@ -27,10 +28,12 @@
 
 namespace lld {
 
+namespace {
+
 /// This is used as a filter function to std::remove_if to dead strip atoms.
 class NotLive {
 public:
-       NotLive(const llvm::DenseSet<const Atom*>& la) : _liveAtoms(la) { }
+  explicit NotLive(const llvm::DenseSet<const Atom*>& la) : _liveAtoms(la) { }
 
   bool operator()(const Atom *atom) const {
     // don't remove if live
@@ -53,7 +56,7 @@ private:
 /// This is used as a filter function to std::remove_if to coalesced atoms.
 class AtomCoalescedAway {
 public:
-  AtomCoalescedAway(SymbolTable &sym) : _symbolTable(sym) {}
+  explicit AtomCoalescedAway(SymbolTable &sym) : _symbolTable(sym) {}
 
   bool operator()(const Atom *atom) const {
     const Atom *rep = _symbolTable.replacement(atom);
@@ -64,9 +67,12 @@ private:
   SymbolTable &_symbolTable;
 };
 
+} // namespace
+
 
 // add all atoms from all initial .o files
 void Resolver::buildInitialAtomList() {
+  ScopedTask task(getDefaultDomain(), "buildInitialAtomList");
  DEBUG_WITH_TYPE("resolver", llvm::dbgs() << "Resolver initial atom list:\n");
 
   // each input files contributes initial atoms
@@ -82,7 +88,7 @@ void Resolver::doFile(const File &file) {
 }
 
 
-void Resolver::doUndefinedAtom(const class UndefinedAtom& atom) {
+void Resolver::doUndefinedAtom(const UndefinedAtom& atom) {
   DEBUG_WITH_TYPE("resolver", llvm::dbgs()
                     << "       UndefinedAtom: "
                     << llvm::format("0x%09lX", &atom)
@@ -128,7 +134,7 @@ void Resolver::doDefinedAtom(const DefinedAtom &atom) {
   // tell symbol table
   _symbolTable.add(atom);
 
-  if (_targetInfo.deadStrip()) {
+  if (_context.deadStrip()) {
     // add to set of dead-strip-roots, all symbols that
     // the compiler marks as don't strip
     if (atom.deadStrip() == DefinedAtom::deadStripNever)
@@ -172,31 +178,44 @@ void Resolver::doAbsoluteAtom(const AbsoluteAtom& atom) {
 
 // utility to add a vector of atoms
 void Resolver::addAtoms(const std::vector<const DefinedAtom*>& newAtoms) {
-  for (std::vector<const DefinedAtom *>::const_iterator it = newAtoms.begin();
-       it != newAtoms.end(); ++it) {
-    this->doDefinedAtom(**it);
+  for (const DefinedAtom *newAtom : newAtoms) {
+    this->doDefinedAtom(*newAtom);
   }
 }
 
 // ask symbol table if any definitionUndefined atoms still exist
 // if so, keep searching libraries until no more atoms being added
 void Resolver::resolveUndefines() {
+  ScopedTask task(getDefaultDomain(), "resolveUndefines");
   const bool searchArchives =
-      _targetInfo.searchArchivesToOverrideTentativeDefinitions();
+      _context.searchArchivesToOverrideTentativeDefinitions();
   const bool searchSharedLibs =
-      _targetInfo.searchSharedLibrariesToOverrideTentativeDefinitions();
+      _context.searchSharedLibrariesToOverrideTentativeDefinitions();
 
   // keep looping until no more undefines were added in last loop
-  unsigned int undefineGenCount = 0xFFFFFFFF;
-  while (undefineGenCount != _symbolTable.size()) {
+  unsigned int undefineGenCount;
+  do {
     undefineGenCount = _symbolTable.size();
     std::vector<const UndefinedAtom *> undefines;
     _symbolTable.undefines(undefines);
-    for ( const Atom *undefAtom : undefines ) {
+    for (const UndefinedAtom *undefAtom : undefines) {
       StringRef undefName = undefAtom->name();
       // load for previous undefine may also have loaded this undefine
       if (!_symbolTable.isDefined(undefName)) {
-        _inputFiles.searchLibraries(undefName, true, true, false, *this);
+        _inputFiles.searchLibraries(undefName,
+                                    true,   // searchSharedLibs
+                                    true,   // searchArchives
+                                    false,  // dataSymbolOnly
+                                    *this);
+      }
+      // If the undefined symbol has an alternative name, try to resolve the
+      // symbol with the name to give it a second chance. This feature is used
+      // for COFF "weak external" symbol.
+      if (!_symbolTable.isDefined(undefName)) {
+        if (const UndefinedAtom *fallbackUndefAtom = undefAtom->fallback()) {
+          _symbolTable.addReplacement(undefAtom, fallbackUndefAtom);
+          _symbolTable.add(*fallbackUndefAtom);
+        }
       }
     }
     // search libraries for overrides of common symbols
@@ -209,21 +228,25 @@ void Resolver::resolveUndefines() {
         const Atom *curAtom = _symbolTable.findByName(tentDefName);
         assert(curAtom != nullptr);
         if (const DefinedAtom* curDefAtom = dyn_cast<DefinedAtom>(curAtom)) {
-          if (curDefAtom->merge() == DefinedAtom::mergeAsTentative ) {
+          if (curDefAtom->merge() == DefinedAtom::mergeAsTentative) {
             // Still tentative definition, so look for override.
-            _inputFiles.searchLibraries(tentDefName, searchSharedLibs,
-                                        searchArchives, true, *this);
+            _inputFiles.searchLibraries(tentDefName,
+                                        searchSharedLibs,
+                                        searchArchives,
+                                        true,  // dataSymbolOnly
+                                        *this);
           }
         }
       }
     }
-  }
+  } while (undefineGenCount != _symbolTable.size());
 }
 
 
 // switch all references to undefined or coalesced away atoms
 // to the new defined atom
 void Resolver::updateReferences() {
+  ScopedTask task(getDefaultDomain(), "updateReferences");
   for(const Atom *atom : _atoms) {
     if (const DefinedAtom* defAtom = dyn_cast<DefinedAtom>(atom)) {
       for (const Reference *ref : *defAtom) {
@@ -257,16 +280,17 @@ void Resolver::markLive(const Atom &atom) {
 
 // remove all atoms not actually used
 void Resolver::deadStripOptimize() {
+  ScopedTask task(getDefaultDomain(), "deadStripOptimize");
   // only do this optimization with -dead_strip
-  if (!_targetInfo.deadStrip())
+  if (!_context.deadStrip())
     return;
 
   // clear liveness on all atoms
   _liveAtoms.clear();
 
   // By default, shared libraries are built with all globals as dead strip roots
-  if (_targetInfo.globalsAreDeadStripRoots()) {
-    for ( const Atom *atom : _atoms ) {
+  if (_context.globalsAreDeadStripRoots()) {
+    for (const Atom *atom : _atoms) {
       const DefinedAtom *defAtom = dyn_cast<DefinedAtom>(atom);
       if (defAtom == nullptr)
         continue;
@@ -276,9 +300,13 @@ void Resolver::deadStripOptimize() {
   }
 
   // Or, use list of names that are dead stip roots.
-  for (const StringRef &name : _targetInfo.deadStripRoots()) {
+  for (const StringRef &name : _context.deadStripRoots()) {
     const Atom *symAtom = _symbolTable.findByName(name);
-    assert(symAtom->definition() != Atom::definitionUndefined);
+    if (symAtom->definition() == Atom::definitionUndefined) {
+      llvm::errs() << "Dead strip root '" << symAtom->name()
+                   << "' is not defined\n";
+      return;
+    }
     _deadStripRoots.insert(symAtom);
   }
 
@@ -302,7 +330,7 @@ bool Resolver::checkUndefines(bool final) {
   // build vector of remaining undefined symbols
   std::vector<const UndefinedAtom *> undefinedAtoms;
   _symbolTable.undefines(undefinedAtoms);
-  if (_targetInfo.deadStrip()) {
+  if (_context.deadStrip()) {
     // When dead code stripping, we don't care if dead atoms are undefined.
     undefinedAtoms.erase(std::remove_if(
                            undefinedAtoms.begin(), undefinedAtoms.end(),
@@ -315,23 +343,29 @@ bool Resolver::checkUndefines(bool final) {
     bool foundUndefines = false;
     for (const UndefinedAtom *undefAtom : undefinedAtoms) {
       const File &f = undefAtom->file();
-      bool isAtomUndefined = false;
-      if (isa<SharedLibraryFile>(f)) {
-        if (!_targetInfo.allowShlibUndefines()) {
-          foundUndefines = true;
-          isAtomUndefined = true;
-        }
-      } else if (undefAtom->canBeNull() == UndefinedAtom::canBeNullNever) {
-        foundUndefines = true;
-        isAtomUndefined = true;
-      }
-      if (isAtomUndefined && _targetInfo.printRemainingUndefines()) {
+
+      // Skip over a weak symbol.
+      if (undefAtom->canBeNull() != UndefinedAtom::canBeNullNever)
+        continue;
+
+      // If this is a library and undefined symbols are allowed on the
+      // target platform, skip over it.
+      if (isa<SharedLibraryFile>(f) && _context.allowShlibUndefines())
+        continue;
+
+      // If the undefine is coalesced away, skip over it.
+      if (_symbolTable.replacement(undefAtom) != undefAtom)
+        continue;
+
+      // Seems like this symbol is undefined. Warn that.
+      foundUndefines = true;
+      if (_context.printRemainingUndefines()) {
         llvm::errs() << "Undefined Symbol: " << undefAtom->file().path()
                      << " : " << undefAtom->name() << "\n";
       }
     }
     if (foundUndefines) {
-      if (_targetInfo.printRemainingUndefines())
+      if (_context.printRemainingUndefines())
         llvm::errs() << "symbol(s) not found\n";
       return true;
     }
@@ -342,6 +376,7 @@ bool Resolver::checkUndefines(bool final) {
 
 // remove from _atoms all coaleseced away atoms
 void Resolver::removeCoalescedAwayAtoms() {
+  ScopedTask task(getDefaultDomain(), "removeCoalescedAwayAtoms");
   _atoms.erase(std::remove_if(_atoms.begin(), _atoms.end(),
                               AtomCoalescedAway(_symbolTable)), _atoms.end());
 }
@@ -349,6 +384,7 @@ void Resolver::removeCoalescedAwayAtoms() {
 // check for interactions between symbols defined in this linkage unit
 // and same symbol name in linked dynamic shared libraries
 void Resolver::checkDylibSymbolCollisions() {
+  ScopedTask task(getDefaultDomain(), "checkDylibSymbolCollisions");
   for ( const Atom *atom : _atoms ) {
     const DefinedAtom* defAtom = dyn_cast<DefinedAtom>(atom);
     if (defAtom == nullptr)
@@ -374,7 +410,7 @@ bool Resolver::resolve() {
   this->updateReferences();
   this->deadStripOptimize();
   if (this->checkUndefines(false)) {
-    if (!_targetInfo.allowRemainingUndefines())
+    if (!_context.allowRemainingUndefines())
       return true;
   }
   this->removeCoalescedAwayAtoms();
@@ -408,6 +444,7 @@ MutableFile::DefinedAtomRange Resolver::MergedFile::definedAtoms() {
 
 
 void Resolver::MergedFile::addAtoms(std::vector<const Atom*>& all) {
+  ScopedTask task(getDefaultDomain(), "addAtoms");
   DEBUG_WITH_TYPE("resolver", llvm::dbgs() << "Resolver final atom list:\n");
   for ( const Atom *atom : all ) {
     DEBUG_WITH_TYPE("resolver", llvm::dbgs()

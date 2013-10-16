@@ -107,7 +107,7 @@ public:
     /// FIXME: The FreeBSD implementation of this function should use tid in order
     ///        to enable support for debugging threaded programs.
     bool
-    ReadRegisterValue(lldb::tid_t tid, unsigned offset,
+    ReadRegisterValue(lldb::tid_t tid, unsigned offset, const char *reg_name,
                       unsigned size, lldb_private::RegisterValue &value);
 
     /// Writes the given value to the register identified by the given
@@ -117,7 +117,7 @@ public:
     /// FIXME: The FreeBSD implementation of this function should use tid in order
     ///        to enable support for debugging threaded programs.
     bool
-    WriteRegisterValue(lldb::tid_t tid, unsigned offset,
+    WriteRegisterValue(lldb::tid_t tid, unsigned offset, const char *reg_name,
                        const lldb_private::RegisterValue &value);
 
     /// Reads all general purpose registers into the specified buffer.
@@ -132,6 +132,14 @@ public:
     bool
     ReadFPR(lldb::tid_t tid, void *buf, size_t buf_size);
 
+    /// Reads the specified register set into the specified buffer.
+    ///
+    /// This method is provided for use by RegisterContextFreeBSD derivatives.
+    /// FIXME: The FreeBSD implementation of this function should use tid in order
+    ///        to enable support for debugging threaded programs.
+    bool
+    ReadRegisterSet(lldb::tid_t tid, void *buf, size_t buf_size, unsigned int regset);
+
     /// Writes all general purpose registers into the specified buffer.
     /// FIXME: The FreeBSD implementation of this function should use tid in order
     ///        to enable support for debugging threaded programs.
@@ -142,12 +150,20 @@ public:
     /// FIXME: The FreeBSD implementation of this function should use tid in order
     ///        to enable support for debugging threaded programs.
     bool
-    WriteFPR(lldb::tid_t tid, void *buf);
+    WriteFPR(lldb::tid_t tid, void *buf, size_t buf_size);
 
-    /// Writes a siginfo_t structure corresponding to the given thread ID to the
-    /// memory region pointed to by @p siginfo.
+    /// Writes the specified register set into the specified buffer.
+    ///
+    /// This method is provided for use by RegisterContextFreeBSD derivatives.
+    /// FIXME: The FreeBSD implementation of this function should use tid in order
+    ///        to enable support for debugging threaded programs.
     bool
-    GetSignalInfo(lldb::tid_t tid, void *siginfo, int &errno);
+    WriteRegisterSet(lldb::tid_t tid, void *buf, size_t buf_size, unsigned int regset);
+
+    /// Writes a ptrace_lwpinfo structure corresponding to the given thread ID
+    /// to the memory region pointed to by @p lwpinfo.
+    bool
+    GetLwpInfo(lldb::tid_t tid, void *lwpinfo, int &error_no);
 
     /// Writes the raw event message code (vis-a-vis PTRACE_GETEVENTMSG)
     /// corresponding to the given thread IDto the memory pointed to by @p
@@ -172,8 +188,14 @@ public:
     BringProcessIntoLimbo();
 
     lldb_private::Error
-    Detach();
+    Detach(lldb::tid_t tid);
 
+    void
+    StopMonitor();
+
+    // Waits for the initial stop message from a new thread.
+    bool
+    WaitForInitialTIDStop(lldb::tid_t tid);
 
 private:
     ProcessFreeBSD *m_process;
@@ -182,12 +204,17 @@ private:
     lldb::thread_t m_monitor_thread;
     lldb::pid_t m_pid;
 
-
-    lldb_private::Mutex m_server_mutex;
     int m_terminal_fd;
-    int m_client_fd;
-    int m_server_fd;
 
+    // current operation which must be executed on the privileged thread
+    Operation *m_operation;
+    lldb_private::Mutex m_operation_mutex;
+
+    // semaphores notified when Operation is ready to be processed and when
+    // the operation is complete.
+    sem_t m_operation_pending;
+    sem_t m_operation_done;
+    
     struct OperationArgs
     {
         OperationArgs(ProcessMonitor *monitor);
@@ -228,17 +255,11 @@ private:
     void
     StartLaunchOpThread(LaunchArgs *args, lldb_private::Error &error);
 
-    void
-    StopLaunchOpThread();
-
     static void *
     LaunchOpThread(void *arg);
 
     static bool
     Launch(LaunchArgs *args);
-
-    bool
-    EnableIPC();
 
     struct AttachArgs : OperationArgs
     {
@@ -252,9 +273,6 @@ private:
 
     void
     StartAttachOpThread(AttachArgs *args, lldb_private::Error &error);
-
-    void
-    StopAttachOpThread();
 
     static void *
     AttachOpThread(void *args);
@@ -299,11 +317,9 @@ private:
     void
     StopMonitoringChildProcess();
 
-    void 
-    StopMonitor();
-
+    /// Stops the operation thread used to attach/launch a process.
     void
-    CloseFD(int &fd);
+    StopOpThread();
 };
 
 #endif // #ifndef liblldb_ProcessMonitor_H_

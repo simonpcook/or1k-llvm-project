@@ -7,6 +7,13 @@ include_directories(
   )
 endif ()
 
+if ( CMAKE_SYSTEM_NAME MATCHES "FreeBSD" )
+include_directories(
+  Plugins/Process/FreeBSD
+  Plugins/Process/POSIX
+  )
+endif ()
+
 add_subdirectory(API)
 add_subdirectory(Breakpoint)
 add_subdirectory(Commands)
@@ -38,25 +45,27 @@ set( LLDB_USED_LIBS
   lldbPluginSymbolFileDWARF
   lldbPluginSymbolFileSymtab
   lldbPluginDynamicLoaderStatic
+  lldbPluginDynamicLoaderPosixDYLD
   
   lldbPluginObjectFileMachO
   lldbPluginObjectFileELF
+  lldbPluginSymbolVendorELF
   lldbPluginObjectContainerBSDArchive
   lldbPluginObjectContainerMachOArchive
   lldbPluginProcessGDBRemote  
+  lldbPluginProcessMachCore
   lldbPluginProcessUtility
   lldbPluginPlatformGDB
   lldbPluginPlatformFreeBSD
   lldbPluginPlatformLinux
+  lldbPluginPlatformPOSIX
   lldbPluginObjectFileMachO
   lldbPluginObjectContainerMachOArchive
   lldbPluginObjectContainerBSDArchive
   lldbPluginPlatformMacOSX
   lldbPluginDynamicLoaderMacOSXDYLD
-  lldbPluginDynamicLoaderPosixDYLD
   lldbPluginUnwindAssemblyInstEmulation
   lldbPluginUnwindAssemblyX86
-  lldbPluginDynamicLoaderDarwinKernel
   lldbPluginAppleObjCRuntime
   lldbPluginCXXItaniumABI
   lldbPluginABIMacOSX_arm
@@ -70,9 +79,9 @@ set( LLDB_USED_LIBS
 # Windows-only libraries
 if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
   list(APPEND LLDB_USED_LIBS
-    #lldbHostWindows
+    lldbHostWindows
     #lldbPluginPlatformWindows
-    #Ws2_32
+    Ws2_32
     )
 endif ()
 
@@ -82,8 +91,36 @@ if ( CMAKE_SYSTEM_NAME MATCHES "Linux" )
     lldbHostLinux
     lldbPluginProcessLinux
     lldbPluginProcessPOSIX
+    lldbPluginProcessElfCore
     )
 endif ()
+
+# FreeBSD-only libraries
+if ( CMAKE_SYSTEM_NAME MATCHES "FreeBSD" )
+  list(APPEND LLDB_USED_LIBS
+    lldbHostFreeBSD
+    lldbPluginProcessFreeBSD
+    lldbPluginProcessPOSIX
+    lldbPluginProcessElfCore
+    )
+endif ()
+
+# Darwin-only libraries
+if ( CMAKE_SYSTEM_NAME MATCHES "Darwin" )
+  set(LLDB_VERS_GENERATED_FILE ${LLDB_BINARY_DIR}/source/LLDB_vers.c)
+  add_custom_command(OUTPUT ${LLDB_VERS_GENERATED_FILE}
+    COMMAND ${LLDB_SOURCE_DIR}/scripts/generate-vers.pl
+            ${LLDB_SOURCE_DIR}/lldb.xcodeproj/project.pbxproj
+            > ${LLDB_VERS_GENERATED_FILE})
+
+  set_source_files_properties(${LLDB_VERS_GENERATED_FILE} PROPERTIES GENERATED 1)
+  list(APPEND LLDB_USED_LIBS
+    lldbHostMacOSX
+    lldbPluginDynamicLoaderDarwinKernel
+    lldbPluginProcessMacOSXKernel
+    lldbPluginSymbolVendorMacOSX
+    )
+endif()
 
 set( CLANG_USED_LIBS
   clangAnalysis
@@ -101,10 +138,12 @@ set( CLANG_USED_LIBS
   clangSerialization
   )  
   
-set( LLDB_SYSTEM_LIBS
-  edit
-  python2.7
-  )
+if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+  set( LLDB_SYSTEM_LIBS
+    edit
+    python2.7
+    )
+endif()
 
 set( LLVM_LINK_COMPONENTS
   ${LLVM_TARGETS_TO_BUILD}
@@ -128,13 +167,27 @@ set( LLVM_LINK_COMPONENTS
 set_source_files_properties(${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp PROPERTIES GENERATED 1)
 set(SHARED_LIBRARY 1)
 
+if(NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+  set(LLDB_WRAP_PYTHON ${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp)
+endif()
+
 add_lldb_library(liblldb
   lldb.cpp
   lldb-log.cpp
-  ${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp
+  ${LLDB_WRAP_PYTHON}
+  ${LLDB_VERS_GENERATED_FILE}
   )
-set_target_properties(liblldb PROPERTIES OUTPUT_NAME lldb)
-add_dependencies(liblldb ${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp)
+set_target_properties(liblldb
+  PROPERTIES
+  OUTPUT_NAME lldb
+  VERSION ${LLDB_VERSION}
+  )
+if (LLDB_WRAP_PYTHON OR LLDB_VERS_GENERATED_FILE)
+  add_dependencies(liblldb
+    ${LLDB_WRAP_PYTHON}
+    ${LLDB_VERS_GENERATED_FILE}
+    )
+endif()
 target_link_libraries(liblldb ${LLDB_SYSTEM_LIBS})
 
 # Determine LLDB revision and repository. GetSourceVersion and GetRepositoryPath are shell-scripts, and as
@@ -149,8 +202,11 @@ if ( NOT CMAKE_SYSTEM_NAME MATCHES "Windows" )
   execute_process(COMMAND ${CMAKE_SOURCE_DIR}/utils/GetRepositoryPath ${LLDB_SOURCE_DIR}
                   OUTPUT_VARIABLE LLDB_REPOSITORY)
   if ( LLDB_REPOSITORY )
-    string(REGEX REPLACE "(\r?\n)+$" "" LLDB_REPOSITORY ${LLDB_REPOSITORY})
-    string(REPLACE " " "" LLDB_REPOSITORY ${LLDB_REPOSITORY})
+    # Replace newline characters with spaces
+    string(REGEX REPLACE "(\r?\n)+" " " LLDB_REPOSITORY ${LLDB_REPOSITORY})
+
+    # Remove trailing spaces
+    string(REGEX REPLACE "(\ )+$" "" LLDB_REPOSITORY ${LLDB_REPOSITORY})
   endif()
 
   set_property(
@@ -162,4 +218,5 @@ endif ()
 
 
 install(TARGETS liblldb
+  RUNTIME DESTINATION bin
   LIBRARY DESTINATION lib)

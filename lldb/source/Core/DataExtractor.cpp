@@ -15,10 +15,14 @@
 #include <sstream>
 #include <string>
 
+#include "clang/AST/ASTContext.h"
+
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
+
 
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/DataExtractor.h"
@@ -30,6 +34,7 @@
 #include "lldb/Core/UUID.h"
 #include "lldb/Core/dwarf.h"
 #include "lldb/Host/Endian.h"
+#include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/ExecutionContextScope.h"
 #include "lldb/Target/Target.h"
@@ -733,7 +738,7 @@ DataExtractor::GetFloat (offset_t *offset_ptr) const
         {
             const uint8_t *src_data = (const uint8_t *)src;
             uint8_t *dst_data = (uint8_t *)&val;
-            for (int i=0; i<sizeof(float_type); ++i)
+            for (size_t i=0; i<sizeof(float_type); ++i)
                 dst_data[sizeof(float_type) - 1 - i] = src_data[i];
         }
         else
@@ -757,7 +762,7 @@ DataExtractor::GetDouble (offset_t *offset_ptr) const
         {
             const uint8_t *src_data = (const uint8_t *)src;
             uint8_t *dst_data = (uint8_t *)&val;
-            for (int i=0; i<sizeof(float_type); ++i)
+            for (size_t i=0; i<sizeof(float_type); ++i)
                 dst_data[sizeof(float_type) - 1 - i] = src_data[i];
         }
         else
@@ -772,24 +777,12 @@ DataExtractor::GetDouble (offset_t *offset_ptr) const
 long double
 DataExtractor::GetLongDouble (offset_t *offset_ptr) const
 {
-    typedef long double float_type;
-    float_type val = 0.0;
-    const size_t src_size = sizeof(float_type);
-    const float_type *src = (const float_type *)GetData (offset_ptr, src_size);
-    if (src)
-    {
-        if (m_byte_order != lldb::endian::InlHostByteOrder())
-        {
-            const uint8_t *src_data = (const uint8_t *)src;
-            uint8_t *dst_data = (uint8_t *)&val;
-            for (int i=0; i<sizeof(float_type); ++i)
-                dst_data[sizeof(float_type) - 1 - i] = src_data[i];
-        }
-        else
-        {
-            val = *src;
-        }
-    }
+    long double val = 0.0;
+#if defined (__i386__) || defined (__amd64__) || defined (__x86_64__) || defined(_M_IX86) || defined(_M_IA64) || defined(_M_X64)
+    *offset_ptr += CopyByteOrderedData (*offset_ptr, 10, &val, sizeof(val), lldb::endian::InlHostByteOrder());
+#else
+    *offset_ptr += CopyByteOrderedData (*offset_ptr, sizeof(val), &val, sizeof(val), lldb::endian::InlHostByteOrder());
+#endif
     return val;
 }
 
@@ -942,6 +935,10 @@ DataExtractor::ExtractBytes (offset_t offset, offset_t length, ByteOrder dst_byt
     {
         if (dst_byte_order != GetByteOrder())
         {
+            // Validate that only a word- or register-sized dst is byte swapped
+            assert (length == 1 || length == 2 || length == 4 || length == 8 ||
+                    length == 10 || length == 16 || length == 32);
+
             for (uint32_t i=0; i<length; ++i)
                 ((uint8_t*)dst)[i] = src[length - i - 1];
         }
@@ -970,7 +967,12 @@ DataExtractor::CopyByteOrderedData (offset_t src_offset,
     assert (dst_void_ptr != NULL);
     assert (dst_len > 0);
     assert (dst_byte_order == eByteOrderBig || dst_byte_order == eByteOrderLittle);
-    
+
+    // Validate that only a word- or register-sized dst is byte swapped
+    assert (dst_byte_order == m_byte_order || dst_len == 1 || dst_len == 2 ||
+            dst_len == 4 || dst_len == 8 || dst_len == 10 || dst_len == 16 ||
+            dst_len == 32);
+
     // Must have valid byte orders set in this object and for destination
     if (!(dst_byte_order == eByteOrderBig || dst_byte_order == eByteOrderLittle) ||
         !(m_byte_order == eByteOrderBig || m_byte_order == eByteOrderLittle))
@@ -1064,14 +1066,10 @@ DataExtractor::CopyByteOrderedData (offset_t src_offset,
 
 
 //----------------------------------------------------------------------
-// Extracts a AsCString (fixed length, or variable length) from
-// the data at the offset pointed to by "offset_ptr". If
-// "length" is zero, then a variable length NULL terminated C
-// string will be extracted from the data the "offset_ptr" will be
-// updated with the offset of the byte that follows the NULL
-// terminator byte. If "length" is greater than zero, then
-// the function will make sure there are "length" bytes
-// available in the current data and if so, return a valid pointer.
+// Extracts a variable length NULL terminated C string from
+// the data at the offset pointed to by "offset_ptr".  The
+// "offset_ptr" will be updated with the offset of the byte that
+// follows the NULL terminator byte.
 //
 // If the offset pointed to by "offset_ptr" is out of bounds, or if
 // "length" is non-zero and there aren't enough avaialable
@@ -1106,6 +1104,33 @@ DataExtractor::GetCStr (offset_t *offset_ptr) const
     return NULL;
 }
 
+//----------------------------------------------------------------------
+// Extracts a NULL terminated C string from the fixed length field of
+// length "len" at the offset pointed to by "offset_ptr".
+// The "offset_ptr" will be updated with the offset of the byte that
+// follows the fixed length field.
+//
+// If the offset pointed to by "offset_ptr" is out of bounds, or if
+// the offset plus the length of the field is out of bounds, or if the
+// field does not contain a NULL terminator byte, NULL will be returned
+// and "offset_ptr" will not be updated.
+//----------------------------------------------------------------------
+const char*
+DataExtractor::GetCStr (offset_t *offset_ptr, offset_t len) const
+{
+    const char *cstr = (const char *)PeekData (*offset_ptr, len);
+    if (cstr)
+    {
+        if (memchr (cstr, '\0', len) == NULL)
+        {
+            return NULL;
+        }
+        *offset_ptr += len;
+        return cstr;
+    }
+    return NULL;
+}
+
 //------------------------------------------------------------------
 // Peeks at a string in the contained data. No verification is done
 // to make sure the entire string lies within the bounds of this
@@ -1132,6 +1157,9 @@ uint64_t
 DataExtractor::GetULEB128 (offset_t *offset_ptr) const
 {
     const uint8_t *src = (const uint8_t *)PeekData (*offset_ptr, 1);
+    if (src == NULL)
+        return 0;
+    
     const uint8_t *end = m_end;
     
     if (src < end)
@@ -1169,6 +1197,9 @@ int64_t
 DataExtractor::GetSLEB128 (offset_t *offset_ptr) const
 {
     const uint8_t *src = (const uint8_t *)PeekData (*offset_ptr, 1);
+    if (src == NULL)
+        return 0;
+    
     const uint8_t *end = m_end;
     
     if (src < end)
@@ -1213,6 +1244,9 @@ DataExtractor::Skip_LEB128 (offset_t *offset_ptr) const
 {
     uint32_t bytes_consumed = 0;
     const uint8_t *src = (const uint8_t *)PeekData (*offset_ptr, 1);
+    if (src == NULL)
+        return 0;
+        
     const uint8_t *end = m_end;
     
     if (src < end)
@@ -1225,8 +1259,8 @@ DataExtractor::Skip_LEB128 (offset_t *offset_ptr) const
     return bytes_consumed;
 }
 
-static lldb::offset_t
-DumpAPInt (Stream *s, const DataExtractor &data, lldb::offset_t offset, lldb::offset_t byte_size, bool is_signed, unsigned radix)
+static bool
+GetAPInt (const DataExtractor &data, lldb::offset_t *offset_ptr, lldb::offset_t byte_size, llvm::APInt &result)
 {
     llvm::SmallVector<uint64_t, 2> uint64_array;
     lldb::offset_t bytes_left = byte_size;
@@ -1238,20 +1272,22 @@ DumpAPInt (Stream *s, const DataExtractor &data, lldb::offset_t offset, lldb::of
         {
             if (bytes_left >= 8)
             {
-                u64 = data.GetU64(&offset);
+                u64 = data.GetU64(offset_ptr);
                 bytes_left -= 8;
             }
             else
             {
-                u64 = data.GetMaxU64(&offset, (uint32_t)bytes_left);
+                u64 = data.GetMaxU64(offset_ptr, (uint32_t)bytes_left);
                 bytes_left = 0;
-            }                        
+            }
             uint64_array.push_back(u64);
         }
+        result = llvm::APInt(byte_size * 8, llvm::ArrayRef<uint64_t>(uint64_array));
+        return true;
     }
     else if (byte_order == lldb::eByteOrderBig)
     {
-        lldb::offset_t be_offset = offset + byte_size;
+        lldb::offset_t be_offset = *offset_ptr + byte_size;
         lldb::offset_t temp_offset;
         while (bytes_left > 0)
         {
@@ -1268,29 +1304,57 @@ DumpAPInt (Stream *s, const DataExtractor &data, lldb::offset_t offset, lldb::of
                 temp_offset = be_offset;
                 u64 = data.GetMaxU64(&temp_offset, (uint32_t)bytes_left);
                 bytes_left = 0;
-            }                        
+            }
             uint64_array.push_back(u64);
         }
+        *offset_ptr += byte_size;
+        result = llvm::APInt(byte_size * 8, llvm::ArrayRef<uint64_t>(uint64_array));
+        return true;
     }
-    else
-        return offset;
+    return false;
+}
 
-    llvm::APInt apint (byte_size * 8, llvm::ArrayRef<uint64_t>(uint64_array));
- 
-    std::string apint_str(apint.toString(radix, is_signed));
-    switch (radix)
+static lldb::offset_t
+DumpAPInt (Stream *s, const DataExtractor &data, lldb::offset_t offset, lldb::offset_t byte_size, bool is_signed, unsigned radix)
+{
+    llvm::APInt apint;
+    if (GetAPInt (data, &offset, byte_size, apint))
     {
-        case 2:
-            s->Write ("0b", 2);
-            break;
-        case 8:
-            s->Write ("0", 1);
-            break;
-        case 10:
-            break;
+        std::string apint_str(apint.toString(radix, is_signed));
+        switch (radix)
+        {
+            case 2:
+                s->Write ("0b", 2);
+                break;
+            case 8:
+                s->Write ("0", 1);
+                break;
+            case 10:
+                break;
+        }
+        s->Write(apint_str.c_str(), apint_str.size());
     }
-    s->Write(apint_str.c_str(), apint_str.size());
     return offset;
+}
+
+static float half2float (uint16_t half)
+{
+#ifdef _MSC_VER
+    llvm_unreachable("half2float not implemented for MSVC");
+#else
+    union{ float       f; uint32_t    u;}u;
+    int32_t v = (int16_t) half;
+    
+    if( 0 == (v & 0x7c00))
+    {
+        u.u = v & 0x80007FFFU;
+        return u.f * ldexpf(1, 125);
+    }
+    
+    v <<= 13;
+    u.u = v | 0x70000000U;
+    return u.f * ldexpf(1, -112);
+#endif
 }
 
 lldb::offset_t
@@ -1349,6 +1413,10 @@ DataExtractor::Dump (Stream *s,
                     ExecutionContext exe_ctx;
                     exe_scope->CalculateExecutionContext(exe_ctx);
                     disassembler_sp->GetInstructionList().Dump (s,  show_address, show_bytes, &exe_ctx);
+                    
+                    // FIXME: The DisassemblerLLVMC has a reference cycle and won't go away if it has any active instructions.
+                    // I'll fix that but for now, just clear the list and it will go away nicely.
+                    disassembler_sp->GetInstructionList().Clear();
                 }
             }
         }
@@ -1648,58 +1716,152 @@ DataExtractor::Dump (Stream *s,
         case eFormatHexUppercase:
             {
                 bool wantsuppercase  = (item_format == eFormatHexUppercase);
-                if (item_byte_size <= 8)
+                switch (item_byte_size)
                 {
+                case 1:
+                case 2:
+                case 4:
+                case 8:
                     s->Printf(wantsuppercase ? "0x%*.*" PRIX64 : "0x%*.*" PRIx64, (int)(2 * item_byte_size), (int)(2 * item_byte_size), GetMaxU64Bitfield(&offset, item_byte_size, item_bit_size, item_bit_offset));
-                }
-                else
-                {
-                    assert (item_bit_size == 0 && item_bit_offset == 0);
-                    s->PutCString("0x");
-                    const uint8_t *bytes = (const uint8_t* )GetData(&offset, item_byte_size);
-                    if (bytes)
+                    break;
+                default:
                     {
-                        uint32_t idx;
-                        if (m_byte_order == eByteOrderBig)
+                        assert (item_bit_size == 0 && item_bit_offset == 0);
+                        const uint8_t *bytes = (const uint8_t* )GetData(&offset, item_byte_size);
+                        if (bytes)
                         {
-                            for (idx = 0; idx < item_byte_size; ++idx)
-                                s->Printf(wantsuppercase ? "%2.2X" : "%2.2x", bytes[idx]);
-                        }
-                        else
-                        {
-                            for (idx = 0; idx < item_byte_size; ++idx)
-                                s->Printf(wantsuppercase ? "%2.2X" : "%2.2x", bytes[item_byte_size - 1 - idx]);
+                            s->PutCString("0x");
+                            uint32_t idx;
+                                if (m_byte_order == eByteOrderBig)
+                            {
+                                for (idx = 0; idx < item_byte_size; ++idx)
+                                    s->Printf(wantsuppercase ? "%2.2X" : "%2.2x", bytes[idx]);
+                            }
+                            else
+                            {
+                                for (idx = 0; idx < item_byte_size; ++idx)
+                                    s->Printf(wantsuppercase ? "%2.2X" : "%2.2x", bytes[item_byte_size - 1 - idx]);
+                            }
                         }
                     }
+                    break;
                 }
             }
             break;
 
         case eFormatFloat:
             {
-                std::ostringstream ss;
-                if (item_byte_size == sizeof(float))
+                TargetSP target_sp;
+                bool used_apfloat = false;
+                if (exe_scope)
+                    target_sp = exe_scope->CalculateTarget();
+                if (target_sp)
                 {
-                    ss.precision(std::numeric_limits<float>::digits10);
-                    ss << GetFloat(&offset);
-                } 
-                else if (item_byte_size == sizeof(double))
-                {
-                    ss.precision(std::numeric_limits<double>::digits10);
-                    ss << GetDouble(&offset);
+                    ClangASTContext *clang_ast = target_sp->GetScratchClangASTContext();
+                    if (clang_ast)
+                    {
+                        clang::ASTContext *ast = clang_ast->getASTContext();
+                        if (ast)
+                        {
+                            llvm::SmallVector<char, 256> sv;
+                            // Show full precision when printing float values
+                            const unsigned format_precision = 0;
+                            const unsigned format_max_padding = 100;
+                            size_t item_bit_size = item_byte_size * 8;
+                            
+                            if (item_bit_size == ast->getTypeSize(ast->FloatTy))
+                            {
+                                llvm::APInt apint(item_bit_size, this->GetMaxU64(&offset, item_byte_size));
+                                llvm::APFloat apfloat (ast->getFloatTypeSemantics(ast->FloatTy), apint);
+                                apfloat.toString(sv, format_precision, format_max_padding);
+                            }
+                            else if (item_bit_size == ast->getTypeSize(ast->DoubleTy))
+                            {
+                                llvm::APInt apint;
+                                if (GetAPInt (*this, &offset, item_byte_size, apint))
+                                {
+                                    llvm::APFloat apfloat (ast->getFloatTypeSemantics(ast->DoubleTy), apint);
+                                    apfloat.toString(sv, format_precision, format_max_padding);
+                                }
+                            }
+                            else if (item_bit_size == ast->getTypeSize(ast->LongDoubleTy))
+                            {
+                                llvm::APInt apint;
+                                switch (target_sp->GetArchitecture().GetCore())
+                                {
+                                    case ArchSpec::eCore_x86_32_i386:
+                                    case ArchSpec::eCore_x86_32_i486:
+                                    case ArchSpec::eCore_x86_32_i486sx:
+                                    case ArchSpec::eCore_x86_64_x86_64:
+                                        // clang will assert when contructing the apfloat if we use a 16 byte integer value
+                                        if (GetAPInt (*this, &offset, 10, apint))
+                                        {
+                                            llvm::APFloat apfloat (ast->getFloatTypeSemantics(ast->LongDoubleTy), apint);
+                                            apfloat.toString(sv, format_precision, format_max_padding);
+                                        }
+                                        break;
+                                        
+                                    default:
+                                        if (GetAPInt (*this, &offset, item_byte_size, apint))
+                                        {
+                                            llvm::APFloat apfloat (ast->getFloatTypeSemantics(ast->LongDoubleTy), apint);
+                                            apfloat.toString(sv, format_precision, format_max_padding);
+                                        }
+                                        break;
+                                }
+                            }
+                            else if (item_bit_size == ast->getTypeSize(ast->HalfTy))
+                            {
+                                llvm::APInt apint(item_bit_size, this->GetU16(&offset));
+                                llvm::APFloat apfloat (ast->getFloatTypeSemantics(ast->HalfTy), apint);
+                                apfloat.toString(sv, format_precision, format_max_padding);
+                            }
+
+                            if (!sv.empty())
+                            {
+                                s->Printf("%*.*s", (int)sv.size(), (int)sv.size(), sv.data());
+                                used_apfloat = true;
+                            }
+                        }
+                    }
                 }
-                else if (item_byte_size == sizeof(long double))
+                
+                if (!used_apfloat)
                 {
-                    ss.precision(std::numeric_limits<long double>::digits10);
-                    ss << GetLongDouble(&offset);
+                    std::ostringstream ss;
+                    if (item_byte_size == sizeof(float) || item_byte_size == 2)
+                    {
+                        float f;
+                        if (item_byte_size == 2)
+                        {
+                            uint16_t half = this->GetU16(&offset);
+                            f = half2float(half);
+                        }
+                        else
+                        {
+                            f = GetFloat (&offset);
+                        }
+                        ss.precision(std::numeric_limits<float>::digits10);
+                        ss << f;
+                    } 
+                    else if (item_byte_size == sizeof(double))
+                    {
+                        ss.precision(std::numeric_limits<double>::digits10);
+                        ss << GetDouble(&offset);
+                    }
+                    else if (item_byte_size == sizeof(long double) || item_byte_size == 10)
+                    {
+                        ss.precision(std::numeric_limits<long double>::digits10);
+                        ss << GetLongDouble(&offset);
+                    }
+                    else
+                    {
+                        s->Printf("error: unsupported byte size (%zu) for float format", item_byte_size);
+                        return offset;
+                    }
+                    ss.flush();
+                    s->Printf("%s", ss.str().c_str());
                 }
-                else
-                {
-                    s->Printf("error: unsupported byte size (%zu) for float format", item_byte_size);
-                    return offset;
-                }
-                ss.flush();
-                s->Printf("%s", ss.str().c_str());
             }
             break;
 

@@ -36,7 +36,6 @@
 #include "clang/CodeGen/CodeGenAction.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/Driver/CC1Options.h"
-#include "clang/Driver/OptTable.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendActions.h"
@@ -53,11 +52,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
-
-#if defined(__FreeBSD__)
-#define USE_STANDARD_JIT
-#endif
 
 #if defined (USE_STANDARD_JIT)
 #include "llvm/ExecutionEngine/JIT.h"
@@ -81,19 +77,16 @@ using namespace lldb_private;
 //===----------------------------------------------------------------------===//
 
 std::string GetBuiltinIncludePath(const char *Argv0) {
-    llvm::sys::Path P =
-    llvm::sys::Path::GetMainExecutable(Argv0,
-                                       (void*)(intptr_t) GetBuiltinIncludePath);
-    
-    if (!P.isEmpty()) {
-        P.eraseComponent();  // Remove /clang from foo/bin/clang
-        P.eraseComponent();  // Remove /bin   from foo/bin
-        
+    SmallString<128> P(llvm::sys::fs::getMainExecutable(
+        Argv0, (void *)(intptr_t) GetBuiltinIncludePath));
+
+    if (!P.empty()) {
+        llvm::sys::path::remove_filename(P); // Remove /clang from foo/bin/clang
+        llvm::sys::path::remove_filename(P); // Remove /bin   from foo/bin
+
         // Get foo/lib/clang/<version>/include
-        P.appendComponent("lib");
-        P.appendComponent("clang");
-        P.appendComponent(CLANG_VERSION_STRING);
-        P.appendComponent("include");
+        llvm::sys::path::append(P, "lib", "clang", CLANG_VERSION_STRING,
+                                "include");
     }
     
     return P.str();
@@ -550,26 +543,29 @@ ClangExpressionParser::PrepareForExecution (lldb::addr_t &func_addr,
         
         if (execution_policy == eExecutionPolicyAlways || !can_interpret)
         {
-            if (!process->GetDynamicCheckers() && m_expr.NeedsValidation())
-            {                
-                DynamicCheckerFunctions *dynamic_checkers = new DynamicCheckerFunctions();
-                
-                StreamString install_errors;
-                
-                if (!dynamic_checkers->Install(install_errors, exe_ctx))
+            if (m_expr.NeedsValidation() && process)
+            {
+                if (!process->GetDynamicCheckers())
                 {
-                    if (install_errors.GetString().empty())
-                        err.SetErrorString ("couldn't install checkers, unknown error");
-                    else
-                        err.SetErrorString (install_errors.GetString().c_str());
+                    DynamicCheckerFunctions *dynamic_checkers = new DynamicCheckerFunctions();
                     
-                    return err;
+                    StreamString install_errors;
+                    
+                    if (!dynamic_checkers->Install(install_errors, exe_ctx))
+                    {
+                        if (install_errors.GetString().empty())
+                            err.SetErrorString ("couldn't install checkers, unknown error");
+                        else
+                            err.SetErrorString (install_errors.GetString().c_str());
+                        
+                        return err;
+                    }
+                    
+                    process->SetDynamicCheckers(dynamic_checkers);
+                    
+                    if (log)
+                        log->Printf("== [ClangUserExpression::Evaluate] Finished installing dynamic checkers ==");
                 }
-                
-                process->SetDynamicCheckers(dynamic_checkers);
-                
-                if (log)
-                    log->Printf("== [ClangUserExpression::Evaluate] Finished installing dynamic checkers ==");
                 
                 IRDynamicChecks ir_dynamic_checks(*process->GetDynamicCheckers(), function_name.AsCString());
                 

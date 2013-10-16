@@ -23,6 +23,9 @@ class StructTypesTestCase(TestBase):
         self.struct_types()
 
     # rdar://problem/12566646
+    @expectedFailureIcc # llvm.org/pr16793
+                        # ICC generates DW_AT_byte_size zero with a zero-length 
+                        # array and LLDB doesn't process it correctly.
     @dwarf_test
     def test_with_dwarf(self):
         """Test that break on a struct declaration has no effect."""
@@ -75,21 +78,22 @@ class StructTypesTestCase(TestBase):
         # Test zero length array access and make sure it succeeds with "frame variable"
         self.expect("frame variable pt.padding[0]",
             DATA_TYPES_DISPLAYED_CORRECTLY,
-            substrs = ["pt.padding[0] = '"])
+            substrs = ["pt.padding[0] = "])
         self.expect("frame variable pt.padding[1]",
             DATA_TYPES_DISPLAYED_CORRECTLY,
-            substrs = ["pt.padding[1] = '"])
+            substrs = ["pt.padding[1] = "])
         # Test zero length array access and make sure it succeeds with "expression"
         self.expect("expression -- (pt.padding[0])",
             DATA_TYPES_DISPLAYED_CORRECTLY,
-            substrs = ["(char)", " = '"])
+            substrs = ["(char)", " = "])
 
         # The padding should be an array of size 0
         self.expect("image lookup -t point_tag",
             DATA_TYPES_DISPLAYED_CORRECTLY,
             substrs = ['padding[]']) # Once rdar://problem/12566646 is fixed, this should display correctly
 
-
+        self.expect("expression -- &pt == (struct point_tag*)0",
+                    substrs = ['false'])
 
 if __name__ == '__main__':
     import atexit

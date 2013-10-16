@@ -11,6 +11,7 @@
 #define liblldb_ModuleList_h_
 
 #include <vector>
+#include <list>
 
 #include "lldb/lldb-private.h"
 #include "lldb/Host/Mutex.h"
@@ -269,6 +270,14 @@ public:
                    SymbolContextList &sc_list) const;
 
     //------------------------------------------------------------------
+    /// @see Module::FindFunctionSymbols ()
+    //------------------------------------------------------------------
+    size_t
+    FindFunctionSymbols (const ConstString &name,
+                         uint32_t name_type_mask,
+                         SymbolContextList& sc_list);
+
+    //------------------------------------------------------------------
     /// Find global and static variables by name.
     ///
     /// @param[in] name
@@ -430,7 +439,35 @@ public:
     
     bool
     FindSourceFile (const FileSpec &orig_spec, FileSpec &new_spec) const;
-    
+
+
+    //------------------------------------------------------------------
+    /// Find addresses by file/line
+    ///
+    /// @param[in] target_sp
+    ///     The target the addresses are desired for.
+    ///
+    /// @param[in] file
+    ///     Source file to locate.
+    ///
+    /// @param[in] line
+    ///     Source line to locate.
+    ///
+    /// @param[in] function
+    ///     Optional filter function. Addresses within this function will be
+    ///     added to the 'local' list. All others will be added to the 'extern' list.
+    ///
+    /// @param[out] output_local
+    ///     All matching addresses within 'function'
+    ///
+    /// @param[out] output_extern
+    ///     All matching addresses not within 'function'
+    void FindAddressesForLine (const lldb::TargetSP target_sp,
+                               const FileSpec &file, uint32_t line,
+                               Function *function,
+                               std::vector<Address> &output_local, std::vector<Address> &output_extern);
+
+
     bool
     Remove (const lldb::ModuleSP &module_sp);
 
@@ -484,6 +521,12 @@ public:
     size_t
     GetSize () const;
 
+    bool
+    LoadScriptingResourcesInTarget (Target *target,
+                                    std::list<Error>& errors,
+                                    Stream* feedback_stream = NULL,
+                                    bool continue_on_error = true);
+    
     static bool
     ModuleIsInCache (const Module *module_ptr);
 

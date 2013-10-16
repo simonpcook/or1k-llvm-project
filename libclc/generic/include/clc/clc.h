@@ -33,16 +33,20 @@
 
 /* 6.11.2 Math Functions */
 #include <clc/math/cos.h>
+#include <clc/math/ceil.h>
 #include <clc/math/exp.h>
 #include <clc/math/exp2.h>
 #include <clc/math/fabs.h>
 #include <clc/math/floor.h>
 #include <clc/math/fma.h>
+#include <clc/math/fmax.h>
+#include <clc/math/fmin.h>
 #include <clc/math/hypot.h>
 #include <clc/math/log.h>
 #include <clc/math/log2.h>
 #include <clc/math/mad.h>
 #include <clc/math/pow.h>
+#include <clc/math/rint.h>
 #include <clc/math/sin.h>
 #include <clc/math/sqrt.h>
 #include <clc/math/native_cos.h>
@@ -60,7 +64,26 @@
 #include <clc/integer/abs.h>
 #include <clc/integer/abs_diff.h>
 #include <clc/integer/add_sat.h>
+#include <clc/integer/clz.h>
+#include <clc/integer/hadd.h>
+#include <clc/integer/mad24.h>
+#include <clc/integer/mad_hi.h>
+#include <clc/integer/mul24.h>
+#include <clc/integer/mul_hi.h>
+#include <clc/integer/rhadd.h>
+#include <clc/integer/rotate.h>
 #include <clc/integer/sub_sat.h>
+#include <clc/integer/upsample.h>
+
+/* 6.11.3 Integer Definitions */
+#include <clc/integer/definitions.h>
+
+/* 6.11.2 and 6.11.3 Shared Integer/Math Functions */
+#include <clc/shared/clamp.h>
+#include <clc/shared/max.h>
+#include <clc/shared/min.h>
+#include <clc/shared/vload.h>
+#include <clc/shared/vstore.h>
 
 /* 6.11.5 Geometric Functions */
 #include <clc/geometric/cross.h>
@@ -70,10 +93,17 @@
 
 /* 6.11.6 Relational Functions */
 #include <clc/relational/any.h>
+#include <clc/relational/bitselect.h>
 #include <clc/relational/select.h>
 
 /* 6.11.8 Synchronization Functions */
 #include <clc/synchronization/cl_mem_fence_flags.h>
 #include <clc/synchronization/barrier.h>
+
+/* 6.11.11 Atomic Functins */
+#include <clc/atomic/atomic_add.h>
+#include <clc/atomic/atomic_dec.h>
+#include <clc/atomic/atomic_inc.h>
+#include <clc/atomic/atomic_sub.h>
 
 #pragma OPENCL EXTENSION all : disable

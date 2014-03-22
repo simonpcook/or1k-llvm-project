@@ -104,13 +104,37 @@ SBExpressionOptions::SetTimeoutInMicroSeconds (uint32_t timeout)
 bool
 SBExpressionOptions::GetTryAllThreads () const
 {
-    return m_opaque_ap->GetRunOthers ();
+    return m_opaque_ap->GetTryAllThreads ();
 }
 
 void
 SBExpressionOptions::SetTryAllThreads (bool run_others)
 {
-    m_opaque_ap->SetRunOthers (run_others);
+    m_opaque_ap->SetTryAllThreads (run_others);
+}
+
+bool
+SBExpressionOptions::GetStopOthers () const
+{
+    return m_opaque_ap->GetStopOthers ();
+}
+
+void
+SBExpressionOptions::SetStopOthers (bool run_others)
+{
+    m_opaque_ap->SetStopOthers (run_others);
+}
+
+bool
+SBExpressionOptions::GetTrapExceptions () const
+{
+    return m_opaque_ap->GetTrapExceptions ();
+}
+
+void
+SBExpressionOptions::SetTrapExceptions (bool trap_exceptions)
+{
+    m_opaque_ap->SetTrapExceptions (trap_exceptions);
 }
 
 EvaluateExpressionOptions *

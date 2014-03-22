@@ -16,7 +16,7 @@
 
 #include "../../../stack_allocator.h"
 #include "../../../NotConstructible.h"
-#include "../../../min_allocator.h"
+#include "min_allocator.h"
 
 template <class T, class Allocator>
 void
@@ -24,6 +24,10 @@ test()
 {
     std::deque<T, Allocator> d;
     assert(d.size() == 0);
+#if __cplusplus >= 201103L
+    std::deque<T, Allocator> d1 = {};
+    assert(d1.size() == 0);
+#endif
 }
 
 int main()

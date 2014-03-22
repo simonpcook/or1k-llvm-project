@@ -11,12 +11,13 @@
 #define CLANG_DRIVER_TOOLCHAIN_H_
 
 #include "clang/Driver/Action.h"
+#include "clang/Driver/Multilib.h"
 #include "clang/Driver/Types.h"
 #include "clang/Driver/Util.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/Path.h"
+#include <memory>
 #include <string>
 
 namespace llvm {
@@ -65,15 +66,19 @@ private:
   /// programs.
   path_list ProgramPaths;
 
-  mutable OwningPtr<Tool> Clang;
-  mutable OwningPtr<Tool> Assemble;
-  mutable OwningPtr<Tool> Link;
+  mutable std::unique_ptr<Tool> Clang;
+  mutable std::unique_ptr<Tool> Assemble;
+  mutable std::unique_ptr<Tool> Link;
   Tool *getClang() const;
   Tool *getAssemble() const;
   Tool *getLink() const;
   Tool *getClangAs() const;
 
+  mutable std::unique_ptr<SanitizerArgs> SanitizerArguments;
+
 protected:
+  MultilibSet Multilibs;
+
   ToolChain(const Driver &D, const llvm::Triple &T,
             const llvm::opt::ArgList &Args);
 
@@ -111,6 +116,9 @@ public:
   StringRef getPlatform() const { return Triple.getVendorName(); }
   StringRef getOS() const { return Triple.getOSName(); }
 
+  /// \brief Returns true if the toolchain is targeting a non-native architecture.
+  bool isCrossCompiling() const;
+
   /// \brief Provide the default architecture name (as expected by -arch) for
   /// this toolchain. Note t
   std::string getDefaultUniversalArchName() const;
@@ -124,6 +132,8 @@ public:
 
   path_list &getProgramPaths() { return ProgramPaths; }
   const path_list &getProgramPaths() const { return ProgramPaths; }
+
+  const MultilibSet &getMultilibs() const { return Multilibs; }
 
   const SanitizerArgs& getSanitizerArgs() const;
 
@@ -175,10 +185,6 @@ public:
   /// \brief Check if the toolchain should use the integrated assembler.
   bool useIntegratedAs() const;
 
-  /// IsStrictAliasingDefault - Does this tool chain use -fstrict-aliasing by
-  /// default.
-  virtual bool IsStrictAliasingDefault() const { return true; }
-
   /// IsMathErrnoDefault - Does this tool chain use -fmath-errno by default.
   virtual bool IsMathErrnoDefault() const { return true; }
 
@@ -195,7 +201,7 @@ public:
   virtual bool UseObjCMixedDispatch() const { return false; }
 
   /// GetDefaultStackProtectorLevel - Get the default stack protector level for
-  /// this tool chain (0=off, 1=on, 2=all).
+  /// this tool chain (0=off, 1=on, 2=strong, 3=all).
   virtual unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const {
     return 0;
   }

@@ -297,7 +297,7 @@ public:
   }
 
   class ValidatorResult visitSMaxExpr(const SCEVSMaxExpr *Expr) {
-    ValidatorResult Return(SCEVType::INT, Expr);
+    ValidatorResult Return(SCEVType::INT);
 
     for (int i = 0, e = Expr->getNumOperands(); i < e; ++i) {
       ValidatorResult Op = visit(Expr->getOperand(i));
@@ -367,7 +367,6 @@ public:
 struct SCEVInRegionDependences
     : public SCEVVisitor<SCEVInRegionDependences, bool> {
 public:
-
   /// Returns true when the SCEV has SSA names defined in region R.
   static bool hasDependences(const SCEV *S, const Region *R) {
     SCEVInRegionDependences Ignore(R);

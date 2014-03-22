@@ -130,8 +130,13 @@ u32 ThreadRegistry::CreateThread(uptr user_id, bool detached, u32 parent_tid,
     tctx = context_factory_(tid);
     threads_[tid] = tctx;
   } else {
+#ifndef SANITIZER_GO
     Report("%s: Thread limit (%u threads) exceeded. Dying.\n",
            SanitizerToolName, max_threads_);
+#else
+    Printf("race: limit on %u simultaneously alive goroutines is exceeded,"
+        " dying\n", max_threads_);
+#endif
     Die();
   }
   CHECK_NE(tctx, 0);
@@ -198,6 +203,18 @@ void ThreadRegistry::SetThreadName(u32 tid, const char *name) {
   CHECK_NE(tctx, 0);
   CHECK_EQ(ThreadStatusRunning, tctx->status);
   tctx->SetName(name);
+}
+
+void ThreadRegistry::SetThreadNameByUserId(uptr user_id, const char *name) {
+  BlockingMutexLock l(&mtx_);
+  for (u32 tid = 0; tid < n_contexts_; tid++) {
+    ThreadContextBase *tctx = threads_[tid];
+    if (tctx != 0 && tctx->user_id == user_id &&
+        tctx->status != ThreadStatusInvalid) {
+      tctx->SetName(name);
+      return;
+    }
+  }
 }
 
 void ThreadRegistry::DetachThread(u32 tid) {

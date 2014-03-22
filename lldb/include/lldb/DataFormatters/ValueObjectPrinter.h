@@ -43,6 +43,7 @@ struct DumpValueObjectOptions
     bool m_hide_root_type;
     bool m_hide_name;
     bool m_hide_value;
+    bool m_be_raw;
     
     DumpValueObjectOptions() :
     m_max_ptr_depth(0),
@@ -61,7 +62,8 @@ struct DumpValueObjectOptions
     m_root_valobj_name(),
     m_hide_root_type(false),  // provide a special compact display for "po"
     m_hide_name(false), // provide a special compact display for "po"
-    m_hide_value(false) // provide a special compact display for "po"
+    m_hide_value(false), // provide a special compact display for "po"
+    m_be_raw(false)
     {}
     
     static const DumpValueObjectOptions
@@ -89,7 +91,8 @@ struct DumpValueObjectOptions
     m_root_valobj_name(rhs.m_root_valobj_name),
     m_hide_root_type(rhs.m_hide_root_type),
     m_hide_name(rhs.m_hide_name),
-    m_hide_value(rhs.m_hide_value)
+    m_hide_value(rhs.m_hide_value),
+    m_be_raw(rhs.m_be_raw)
     {}
     
     DumpValueObjectOptions&
@@ -189,6 +192,7 @@ struct DumpValueObjectOptions
             SetIgnoreCap(true);
             SetHideName(false);
             SetHideValue(false);
+            m_be_raw = true;
         }
         else
         {
@@ -197,6 +201,7 @@ struct DumpValueObjectOptions
             SetIgnoreCap(false);
             SetHideName(false);
             SetHideValue(false);
+            m_be_raw = false;
         }
         return *this;
     }
@@ -269,6 +274,15 @@ protected:
                         const DumpValueObjectOptions& options,
                         uint32_t ptr_depth,
                         uint32_t curr_depth);
+    
+    // we should actually be using delegating constructors here
+    // but some versions of GCC still have trouble with those
+    void
+    Init (ValueObject* valobj,
+          Stream* s,
+          const DumpValueObjectOptions& options,
+          uint32_t ptr_depth,
+          uint32_t curr_depth);
     
     bool
     GetDynamicValueIfNeeded ();
@@ -349,6 +363,9 @@ protected:
     PrintChildrenIfNeeded (bool value_printed,
                            bool summary_printed);
     
+    bool
+    PrintChildrenOneLiner (bool hide_names);
+    
 private:
     
     ValueObject *m_orig_valobj;
@@ -368,6 +385,8 @@ private:
     std::string m_value;
     std::string m_summary;
     std::string m_error;
+    
+    friend struct StringSummaryFormat;
     
     DISALLOW_COPY_AND_ASSIGN(ValueObjectPrinter);
 };

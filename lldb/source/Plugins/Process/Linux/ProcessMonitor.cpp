@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 
 // C++ Includes
@@ -46,6 +47,19 @@
 #ifndef PTRACE_SETREGSET
   #define PTRACE_SETREGSET 0x4205
 #endif
+#ifndef PTRACE_GET_THREAD_AREA
+  #define PTRACE_GET_THREAD_AREA 25
+#endif
+#ifndef PTRACE_ARCH_PRCTL
+  #define PTRACE_ARCH_PRCTL      30
+#endif
+#ifndef ARCH_GET_FS
+  #define ARCH_SET_GS 0x1001
+  #define ARCH_SET_FS 0x1002
+  #define ARCH_GET_FS 0x1003
+  #define ARCH_GET_GS 0x1004
+#endif
+
 
 // Support hardware breakpoints in case it has not been defined
 #ifndef TRAP_HWBKPT
@@ -150,17 +164,17 @@ PtraceWrapper(int req, lldb::pid_t pid, void *addr, void *data, size_t data_size
 
     Log *log (ProcessPOSIXLog::GetLogIfAllCategoriesSet (POSIX_LOG_PTRACE));
 
-    if (log)
-        log->Printf("ptrace(%s, %lu, %p, %p, %zu) called from file %s line %d",
-                    reqName, pid, addr, data, data_size, file, line);
-
     PtraceDisplayBytes(req, data, data_size);
 
     errno = 0;
     if (req == PTRACE_GETREGSET || req == PTRACE_SETREGSET)
-        result = ptrace(static_cast<__ptrace_request>(req), pid, *(unsigned int *)addr, data);
+        result = ptrace(static_cast<__ptrace_request>(req), static_cast<pid_t>(pid), *(unsigned int *)addr, data);
     else
-        result = ptrace(static_cast<__ptrace_request>(req), pid, addr, data);
+        result = ptrace(static_cast<__ptrace_request>(req), static_cast<pid_t>(pid), addr, data);
+
+    if (log)
+        log->Printf("ptrace(%s, %" PRIu64 ", %p, %p, %zu)=%lX called from file %s line %d",
+                    reqName, pid, addr, data, data_size, result, file, line);
 
     PtraceDisplayBytes(req, data, data_size);
 
@@ -518,11 +532,7 @@ WriteRegOperation::Execute(ProcessMonitor *monitor)
     void* buf;
     Log *log (ProcessPOSIXLog::GetLogIfAllCategoriesSet (POSIX_LOG_REGISTERS));
 
-#if __WORDSIZE == 32
-    buf = (void*) m_value.GetAsUInt32();
-#else
     buf = (void*) m_value.GetAsUInt64();
-#endif
 
     if (log)
         log->Printf ("ProcessMonitor::%s() reg %s: %p", __FUNCTION__, m_reg_name, buf);
@@ -703,6 +713,74 @@ WriteRegisterSetOperation::Execute(ProcessMonitor *monitor)
 }
 
 //------------------------------------------------------------------------------
+/// @class ReadThreadPointerOperation
+/// @brief Implements ProcessMonitor::ReadThreadPointer.
+class ReadThreadPointerOperation : public Operation
+{
+public:
+    ReadThreadPointerOperation(lldb::tid_t tid, lldb::addr_t *addr, bool &result)
+        : m_tid(tid), m_addr(addr), m_result(result)
+        { }
+
+    void Execute(ProcessMonitor *monitor);
+
+private:
+    lldb::tid_t m_tid;
+    lldb::addr_t *m_addr;
+    bool &m_result;
+};
+
+void
+ReadThreadPointerOperation::Execute(ProcessMonitor *monitor)
+{
+    Log *log (ProcessPOSIXLog::GetLogIfAllCategoriesSet (POSIX_LOG_REGISTERS));
+    if (log)
+        log->Printf ("ProcessMonitor::%s()", __FUNCTION__);
+
+    // The process for getting the thread area on Linux is
+    // somewhat... obscure. There's several different ways depending on
+    // what arch you're on, and what kernel version you have.
+
+    const ArchSpec& arch = monitor->GetProcess().GetTarget().GetArchitecture();
+    switch(arch.GetMachine())
+    {
+    case llvm::Triple::x86:
+    {
+        // Find the GS register location for our host architecture.
+        size_t gs_user_offset = offsetof(struct user, regs);
+#ifdef __x86_64__
+        gs_user_offset += offsetof(struct user_regs_struct, gs);
+#endif
+#ifdef __i386__
+        gs_user_offset += offsetof(struct user_regs_struct, xgs);
+#endif
+
+        // Read the GS register value to get the selector.
+        errno = 0;
+        long gs = PTRACE(PTRACE_PEEKUSER, m_tid, (void*)gs_user_offset, NULL, 0);
+        if (errno)
+        {
+            m_result = false;
+            break;
+        }
+
+        // Read the LDT base for that selector.
+        uint32_t tmp[4];
+        m_result = (PTRACE(PTRACE_GET_THREAD_AREA, m_tid, (void *)(gs >> 3), &tmp, 0) == 0);
+        *m_addr = tmp[1];
+        break;
+    }
+    case llvm::Triple::x86_64:
+        // Read the FS register base.
+        m_result = (PTRACE(PTRACE_ARCH_PRCTL, m_tid, m_addr, (void *)ARCH_GET_FS, 0) == 0);
+        break;
+    default:
+        m_result = false;
+        break;
+    }
+}
+
+//------------------------------------------------------------------------------
 /// @class ResumeOperation
 /// @brief Implements ProcessMonitor::Resume.
 class ResumeOperation : public Operation
@@ -851,8 +929,8 @@ KillOperation::Execute(ProcessMonitor *monitor)
 }
 
 //------------------------------------------------------------------------------
-/// @class KillOperation
-/// @brief Implements ProcessMonitor::BringProcessIntoLimbo.
+/// @class DetachOperation
+/// @brief Implements ProcessMonitor::Detach.
 class DetachOperation : public Operation
 {
 public:
@@ -1088,14 +1166,6 @@ ProcessMonitor::Launch(LaunchArgs *args)
     // Propagate the environment if one is not supplied.
     if (envp == NULL || envp[0] == NULL)
         envp = const_cast<const char **>(environ);
-
-    // Pseudo terminal setup.
-    if (!terminal.OpenFirstAvailableMaster(O_RDWR | O_NOCTTY, err_str, err_len))
-    {
-        args->m_error.SetErrorToGenericError();
-        args->m_error.SetErrorString("Could not open controlling TTY.");
-        goto FINISH;
-    }
 
     if ((pid = terminal.Fork(err_str, err_len)) == -1)
     {
@@ -1487,8 +1557,10 @@ ProcessMonitor::MonitorSIGTRAP(ProcessMonitor *monitor,
     }
 
     case (SIGTRAP | (PTRACE_EVENT_EXEC << 8)):
-        // Don't follow the child by default and resume
-        monitor->Resume(pid, SIGCONT);
+        if (log)
+            log->Printf ("ProcessMonitor::%s() received exec event, code = %d", __FUNCTION__, info->si_code ^ SIGTRAP);
+
+        message = ProcessMessage::Exec(pid);
         break;
 
     case (SIGTRAP | (PTRACE_EVENT_EXIT << 8)):
@@ -1722,14 +1794,23 @@ ProcessMonitor::StopThread(lldb::tid_t tid)
         int ptrace_err;
         if (!GetSignalInfo(wait_pid, &info, ptrace_err))
         {
-            if (log)
+            // another signal causing a StopAllThreads may have been received
+            // before wait_pid's group-stop was processed, handle it now
+            if (ptrace_err == EINVAL)
             {
-                log->Printf ("ProcessMonitor::%s() GetSignalInfo failed.", __FUNCTION__);
+                assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
 
-                // This would be a particularly interesting case
-                if (ptrace_err == EINVAL)
-                    log->Printf ("ProcessMonitor::%s() in group-stop", __FUNCTION__);
+                if (log)
+                  log->Printf ("ProcessMonitor::%s() resuming from group-stop", __FUNCTION__);
+                // inferior process is in 'group-stop', so deliver SIGSTOP signal
+                if (!Resume(wait_pid, SIGSTOP)) {
+                  assert(0 && "SIGSTOP delivery failed while in 'group-stop' state");
+                }
+                continue;
             }
+
+            if (log)
+                log->Printf ("ProcessMonitor::%s() GetSignalInfo failed.", __FUNCTION__);
             return false;
         }
 
@@ -1983,9 +2064,15 @@ ProcessMonitor::ServeOperation(OperationArgs *args)
     // parent thread and start serving operations on the inferior.
     sem_post(&args->m_semaphore);
 
-    for(;;) {
+    for(;;)
+    {
         // wait for next pending operation
-        sem_wait(&monitor->m_operation_pending);
+        if (sem_wait(&monitor->m_operation_pending))
+        {
+            if (errno == EINTR)
+                continue;
+            assert(false && "Unexpected errno from sem_wait");
+        }
 
         monitor->m_operation->Execute(monitor);
 
@@ -2005,7 +2092,12 @@ ProcessMonitor::DoOperation(Operation *op)
     sem_post(&m_operation_pending);
 
     // wait for operation to complete
-    sem_wait(&m_operation_done);
+    while (sem_wait(&m_operation_done))
+    {
+        if (errno == EINTR)
+            continue;
+        assert(false && "Unexpected errno from sem_wait");
+    }
 }
 
 size_t
@@ -2098,6 +2190,15 @@ ProcessMonitor::WriteRegisterSet(lldb::tid_t tid, void *buf, size_t buf_size, un
 {
     bool result;
     WriteRegisterSetOperation op(tid, buf, buf_size, regset, result);
+    DoOperation(&op);
+    return result;
+}
+
+bool
+ProcessMonitor::ReadThreadPointer(lldb::tid_t tid, lldb::addr_t &value)
+{
+    bool result;
+    ReadThreadPointerOperation op(tid, &value, result);
     DoOperation(&op);
     return result;
 }

@@ -8,7 +8,7 @@ import lldbutil
 
 class BitfieldsTestCase(TestBase):
 
-    mydir = os.path.join("lang", "c", "bitfields")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
@@ -133,7 +133,7 @@ class BitfieldsTestCase(TestBase):
         breakpoint = target.BreakpointCreateByLocation("main.c", self.line)
         self.assertTrue(breakpoint, VALID_BREAKPOINT)
 
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
         self.assertTrue(process, PROCESS_IS_VALID)
 
         # The stop reason of the thread should be breakpoint.
@@ -152,7 +152,12 @@ class BitfieldsTestCase(TestBase):
         self.DebugSBValue(bits)
         self.assertTrue(bits.GetTypeName() == 'Bits', "bits.GetTypeName() == 'Bits'");
         self.assertTrue(bits.GetNumChildren() == 10, "bits.GetNumChildren() == 10");
-        self.assertTrue(bits.GetByteSize() == 32, "bits.GetByteSize() == 32");
+        test_compiler = self.getCompiler()
+        if "gcc" in test_compiler:
+        # Clang ignores the align attribute, so this structure isn't padded out to 
+        # 32 bytes there as the test author intended.  Suppress this test for clang
+        # till somebody has a chance to go rewrite the test source to be this big portably.
+            self.assertTrue(bits.GetByteSize() == 32, "bits.GetByteSize() == 32");
 
         # Notice the pattern of int(b1.GetValue(), 0).  We pass a base of 0
         # so that the proper radix is determined based on the contents of the

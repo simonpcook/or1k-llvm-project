@@ -21,8 +21,7 @@ using namespace clang;
 using namespace clang::tooling;
 using namespace clang::ast_matchers;
 
-int PassByValueTransform::apply(const FileOverrides &InputStates,
-                                const tooling::CompilationDatabase &Database,
+int PassByValueTransform::apply(const tooling::CompilationDatabase &Database,
                                 const std::vector<std::string> &SourcePaths) {
   ClangTool Tool(Database, SourcePaths);
   unsigned AcceptedChanges = 0;
@@ -35,8 +34,6 @@ int PassByValueTransform::apply(const FileOverrides &InputStates,
 
   // make the replacer available to handleBeginSource()
   this->Replacer = &Replacer;
-
-  setOverrides(InputStates);
 
   if (Tool.run(createActionFactory(Finder))) {
     llvm::errs() << "Error encountered during translation.\n";
@@ -65,7 +62,7 @@ struct PassByValueFactory : TransformFactory {
     Since.Msvc = Version(11);
   }
 
-  Transform *createTransform(const TransformOptions &Opts) LLVM_OVERRIDE {
+  Transform *createTransform(const TransformOptions &Opts) override {
     return new PassByValueTransform(Opts);
   }
 };

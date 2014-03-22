@@ -24,8 +24,7 @@ using clang::ast_matchers::MatchFinder;
 using namespace clang::tooling;
 using namespace clang;
 
-int LoopConvertTransform::apply(const FileOverrides &InputStates,
-                                const CompilationDatabase &Database,
+int LoopConvertTransform::apply(const CompilationDatabase &Database,
                                 const std::vector<std::string> &SourcePaths) {
   ClangTool LoopTool(Database, SourcePaths);
 
@@ -48,8 +47,6 @@ int LoopConvertTransform::apply(const FileOverrides &InputStates,
                                   &RejectedChanges, Options().MaxRiskLevel,
                                   LFK_PseudoArray, /*Owner=*/ *this);
   Finder.addMatcher(makePseudoArrayLoopMatcher(), &PseudoarrrayLoopFixer);
-
-  setOverrides(InputStates);
 
   if (int result = LoopTool.run(createActionFactory(Finder))) {
     llvm::errs() << "Error encountered during translation.\n";
@@ -80,7 +77,7 @@ struct LoopConvertFactory : TransformFactory {
     Since.Msvc = Version(11);
   }
 
-  Transform *createTransform(const TransformOptions &Opts) LLVM_OVERRIDE {
+  Transform *createTransform(const TransformOptions &Opts) override {
     return new LoopConvertTransform(Opts);
   }
 };

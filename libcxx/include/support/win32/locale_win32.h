@@ -52,7 +52,7 @@ wint_t btowc_l( int c, locale_t loc );
 int wctob_l( wint_t c, locale_t loc );
 typedef _VSTD::remove_pointer<locale_t>::type __locale_struct;
 typedef _VSTD::unique_ptr<__locale_struct, decltype(&uselocale)> __locale_raii;
-_LIBCPP_ALWAYS_INLINE inline
+inline _LIBCPP_ALWAYS_INLINE
 decltype(MB_CUR_MAX) MB_CUR_MAX_L( locale_t __l )
 {
   __locale_raii __current( uselocale(__l), uselocale );
@@ -103,9 +103,9 @@ isupper_l(int c, _locale_t loc)
 #define sscanf_l( __s, __l, __f, ...) _sscanf_l( __s, __f, __l, __VA_ARGS__ )
 #define vsscanf_l( __s, __l, __f, ...) _sscanf_l( __s, __f, __l, __VA_ARGS__ )
 #define sprintf_l( __s, __l, __f, ... ) _sprintf_l( __s, __f, __l, __VA_ARGS__ )
-#define snprintf_l( __s, __n, __l, __f, ... ) _snprintf_l( __s, __n, __f, __l, __VA_ARGS__ )
 #define vsprintf_l( __s, __l, __f, ... ) _vsprintf_l( __s, __f, __l, __VA_ARGS__ )
 #define vsnprintf_l( __s, __n, __l, __f, ... ) _vsnprintf_l( __s, __n, __f, __l, __VA_ARGS__ )
+int snprintf_l(char *ret, size_t n, locale_t loc, const char *format, ...);
 int asprintf_l( char **ret, locale_t loc, const char *format, ... );
 int vasprintf_l( char **ret, locale_t loc, const char *format, va_list ap );
 

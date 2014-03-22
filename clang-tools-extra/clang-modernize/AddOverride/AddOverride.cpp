@@ -16,7 +16,6 @@
 #include "AddOverride.h"
 #include "AddOverrideActions.h"
 #include "AddOverrideMatchers.h"
-
 #include "clang/Frontend/CompilerInstance.h"
 
 using clang::ast_matchers::MatchFinder;
@@ -29,8 +28,7 @@ static cl::opt<bool> DetectMacros(
     cl::desc("Detect and use macros that expand to the 'override' keyword."),
     cl::cat(TransformsOptionsCategory));
 
-int AddOverrideTransform::apply(const FileOverrides &InputStates,
-                                const CompilationDatabase &Database,
+int AddOverrideTransform::apply(const CompilationDatabase &Database,
                                 const std::vector<std::string> &SourcePaths) {
   ClangTool AddOverrideTool(Database, SourcePaths);
   unsigned AcceptedChanges = 0;
@@ -41,8 +39,6 @@ int AddOverrideTransform::apply(const FileOverrides &InputStates,
 
   // Make Fixer available to handleBeginSource().
   this->Fixer = &Fixer;
-
-  setOverrides(InputStates);
 
   if (int result = AddOverrideTool.run(createActionFactory(Finder))) {
     llvm::errs() << "Error encountered during translation.\n";
@@ -73,7 +69,7 @@ struct AddOverrideFactory : TransformFactory {
     }
   }
 
-  Transform *createTransform(const TransformOptions &Opts) LLVM_OVERRIDE {
+  Transform *createTransform(const TransformOptions &Opts) override {
     return new AddOverrideTransform(Opts);
   }
 };

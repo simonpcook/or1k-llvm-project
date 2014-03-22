@@ -18,9 +18,7 @@
 
 #ifdef _MSC_VER
 // Exceptions are disabled so this isn't defined, but concrt assumes it is.
-namespace {
-void *__uncaught_exception() { return nullptr; }
-}
+static void *__uncaught_exception() { return nullptr; }
 #endif
 
 #include <algorithm>
@@ -105,7 +103,7 @@ public:
     // Wait for ~Latch.
   }
 
-  virtual void add(std::function<void()> f) {
+  void add(std::function<void()> f) override {
     std::unique_lock<std::mutex> lock(_mutex);
     _workStack.push(f);
     lock.unlock();

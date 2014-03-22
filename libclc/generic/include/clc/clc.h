@@ -45,10 +45,14 @@
 #include <clc/math/log.h>
 #include <clc/math/log2.h>
 #include <clc/math/mad.h>
+#include <clc/math/nextafter.h>
 #include <clc/math/pow.h>
 #include <clc/math/rint.h>
+#include <clc/math/round.h>
 #include <clc/math/sin.h>
+#include <clc/math/sincos.h>
 #include <clc/math/sqrt.h>
+#include <clc/math/trunc.h>
 #include <clc/math/native_cos.h>
 #include <clc/math/native_divide.h>
 #include <clc/math/native_exp.h>
@@ -59,6 +63,9 @@
 #include <clc/math/native_sin.h>
 #include <clc/math/native_sqrt.h>
 #include <clc/math/rsqrt.h>
+
+/* 6.11.2.1 Floating-point macros */
+#include <clc/float/definitions.h>
 
 /* 6.11.3 Integer Functions */
 #include <clc/integer/abs.h>
@@ -85,6 +92,9 @@
 #include <clc/shared/vload.h>
 #include <clc/shared/vstore.h>
 
+/* 6.11.4 Common Functions */
+#include <clc/common/sign.h>
+
 /* 6.11.5 Geometric Functions */
 #include <clc/geometric/cross.h>
 #include <clc/geometric/dot.h>
@@ -94,16 +104,28 @@
 /* 6.11.6 Relational Functions */
 #include <clc/relational/any.h>
 #include <clc/relational/bitselect.h>
+#include <clc/relational/isnan.h>
 #include <clc/relational/select.h>
 
 /* 6.11.8 Synchronization Functions */
 #include <clc/synchronization/cl_mem_fence_flags.h>
 #include <clc/synchronization/barrier.h>
 
-/* 6.11.11 Atomic Functins */
+/* 6.11.11 Atomic Functions */
 #include <clc/atomic/atomic_add.h>
 #include <clc/atomic/atomic_dec.h>
 #include <clc/atomic/atomic_inc.h>
 #include <clc/atomic/atomic_sub.h>
+
+/* cl_khr_global_int32_base_atomics Extension Functions */
+#include <clc/cl_khr_global_int32_base_atomics/atom_add.h>
+#include <clc/cl_khr_global_int32_base_atomics/atom_dec.h>
+#include <clc/cl_khr_global_int32_base_atomics/atom_inc.h>
+#include <clc/cl_khr_global_int32_base_atomics/atom_sub.h>
+
+/* libclc internal defintions */
+#ifdef __CLC_INTERNAL
+#include <math/clc_nextafter.h>
+#endif
 
 #pragma OPENCL EXTENSION all : disable

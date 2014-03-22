@@ -10,7 +10,7 @@ from lldbtest import *
 
 class StopHookMechanismTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "stop-hook")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
@@ -19,7 +19,8 @@ class StopHookMechanismTestCase(TestBase):
         self.buildDsym()
         self.stop_hook_firing()
 
-    @skipIfLinux # llvm.org/pr15037: stop-hooks sometimes fail to fire on Linux (disabled to avoid needless noise)
+    @skipIfFreeBSD # llvm.org/pr15037
+    @expectedFailureLinux('llvm.org/pr15037') # stop-hooks sometimes fail to fire on Linux
     @dwarf_test
     def test_with_dwarf(self):
         """Test the stop-hook mechanism."""

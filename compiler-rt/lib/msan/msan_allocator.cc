@@ -22,14 +22,29 @@ struct Metadata {
   uptr requested_size;
 };
 
+struct MsanMapUnmapCallback {
+  void OnMap(uptr p, uptr size) const {}
+  void OnUnmap(uptr p, uptr size) const {
+    __msan_unpoison((void *)p, size);
+
+    // We are about to unmap a chunk of user memory.
+    // Mark the corresponding shadow memory as not needed.
+    FlushUnneededShadowMemory(MEM_TO_SHADOW(p), size);
+    if (__msan_get_track_origins())
+      FlushUnneededShadowMemory(MEM_TO_ORIGIN(p), size);
+  }
+};
+
 static const uptr kAllocatorSpace = 0x600000000000ULL;
 static const uptr kAllocatorSize   = 0x80000000000;  // 8T.
 static const uptr kMetadataSize  = sizeof(Metadata);
+static const uptr kMaxAllowedMallocSize = 8UL << 30;
 
 typedef SizeClassAllocator64<kAllocatorSpace, kAllocatorSize, kMetadataSize,
-                             DefaultSizeClassMap> PrimaryAllocator;
+                             DefaultSizeClassMap,
+                             MsanMapUnmapCallback> PrimaryAllocator;
 typedef SizeClassAllocatorLocalCache<PrimaryAllocator> AllocatorCache;
-typedef LargeMmapAllocator<> SecondaryAllocator;
+typedef LargeMmapAllocator<MsanMapUnmapCallback> SecondaryAllocator;
 typedef CombinedAllocator<PrimaryAllocator, AllocatorCache,
                           SecondaryAllocator> Allocator;
 
@@ -45,9 +60,18 @@ static inline void Init() {
   allocator.Init();
 }
 
+void MsanAllocatorThreadFinish() {
+  allocator.SwallowCache(&cache);
+}
+
 static void *MsanAllocate(StackTrace *stack, uptr size,
                           uptr alignment, bool zeroise) {
   Init();
+  if (size > kMaxAllowedMallocSize) {
+    Report("WARNING: MemorySanitizer failed to allocate %p bytes\n",
+           (void *)size);
+    return AllocatorReturnNull();
+  }
   void *res = allocator.Allocate(&cache, size, alignment, false);
   Metadata *meta = reinterpret_cast<Metadata*>(allocator.GetMetaData(res));
   meta->requested_size = size;
@@ -110,9 +134,10 @@ void *MsanReallocate(StackTrace *stack, void *old_p, uptr new_size,
   uptr memcpy_size = Min(new_size, old_size);
   void *new_p = MsanAllocate(stack, new_size, alignment, zeroise);
   // Printf("realloc: old_size %zd new_size %zd\n", old_size, new_size);
-  if (new_p)
+  if (new_p) {
     __msan_memcpy(new_p, old_p, memcpy_size);
-  MsanDeallocate(stack, old_p);
+    MsanDeallocate(stack, old_p);
+  }
   return new_p;
 }
 

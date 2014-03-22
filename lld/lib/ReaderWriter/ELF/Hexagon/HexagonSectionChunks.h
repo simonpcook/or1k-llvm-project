@@ -6,14 +6,13 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-#ifndef LLD_READER_WRITER_ELF_HEXAGON_SECTION_CHUNKS_H
-#define LLD_READER_WRITER_ELF_HEXAGON_SECTION_CHUNKS_H
+#ifndef HEXAGON_SECTION_CHUNKS_H
+#define HEXAGON_SECTION_CHUNKS_H
 
 #include "HexagonTargetHandler.h"
 
 namespace lld {
 namespace elf {
-typedef llvm::object::ELFType<llvm::support::little, 4, false> HexagonELFType;
 template <typename ELFT> class HexagonTargetLayout;
 class HexagonLinkingContext;
 
@@ -42,7 +41,7 @@ public:
     uint64_t align2 = 1u << atomAlign.powerOf2;
     this->_atoms.push_back(new (this->_alloc) lld::AtomLayout(atom, 0, 0));
     // Set the section alignment to the largest alignment
-    // std::max doesnot support uint64_t
+    // std::max doesn't support uint64_t
     if (this->_align2 < align2)
       this->_align2 = align2;
     return *(this->_atoms.back());
@@ -84,4 +83,4 @@ void SDataSection<HexagonELFType>::doPreFlight() {
 } // elf
 } // lld
 
-#endif // LLD_READER_WRITER_ELF_HEXAGON_SECTION_CHUNKS_H
+#endif // LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_SECTION_CHUNKS_H

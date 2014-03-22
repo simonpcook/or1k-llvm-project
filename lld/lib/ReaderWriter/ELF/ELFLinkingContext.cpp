@@ -9,13 +9,14 @@
 
 #include "lld/ReaderWriter/ELFLinkingContext.h"
 
-#include "File.h"
+#include "ArrayOrderPass.h"
+#include "ELFFile.h"
 #include "TargetHandler.h"
 #include "Targets.h"
 
 #include "lld/Core/Instrumentation.h"
 #include "lld/Passes/LayoutPass.h"
-#include "lld/ReaderWriter/ReaderLinkerScript.h"
+#include "lld/Passes/RoundTripYAMLPass.h"
 
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/ELF.h"
@@ -29,7 +30,7 @@ public:
   CommandLineUndefinedAtom(const File &f, StringRef name)
       : SimpleUndefinedAtom(f, name) {}
 
-  virtual CanBeNull canBeNull() const {
+  CanBeNull canBeNull() const override {
     return CanBeNull::canBeNullAtBuildtime;
   }
 };
@@ -40,7 +41,7 @@ ELFLinkingContext::ELFLinkingContext(
       _targetHandler(std::move(targetHandler)), _baseAddress(0),
       _isStaticExecutable(false), _noInhibitExec(false),
       _mergeCommonStrings(false), _runLayoutPass(true),
-      _useShlibUndefines(false), _dynamicLinkerArg(false),
+      _useShlibUndefines(true), _dynamicLinkerArg(false),
       _noAllowDynamicLibraries(false), _outputMagic(OutputMagic::DEFAULT),
       _sysrootPath("") {}
 
@@ -51,9 +52,10 @@ bool ELFLinkingContext::isLittleEndian() const {
   return true;
 }
 
-void ELFLinkingContext::addPasses(PassManager &pm) const {
+void ELFLinkingContext::addPasses(PassManager &pm) {
   if (_runLayoutPass)
-    pm.add(std::unique_ptr<Pass>(new LayoutPass()));
+    pm.add(std::unique_ptr<Pass>(new LayoutPass(registry())));
+  pm.add(std::unique_ptr<Pass>(new elf::ArrayOrderPass()));
 }
 
 uint16_t ELFLinkingContext::getOutputMachine() const {
@@ -64,6 +66,8 @@ uint16_t ELFLinkingContext::getOutputMachine() const {
     return llvm::ELF::EM_X86_64;
   case llvm::Triple::hexagon:
     return llvm::ELF::EM_HEXAGON;
+  case llvm::Triple::mipsel:
+    return llvm::ELF::EM_MIPS;
   case llvm::Triple::ppc:
     return llvm::ELF::EM_PPC;
   default:
@@ -78,8 +82,6 @@ StringRef ELFLinkingContext::entrySymbolName() const {
 }
 
 bool ELFLinkingContext::validateImpl(raw_ostream &diagnostics) {
-  _elfReader = createReaderELF(*this);
-  _linkerScriptReader.reset(new ReaderLinkerScript(*this));
   switch (outputFileType()) {
   case LinkingContext::OutputFileType::YAML:
     _writer = createWriterYAML(*this);
@@ -88,7 +90,7 @@ bool ELFLinkingContext::validateImpl(raw_ostream &diagnostics) {
     llvm_unreachable("Unimplemented");
     break;
   default:
-    _writer = createWriterELF(*this);
+    _writer = createWriterELF(this->targetHandler());
     break;
   }
   return true;
@@ -108,25 +110,6 @@ bool ELFLinkingContext::isRelativeReloc(const Reference &) const {
   return false;
 }
 
-error_code ELFLinkingContext::parseFile(LinkerInput &input,
-    std::vector<std::unique_ptr<File>> &result) const {
-  ScopedTask task(getDefaultDomain(), "parseFile");
-  error_code ec = _elfReader->parseFile(input, result);
-  if (!ec)
-    return ec;
-
-  // Not an ELF file, check file extension to see if it might be yaml
-  StringRef path = input.getBuffer().getBufferIdentifier();
-  if (path.endswith(".objtxt")) {
-    ec = _yamlReader->parseFile(input, result);
-    if (!ec)
-      return ec;
-  }
-
-  // Not a yaml file, assume it is a linkerscript
-  return _linkerScriptReader->parseFile(input, result);
-}
-
 Writer &ELFLinkingContext::writer() const { return *_writer; }
 
 std::unique_ptr<ELFLinkingContext>
@@ -141,6 +124,9 @@ ELFLinkingContext::create(llvm::Triple triple) {
   case llvm::Triple::hexagon:
     return std::unique_ptr<ELFLinkingContext>(
         new lld::elf::HexagonLinkingContext(triple));
+  case llvm::Triple::mipsel:
+    return std::unique_ptr<ELFLinkingContext>(
+        new lld::elf::MipsLinkingContext(triple));
   case llvm::Triple::ppc:
     return std::unique_ptr<ELFLinkingContext>(
         new lld::elf::PPCLinkingContext(triple));
@@ -149,12 +135,11 @@ ELFLinkingContext::create(llvm::Triple triple) {
   }
 }
 
-llvm::ErrorOr<StringRef> ELFLinkingContext::searchLibrary(
-    StringRef libName, const std::vector<StringRef> &searchPath) const {
+ErrorOr<StringRef> ELFLinkingContext::searchLibrary(StringRef libName) const {
   bool foundFile = false;
   StringRef pathref;
   SmallString<128> path;
-  for (StringRef dir : searchPath) {
+  for (StringRef dir : _inputSearchPaths) {
     // Search for dynamic library
     if (!_isStaticExecutable) {
       path.clear();
@@ -186,7 +171,7 @@ llvm::ErrorOr<StringRef> ELFLinkingContext::searchLibrary(
       }
     }
     if (foundFile)
-      return StringRef(*new (_alloc) std::string(pathref));
+      return StringRef(*new (_allocator) std::string(pathref));
   }
   if (!llvm::sys::fs::exists(libName))
     return llvm::make_error_code(llvm::errc::no_such_file_or_directory);
@@ -194,11 +179,11 @@ llvm::ErrorOr<StringRef> ELFLinkingContext::searchLibrary(
   return libName;
 }
 
-std::unique_ptr<File> ELFLinkingContext::createUndefinedSymbolFile() {
+std::unique_ptr<File> ELFLinkingContext::createUndefinedSymbolFile() const {
   if (_initialUndefinedSymbols.empty())
     return nullptr;
   std::unique_ptr<SimpleFile> undefinedSymFile(
-      new SimpleFile(*this, "command line option -u"));
+      new SimpleFile("command line option -u"));
   for (auto undefSymStr : _initialUndefinedSymbols)
     undefinedSymFile->addAtom(*(new (_allocator) CommandLineUndefinedAtom(
                                    *undefinedSymFile, undefSymStr)));

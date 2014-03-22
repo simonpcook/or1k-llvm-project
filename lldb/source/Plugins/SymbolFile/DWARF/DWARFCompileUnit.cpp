@@ -69,7 +69,7 @@ DWARFCompileUnit::Clear()
 }
 
 bool
-DWARFCompileUnit::Extract(const DataExtractor &debug_info, lldb::offset_t *offset_ptr)
+DWARFCompileUnit::Extract(const DWARFDataExtractor &debug_info, lldb::offset_t *offset_ptr)
 {
     Clear();
 
@@ -102,30 +102,6 @@ DWARFCompileUnit::Extract(const DataExtractor &debug_info, lldb::offset_t *offse
     return false;
 }
 
-
-dw_offset_t
-DWARFCompileUnit::Extract(lldb::offset_t offset, const DataExtractor& debug_info_data, const DWARFAbbreviationDeclarationSet* abbrevs)
-{
-    Clear();
-
-    m_offset = offset;
-
-    if (debug_info_data.ValidOffset(offset))
-    {
-        m_length        = debug_info_data.GetU32(&offset);
-        m_version       = debug_info_data.GetU16(&offset);
-        bool abbrevs_OK = debug_info_data.GetU32(&offset) == abbrevs->GetOffset();
-        m_abbrevs       = abbrevs;
-        m_addr_size     = debug_info_data.GetU8 (&offset);
-
-        bool version_OK = SymbolFileDWARF::SupportedVersion(m_version);
-        bool addr_size_OK = ((m_addr_size == 4) || (m_addr_size == 8));
-
-        if (version_OK && addr_size_OK && abbrevs_OK && debug_info_data.ValidOffset(offset))
-            return offset;
-    }
-    return DW_INVALID_OFFSET;
-}
 
 void
 DWARFCompileUnit::ClearDIEs(bool keep_compile_unit_die)
@@ -187,7 +163,7 @@ DWARFCompileUnit::ExtractDIEsIfNeeded (bool cu_die_only)
     uint32_t depth = 0;
     // We are in our compile unit, parse starting at the offset
     // we were told to parse
-    const DataExtractor& debug_info_data = m_dwarf2Data->get_debug_info_data();
+    const DWARFDataExtractor& debug_info_data = m_dwarf2Data->get_debug_info_data();
     std::vector<uint32_t> die_index_stack;
     die_index_stack.reserve(32);
     die_index_stack.push_back(0);
@@ -289,12 +265,16 @@ DWARFCompileUnit::ExtractDIEsIfNeeded (bool cu_die_only)
         DWARFDebugInfoEntry::collection exact_size_die_array (m_die_array.begin(), m_die_array.end());
         exact_size_die_array.swap (m_die_array);
     }
-    Log *log (LogChannelDWARF::GetLogIfAll (DWARF_LOG_DEBUG_INFO | DWARF_LOG_VERBOSE));
-    if (log)
+    Log *verbose_log (LogChannelDWARF::GetLogIfAll (DWARF_LOG_DEBUG_INFO | DWARF_LOG_VERBOSE));
+    if (verbose_log)
     {
         StreamString strm;
-        DWARFDebugInfoEntry::DumpDIECollection (strm, m_die_array);
-        log->PutCString (strm.GetString().c_str());
+        Dump(&strm);
+        if (m_die_array.empty())
+            strm.Printf("error: no DIE for compile unit");
+        else
+            m_die_array[0].Dump(m_dwarf2Data, this, strm, UINT32_MAX);        
+        verbose_log->PutCString (strm.GetString().c_str());
     }
 
     return m_die_array.size();
@@ -312,7 +292,7 @@ DWARFCompileUnit::GetAbbrevOffset() const
 bool
 DWARFCompileUnit::Verify(Stream *s) const
 {
-    const DataExtractor& debug_info = m_dwarf2Data->get_debug_info_data();
+    const DWARFDataExtractor& debug_info = m_dwarf2Data->get_debug_info_data();
     bool valid_offset = debug_info.ValidOffset(m_offset);
     bool length_OK = debug_info.ValidOffset(GetNextCompileUnitOffset()-1);
     bool version_OK = SymbolFileDWARF::SupportedVersion(m_version);
@@ -381,18 +361,43 @@ DWARFCompileUnit::SetDefaultAddressSize(uint8_t addr_size)
 
 void
 DWARFCompileUnit::BuildAddressRangeTable (SymbolFileDWARF* dwarf2Data,
-                                          DWARFDebugAranges* debug_aranges,
-                                          bool clear_dies_if_already_not_parsed)
+                                          DWARFDebugAranges* debug_aranges)
 {
     // This function is usually called if there in no .debug_aranges section
     // in order to produce a compile unit level set of address ranges that
-    // is accurate. If the DIEs weren't parsed, then we don't want all dies for
-    // all compile units to stay loaded when they weren't needed. So we can end
-    // up parsing the DWARF and then throwing them all away to keep memory usage
-    // down.
+    // is accurate.
+    
+    // First get the compile unit DIE only and check if it has a DW_AT_ranges
+    const DWARFDebugInfoEntry* die = GetCompileUnitDIEOnly();
+    
+    const dw_offset_t cu_offset = GetOffset();
+    if (die)
+    {
+        DWARFDebugRanges::RangeList ranges;
+        const size_t num_ranges = die->GetAttributeAddressRanges(dwarf2Data, this, ranges, false);
+        if (num_ranges > 0)
+        {
+            // This compile unit has DW_AT_ranges, assume this is correct if it
+            // is present since clang no longer makes .debug_aranges by default
+            // and it emits DW_AT_ranges for DW_TAG_compile_units. GCC also does
+            // this with recent GCC builds.
+            for (size_t i=0; i<num_ranges; ++i)
+            {
+                const DWARFDebugRanges::RangeList::Entry &range = ranges.GetEntryRef(i);
+                debug_aranges->AppendRange(cu_offset, range.GetRangeBase(), range.GetRangeEnd());
+            }
+            
+            return; // We got all of our ranges from the DW_AT_ranges attribute
+        }
+    }
+    // We don't have a DW_AT_ranges attribute, so we need to parse the DWARF
+    
+    // If the DIEs weren't parsed, then we don't want all dies for all compile units
+    // to stay loaded when they weren't needed. So we can end up parsing the DWARF
+    // and then throwing them all away to keep memory usage down.
     const bool clear_dies = ExtractDIEsIfNeeded (false) > 1;
     
-    const DWARFDebugInfoEntry* die = DIE();
+    die = DIE();
     if (die)
         die->BuildAddressRangeTable(dwarf2Data, this, debug_aranges);
     
@@ -417,7 +422,7 @@ DWARFCompileUnit::BuildAddressRangeTable (SymbolFileDWARF* dwarf2Data,
                     for (uint32_t idx=0; idx<num_ranges; ++idx)
                     {
                         const LineTable::FileAddressRanges::Entry &range = file_ranges.GetEntryRef(idx);
-                        debug_aranges->AppendRange(GetOffset(), range.GetRangeBase(), range.GetRangeEnd());
+                        debug_aranges->AppendRange(cu_offset, range.GetRangeBase(), range.GetRangeEnd());
                         printf ("0x%8.8x: [0x%16.16" PRIx64 " - 0x%16.16" PRIx64 ")\n", GetOffset(), range.GetRangeBase(), range.GetRangeEnd());
                     }
                 }
@@ -612,7 +617,7 @@ DWARFCompileUnit::Index (const uint32_t cu_idx,
                          NameToDIE& types,
                          NameToDIE& namespaces)
 {
-    const DataExtractor* debug_str = &m_dwarf2Data->get_debug_str_data();
+    const DWARFDataExtractor* debug_str = &m_dwarf2Data->get_debug_str_data();
 
     const uint8_t *fixed_form_sizes = DWARFFormValue::GetFixedFormSizesForAddressSize (GetAddressByteSize());
 

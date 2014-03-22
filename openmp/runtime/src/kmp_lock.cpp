@@ -1,7 +1,7 @@
 /*
  * kmp_lock.cpp -- lock-related functions
- * $Revision: 42613 $
- * $Date: 2013-08-23 13:29:50 -0500 (Fri, 23 Aug 2013) $
+ * $Revision: 42810 $
+ * $Date: 2013-11-07 12:06:33 -0600 (Thu, 07 Nov 2013) $
  */
 
 
@@ -23,7 +23,7 @@
 #include "kmp_lock.h"
 #include "kmp_io.h"
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 # include <unistd.h>
 # include <sys/syscall.h>
 // We should really include <futex.h>, but that causes compatibility problems on different
@@ -398,7 +398,7 @@ __kmp_destroy_nested_tas_lock_with_checks( kmp_tas_lock_t *lck )
 }
 
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 
 /* ------------------------------------------------------------------------ */
 /* futex locks */
@@ -484,7 +484,7 @@ __kmp_acquire_futex_lock_timed_template( kmp_futex_lock_t *lck, kmp_int32 gtid )
         KA_TRACE( 1000, ("__kmp_acquire_futex_lock: lck:%p, T#%d after futex_wait(0x%x)\n",
            lck, gtid, poll_val ) );
         //
-        // This thread has now done a succesful futex wait call and was
+        // This thread has now done a successful futex wait call and was
         // entered on the OS futex queue.  We must now perform a futex
         // wake call when releasing the lock, as we have no idea how many
         // other threads are in the queue.
@@ -755,7 +755,7 @@ __kmp_destroy_nested_futex_lock_with_checks( kmp_futex_lock_t *lck )
     __kmp_destroy_nested_futex_lock( lck );
 }
 
-#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 
 
 /* ------------------------------------------------------------------------ */
@@ -2199,10 +2199,10 @@ __kmp_is_unlocked_queuing_lock( kmp_queuing_lock_t *lck )
 
     // We need a fence here, since we must ensure that no memory operations
     // from later in this thread float above that read.
-#if defined( __GNUC__ ) && !defined( __INTEL_COMPILER )
-    __sync_synchronize();
-#else
+#if KMP_COMPILER_ICC
     _mm_mfence();
+#else
+    __sync_synchronize();
 #endif
 
     return res;
@@ -2548,7 +2548,7 @@ __kmp_acquire_drdpa_lock_timed_template( kmp_drdpa_lock_t *lck, kmp_int32 gtid )
 
         //
         // If we are oversubscribed,
-        // or ahve waited a bit (and KMP_LIBRARY=turnaround), then yield.
+        // or have waited a bit (and KMP_LIBRARY=turnaround), then yield.
         // CPU Pause is in the macros for yield.
         //
         KMP_YIELD(TCR_4(__kmp_nth)
@@ -2733,7 +2733,7 @@ __kmp_test_drdpa_lock( kmp_drdpa_lock_t *lck, kmp_int32 gtid )
             lck->lk.now_serving = ticket;               // non-volatile store
 
             //
-            // Since no threads are waiting, there is no possiblity that
+            // Since no threads are waiting, there is no possibility that
             // we would want to reconfigure the polling area.  We might
             // have the cleanup ticket value (which says that it is now
             // safe to deallocate old_polls), but we'll let a later thread
@@ -3167,7 +3167,7 @@ void __kmp_set_user_lock_vptrs( kmp_lock_kind_t user_lock_kind )
         }
         break;
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 
         case lk_futex: {
             __kmp_base_user_lock_size = sizeof( kmp_base_futex_lock_t );
@@ -3238,7 +3238,7 @@ void __kmp_set_user_lock_vptrs( kmp_lock_kind_t user_lock_kind )
         }
         break;
 
-#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 
         case lk_ticket: {
             __kmp_base_user_lock_size = sizeof( kmp_base_ticket_lock_t );

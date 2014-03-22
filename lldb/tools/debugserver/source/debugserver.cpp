@@ -63,6 +63,7 @@ static nub_launch_flavor_t g_launch_flavor = eLaunchFlavorDefault;
 int g_disable_aslr = 0;
 
 int g_isatty = 0;
+bool g_detach_on_error = true;
 
 #define RNBLogSTDOUT(fmt, ...) do { if (g_isatty) { fprintf(stdout, fmt, ## __VA_ARGS__); } else { _DNBLog(0, fmt, ## __VA_ARGS__); } } while (0)
 #define RNBLogSTDERR(fmt, ...) do { if (g_isatty) { fprintf(stderr, fmt, ## __VA_ARGS__); } else { _DNBLog(0, fmt, ## __VA_ARGS__); } } while (0)
@@ -571,8 +572,24 @@ RNBRunLoopInferiorExecuting (RNBRemote *remote)
                     // in its current state and listen for another connection...
                     if (ctx.ProcessStateRunning())
                     {
-                        DNBLog ("debugserver's event read thread is exiting, killing the inferior process.");
-                        DNBProcessKill (ctx.ProcessID());
+                        if (ctx.GetDetachOnError())
+                        {
+                            DNBLog ("debugserver's event read thread is exiting, detaching from the inferior process.");
+                            DNBProcessDetach (ctx.ProcessID());
+                        }
+                        else
+                        {
+                            DNBLog ("debugserver's event read thread is exiting, killing the inferior process.");
+                            DNBProcessKill (ctx.ProcessID());
+                        }
+                    }
+                    else
+                    {
+                        if (ctx.GetDetachOnError())
+                        {
+                            DNBLog ("debugserver's event read thread is exiting, detaching from the inferior process.");
+                            DNBProcessDetach (ctx.ProcessID());
+                        }
                     }
                 }
                 mode = eRNBRunLoopModeExit;
@@ -631,10 +648,10 @@ RNBRunLoopPlatform (RNBRemote *remote)
 //----------------------------------------------------------------------
 
 static void
-PortWasBoundCallback (const void *baton, in_port_t port)
+PortWasBoundCallbackUnixSocket (const void *baton, in_port_t port)
 {
-    //::printf ("PortWasBoundCallback (baton = %p, port = %u)\n", baton, port);
-
+    //::printf ("PortWasBoundCallbackUnixSocket (baton = %p, port = %u)\n", baton, port);
+    
     const char *unix_socket_name = (const char *)baton;
     
     if (unix_socket_name && unix_socket_name[0])
@@ -654,14 +671,14 @@ PortWasBoundCallback (const void *baton, in_port_t port)
         saddr_un.sun_path[sizeof(saddr_un.sun_path) - 1] = '\0';
         saddr_un.sun_len = SUN_LEN (&saddr_un);
         
-        if (::connect (s, (struct sockaddr *)&saddr_un, SUN_LEN (&saddr_un)) < 0) 
+        if (::connect (s, (struct sockaddr *)&saddr_un, SUN_LEN (&saddr_un)) < 0)
         {
             perror("error: connect (socket, &saddr_un, saddr_un_len)");
             exit(1);
         }
         
         //::printf ("connect () sucess!!\n");
-
+        
         
         // We were able to connect to the socket, now write our PID so whomever
         // launched us will know this process's ID
@@ -676,30 +693,77 @@ PortWasBoundCallback (const void *baton, in_port_t port)
             perror("error: send (s, pid_str, pid_str_len, 0)");
             exit (1);
         }
-
+        
         //::printf ("send () sucess!!\n");
-
+        
         // We are done with the socket
         close (s);
     }
 }
 
+static void
+PortWasBoundCallbackNamedPipe (const void *baton, uint16_t port)
+{
+    const char *named_pipe = (const char *)baton;
+    if (named_pipe && named_pipe[0])
+    {
+        int fd = ::open(named_pipe, O_WRONLY);
+        if (fd > -1)
+        {
+            char port_str[64];
+            const ssize_t port_str_len = ::snprintf (port_str, sizeof(port_str), "%u", port);
+            // Write the port number as a C string with the NULL terminator
+            ::write (fd, port_str, port_str_len + 1);
+            close (fd);
+        }
+    }
+}
+
 static int
-StartListening (RNBRemote *remote, const char *listen_host, int listen_port, const char *unix_socket_name)
+ConnectRemote (RNBRemote *remote,
+               const char *host,
+               int port,
+               bool reverse_connect,
+               const char *named_pipe_path,
+               const char *unix_socket_name)
 {
     if (!remote->Comm().IsConnected())
     {
-        if (listen_port != 0)
-            RNBLogSTDOUT ("Listening to port %i for a connection from %s...\n", listen_port, listen_host ? listen_host : "localhost");
-        if (remote->Comm().Listen(listen_host, listen_port, PortWasBoundCallback, unix_socket_name) != rnb_success)
+        if (reverse_connect)
         {
-            RNBLogSTDERR ("Failed to get connection from a remote gdb process.\n");
-            return 0;
+            if (port == 0)
+            {
+                DNBLogThreaded("error: invalid port supplied for reverse connection: %i.\n", port);
+                return 0;
+            }
+            if (remote->Comm().Connect(host, port) != rnb_success)
+            {
+                DNBLogThreaded("Failed to reverse connect to %s:%i.\n", host, port);
+                return 0;
+            }
         }
         else
         {
-            remote->StartReadRemoteDataThread();
+            if (port != 0)
+                RNBLogSTDOUT ("Listening to port %i for a connection from %s...\n", port, host ? host : "127.0.0.1");
+            if (unix_socket_name && unix_socket_name[0])
+            {
+                if (remote->Comm().Listen(host, port, PortWasBoundCallbackUnixSocket, unix_socket_name) != rnb_success)
+                {
+                    RNBLogSTDERR ("Failed to get connection from a remote gdb process.\n");
+                    return 0;
+                }
+            }
+            else
+            {
+                if (remote->Comm().Listen(host, port, PortWasBoundCallbackNamedPipe, named_pipe_path) != rnb_success)
+                {
+                    RNBLogSTDERR ("Failed to get connection from a remote gdb process.\n");
+                    return 0;
+                }
+            }
         }
+        remote->StartReadRemoteDataThread();
     }
     return 1;
 }
@@ -717,7 +781,7 @@ ASLLogCallback(void *baton, uint32_t flags, const char *format, va_list args)
     {
         g_aslmsg = ::asl_new (ASL_TYPE_MSG);
         char asl_key_sender[PATH_MAX];
-        snprintf(asl_key_sender, sizeof(asl_key_sender), "com.apple.%s-%g", DEBUGSERVER_PROGRAM_NAME, DEBUGSERVER_VERSION_NUM);
+        snprintf(asl_key_sender, sizeof(asl_key_sender), "com.apple.%s-%s", DEBUGSERVER_PROGRAM_NAME, DEBUGSERVER_VERSION_STR);
         ::asl_set (g_aslmsg, ASL_KEY_SENDER, asl_key_sender);
     }
 
@@ -767,6 +831,7 @@ static struct option g_long_options[] =
     { "attach",             required_argument,  NULL,               'a' },
     { "arch",               required_argument,  NULL,               'A' },
     { "debug",              no_argument,        NULL,               'g' },
+    { "kill-on-error",      no_argument,        NULL,               'K' },
     { "verbose",            no_argument,        NULL,               'v' },
     { "lockdown",           no_argument,        &g_lockdown_opt,    1   },  // short option "-k"
     { "applist",            no_argument,        &g_applist_opt,     1   },  // short option "-t"
@@ -787,6 +852,8 @@ static struct option g_long_options[] =
     { "working-dir",        required_argument,  NULL,               'W' },  // The working directory that the inferior process should have (only if debugserver launches the process)
     { "platform",           required_argument,  NULL,               'p' },  // Put this executable into a remote platform mode
     { "unix-socket",        required_argument,  NULL,               'u' },  // If we need to handshake with our parent process, an option will be passed down that specifies a unix socket name to use
+    { "named-pipe",         required_argument,  NULL,               'P' },
+    { "reverse-connect",    no_argument,        NULL,               'R' },
     { NULL,                 0,                  NULL,               0   }
 };
 
@@ -839,9 +906,11 @@ main (int argc, char *argv[])
     std::string arch_name;
     std::string working_dir;                // The new working directory to use for the inferior
     std::string unix_socket_name;           // If we need to handshake with our parent process, an option will be passed down that specifies a unix socket name to use
+    std::string named_pipe_path;            // If we need to handshake with our parent process, an option will be passed down that specifies a named pipe to use
     useconds_t waitfor_interval = 1000;     // Time in usecs between process lists polls when waiting for a process by name, default 1 msec.
     useconds_t waitfor_duration = 0;        // Time in seconds to wait for a process by name, 0 means wait forever.
     bool no_stdio = false;
+    bool reverse_connect = false;           // Set to true by an option to indicate we should reverse connect to the host:port supplied as the first debugserver argument
 
 #if !defined (DNBLOG_ENABLED)
     compile_options += "(no-logging) ";
@@ -878,6 +947,14 @@ main (int argc, char *argv[])
     }
     // NULL terminate the short option string.
     short_options[short_options_idx++] = '\0';
+    
+#if __GLIBC__
+    optind = 0;
+#else
+    optreset = 1;
+    optind = 1;
+#endif
+
     while ((ch = getopt_long_only(argc, argv, short_options, g_long_options, &long_option_index)) != -1)
     {
         DNBLogDebug("option: ch == %c (0x%2.2x) --%s%c%s\n",
@@ -952,6 +1029,9 @@ main (int argc, char *argv[])
                     }
                 }
                 break;
+                
+            case 'K':
+                g_detach_on_error = false;
 
             case 'W':
                 if (optarg && optarg[0])
@@ -1027,9 +1107,12 @@ main (int argc, char *argv[])
                 break;
 
             case 'r':
-                remote->SetUseNativeRegisters (true);
+                // Do nothing, native regs is the default these days
                 break;
 
+            case 'R':
+                reverse_connect = true;
+                break;
             case 'v':
                 DNBLogSetVerbose(1);
                 break;
@@ -1081,6 +1164,11 @@ main (int argc, char *argv[])
             case 'u':
                 unix_socket_name.assign (optarg);
                 break;
+
+            case 'P':
+                named_pipe_path.assign (optarg);
+                break;
+                
         }
     }
     
@@ -1114,6 +1202,8 @@ main (int argc, char *argv[])
         }
     }
 
+    remote->Context().SetDetachOnError(g_detach_on_error);
+    
     remote->Initialize();
 
     // It is ok for us to set NULL as the logfile (this will disable any logging)
@@ -1144,14 +1234,14 @@ main (int argc, char *argv[])
     // as long as we're dropping remotenub in as a replacement for gdbserver,
     // explicitly note that this is not gdbserver.
 
-    RNBLogSTDOUT ("%s-%g %sfor %s.\n",
+    RNBLogSTDOUT ("%s-%s %sfor %s.\n",
                   DEBUGSERVER_PROGRAM_NAME,
-                  DEBUGSERVER_VERSION_NUM,
+                  DEBUGSERVER_VERSION_STR,
                   compile_options.c_str(),
                   RNB_ARCH);
 
-    std::string listen_host;
-    int listen_port = INT32_MAX;
+    std::string host;
+    int port = INT32_MAX;
     char str[PATH_MAX];
     str[0] = '\0';
 
@@ -1164,24 +1254,24 @@ main (int argc, char *argv[])
         }
         // accept 'localhost:' prefix on port number
 
-        int items_scanned = ::sscanf (argv[0], "%[^:]:%i", str, &listen_port);
+        int items_scanned = ::sscanf (argv[0], "%[^:]:%i", str, &port);
         if (items_scanned == 2)
         {
-            listen_host = str;
-            DNBLogDebug("host = '%s'  port = %i", listen_host.c_str(), listen_port);
+            host = str;
+            DNBLogDebug("host = '%s'  port = %i", host.c_str(), port);
         }
         else
         {
             // No hostname means "localhost"
-            int items_scanned = ::sscanf (argv[0], "%i", &listen_port);
+            int items_scanned = ::sscanf (argv[0], "%i", &port);
             if (items_scanned == 1)
             {
-                listen_host = "localhost";
-                DNBLogDebug("host = '%s'  port = %i", listen_host.c_str(), listen_port);
+                host = "127.0.0.1";
+                DNBLogDebug("host = '%s'  port = %i", host.c_str(), port);
             }
             else if (argv[0][0] == '/')
             {
-                listen_port = INT32_MAX;
+                port = INT32_MAX;
                 strncpy(str, argv[0], sizeof(str));
             }
             else
@@ -1296,9 +1386,9 @@ main (int argc, char *argv[])
                 }
                 else
 #endif
-                if (listen_port != INT32_MAX)
+                if (port != INT32_MAX)
                 {
-                    if (!StartListening (remote, listen_host.c_str(), listen_port, unix_socket_name.c_str()))
+                    if (!ConnectRemote (remote, host.c_str(), port, reverse_connect, named_pipe_path.c_str(), unix_socket_name.c_str()))
                         mode = eRNBRunLoopModeExit;
                 }
                 else if (str[0] == '/')
@@ -1409,9 +1499,9 @@ main (int argc, char *argv[])
 
                 if (mode != eRNBRunLoopModeExit)
                 {
-                    if (listen_port != INT32_MAX)
+                    if (port != INT32_MAX)
                     {
-                        if (!StartListening (remote, listen_host.c_str(), listen_port, unix_socket_name.c_str()))
+                        if (!ConnectRemote (remote, host.c_str(), port, reverse_connect, named_pipe_path.c_str(), unix_socket_name.c_str()))
                             mode = eRNBRunLoopModeExit;
                     }
                     else if (str[0] == '/')
@@ -1434,9 +1524,9 @@ main (int argc, char *argv[])
 
                     if (mode == eRNBRunLoopModeInferiorExecuting)
                     {
-                        if (listen_port != INT32_MAX)
+                        if (port != INT32_MAX)
                         {
-                            if (!StartListening (remote, listen_host.c_str(), listen_port, unix_socket_name.c_str()))
+                            if (!ConnectRemote (remote, host.c_str(), port, reverse_connect, named_pipe_path.c_str(), unix_socket_name.c_str()))
                                 mode = eRNBRunLoopModeExit;
                         }
                         else if (str[0] == '/')
@@ -1446,7 +1536,12 @@ main (int argc, char *argv[])
                         }
 
                         if (mode != eRNBRunLoopModeExit)
-                            RNBLogSTDOUT ("Got a connection, launched process %s.\n", argv_sub_zero);
+                        {
+                            const char *proc_name = "<unknown>";
+                            if (ctx.ArgumentCount() > 0)
+                                proc_name = ctx.ArgumentAtIndex(0);
+                            RNBLogSTDOUT ("Got a connection, launched process %s (pid = %d).\n", proc_name, ctx.ProcessID());
+                        }
                     }
                     else
                     {
@@ -1461,9 +1556,9 @@ main (int argc, char *argv[])
                 break;
 
             case eRNBRunLoopModePlatformMode:
-                if (listen_port != INT32_MAX)
+                if (port != INT32_MAX)
                 {
-                    if (!StartListening (remote, listen_host.c_str(), listen_port, unix_socket_name.c_str()))
+                    if (!ConnectRemote (remote, host.c_str(), port, reverse_connect, named_pipe_path.c_str(), unix_socket_name.c_str()))
                         mode = eRNBRunLoopModeExit;
                 }
                 else if (str[0] == '/')

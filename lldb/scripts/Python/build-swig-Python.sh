@@ -36,12 +36,7 @@ else
     GenerateDependencies=0
 fi
 
-if [ $MakefileCalled -eq 0 ]
-then
-  swig_output_file=${SRC_ROOT}/source/LLDBWrapPython.cpp
-else
-  swig_output_file=${TARGET_DIR}/LLDBWrapPython.cpp
-fi
+swig_output_file=${TARGET_DIR}/LLDBWrapPython.cpp
 swig_input_file=${SRC_ROOT}/scripts/lldb.swig
 swig_python_extensions=${SRC_ROOT}/scripts/Python/python-extensions.swig
 swig_python_wrapper=${SRC_ROOT}/scripts/Python/python-wrapper.swig
@@ -99,7 +94,6 @@ HEADER_FILES="${SRC_ROOT}/include/lldb/lldb.h"\
 " ${SRC_ROOT}/include/lldb/API/SBFrame.h"\
 " ${SRC_ROOT}/include/lldb/API/SBFunction.h"\
 " ${SRC_ROOT}/include/lldb/API/SBHostOS.h"\
-" ${SRC_ROOT}/include/lldb/API/SBInputReader.h"\
 " ${SRC_ROOT}/include/lldb/API/SBInstruction.h"\
 " ${SRC_ROOT}/include/lldb/API/SBInstructionList.h"\
 " ${SRC_ROOT}/include/lldb/API/SBLineEntry.h"\
@@ -107,6 +101,8 @@ HEADER_FILES="${SRC_ROOT}/include/lldb/lldb.h"\
 " ${SRC_ROOT}/include/lldb/API/SBModule.h"\
 " ${SRC_ROOT}/include/lldb/API/SBModuleSpec.h"\
 " ${SRC_ROOT}/include/lldb/API/SBProcess.h"\
+" ${SRC_ROOT}/include/lldb/API/SBQueue.h"\
+" ${SRC_ROOT}/include/lldb/API/SBQueueItem.h"\
 " ${SRC_ROOT}/include/lldb/API/SBSourceManager.h"\
 " ${SRC_ROOT}/include/lldb/API/SBStream.h"\
 " ${SRC_ROOT}/include/lldb/API/SBStringList.h"\
@@ -145,14 +141,16 @@ INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBFrame.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBFunction.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBHostOS.i"\
-" ${SRC_ROOT}/scripts/Python/interface/SBInputReader.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBInstruction.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBInstructionList.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBLineEntry.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBListener.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBModule.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBModuleSpec.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBPlatform.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBProcess.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBQueue.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBQueueItem.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBSourceManager.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBStream.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBStringList.i"\
@@ -355,23 +353,8 @@ fi
 current_dir=`pwd`
 if [ -f "${current_dir}/modify-python-lldb.py" ]
 then
-    python ${current_dir}/modify-python-lldb.py ${CONFIG_BUILD_DIR}
+    /usr/bin/env python ${current_dir}/modify-python-lldb.py ${CONFIG_BUILD_DIR}
 fi
 
-# Fix the "#include" statement in the swig output file
-
-if [ -f "${current_dir}/edit-swig-python-wrapper-file.py" ]
-then
-    if [ $MakefileCalled -eq 1 ]
-    then
-        python ${current_dir}/edit-swig-python-wrapper-file.py "${TARGET_DIR}"
-    else
-        python ${current_dir}/edit-swig-python-wrapper-file.py
-    fi
-    if [ -f "${swig_output_file}.edited" ]
-    then
-        mv "${swig_output_file}.edited" ${swig_output_file}
-    fi
-fi
 
 fi

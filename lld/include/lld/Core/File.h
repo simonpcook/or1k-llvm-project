@@ -17,7 +17,6 @@
 #include "lld/Core/LinkingContext.h"
 #include "lld/Core/UndefinedAtom.h"
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 
 #include <vector>
@@ -44,10 +43,9 @@ public:
 
   /// \brief Kinds of files that are supported.
   enum Kind {
-    kindObject,            ///< object file (.o)
-    kindSharedLibrary,     ///< shared library (.so)
-    kindArchiveLibrary,    ///< archive (.a)
-    kindLinkerScript,      ///< linker script
+    kindObject,        ///< object file (.o)
+    kindSharedLibrary, ///< shared library (.so)
+    kindArchiveLibrary ///< archive (.a)
   };
 
   /// \brief Returns file kind.  Need for dyn_cast<> on File objects.
@@ -73,12 +71,11 @@ public:
     return _ordinal;
   }
 
-  /// Sets the command line order of the file.  The parameter must
-  /// also be incremented to the next available ordinal number.
-  virtual void setOrdinalAndIncrement(uint64_t &ordinal) const {
-    _ordinal = ordinal;
-    ++ordinal;
-  }
+  /// Returns true/false depending on whether an ordinal has been set.
+  bool hasOrdinal() const { return (_ordinal != UINT64_MAX); }
+
+  /// Sets the command line order of the file.
+  void setOrdinal(uint64_t ordinal) const { _ordinal = ordinal; }
 
 public:
   template <typename T> class atom_iterator; // forward reference
@@ -158,8 +155,6 @@ public:
   /// all AbsoluteAtoms in this File.
   virtual const atom_collection<AbsoluteAtom> &absolute() const = 0;
 
-  virtual const LinkingContext &getLinkingContext() const = 0;
-
 protected:
   /// \brief only subclasses of File can be instantiated
   File(StringRef p, Kind kind) : _path(p), _kind(kind), _ordinal(UINT64_MAX) {}
@@ -170,13 +165,15 @@ protected:
   class atom_collection_vector : public atom_collection<T> {
   public:
     virtual atom_iterator<T> begin() const {
-      return atom_iterator<T>(*this,
-          _atoms.empty() ? 0 : reinterpret_cast<const void *>(_atoms.data()));
+      auto *it = _atoms.empty() ? nullptr
+                                : reinterpret_cast<const void *>(_atoms.data());
+      return atom_iterator<T>(*this, it);
     }
 
     virtual atom_iterator<T> end() const{
-      return atom_iterator<T>(*this, _atoms.empty() ? 0 :
-          reinterpret_cast<const void *>(_atoms.data() + _atoms.size()));
+      auto *it = _atoms.empty() ? nullptr : reinterpret_cast<const void *>(
+                                                _atoms.data() + _atoms.size());
+      return atom_iterator<T>(*this, it);
     }
 
     virtual const T *deref(const void *it) const {
@@ -221,7 +218,8 @@ protected:
   static atom_collection_empty<SharedLibraryAtom> _noSharedLibraryAtoms;
   static atom_collection_empty<AbsoluteAtom>      _noAbsoluteAtoms;
 
-  StringRef         _path;
+private:
+  StringRef _path;
   Kind              _kind;
   mutable uint64_t  _ordinal;
 };
@@ -236,15 +234,9 @@ public:
   typedef range<std::vector<const DefinedAtom *>::iterator> DefinedAtomRange;
   virtual DefinedAtomRange definedAtoms() = 0;
 
-  virtual const LinkingContext &getLinkingContext() const { return _context; }
-
 protected:
   /// \brief only subclasses of MutableFile can be instantiated
-  MutableFile(const LinkingContext &ctx, StringRef p)
-      : File(p, kindObject), _context(ctx) {}
-
-private:
-  const LinkingContext &_context;
+  MutableFile(StringRef p) : File(p, kindObject) {}
 };
 } // end namespace lld
 

@@ -12,7 +12,6 @@
 
 #include "lld/Core/LLVM.h"
 
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/Allocator.h"
@@ -21,11 +20,15 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileOutputBuffer.h"
 
+#include <memory>
+
 namespace lld {
 class ELFLinkingContext;
 
 namespace elf {
 class ELFWriter;
+
+template <class ELFT> class TargetLayout;
 
 /// \brief A chunk is a contiguous region of space
 template<class ELFT>
@@ -73,7 +76,8 @@ public:
   // Whats the contentType of the chunk ?
   virtual int getContentType() const = 0;
   // Writer the chunk
-  virtual void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) = 0;
+  virtual void write(ELFWriter *writer, TargetLayout<ELFT> &layout,
+                     llvm::FileOutputBuffer &buffer) = 0;
   // Finalize the chunk before assigning offsets/virtual addresses
   virtual void doPreFlight() = 0;
   // Finalize the chunk before writing

@@ -84,15 +84,15 @@ AppleThreadPlanStepThroughObjCTrampoline::InitializeClangFunction ()
         }
         m_impl_function = m_trampoline_handler->GetLookupImplementationWrapperFunction();
         ExecutionContext exc_ctx;
-        const bool unwind_on_error = true;
-        const bool ignore_breakpoints = true;
+        EvaluateExpressionOptions options;
+        options.SetUnwindOnError(true);
+        options.SetIgnoreBreakpoints(true);
+        options.SetStopOthers(m_stop_others);
         m_thread.CalculateExecutionContext(exc_ctx);
         m_func_sp.reset(m_impl_function->GetThreadPlanToCallFunction (exc_ctx,
                                                                       m_args_addr,
-                                                                      errors,
-                                                                      m_stop_others,
-                                                                      unwind_on_error,
-                                                                      ignore_breakpoints));
+                                                                      options,
+                                                                      errors));
         m_func_sp->SetOkayToDiscard(true);
         m_thread.QueueThreadPlan (m_func_sp, false);
     }
@@ -187,14 +187,16 @@ AppleThreadPlanStepThroughObjCTrampoline::ShouldStop (Event *event_ptr)
                 log->Printf ("Implementation lookup returned msgForward function: 0x%" PRIx64 ", stopping.", target_addr);
 
             SymbolContext sc = m_thread.GetStackFrameAtIndex(0)->GetSymbolContext(eSymbolContextEverything);
-            m_run_to_sp.reset(new ThreadPlanStepOut (m_thread, 
-                                                     &sc, 
-                                                     true, 
-                                                     m_stop_others, 
-                                                     eVoteNoOpinion, 
-                                                     eVoteNoOpinion,
-                                                     0));
-            m_thread.QueueThreadPlan(m_run_to_sp, false);
+            const bool abort_other_plans = false;
+            const bool first_insn = true;
+            const uint32_t frame_idx = 0;
+            m_run_to_sp = m_thread.QueueThreadPlanForStepOutNoShouldStop (abort_other_plans,
+                                           &sc,
+                                           first_insn,
+                                           m_stop_others,
+                                           eVoteNoOpinion,
+                                           eVoteNoOpinion,
+                                           frame_idx);
             m_run_to_sp->SetPrivate(true);
             return false;
         }

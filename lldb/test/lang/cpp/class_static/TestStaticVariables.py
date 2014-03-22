@@ -10,7 +10,7 @@ import lldbutil
 
 class StaticVariableTestCase(TestBase):
 
-    mydir = os.path.join("lang", "cpp", "class_static")
+    mydir = TestBase.compute_mydir(__file__)
     failing_compilers = ['clang', 'gcc']
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
@@ -88,7 +88,7 @@ class StaticVariableTestCase(TestBase):
         self.assertTrue(breakpoint, VALID_BREAKPOINT)
 
         # Now launch the process, and do not stop at entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
         self.assertTrue(process, PROCESS_IS_VALID)
 
         # The stop reason of the thread should be breakpoint.

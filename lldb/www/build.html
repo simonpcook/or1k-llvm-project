@@ -23,7 +23,7 @@
                         <ul>
                                 <li> <a href="http://lab.llvm.org:8011/builders/lldb-x86_64-debian-clang">LLDB Linux x86_64 build with Clang (automake)</a>
                                 <li> <a href="http://lab.llvm.org:8011/builders/lldb-x86_64-linux">LLDB Linux x86_64 build with GCC 4.6 (automake)</a>
-                                <li> <a href="http://lab.llvm.org:8011/builders/lldb-x86_64-darwin11">LLDB Mac OS X x86_64 build with Clang (XCode)</a>
+                                <li> <a href="http://lab.llvm.org:8011/builders/lldb-x86_64-darwin12">LLDB Mac OS X x86_64 build with Clang (XCode)</a>
                                 <li> <a href="http://llvm-amd64.freebsd.your.org:8010/builders/lldb-amd64-freebsd">LLDB FreeBSD x86_64</a>
                                 <li> <a href="http://llvm-amd64.freebsd.your.org:8010/builders/lldb-i386-freebsd">LLDB FreeBSD i386</a>
                         </ul>
@@ -150,14 +150,14 @@
                    ninja on your system. To build using ninja:
                 </p>
                 <code>
-                  &gt; cmake .. -G Ninja
+                  &gt; cmake .. -G Ninja -DLLVM_ENABLE_CXX11=ON
                   <br>&gt; ninja lldb
                   <br>&gt; ninja check-lldb
                 </code>
                 <h3>Using CMake + Unix Makefiles</h3>
                 <p>If you do not have Ninja, you can still use CMake to generate Unix Makefiles that build LLDB:</p>
                 <code>
-                  &gt; cmake ..
+                  &gt; cmake .. -DLLVM_ENABLE_CXX11=ON
                   <br>&gt; make
                   <br>&gt; make check-lldb
                 </code>

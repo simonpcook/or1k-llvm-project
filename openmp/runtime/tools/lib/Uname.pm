@@ -58,7 +58,7 @@ my @aux =
         qw{ host_name domain_name },
         map( "operating_system_$_", qw{ name release codename description } )
     );
-    # Auxillary properties.
+    # Auxiliary properties.
 my @all = ( @base, @aux );
     # All the properties.
 my @meta = qw{ base_names all_names value };
@@ -139,12 +139,14 @@ $values{ processor } = $values{ machine };
 
 # hardware_platform.
 if ( 0 ) {
-} elsif ( $^O eq "linux" ) {
+} elsif ( $^O eq "linux" or $^O eq "freebsd" ) {
     if ( 0 ) {
     } elsif ( $values{ machine } =~ m{\Ai[3456]86\z} ) {
         $values{ hardware_platform } = "i386";
-    } elsif ( $values{ machine } =~ m{\Ax86_64\z} ) {
+    } elsif ( $values{ machine } =~ m{\A(x86_64|amd64)\z} ) {
         $values{ hardware_platform } = "x86_64";
+    } elsif ( $values{ machine } =~ m{\Aarmv7\D*\z} ) {
+        $values{ hardware_platform } = "arm";
     } else {
         die "Unsupported machine (\"$values{ machine }\") returned by POSIX::uname(); stopped";
     }; # if
@@ -207,7 +209,7 @@ if ( 0 ) {
 if ( 0 ) {
 } elsif ( $values{ kernel_name } eq "Linux" ) {
     $values{ operating_system } = "GNU/Linux";
-    my $release;    # Name of choosen "*-release" file.
+    my $release;    # Name of chosen "*-release" file.
     my $bulk;       # Content of release file.
     # On Ubuntu, lsb-release is quite informative, e. g.:
     #     DISTRIB_ID=Ubuntu
@@ -276,7 +278,7 @@ if ( 0 ) {
                     or runtime_error( "$release: Cannot find the first line:", $bulk, "(eof)" );
                 my $first_line = $1;
                 $values{ operating_system_description } = $first_line;
-                $first_line =~ m{\A(.*?)\s+release\s+(.*?)\s+\((.*?)(?:\s+Update\s+(.*?))?\)\s*$}
+                $first_line =~ m{\A(.*?)\s+release\s+(.*?)(?:\s+\((.*?)(?:\s+Update\s+(.*?))?\))?\s*$}
                     or runtime_error( "$release:1: Cannot parse line:", $first_line );
                 $values{ operating_system_name    }  = $1;
                 $values{ operating_system_release }  = $2 . ( defined( $4 ) ? ".$4" : "" );
@@ -368,8 +370,10 @@ if ( 0 ) {
     # $values{ operating_system_update  } = $os_name[ 1 ];
 } elsif ( $values{ kernel_name } =~ m{\ACYGWIN_NT-} ) {
     $values{ operating_system } = "MS Windows";
+} elsif ( $values{ kernel_name } =~ m{\AFreeBSD} ) {
+    $values{ operating_system } = "FreeBSD";
 } else {
-    die "Unsuppoprted kernel_name (\"$values{ kernel_name }\") returned by POSIX::uname(); stopped";
+    die "Unsupported kernel_name (\"$values{ kernel_name }\") returned by POSIX::uname(); stopped";
 }; # if
 
 # host_name and domain_name
@@ -452,7 +456,7 @@ C</bin/uname> and C<POSIX::uname()>.
     $hardware_platform = Uname::hardware_platform();
     $operating_system  = Uname::operating_system();
 
-    # Auxillary property functions.
+    # Auxiliary property functions.
     $host_name         = Uname::host_name();
     $domain_name       = Uname::domain_name();
     $os_name           = Uname::operating_system_name();
@@ -545,11 +549,11 @@ One of: C<GNU/Linux>, C<OS X*>, or C<MS Windows>.
 
 =back
 
-=head2 Auxillary Functions
+=head2 Auxiliary Functions
 
-Auxillary functions extends base functions with information not reported by C<uname> program.
+Auxiliary functions extends base functions with information not reported by C<uname> program.
 
-Auxillary functions collect information from different sources. For example, on OS X*, they may
+Auxiliary functions collect information from different sources. For example, on OS X*, they may
 call C<sw_vers> program to find out OS release; on Linux* OS they may parse C</etc/redhat-release> file,
 etc.
 

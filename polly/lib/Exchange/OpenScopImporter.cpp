@@ -17,7 +17,6 @@
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/ScopPass.h"
-#include "llvm/Assembly/Writer.h"
 
 #ifdef OPENSCOP_FOUND
 
@@ -119,7 +118,6 @@ isl_map *mapFromMatrix(openscop_matrix_p m, isl_space *Space) {
 ///
 /// @return An isl_map describing the scattering.
 isl_map *scatteringForStmt(openscop_matrix_p m, ScopStmt *PollyStmt) {
-
   unsigned NbParam = PollyStmt->getNumParams();
   unsigned NbIterators = PollyStmt->getNumIterators();
   unsigned NbScattering = m->NbColumns - 2 - NbParam - NbIterators;

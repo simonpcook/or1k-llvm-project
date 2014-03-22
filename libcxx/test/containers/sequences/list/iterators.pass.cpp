@@ -20,7 +20,7 @@
 #include <cassert>
 #include <iterator>
 
-#include "../../min_allocator.h"
+#include "min_allocator.h"
 
 struct A
 {
@@ -143,10 +143,13 @@ int main()
         std::list<int>::const_iterator cii{};
         assert ( ii1 == ii2 );
         assert ( ii1 == ii4 );
-        assert ( ii1 == cii );
 
-        assert ( !(ii1 != ii2 ));
-        assert ( !(ii1 != cii ));
+        assert (!(ii1 != ii2 ));
+
+        assert ( (ii1 == cii ));
+        assert ( (cii == ii1 ));
+        assert (!(ii1 != cii ));
+        assert (!(cii != ii1 ));
 
         assert ( ii1 != c.cbegin());
         assert ( cii != c.begin());

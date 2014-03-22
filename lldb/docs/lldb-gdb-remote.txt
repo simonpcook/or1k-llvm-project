@@ -10,7 +10,7 @@ Some packets improve performance, others allow for remote process launching
 (if you have an OS), and others allow us to dynamically figure out what
 registers a thread might have. Again with GDB, both sides pre-agree on how the
 registers will look (how many, their register number,name and offsets). We 
-prefer to be able to dynamically determine what kind of architecture, os and
+prefer to be able to dynamically determine what kind of architecture, OS and
 vendor we are debugging, as well as how things are laid out when it comes to
 the thread register contexts. Below are the details on the new packets we have
 added above and beyond the standard GDB remote protocol packets.
@@ -78,6 +78,14 @@ debugging.
 //  Setup the environment up for a new child process that will soon be
 //  launched using the "A" packet.
 //
+// NB: key/value pairs are sent as-is so gdb-remote protocol meta characters
+//     (e.g. '#' or '$') are not acceptable.  If any non-printable or 
+//     metacharacters are present in the strings, QEnvironmentHexEncoded
+//     should be used instead if it is available.  If you don't want to
+//     scan the environment strings before sending, prefer 
+//     the QEnvironmentHexEncoded packet over QEnvironment, if it is
+//     available.
+//
 // PRIORITY TO IMPLEMENT
 //  Low. Only needed if the remote target wants to launch a target after
 //  making a connection to a GDB server that isn't already connected to
@@ -88,6 +96,31 @@ Both GDB and LLDB support passing down environment variables. Is it ok to
 respond with a "$#00" (unimplemented):
 
 send packet: $QEnvironment:ACK_COLOR_FILENAME=bold yellow#00
+read packet: $OK#00
+
+This packet can be sent one or more times _prior_ to sending a "A" packet.
+
+//----------------------------------------------------------------------
+// "QEnvironmentHexEncoded:HEX-ENCODING(NAME=VALUE)"
+//
+// BRIEF
+//  Setup the environment up for a new child process that will soon be
+//  launched using the "A" packet.
+//
+// The only difference between this packet and QEnvironment is that the
+// environment key-value pair is ascii hex encoded for transmission.
+// This allows values with gdb-remote metacharacters like '#' to be sent.
+//
+// PRIORITY TO IMPLEMENT
+//  Low. Only needed if the remote target wants to launch a target after
+//  making a connection to a GDB server that isn't already connected to
+//  an inferior process.
+//----------------------------------------------------------------------
+
+Both GDB and LLDB support passing down environment variables. Is it ok to
+respond with a "$#00" (unimplemented):
+
+send packet: $QEnvironment:41434b5f434f4c4f525f46494c454e414d453d626f6c642379656c6c6f77#00
 read packet: $OK#00
 
 This packet can be sent one or more times _prior_ to sending a "A" packet.
@@ -300,10 +333,22 @@ As we see above we keep making subsequent calls to the remote server to
 discover all registers by increasing the number appended to qRegisterInfo and
 we get a response back that is a series of "key=value;" strings. 
 
-The register offsets may end up describing a register context with gaps.  The
-actual register context structure used may have gaps due to alignment issues.
-Implementations of the g/G packet construction/parsing must handle this padding
-if it exists.  
+The offset: fields should not leave a gap anywhere in the g/G packet -- the
+register values should be appended one after another.  For instance, if the
+register context for a thread looks like 
+
+struct rctx {
+    uint32_t gpr1;  // offset 0
+    uint32_t gpr2;  // offset 4
+    uint32_t gpr3;  // offset 8
+    uint64_t fp1;   // offset 16
+};
+
+You may end up with a 4-byte gap between gpr3 and fp1 on architectures
+that align values like this.  The correct offset: value for fp1 is 12 -
+in the g/G packet fp1 will immediately follow gpr3, even though the 
+in-memory thread structure has an empty 4 bytes for alignment between 
+these two registers.
 
 The keys and values are detailed below:
 
@@ -478,12 +523,20 @@ read packet: $cputype:16777223;cpusubtype:3;ostype:darwin;vendor:apple;endian:li
 
 Key value pairs are one of:
 
-cputype: is a number that is the mach-o CPU type that is being debugged
-cpusubtype: is a number that is the mach-o CPU subtype type that is being debugged
-ostype: is a string the represents the OS being debugged (darwin, linux, freebsd)
-vendor: is a string that represents the vendor (apple)
+cputype: is a number that is the mach-o CPU type that is being debugged (base 10)
+cpusubtype: is a number that is the mach-o CPU subtype type that is being debugged (base 10)
+triple: a string for the target triple (x86_64-apple-macosx) that can be used to specify arch + vendor + os in one entry
+vendor: a string for the vendor (apple), not needed if "triple" is specified
+ostype: a string for the OS being debugged (darwin, linux, freebsd), not needed if "triple" is specified
 endian: is one of "little", "big", or "pdp"
-ptrsize: is a number that represents how big pointers are in bytes on the debug target
+ptrsize: an unsigned number that represents how big pointers are in bytes on the debug target
+hostname: the hostname of the host that is running the GDB server if available
+os_build: a string for the the OS build for the remote host as a string value
+os_kernel: a string describing the kernel version
+os_version: a version string that represents the current OS version (10.8.2)
+watchpoint_exceptions_received: one of "before" or "after" to specify if a watchpoint is triggered before or after the pc when it stops
+default_packet_timeout: an unsigned number that specifies the default timeout in seconds
+distribution_id: optional. For linux, specifies distribution id (e.g. ubuntu, fedora, etc.)
 
 //----------------------------------------------------------------------
 // "qGDBServerVersion"
@@ -568,8 +621,8 @@ real-uid: the real user id of the process
 real-gid: the real group id of the process
 effective-uid: the effective user id of the process
 effective-gid: the effective group id of the process
-cputype: the Mach-O CPU type of the process
-cpusubtype: the Mach-O CPU subtype of the process
+cputype: the Mach-O CPU type of the process  (base 16)
+cpusubtype: the Mach-O CPU subtype of the process  (base 16)
 ostype: is a string the represents the OS being debugged (darwin, linux, freebsd)
 vendor: is a string that represents the vendor (apple)
 endian: is one of "little", "big", or "pdp"
@@ -801,6 +854,61 @@ for this region.
 // In any case, if we want the normal detach behavior we will just send:
 //
 //   D
+//----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+// QSaveRegisterState
+// QSaveRegisterState;thread:XXXX;
+//
+// BRIEF
+//  The QSaveRegisterState packet tells the remote debugserver to save
+//  all registers and return a non-zero unique integer ID that 
+//  represents these save registers. If thread suffixes are enabled the
+//  second form of this packet is used, otherwise the first form is 
+//  used. This packet is called prior to executing an expression, so
+//  the remote GDB server should do anything it needs to in order to 
+//  ensure the registers that are saved are correct. On MacOSX this
+//  involves calling "thread_abort_safely(mach_port_t thread)" to 
+//  ensure we get the correct registers for a thread in case it is
+//  currently having code run on its behalf in the kernel.
+//
+// RESPONSE
+//  unsigned - The save_id result is a non-zero unsigned integer value
+//             that can be passed back to the GDB server using a
+//             QRestoreRegisterState packet to restore the registers
+//             one time.
+//  "EXX" - or an error code in the form of EXX where XX is a
+//  hex error code.
+//
+// PRIORITY TO IMPLEMENT
+//  Low, this is mostly a convenience packet to avoid having to send all
+//  registers via a g packet. It should only be implemented if support
+//  for the QRestoreRegisterState is added.
+//----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+// QRestoreRegisterState:<save_id>
+// QRestoreRegisterState:<save_id>;thread:XXXX;
+//
+// BRIEF
+//  The QRestoreRegisterState packet tells the remote debugserver to 
+//  restore all registers using the "save_id" which is an unsigned
+//  integer that was returned from a previous call to 
+//  QSaveRegisterState. The restoration process can only be done once
+//  as the data backing the register state will be freed upon the 
+//  completion of the QRestoreRegisterState command.
+//
+//  If thread suffixes are enabled the second form of this packet is 
+//  used, otherwise the first form is used.
+//
+// RESPONSE
+//  "OK" - if all registers were successfully restored
+//  "EXX" - for any errors
+//
+// PRIORITY TO IMPLEMENT
+//  Low, this is mostly a convenience packet to avoid having to send all
+//  registers via a g packet. It should only be implemented if support
+//  for the QSaveRegisterState is added.
 //----------------------------------------------------------------------
 
 //----------------------------------------------------------------------

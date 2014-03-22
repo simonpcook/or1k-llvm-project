@@ -87,13 +87,16 @@ public:
     }
     
     virtual lldb_private::Error
-    GetFile (const lldb_private::FileSpec &platform_file, 
-             const lldb_private::UUID *uuid_ptr,
-             lldb_private::FileSpec &local_file);
+    GetFileWithUUID (const lldb_private::FileSpec &platform_file, 
+                     const lldb_private::UUID *uuid_ptr,
+                     lldb_private::FileSpec &local_file);
     
     virtual bool
     GetSupportedArchitectureAtIndex (uint32_t idx, 
                                      lldb_private::ArchSpec &arch);
+
+    virtual lldb_private::ConstString
+    GetSDKDirectory (lldb_private::Target &target);
 
 private:
     DISALLOW_COPY_AND_ASSIGN (PlatformMacOSX);

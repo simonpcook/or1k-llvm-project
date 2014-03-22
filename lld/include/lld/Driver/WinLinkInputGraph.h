@@ -17,7 +17,7 @@
 #ifndef LLD_DRIVER_WIN_LINK_INPUT_GRAPH_H
 #define LLD_DRIVER_WIN_LINK_INPUT_GRAPH_H
 
-#include "lld/Driver/InputGraph.h"
+#include "lld/Core/InputGraph.h"
 #include "lld/ReaderWriter/PECOFFLinkingContext.h"
 
 #include <map>
@@ -30,42 +30,51 @@ public:
   PECOFFFileNode(PECOFFLinkingContext &ctx, StringRef path)
       : FileNode(path), _ctx(ctx) {}
 
-  static inline bool classof(const InputElement *a) {
-    return a->kind() == InputElement::Kind::File;
-  }
+  ErrorOr<StringRef> getPath(const LinkingContext &ctx) const override;
 
-  virtual llvm::ErrorOr<StringRef> path(const LinkingContext &ctx) const;
+  /// \brief Parse the input file to lld::File.
+  error_code parse(const LinkingContext &ctx, raw_ostream &diagnostics) override;
 
   /// \brief validates the Input Element
-  virtual bool validate() { return true; }
+  bool validate() override { return true; }
 
   /// \brief Dump the Input Element
-  virtual bool dump(raw_ostream &) { return true; }
+  bool dump(raw_ostream &) override { return true; }
 
-private:
+  ErrorOr<File &> getNextFile() override;
+
+protected:
   const PECOFFLinkingContext &_ctx;
 };
 
 /// \brief Represents a PECOFF Library File
-class PECOFFLibraryNode : public FileNode {
+class PECOFFLibraryNode : public PECOFFFileNode {
 public:
   PECOFFLibraryNode(PECOFFLinkingContext &ctx, StringRef path)
-      : FileNode(path), _ctx(ctx) {}
+      : PECOFFFileNode(ctx, path) {}
 
-  static inline bool classof(const InputElement *a) {
-    return a->kind() == InputElement::Kind::File;
+  ErrorOr<StringRef> getPath(const LinkingContext &ctx) const override;
+};
+
+/// \brief Represents a ELF control node
+class PECOFFGroup : public Group {
+public:
+  PECOFFGroup() : Group(0) {}
+
+  bool validate() override { return true; }
+  bool dump(raw_ostream &) override { return true; }
+
+  /// \brief Parse the group members.
+  error_code parse(const LinkingContext &ctx, raw_ostream &diagnostics) override {
+    auto *pctx = (PECOFFLinkingContext *)(&ctx);
+    error_code ec = error_code::success();
+    pctx->lock();
+    for (auto &elem : _elements)
+      if ((ec = elem->parse(ctx, diagnostics)))
+        break;
+    pctx->unlock();
+    return ec;
   }
-
-  virtual llvm::ErrorOr<StringRef> path(const LinkingContext &ctx) const;
-
-  /// \brief validates the Input Element
-  virtual bool validate() { return true; }
-
-  /// \brief Dump the Input Element
-  virtual bool dump(raw_ostream &) { return true; }
-
-private:
-  const PECOFFLinkingContext &_ctx;
 };
 
 } // namespace lld

@@ -10,16 +10,18 @@
 
 #include "ThreadGDBRemote.h"
 
+#include "lldb/Breakpoint/Watchpoint.h"
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/DataExtractor.h"
-#include "lldb/Core/StreamString.h"
 #include "lldb/Core/State.h"
+#include "lldb/Core/StreamString.h"
+#include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
 #include "lldb/Target/StopInfo.h"
+#include "lldb/Target/SystemRuntime.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Unwind.h"
-#include "lldb/Breakpoint/Watchpoint.h"
 
 #include "ProcessGDBRemote.h"
 #include "ProcessGDBRemoteLog.h"
@@ -73,11 +75,55 @@ ThreadGDBRemote::GetQueueName ()
         ProcessSP process_sp (GetProcess());
         if (process_sp)
         {
-            ProcessGDBRemote *gdb_process = static_cast<ProcessGDBRemote *>(process_sp.get());
-            return gdb_process->GetDispatchQueueNameForThread (m_thread_dispatch_qaddr, m_dispatch_queue_name);
+            SystemRuntime *runtime = process_sp->GetSystemRuntime ();
+            if (runtime)
+            {
+                m_dispatch_queue_name = runtime->GetQueueNameFromThreadQAddress (m_thread_dispatch_qaddr);
+            }
+            if (m_dispatch_queue_name.length() > 0)
+            {
+                return m_dispatch_queue_name.c_str();
+            }
         }
     }
     return NULL;
+}
+
+queue_id_t
+ThreadGDBRemote::GetQueueID ()
+{
+    if (m_thread_dispatch_qaddr != 0 || m_thread_dispatch_qaddr != LLDB_INVALID_ADDRESS)
+    {
+        ProcessSP process_sp (GetProcess());
+        if (process_sp)
+        {
+            SystemRuntime *runtime = process_sp->GetSystemRuntime ();
+            if (runtime)
+            {
+                return runtime->GetQueueIDFromThreadQAddress (m_thread_dispatch_qaddr);
+            }
+        }
+    }
+    return LLDB_INVALID_QUEUE_ID;
+}
+
+addr_t
+ThreadGDBRemote::GetQueueLibdispatchQueueAddress ()
+{
+    addr_t dispatch_queue_t_addr = LLDB_INVALID_ADDRESS;
+    if (m_thread_dispatch_qaddr != 0 || m_thread_dispatch_qaddr != LLDB_INVALID_ADDRESS)
+    {
+        ProcessSP process_sp (GetProcess());
+        if (process_sp)
+        {
+            SystemRuntime *runtime = process_sp->GetSystemRuntime ();
+            if (runtime)
+            {
+                dispatch_queue_t_addr = runtime->GetLibdispatchQueueAddressFromThreadQAddress (m_thread_dispatch_qaddr);
+            }
+        }
+    }
+    return dispatch_queue_t_addr;
 }
 
 void

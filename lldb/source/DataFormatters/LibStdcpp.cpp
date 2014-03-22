@@ -34,10 +34,10 @@ m_options()
 {
     if (valobj_sp)
         Update();
-    m_options.SetCoerceToId(false)
-    .SetUnwindOnError(true)
-    .SetKeepInMemory(true)
-    .SetUseDynamic(lldb::eDynamicCanRunTarget);
+    m_options.SetCoerceToId(false);
+    m_options.SetUnwindOnError(true);
+    m_options.SetKeepInMemory(true);
+    m_options.SetUseDynamic(lldb::eDynamicCanRunTarget);
 }
 
 size_t
@@ -93,7 +93,7 @@ lldb_private::formatters::LibstdcppVectorBoolSyntheticFrontEnd::GetChildAtIndex 
         target.EvaluateExpression("(bool)true", NULL, retval_sp);
     else
         target.EvaluateExpression("(bool)false", NULL, retval_sp);
-    StreamString name; name.Printf("[%zu]",idx);
+    StreamString name; name.Printf("[%" PRIu64 "]", (uint64_t)idx);
     if (retval_sp)
         retval_sp->SetName(ConstString(name.GetData()));
     return retval_sp;
@@ -215,10 +215,10 @@ lldb_private::formatters::LibstdcppMapIteratorSyntheticFrontEnd::LibstdcppMapIte
 {
     if (valobj_sp)
         Update();
-    m_options.SetCoerceToId(false)
-    .SetUnwindOnError(true)
-    .SetKeepInMemory(true)
-    .SetUseDynamic(lldb::eDynamicCanRunTarget);
+    m_options.SetCoerceToId(false);
+    m_options.SetUnwindOnError(true);
+    m_options.SetKeepInMemory(true);
+    m_options.SetUseDynamic(lldb::eDynamicCanRunTarget);
 }
 
 bool

@@ -15,8 +15,6 @@ include_directories(
   )
 
 add_extra_unittest(ClangModernizeTests
-  FileOverridesTest.cpp
-  ReformattingTest.cpp
   IncludeExcludeTest.cpp
   PerfSupportTest.cpp
   TransformTest.cpp
@@ -25,10 +23,10 @@ add_extra_unittest(ClangModernizeTests
   )
 
 target_link_libraries(ClangModernizeTests
-  modernizeCore
-  clangFormat
-  clangTooling
-  clangBasic
+  clangAST
   clangASTMatchers
-  clangRewriteFrontend
+  clangBasic
+  clangFrontend
+  clangTooling
+  modernizeCore
   )

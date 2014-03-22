@@ -33,6 +33,7 @@
 #include "lldb/Target/CPPLanguageRuntime.h"
 #include "lldb/Target/ObjCLanguageRuntime.h"
 #include "lldb/Target/Process.h"
+#include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Symbol/SymbolFile.h"
 
@@ -130,15 +131,16 @@ namespace lldb {
 
 Module::Module (const ModuleSpec &module_spec) :
     m_mutex (Mutex::eMutexTypeRecursive),
-    m_mod_time (module_spec.GetFileSpec().GetModificationTime()),
-    m_arch (module_spec.GetArchitecture()),
+    m_mod_time (),
+    m_arch (),
     m_uuid (),
-    m_file (module_spec.GetFileSpec()),
-    m_platform_file(module_spec.GetPlatformFileSpec()),
-    m_symfile_spec (module_spec.GetSymbolFileSpec()),
-    m_object_name (module_spec.GetObjectName()),
-    m_object_offset (module_spec.GetObjectOffset()),
-    m_object_mod_time (module_spec.GetObjectModificationTime()),
+    m_file (),
+    m_platform_file(),
+    m_remote_install_file(),
+    m_symfile_spec (),
+    m_object_name (),
+    m_object_offset (),
+    m_object_mod_time (),
     m_objfile_sp (),
     m_symfile_ap (),
     m_ast (),
@@ -161,11 +163,40 @@ Module::Module (const ModuleSpec &module_spec) :
     if (log)
         log->Printf ("%p Module::Module((%s) '%s%s%s%s')",
                      this,
-                     m_arch.GetArchitectureName(),
-                     m_file.GetPath().c_str(),
-                     m_object_name.IsEmpty() ? "" : "(",
-                     m_object_name.IsEmpty() ? "" : m_object_name.AsCString(""),
-                     m_object_name.IsEmpty() ? "" : ")");
+                     module_spec.GetArchitecture().GetArchitectureName(),
+                     module_spec.GetFileSpec().GetPath().c_str(),
+                     module_spec.GetObjectName().IsEmpty() ? "" : "(",
+                     module_spec.GetObjectName().IsEmpty() ? "" : module_spec.GetObjectName().AsCString(""),
+                     module_spec.GetObjectName().IsEmpty() ? "" : ")");
+    
+    // First extract all module specifications from the file using the local
+    // file path. If there are no specifications, then don't fill anything in
+    ModuleSpecList modules_specs;
+    if (ObjectFile::GetModuleSpecifications(module_spec.GetFileSpec(), 0, 0, modules_specs) == 0)
+        return;
+    
+    // Now make sure that one of the module specifications matches what we just
+    // extract. We might have a module specification that specifies a file "/usr/lib/dyld"
+    // with UUID XXX, but we might have a local version of "/usr/lib/dyld" that has
+    // UUID YYY and we don't want those to match. If they don't match, just don't
+    // fill any ivars in so we don't accidentally grab the wrong file later since
+    // they don't match...
+    ModuleSpec matching_module_spec;
+    if (modules_specs.FindMatchingModuleSpec(module_spec, matching_module_spec) == 0)
+        return;
+    m_mod_time = module_spec.GetFileSpec().GetModificationTime();
+    if (module_spec.GetArchitecture().IsValid())
+        m_arch = module_spec.GetArchitecture();
+    else
+        m_arch = matching_module_spec.GetArchitecture();
+    m_mod_time = module_spec.GetFileSpec().GetModificationTime();
+    m_file = module_spec.GetFileSpec();
+    m_platform_file = module_spec.GetPlatformFileSpec();
+    m_symfile_spec = module_spec.GetSymbolFileSpec();
+    m_object_name = module_spec.GetObjectName();
+    m_object_offset = module_spec.GetObjectOffset();
+    m_object_mod_time = module_spec.GetObjectModificationTime();
+    
 }
 
 Module::Module(const FileSpec& file_spec, 
@@ -179,6 +210,7 @@ Module::Module(const FileSpec& file_spec,
     m_uuid (),
     m_file (file_spec),
     m_platform_file(),
+    m_remote_install_file (),
     m_symfile_spec (),
     m_object_name (),
     m_object_offset (object_offset),
@@ -252,7 +284,7 @@ Module::~Module()
 }
 
 ObjectFile *
-Module::GetMemoryObjectFile (const lldb::ProcessSP &process_sp, lldb::addr_t header_addr, Error &error)
+Module::GetMemoryObjectFile (const lldb::ProcessSP &process_sp, lldb::addr_t header_addr, Error &error, size_t size_to_read)
 {
     if (m_objfile_sp)
     {
@@ -264,13 +296,13 @@ Module::GetMemoryObjectFile (const lldb::ProcessSP &process_sp, lldb::addr_t hea
         if (process_sp)
         {
             m_did_load_objfile = true;
-            std::unique_ptr<DataBufferHeap> data_ap (new DataBufferHeap (512, 0));
+            std::unique_ptr<DataBufferHeap> data_ap (new DataBufferHeap (size_to_read, 0));
             Error readmem_error;
             const size_t bytes_read = process_sp->ReadMemory (header_addr, 
                                                               data_ap->GetBytes(), 
                                                               data_ap->GetByteSize(), 
                                                               readmem_error);
-            if (bytes_read == 512)
+            if (bytes_read == size_to_read)
             {
                 DataBufferSP data_sp(data_ap.release());
                 m_objfile_sp = ObjectFile::FindPlugin(shared_from_this(), process_sp, header_addr, data_sp);
@@ -499,7 +531,39 @@ Module::ResolveSymbolContextForAddress (const Address& so_addr, uint32_t resolve
                 }
 
                 if (sc.symbol)
+                {
+                    if (sc.symbol->IsSynthetic())
+                    {
+                        // We have a synthetic symbol so lets check if the object file
+                        // from the symbol file in the symbol vendor is different than
+                        // the object file for the module, and if so search its symbol
+                        // table to see if we can come up with a better symbol. For example
+                        // dSYM files on MacOSX have an unstripped symbol table inside of
+                        // them.
+                        ObjectFile *symtab_objfile = symtab->GetObjectFile();
+                        if (symtab_objfile && symtab_objfile->IsStripped())
+                        {
+                            SymbolFile *symfile = sym_vendor->GetSymbolFile();
+                            if (symfile)
+                            {
+                                ObjectFile *symfile_objfile = symfile->GetObjectFile();
+                                if (symfile_objfile != symtab_objfile)
+                                {
+                                    Symtab *symfile_symtab = symfile_objfile->GetSymtab();
+                                    if (symfile_symtab)
+                                    {
+                                        Symbol *symbol = symfile_symtab->FindSymbolContainingFileAddress(so_addr.GetFileAddress());
+                                        if (symbol && !symbol->IsSynthetic())
+                                        {
+                                            sc.symbol = symbol;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     resolved_flags |= eSymbolContextSymbol;
+                }
             }
         }
 
@@ -1465,30 +1529,19 @@ Module::SetArchitecture (const ArchSpec &new_arch)
 }
 
 bool 
-Module::SetLoadAddress (Target &target, lldb::addr_t offset, bool &changed)
+Module::SetLoadAddress (Target &target, lldb::addr_t value, bool value_is_offset, bool &changed)
 {
-    size_t num_loaded_sections = 0;
-    SectionList *section_list = GetSectionList ();
-    if (section_list)
+    ObjectFile *object_file = GetObjectFile();
+    if (object_file)
     {
-        const size_t num_sections = section_list->GetSize();
-        size_t sect_idx = 0;
-        for (sect_idx = 0; sect_idx < num_sections; ++sect_idx)
-        {
-            // Iterate through the object file sections to find the
-            // first section that starts of file offset zero and that
-            // has bytes in the file...
-            SectionSP section_sp (section_list->GetSectionAtIndex (sect_idx));
-            // Only load non-thread specific sections when given a slide
-            if (section_sp && !section_sp->IsThreadSpecific())
-            {
-                if (target.GetSectionLoadList().SetSectionLoadAddress (section_sp, section_sp->GetFileAddress() + offset))
-                    ++num_loaded_sections;
-            }
-        }
+        changed = object_file->SetLoadAddress(target, value, value_is_offset);
+        return true;
     }
-    changed = num_loaded_sections > 0;
-    return num_loaded_sections > 0;
+    else
+    {
+        changed = false;
+    }
+    return false;
 }
 
 

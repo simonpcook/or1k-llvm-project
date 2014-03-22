@@ -18,9 +18,9 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/Refactoring.h"
-#include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/raw_os_ostream.h"
 
 namespace clang {
 namespace tooling {
@@ -35,12 +35,13 @@ Replacement::Replacement(StringRef FilePath, unsigned Offset, unsigned Length,
     : FilePath(FilePath), ReplacementRange(Offset, Length),
       ReplacementText(ReplacementText) {}
 
-Replacement::Replacement(SourceManager &Sources, SourceLocation Start,
+Replacement::Replacement(const SourceManager &Sources, SourceLocation Start,
                          unsigned Length, StringRef ReplacementText) {
   setFromSourceLocation(Sources, Start, Length, ReplacementText);
 }
 
-Replacement::Replacement(SourceManager &Sources, const CharSourceRange &Range,
+Replacement::Replacement(const SourceManager &Sources,
+                         const CharSourceRange &Range,
                          StringRef ReplacementText) {
   setFromSourceRange(Sources, Range, ReplacementText);
 }
@@ -99,22 +100,21 @@ bool operator==(const Replacement &LHS, const Replacement &RHS) {
          LHS.getReplacementText() == RHS.getReplacementText();
 }
 
-void Replacement::setFromSourceLocation(SourceManager &Sources,
+void Replacement::setFromSourceLocation(const SourceManager &Sources,
                                         SourceLocation Start, unsigned Length,
                                         StringRef ReplacementText) {
   const std::pair<FileID, unsigned> DecomposedLocation =
       Sources.getDecomposedLoc(Start);
   const FileEntry *Entry = Sources.getFileEntryForID(DecomposedLocation.first);
-
   if (Entry != NULL) {
     // Make FilePath absolute so replacements can be applied correctly when
     // relative paths for files are used.
     llvm::SmallString<256> FilePath(Entry->getName());
     llvm::error_code EC = llvm::sys::fs::make_absolute(FilePath);
-    // Don't change the FilePath if the file is a virtual file.
     this->FilePath = EC ? FilePath.c_str() : Entry->getName();
-  } else
+  } else {
     this->FilePath = InvalidLocation;
+  }
   this->ReplacementRange = Range(DecomposedLocation.second, Length);
   this->ReplacementText = ReplacementText;
 }
@@ -122,7 +122,8 @@ void Replacement::setFromSourceLocation(SourceManager &Sources,
 // FIXME: This should go into the Lexer, but we need to figure out how
 // to handle ranges for refactoring in general first - there is no obvious
 // good way how to integrate this into the Lexer yet.
-static int getRangeSize(SourceManager &Sources, const CharSourceRange &Range) {
+static int getRangeSize(const SourceManager &Sources,
+                        const CharSourceRange &Range) {
   SourceLocation SpellingBegin = Sources.getSpellingLoc(Range.getBegin());
   SourceLocation SpellingEnd = Sources.getSpellingLoc(Range.getEnd());
   std::pair<FileID, unsigned> Start = Sources.getDecomposedLoc(SpellingBegin);
@@ -134,7 +135,7 @@ static int getRangeSize(SourceManager &Sources, const CharSourceRange &Range) {
   return End.second - Start.second;
 }
 
-void Replacement::setFromSourceRange(SourceManager &Sources,
+void Replacement::setFromSourceRange(const SourceManager &Sources,
                                      const CharSourceRange &Range,
                                      StringRef ReplacementText) {
   setFromSourceLocation(Sources, Sources.getSpellingLoc(Range.getBegin()),
@@ -302,23 +303,7 @@ bool RefactoringTool::applyAllReplacements(Rewriter &Rewrite) {
 }
 
 int RefactoringTool::saveRewrittenFiles(Rewriter &Rewrite) {
-  for (Rewriter::buffer_iterator I = Rewrite.buffer_begin(),
-                                 E = Rewrite.buffer_end();
-       I != E; ++I) {
-    // FIXME: This code is copied from the FixItRewriter.cpp - I think it should
-    // go into directly into Rewriter (there we also have the Diagnostics to
-    // handle the error cases better).
-    const FileEntry *Entry =
-        Rewrite.getSourceMgr().getFileEntryForID(I->first);
-    std::string ErrorInfo;
-    llvm::raw_fd_ostream FileStream(Entry->getName(), ErrorInfo,
-                                    llvm::sys::fs::F_Binary);
-    if (!ErrorInfo.empty())
-      return 1;
-    I->second.write(FileStream);
-    FileStream.flush();
-  }
-  return 0;
+  return Rewrite.overwriteChangedFiles() ? 1 : 0;
 }
 
 } // end namespace tooling

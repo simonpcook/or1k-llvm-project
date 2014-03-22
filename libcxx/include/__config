@@ -174,7 +174,7 @@
 #endif
 
 #ifndef _LIBCPP_TYPE_VIS
-#  if __has_attribute(type_visibility)
+#  if __has_attribute(__type_visibility__)
 #    define _LIBCPP_TYPE_VIS __attribute__ ((__type_visibility__("default")))
 #  else
 #    define _LIBCPP_TYPE_VIS __attribute__ ((__visibility__("default")))
@@ -194,7 +194,7 @@
 #endif
 
 #ifndef _LIBCPP_EXCEPTION_ABI
-#define _LIBCPP_EXCEPTION_ABI _LIBCPP_TYPE_VIS
+#define _LIBCPP_EXCEPTION_ABI __attribute__ ((__visibility__("default")))
 #endif
 
 #ifndef _LIBCPP_ALWAYS_INLINE
@@ -215,7 +215,7 @@
 #define _LIBCPP_HAS_NO_TEMPLATE_ALIASES
 #endif
 
-#ifndef __GXX_EXPERIMENTAL_CXX0X__
+#if __cplusplus < 201103L
 #ifdef __linux__
 #define _LIBCPP_HAS_NO_UNICODE_CHARS
 #else
@@ -326,9 +326,11 @@ typedef __char32_t char32_t;
 #if (__has_feature(cxx_noexcept))
 #  define _NOEXCEPT noexcept
 #  define _NOEXCEPT_(x) noexcept(x)
+#  define _NOEXCEPT_OR_FALSE(x) noexcept(x)
 #else
 #  define _NOEXCEPT throw()
 #  define _NOEXCEPT_(x)
+#  define _NOEXCEPT_OR_FALSE(x) false
 #endif
 
 #if __has_feature(underlying_type)
@@ -361,6 +363,7 @@ namespace std {
 
 #define _NOEXCEPT throw()
 #define _NOEXCEPT_(x)
+#define _NOEXCEPT_OR_FALSE(x) false
 
 #ifndef __GXX_EXPERIMENTAL_CXX0X__
 
@@ -374,6 +377,7 @@ namespace std {
 #define _LIBCPP_HAS_NO_VARIADICS
 #define _LIBCPP_HAS_NO_RVALUE_REFERENCES
 #define _LIBCPP_HAS_NO_ALWAYS_INLINE_VARIADICS
+#define _LIBCPP_HAS_NO_STRONG_ENUMS
 
 #else  // __GXX_EXPERIMENTAL_CXX0X__
 
@@ -389,9 +393,7 @@ namespace std {
 #endif
 
 #if _GNUC_VER < 404
-#define _LIBCPP_HAS_NO_ADVANCED_SFINAE
 #define _LIBCPP_HAS_NO_DECLTYPE
-#define _LIBCPP_HAS_NO_DEFAULTED_FUNCTIONS
 #define _LIBCPP_HAS_NO_DELETED_FUNCTIONS
 #define _LIBCPP_HAS_NO_UNICODE_CHARS
 #define _LIBCPP_HAS_NO_VARIADICS
@@ -400,6 +402,11 @@ namespace std {
 
 #if _GNUC_VER < 406
 #define _LIBCPP_HAS_NO_NULLPTR
+#endif
+
+#if _GNUC_VER < 407
+#define _LIBCPP_HAS_NO_ADVANCED_SFINAE
+#define _LIBCPP_HAS_NO_DEFAULTED_FUNCTIONS
 #endif
 
 #endif  // __GXX_EXPERIMENTAL_CXX0X__
@@ -427,13 +434,15 @@ using namespace _LIBCPP_NAMESPACE __attribute__((__strong__));
 #define _ALIGNAS(x) __declspec(align(x))
 #define _LIBCPP_HAS_NO_VARIADICS
 
-#define _NOEXCEPT throw()
+#define _NOEXCEPT throw ()
 #define _NOEXCEPT_(x)
+#define _NOEXCEPT_OR_FALSE(x) false
 
 #define _LIBCPP_BEGIN_NAMESPACE_STD namespace std {
 #define _LIBCPP_END_NAMESPACE_STD  }
 #define _VSTD std
 
+#  define _LIBCPP_WEAK
 namespace std {
 }
 
@@ -446,6 +455,7 @@ namespace std {
 
 #define _NOEXCEPT throw()
 #define _NOEXCEPT_(x)
+#define _NOEXCEPT_OR_FALSE(x) false
 
 #define _LIBCPP_HAS_NO_TEMPLATE_ALIASES
 #define _LIBCPP_HAS_NO_ADVANCED_SFINAE
@@ -453,7 +463,6 @@ namespace std {
 #define _LIBCPP_HAS_NO_GENERALIZED_INITIALIZERS
 #define _LIBCPP_HAS_NO_NULLPTR
 #define _LIBCPP_HAS_NO_UNICODE_CHARS
-#define _LIBCPP_HAS_NO_STRONG_ENUMS
 #define _LIBCPP_HAS_IS_BASE_OF
 
 #if defined(_AIX)
@@ -469,7 +478,7 @@ namespace std {
   }
 }
 
-#endif // __clang__ || __GNUC___ || _MSC_VER || __IBMCPP__
+#endif // __clang__ || __GNUC__ || _MSC_VER || __IBMCPP__
 
 #ifdef _LIBCPP_HAS_NO_UNICODE_CHARS
 typedef unsigned short char16_t;
@@ -513,7 +522,7 @@ template <unsigned> struct __static_assert_check {};
 #define __has_feature(__x) 0
 #endif
 
-#if __has_feature(cxx_explicit_conversions)
+#if __has_feature(cxx_explicit_conversions) || defined(__IBMCPP__)
 #   define _LIBCPP_EXPLICIT explicit
 #else
 #   define _LIBCPP_EXPLICIT
@@ -554,6 +563,7 @@ template <unsigned> struct __static_assert_check {};
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(_WIN32) || defined(__sun__) || defined(__NetBSD__)
 #define _LIBCPP_LOCALE__L_EXTENSIONS 1
 #endif
+
 #ifdef __FreeBSD__
 #define _DECLARE_C99_LDBL_MATH 1
 #endif
@@ -564,6 +574,10 @@ template <unsigned> struct __static_assert_check {};
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__sun__)
 #define _LIBCPP_WCTYPE_IS_MASK
+#endif
+
+#ifndef _LIBCPP_TRIVIAL_PAIR_COPY_CTOR
+#  define _LIBCPP_TRIVIAL_PAIR_COPY_CTOR 1
 #endif
 
 #ifndef _LIBCPP_STD_VER
@@ -600,6 +614,10 @@ template <unsigned> struct __static_assert_check {};
 #  elif (defined(_MSC_VER) && !defined(__clang__)) && !defined(_CPPRTTI)
 #    define _LIBCPP_NO_RTTI
 #  endif
+#endif
+
+#ifndef _LIBCPP_WEAK
+#  define _LIBCPP_WEAK __attribute__((__weak__))
 #endif
 
 #endif  // _LIBCPP_CONFIG

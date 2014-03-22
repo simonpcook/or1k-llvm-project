@@ -15,13 +15,6 @@ include(CompilerRTCompile)
 include_directories(..)
 include_directories(../..)
 
-# Use zero-based shadow on Android.
-if(ANDROID)
-  set(ASAN_TESTS_USE_ZERO_BASE_SHADOW TRUE)
-else()
-  set(ASAN_TESTS_USE_ZERO_BASE_SHADOW FALSE)
-endif()
-
 set(ASAN_UNITTEST_HEADERS
   asan_mac_test.h
   asan_test_config.h
@@ -39,24 +32,14 @@ set(ASAN_UNITTEST_COMMON_CFLAGS
   -Werror=sign-compare
   -g
   -O2)
-if(SUPPORTS_NO_VARIADIC_MACROS_FLAG)
-  list(APPEND ASAN_UNITTEST_COMMON_CFLAGS -Wno-variadic-macros)
-endif()
+append_if(COMPILER_RT_HAS_WNO_VARIADIC_MACROS_FLAG -Wno-variadic-macros ASAN_UNITTEST_COMMON_CFLAGS)
 
 # Use -D instead of definitions to please custom compile command.
 list(APPEND ASAN_UNITTEST_COMMON_CFLAGS
   -DASAN_HAS_BLACKLIST=1
   -DASAN_HAS_EXCEPTIONS=1
+  -DASAN_NEEDS_SEGV=1
   -DASAN_UAR=0)
-if(ANDROID)
-  list(APPEND ASAN_UNITTEST_COMMON_CFLAGS
-    -DASAN_FLEXIBLE_MAPPING_AND_OFFSET=0
-    -DASAN_NEEDS_SEGV=0)
-else()
-  list(APPEND ASAN_UNITTEST_COMMON_CFLAGS
-    -DASAN_FLEXIBLE_MAPPING_AND_OFFSET=1
-    -DASAN_NEEDS_SEGV=1)
-endif()
 
 set(ASAN_BLACKLIST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/asan_test.ignore")
 set(ASAN_UNITTEST_INSTRUMENTED_CFLAGS
@@ -65,13 +48,7 @@ set(ASAN_UNITTEST_INSTRUMENTED_CFLAGS
   "-fsanitize-blacklist=${ASAN_BLACKLIST_FILE}"
   -mllvm -asan-stack=1
   -mllvm -asan-globals=1
-  -mllvm -asan-mapping-scale=0        # default will be used
-  -mllvm -asan-mapping-offset-log=-1  # default will be used
 )
-if(ASAN_TESTS_USE_ZERO_BASE_SHADOW)
-  list(APPEND ASAN_UNITTEST_INSTRUMENTED_CFLAGS
-    -fsanitize-address-zero-base-shadow)
-endif()
 
 # Unit tests require libstdc++.
 set(ASAN_UNITTEST_COMMON_LINKFLAGS -lstdc++)
@@ -79,7 +56,7 @@ set(ASAN_UNITTEST_COMMON_LINKFLAGS -lstdc++)
 if(APPLE)
   list(APPEND ASAN_UNITTEST_COMMON_LINKFLAGS -framework Foundation)
 endif()
-if(ASAN_TESTS_USE_ZERO_BASE_SHADOW)
+if(ANDROID)
   list(APPEND ASAN_UNITTEST_COMMON_LINKFLAGS -pie)
 endif()
 
@@ -92,11 +69,9 @@ if(NOT ANDROID)
 endif()
 
 set(ASAN_UNITTEST_NOINST_LINKFLAGS
-  ${ASAN_UNITTEST_COMMON_LINKFLAGS}
-  -ldl)
-if(NOT ANDROID)
-  list(APPEND ASAN_UNITTEST_NOINST_LINKFLAGS -lpthread)
-endif()
+  ${ASAN_UNITTEST_COMMON_LINKFLAGS} -lm)
+append_if(COMPILER_RT_HAS_LIBDL -ldl ASAN_UNITTEST_NOINST_LINKFLAGS)
+append_if(COMPILER_RT_HAS_LIBPTHREAD -lpthread ASAN_UNITTEST_NOINST_LINKFLAGS)
 
 # Compile source for the given architecture, using compiler
 # options in ${ARGN}, and add it to the object list.
@@ -104,11 +79,13 @@ macro(asan_compile obj_list source arch)
   get_filename_component(basename ${source} NAME)
   set(output_obj "${obj_list}.${basename}.${arch}.o")
   get_target_flags_for_arch(${arch} TARGET_CFLAGS)
+  set(COMPILE_DEPS ${ASAN_UNITTEST_HEADERS} ${ASAN_BLACKLIST_FILE})
+  if(NOT COMPILER_RT_STANDALONE_BUILD)
+    list(APPEND COMPILE_DEPS gtest asan)
+  endif()
   clang_compile(${output_obj} ${source}
                 CFLAGS ${ARGN} ${TARGET_CFLAGS}
-                DEPS gtest ${ASAN_RUNTIME_LIBRARIES}
-                           ${ASAN_UNITTEST_HEADERS}
-                           ${ASAN_BLACKLIST_FILE})
+                DEPS ${COMPILE_DEPS})
   list(APPEND ${obj_list} ${output_obj})
 endmacro()
 
@@ -117,7 +94,10 @@ endmacro()
 macro(add_asan_test test_suite test_name arch)
   parse_arguments(TEST "OBJECTS;LINKFLAGS" "WITH_TEST_RUNTIME" ${ARGN})
   get_target_flags_for_arch(${arch} TARGET_LINK_FLAGS)
-  set(TEST_DEPS ${ASAN_RUNTIME_LIBRARIES} ${TEST_OBJECTS})
+  set(TEST_DEPS ${TEST_OBJECTS})
+  if(NOT COMPILER_RT_STANDALONE_BUILD)
+    list(APPEND TEST_DEPS asan)
+  endif()
   if(TEST_WITH_TEST_RUNTIME)
     list(APPEND TEST_DEPS ${ASAN_TEST_RUNTIME})
     list(APPEND TEST_OBJECTS lib${ASAN_TEST_RUNTIME}.a)
@@ -144,6 +124,7 @@ set(ASAN_NOINST_TEST_SOURCES
 
 set(ASAN_INST_TEST_SOURCES
   ${COMPILER_RT_GTEST_SOURCE}
+  asan_asm_test.cc
   asan_globals_test.cc
   asan_interface_test.cc
   asan_test.cc
@@ -165,7 +146,7 @@ macro(add_asan_tests_for_arch arch)
   set(ASAN_INST_TEST_OBJECTS)
   foreach(src ${ASAN_INST_TEST_SOURCES})
     asan_compile(ASAN_INST_TEST_OBJECTS ${src} ${arch}
-                 ${ASAN_UNITTEST_INSTRUMENTED_CFLAGS})
+                 ${ASAN_UNITTEST_INSTRUMENTED_CFLAGS} -std=c++11)
   endforeach()
   if (APPLE)
     # Add Mac-specific helper.
@@ -199,7 +180,7 @@ macro(add_asan_tests_for_arch arch)
   set(ASAN_NOINST_TEST_OBJECTS)
   foreach(src ${ASAN_NOINST_TEST_SOURCES})
     asan_compile(ASAN_NOINST_TEST_OBJECTS ${src} ${arch}
-                 ${ASAN_UNITTEST_COMMON_CFLAGS})
+                 ${ASAN_UNITTEST_COMMON_CFLAGS} -std=c++11)
   endforeach()
   add_asan_test(AsanUnitTests "Asan-${arch}-Noinst-Test" ${arch}
                 OBJECTS ${ASAN_NOINST_TEST_OBJECTS}
@@ -210,7 +191,7 @@ macro(add_asan_tests_for_arch arch)
   set(ASAN_BENCHMARKS_OBJECTS)
   foreach(src ${ASAN_BENCHMARKS_SOURCES})
     asan_compile(ASAN_BENCHMARKS_OBJECTS ${src} ${arch}
-                 ${ASAN_UNITTEST_INSTRUMENTED_CFLAGS})
+                 ${ASAN_UNITTEST_INSTRUMENTED_CFLAGS} -std=c++11)
   endforeach()
   add_asan_test(AsanBenchmarks "Asan-${arch}-Benchmark" ${arch}
                 OBJECTS ${ASAN_BENCHMARKS_OBJECTS}
@@ -236,6 +217,7 @@ if(ANDROID)
     ${ASAN_NOINST_TEST_SOURCES})
   set_target_compile_flags(AsanNoinstTest ${ASAN_UNITTEST_COMMON_CFLAGS})
   set_target_link_flags(AsanNoinstTest ${ASAN_UNITTEST_NOINST_LINKFLAGS})
+  target_link_libraries(AsanNoinstTest log)
 
   # Test with ASan instrumentation. Link with ASan dynamic runtime.
   add_executable(AsanTest

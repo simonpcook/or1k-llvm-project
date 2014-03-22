@@ -9,7 +9,7 @@ from lldbtest import *
 @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
 class AddDsymMidExecutionCommandCase(TestBase):
 
-    mydir = os.path.join ("macosx", "add-dsym")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -28,7 +28,7 @@ class AddDsymMidExecutionCommandCase(TestBase):
         self.assertTrue(main_bp, VALID_BREAKPOINT)
 
         self.runCmd("settings set target.disable-aslr false")
-        self.process = self.target.LaunchSimple(None, None, os.getcwd())
+        self.process = self.target.LaunchSimple (None, None, self.get_process_working_directory())
         self.assertTrue(self.process, PROCESS_IS_VALID)
 
         # The stop reason of the thread should be breakpoint.

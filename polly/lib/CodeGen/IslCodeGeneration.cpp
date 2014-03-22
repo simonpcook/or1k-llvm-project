@@ -58,7 +58,7 @@ using namespace llvm;
 /// run time.
 class RuntimeDebugBuilder {
 public:
-  RuntimeDebugBuilder(IRBuilder<> &Builder) : Builder(Builder) {}
+  RuntimeDebugBuilder(PollyIRBuilder &Builder) : Builder(Builder) {}
 
   /// @brief Print a string to stdout.
   ///
@@ -71,7 +71,7 @@ public:
   void createIntPrinter(Value *V);
 
 private:
-  IRBuilder<> &Builder;
+  PollyIRBuilder &Builder;
 
   /// @brief Add a call to the fflush function with no file pointer given.
   ///
@@ -138,8 +138,8 @@ void RuntimeDebugBuilder::createIntPrinter(Value *V) {
 /// @brief Calculate the Value of a certain isl_ast_expr
 class IslExprBuilder {
 public:
-  IslExprBuilder(IRBuilder<> &Builder, std::map<isl_id *, Value *> &IDToValue,
-                 Pass *P)
+  IslExprBuilder(PollyIRBuilder &Builder,
+                 std::map<isl_id *, Value *> &IDToValue, Pass *P)
       : Builder(Builder), IDToValue(IDToValue) {}
 
   Value *create(__isl_take isl_ast_expr *Expr);
@@ -147,7 +147,7 @@ public:
   IntegerType *getType(__isl_keep isl_ast_expr *Expr);
 
 private:
-  IRBuilder<> &Builder;
+  PollyIRBuilder &Builder;
   std::map<isl_id *, Value *> &IDToValue;
 
   Value *createOp(__isl_take isl_ast_expr *Expr);
@@ -445,6 +445,8 @@ Value *IslExprBuilder::createOp(__isl_take isl_ast_expr *Expr) {
   case isl_ast_op_and_then:
   case isl_ast_op_or_else:
   case isl_ast_op_call:
+  case isl_ast_op_member:
+  case isl_ast_op_access:
     llvm_unreachable("Unsupported isl ast expression");
   case isl_ast_op_max:
   case isl_ast_op_min:
@@ -537,14 +539,17 @@ Value *IslExprBuilder::create(__isl_take isl_ast_expr *Expr) {
 
 class IslNodeBuilder {
 public:
-  IslNodeBuilder(IRBuilder<> &Builder, Pass *P)
-      : Builder(Builder), ExprBuilder(Builder, IDToValue, P), P(P) {}
+  IslNodeBuilder(PollyIRBuilder &Builder, LoopAnnotator &Annotator, Pass *P)
+      : Builder(Builder), Annotator(Annotator),
+        ExprBuilder(Builder, IDToValue, P), P(P) {}
 
   void addParameters(__isl_take isl_set *Context);
   void create(__isl_take isl_ast_node *Node);
+  IslExprBuilder &getExprBuilder() { return ExprBuilder; }
 
 private:
-  IRBuilder<> &Builder;
+  PollyIRBuilder &Builder;
+  LoopAnnotator &Annotator;
   IslExprBuilder ExprBuilder;
   Pass *P;
 
@@ -706,22 +711,16 @@ void IslNodeBuilder::createForVector(__isl_take isl_ast_node *For,
   isl_ast_expr *Inc = isl_ast_node_for_get_inc(For);
   isl_ast_expr *Iterator = isl_ast_node_for_get_iterator(For);
   isl_id *IteratorID = isl_ast_expr_get_id(Iterator);
-  CmpInst::Predicate Predicate;
-  isl_ast_expr *UB = getUpperBound(For, Predicate);
 
   Value *ValueLB = ExprBuilder.create(Init);
-  Value *ValueUB = ExprBuilder.create(UB);
   Value *ValueInc = ExprBuilder.create(Inc);
 
   Type *MaxType = ExprBuilder.getType(Iterator);
   MaxType = ExprBuilder.getWidestType(MaxType, ValueLB->getType());
-  MaxType = ExprBuilder.getWidestType(MaxType, ValueUB->getType());
   MaxType = ExprBuilder.getWidestType(MaxType, ValueInc->getType());
 
   if (MaxType != ValueLB->getType())
     ValueLB = Builder.CreateSExt(ValueLB, MaxType);
-  if (MaxType != ValueUB->getType())
-    ValueUB = Builder.CreateSExt(ValueUB, MaxType);
   if (MaxType != ValueInc->getType())
     ValueInc = Builder.CreateSExt(ValueInc, MaxType);
 
@@ -781,6 +780,9 @@ void IslNodeBuilder::createForSequential(__isl_take isl_ast_node *For) {
   BasicBlock *ExitBlock;
   Value *IV;
   CmpInst::Predicate Predicate;
+  bool Parallel;
+
+  Parallel = isInnermostParallel(For);
 
   Body = isl_ast_node_for_get_body(For);
 
@@ -812,10 +814,13 @@ void IslNodeBuilder::createForSequential(__isl_take isl_ast_node *For) {
   if (MaxType != ValueInc->getType())
     ValueInc = Builder.CreateSExt(ValueInc, MaxType);
 
-  IV = createLoop(ValueLB, ValueUB, ValueInc, Builder, P, ExitBlock, Predicate);
+  IV = createLoop(ValueLB, ValueUB, ValueInc, Builder, P, ExitBlock, Predicate,
+                  &Annotator, Parallel);
   IDToValue[IteratorID] = IV;
 
   create(Body);
+
+  Annotator.End();
 
   IDToValue.erase(IteratorID);
 
@@ -853,7 +858,7 @@ void IslNodeBuilder::createIf(__isl_take isl_ast_node *If) {
   BasicBlock *ThenBB = BasicBlock::Create(Context, "polly.then", F);
   BasicBlock *ElseBB = BasicBlock::Create(Context, "polly.else", F);
 
-  DominatorTree &DT = P->getAnalysis<DominatorTree>();
+  DominatorTree &DT = P->getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   DT.addNewBlock(ThenBB, CondBB);
   DT.addNewBlock(ElseBB, CondBB);
   DT.changeImmediateDominator(MergeBB, CondBB);
@@ -1035,9 +1040,23 @@ public:
 
     BasicBlock *StartBlock = executeScopConditionally(S, this);
     isl_ast_node *Ast = AstInfo.getAst();
-    IRBuilder<> Builder(StartBlock->begin());
+    LoopAnnotator Annotator;
+    PollyIRBuilder Builder(StartBlock->getContext(), llvm::ConstantFolder(),
+                           polly::IRInserter(Annotator));
+    Builder.SetInsertPoint(StartBlock->begin());
 
-    IslNodeBuilder NodeBuilder(Builder, this);
+    IslNodeBuilder NodeBuilder(Builder, Annotator, this);
+
+    // Build condition that evaluates at run-time if all assumptions taken
+    // for the scop hold. If we detect some assumptions do not hold, the
+    // original code is executed.
+    Value *V = NodeBuilder.getExprBuilder().create(AstInfo.getRunCondition());
+    Value *Zero = ConstantInt::get(V->getType(), 0);
+    V = Builder.CreateICmp(CmpInst::ICMP_NE, Zero, V);
+    BasicBlock *PrevBB = StartBlock->getUniquePredecessor();
+    BranchInst *Branch = dyn_cast<BranchInst>(PrevBB->getTerminator());
+    Branch->setCondition(V);
+
     NodeBuilder.addParameters(S.getContext());
     NodeBuilder.create(Ast);
     return true;
@@ -1046,7 +1065,7 @@ public:
   virtual void printScop(raw_ostream &OS) const {}
 
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    AU.addRequired<DominatorTree>();
+    AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<IslAstInfo>();
     AU.addRequired<RegionInfo>();
     AU.addRequired<ScalarEvolution>();
@@ -1057,7 +1076,7 @@ public:
     AU.addPreserved<Dependences>();
 
     AU.addPreserved<LoopInfo>();
-    AU.addPreserved<DominatorTree>();
+    AU.addPreserved<DominatorTreeWrapperPass>();
     AU.addPreserved<IslAstInfo>();
     AU.addPreserved<ScopDetection>();
     AU.addPreserved<ScalarEvolution>();
@@ -1079,7 +1098,7 @@ Pass *polly::createIslCodeGenerationPass() { return new IslCodeGeneration(); }
 INITIALIZE_PASS_BEGIN(IslCodeGeneration, "polly-codegen-isl",
                       "Polly - Create LLVM-IR from SCoPs", false, false);
 INITIALIZE_PASS_DEPENDENCY(Dependences);
-INITIALIZE_PASS_DEPENDENCY(DominatorTree);
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass);
 INITIALIZE_PASS_DEPENDENCY(LoopInfo);
 INITIALIZE_PASS_DEPENDENCY(RegionInfo);
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);

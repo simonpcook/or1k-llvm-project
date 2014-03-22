@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_MACHO_GOT_PASS_H_
-#define LLD_READER_WRITER_MACHO_GOT_PASS_H_
+#ifndef LLD_READER_WRITER_MACHO_GOT_PASS_H
+#define LLD_READER_WRITER_MACHO_GOT_PASS_H
 
 #include "lld/Core/DefinedAtom.h"
 #include "lld/Core/SharedLibraryAtom.h"
@@ -29,23 +29,23 @@ public:
     return true;
   }
 
-  virtual bool isGOTAccess(int32_t, bool& canBypassGOT) {
+  virtual bool isGOTAccess(const Reference &, bool &canBypassGOT) {
     return false;
   }
 
   virtual void updateReferenceToGOT(const Reference*, bool targetIsNowGOT) {
-  
+
   }
 
   virtual const DefinedAtom* makeGOTEntry(const Atom&) {
     return nullptr;
   }
-  
+
 };
 
 
-} // namespace mach_o 
-} // namespace lld 
+} // namespace mach_o
+} // namespace lld
 
 
-#endif // LLD_READER_WRITER_MACHO_GOT_PASS_H_
+#endif // LLD_READER_WRITER_MACHO_GOT_PASS_H

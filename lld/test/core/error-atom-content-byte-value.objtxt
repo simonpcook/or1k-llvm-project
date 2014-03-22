@@ -1,5 +1,5 @@
 # RUN: not lld -core %s 2> %t.err
-# RUN:   FileCheck < %t.err %s
+# RUN: FileCheck %s < %t.err
 
 #
 # Test that an invalid hex byte produces a readable error.
@@ -10,7 +10,7 @@ defined-atoms:
     - name:         entry
       scope:        hidden
       content:      [ A5, 00, 4G, 1F ]
-  
+
 ...
 
 

@@ -29,8 +29,7 @@ public:
 
     DWARFCompileUnit(SymbolFileDWARF* dwarf2Data);
 
-    bool        Extract(const lldb_private::DataExtractor &debug_info, lldb::offset_t *offset_ptr);
-    dw_offset_t Extract(lldb::offset_t offset, const lldb_private::DataExtractor& debug_info_data, const DWARFAbbreviationDeclarationSet* abbrevs);
+    bool        Extract(const lldb_private::DWARFDataExtractor &debug_info, lldb::offset_t *offset_ptr);
     size_t      ExtractDIEsIfNeeded (bool cu_die_only);
     bool        LookupAddress(
                     const dw_addr_t address,
@@ -55,8 +54,7 @@ public:
     dw_addr_t   GetBaseAddress() const { return m_base_addr; }
     void        ClearDIEs(bool keep_compile_unit_die);
     void        BuildAddressRangeTable (SymbolFileDWARF* dwarf2Data,
-                                        DWARFDebugAranges* debug_aranges,
-                                        bool clear_dies_if_already_not_parsed);
+                                        DWARFDebugAranges* debug_aranges);
 
     void
     SetBaseAddress(dw_addr_t base_addr)

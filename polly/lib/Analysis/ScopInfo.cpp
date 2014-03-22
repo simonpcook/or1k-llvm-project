@@ -30,7 +30,6 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/RegionIterator.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
-#include "llvm/Assembly/Writer.h"
 #include "llvm/Support/CommandLine.h"
 
 #define DEBUG_TYPE "polly-scops"
@@ -39,6 +38,7 @@
 #include "isl/constraint.h"
 #include "isl/set.h"
 #include "isl/map.h"
+#include "isl/union_map.h"
 #include "isl/aff.h"
 #include "isl/printer.h"
 #include "isl/local_space.h"
@@ -57,7 +57,6 @@ STATISTIC(RichScopFound, "Number of Scops containing a loop");
 /// Translate a 'const SCEV *' expression in an isl_pw_aff.
 struct SCEVAffinator : public SCEVVisitor<SCEVAffinator, isl_pw_aff *> {
 public:
-
   /// @brief Translate a 'const SCEV *' to an isl_pw_aff.
   ///
   /// @param Stmt The location at which the scalar evolution expression
@@ -288,7 +287,7 @@ static void makeIslCompatible(std::string &str) {
 
 void MemoryAccess::setBaseName() {
   raw_string_ostream OS(BaseName);
-  WriteAsOperand(OS, getBaseAddr(), false);
+  getBaseAddr()->printAsOperand(OS, false);
   BaseName = OS.str();
 
   makeIslCompatible(BaseName);
@@ -492,7 +491,16 @@ void MemoryAccess::setNewAccessRelation(isl_map *newAccess) {
 
 isl_map *ScopStmt::getScattering() const { return isl_map_copy(Scattering); }
 
+void ScopStmt::restrictDomain(__isl_take isl_set *NewDomain) {
+  assert(isl_set_is_subset(NewDomain, Domain) &&
+         "New domain is not a subset of old domain!");
+  isl_set_free(Domain);
+  Domain = NewDomain;
+  Scattering = isl_map_intersect_domain(Scattering, isl_set_copy(Domain));
+}
+
 void ScopStmt::setScattering(isl_map *NewScattering) {
+  assert(NewScattering && "New scattering is NULL");
   isl_map_free(Scattering);
   Scattering = NewScattering;
 }
@@ -530,9 +538,17 @@ void ScopStmt::buildAccesses(TempScop &tempScop, const Region &CurRegion) {
                                       E = AccFuncs->end();
        I != E; ++I) {
     MemAccs.push_back(new MemoryAccess(I->first, I->second, this));
-    assert(!InstructionToAccess.count(I->second) &&
-           "Unexpected 1-to-N mapping on instruction to access map!");
-    InstructionToAccess[I->second] = MemAccs.back();
+
+    // We do not track locations for scalar memory accesses at the moment.
+    //
+    // We do not have a use for this information at the moment. If we need this
+    // at some point, the "instruction -> access" mapping needs to be enhanced
+    // as a single instruction could then possibly perform multiple accesses.
+    if (!I->first.isScalar()) {
+      assert(!InstructionToAccess.count(I->second) &&
+             "Unexpected 1-to-N mapping on instruction to access map!");
+      InstructionToAccess[I->second] = MemAccs.back();
+    }
   }
 }
 
@@ -657,7 +673,7 @@ ScopStmt::ScopStmt(Scop &parent, TempScop &tempScop, const Region &CurRegion,
   }
 
   raw_string_ostream OS(BaseName);
-  WriteAsOperand(OS, &bb, false);
+  bb.printAsOperand(OS, false);
   BaseName = OS.str();
 
   makeIslCompatible(BaseName);
@@ -789,7 +805,8 @@ __isl_give isl_id *Scop::getIdForParam(const SCEV *Parameter) const {
 
 void Scop::buildContext() {
   isl_space *Space = isl_space_params_alloc(IslCtx, 0);
-  Context = isl_set_universe(Space);
+  Context = isl_set_universe(isl_space_copy(Space));
+  AssumedContext = isl_set_universe(Space);
 }
 
 void Scop::addParameterBounds() {
@@ -861,6 +878,7 @@ Scop::Scop(TempScop &tempScop, LoopInfo &LI, ScalarEvolution &ScalarEvolution,
 
 Scop::~Scop() {
   isl_set_free(Context);
+  isl_set_free(AssumedContext);
 
   // Free the statements;
   for (iterator I = begin(), E = end(); I != E; ++I)
@@ -874,11 +892,11 @@ std::string Scop::getNameStr() const {
   raw_string_ostream ExitStr(ExitName);
   raw_string_ostream EntryStr(EntryName);
 
-  WriteAsOperand(EntryStr, R.getEntry(), false);
+  R.getEntry()->printAsOperand(EntryStr, false);
   EntryStr.str();
 
   if (R.getExit()) {
-    WriteAsOperand(ExitStr, R.getExit(), false);
+    R.getExit()->printAsOperand(ExitStr, false);
     ExitStr.str();
   } else
     ExitName = "FunctionExit";
@@ -889,6 +907,10 @@ std::string Scop::getNameStr() const {
 __isl_give isl_set *Scop::getContext() const { return isl_set_copy(Context); }
 __isl_give isl_space *Scop::getParamSpace() const {
   return isl_set_get_space(this->Context);
+}
+
+__isl_give isl_set *Scop::getAssumedContext() const {
+  return isl_set_copy(AssumedContext);
 }
 
 void Scop::printContext(raw_ostream &OS) const {
@@ -921,6 +943,9 @@ void Scop::printStatements(raw_ostream &OS) const {
 }
 
 void Scop::print(raw_ostream &OS) const {
+  OS.indent(4) << "Function: " << getRegion().getEntry()->getParent()->getName()
+               << "\n";
+  OS.indent(4) << "Region: " << getNameStr() << "\n";
   printContext(OS.indent(4));
   printStatements(OS.indent(4));
 }
@@ -940,6 +965,90 @@ __isl_give isl_union_set *Scop::getDomains() {
                                    isl_union_set_from_set((*SI)->getDomain()));
 
   return Domain;
+}
+
+__isl_give isl_union_map *Scop::getWrites() {
+  isl_union_map *Write = isl_union_map_empty(this->getParamSpace());
+
+  for (Scop::iterator SI = this->begin(), SE = this->end(); SI != SE; ++SI) {
+    ScopStmt *Stmt = *SI;
+
+    for (ScopStmt::memacc_iterator MI = Stmt->memacc_begin(),
+                                   ME = Stmt->memacc_end();
+         MI != ME; ++MI) {
+      if (!(*MI)->isWrite())
+        continue;
+
+      isl_set *Domain = Stmt->getDomain();
+      isl_map *AccessDomain = (*MI)->getAccessRelation();
+
+      AccessDomain = isl_map_intersect_domain(AccessDomain, Domain);
+      Write = isl_union_map_add_map(Write, AccessDomain);
+    }
+  }
+  return isl_union_map_coalesce(Write);
+}
+
+__isl_give isl_union_map *Scop::getReads() {
+  isl_union_map *Read = isl_union_map_empty(this->getParamSpace());
+
+  for (Scop::iterator SI = this->begin(), SE = this->end(); SI != SE; ++SI) {
+    ScopStmt *Stmt = *SI;
+
+    for (ScopStmt::memacc_iterator MI = Stmt->memacc_begin(),
+                                   ME = Stmt->memacc_end();
+         MI != ME; ++MI) {
+      if (!(*MI)->isRead())
+        continue;
+
+      isl_set *Domain = Stmt->getDomain();
+      isl_map *AccessDomain = (*MI)->getAccessRelation();
+
+      AccessDomain = isl_map_intersect_domain(AccessDomain, Domain);
+      Read = isl_union_map_add_map(Read, AccessDomain);
+    }
+  }
+  return isl_union_map_coalesce(Read);
+}
+
+__isl_give isl_union_map *Scop::getSchedule() {
+  isl_union_map *Schedule = isl_union_map_empty(this->getParamSpace());
+
+  for (Scop::iterator SI = this->begin(), SE = this->end(); SI != SE; ++SI) {
+    ScopStmt *Stmt = *SI;
+    Schedule = isl_union_map_add_map(Schedule, Stmt->getScattering());
+  }
+  return isl_union_map_coalesce(Schedule);
+}
+
+bool Scop::restrictDomains(__isl_take isl_union_set *Domain) {
+  bool Changed = false;
+  for (Scop::iterator SI = this->begin(), SE = this->end(); SI != SE; ++SI) {
+    ScopStmt *Stmt = *SI;
+    isl_union_set *StmtDomain = isl_union_set_from_set(Stmt->getDomain());
+
+    isl_union_set *NewStmtDomain = isl_union_set_intersect(
+        isl_union_set_copy(StmtDomain), isl_union_set_copy(Domain));
+
+    if (isl_union_set_is_subset(StmtDomain, NewStmtDomain)) {
+      isl_union_set_free(StmtDomain);
+      isl_union_set_free(NewStmtDomain);
+      continue;
+    }
+
+    Changed = true;
+
+    isl_union_set_free(StmtDomain);
+    NewStmtDomain = isl_union_set_coalesce(NewStmtDomain);
+
+    if (isl_union_set_is_empty(NewStmtDomain)) {
+      Stmt->restrictDomain(isl_set_empty(Stmt->getDomainSpace()));
+      isl_union_set_free(NewStmtDomain);
+    } else
+      Stmt->restrictDomain(isl_set_from_union_set(NewStmtDomain));
+  }
+  isl_union_set_free(Domain);
+  return Changed;
 }
 
 ScalarEvolution *Scop::getSE() const { return SE; }

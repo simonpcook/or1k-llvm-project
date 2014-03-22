@@ -15,6 +15,29 @@
 // CHECK-ASAN-LINUX-NOT: "-export-dynamic"
 // CHECK-ASAN-LINUX: "--dynamic-list={{.*}}libclang_rt.asan-i386.a.syms"
 
+// RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
+// RUN:     -target i386-unknown-freebsd -fsanitize=address \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
+// RUN:     --sysroot=%S/Inputs/basic_freebsd_tree \
+// RUN:   | FileCheck --check-prefix=CHECK-ASAN-FREEBSD %s
+//
+// CHECK-ASAN-FREEBSD: "{{(.*[^-.0-9A-Z_a-z])?}}ld{{(.exe)?}}"
+// CHECK-ASAN-FREEBSD-NOT: "-lc"
+// CHECK-ASAN-FREEBSD: freebsd{{/|\\+}}libclang_rt.asan-i386.a"
+// CHECK-ASAN-FREEBSD: "-lpthread"
+// CHECK-ASAN-FREEBSD: "-lrt"
+// CHECK-ASAN-FREEBSD: "-export-dynamic"
+// CHECK-ASAN-FREEBSD-NOT: "--dynamic-list"
+
+// RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
+// RUN:     -target i386-unknown-freebsd -fsanitize=address \
+// RUN:     -resource-dir=%S/Inputs/resource_dir \
+// RUN:     --sysroot=%S/Inputs/basic_freebsd_tree \
+// RUN:   | FileCheck --check-prefix=CHECK-ASAN-FREEBSD-LDL %s
+//
+// CHECK-ASAN-FREEBSD-LDL: "{{(.*[^-.0-9A-Z_a-z])?}}ld{{(.exe)?}}"
+// CHECK-ASAN-FREEBSD-LDL-NOT: "-ldl"
+
 // RUN: %clangxx -no-canonical-prefixes %s -### -o %t.o 2>&1 \
 // RUN:     -target i386-unknown-linux -fsanitize=address \
 // RUN:     -resource-dir=%S/Inputs/empty_resource_dir \
@@ -42,6 +65,25 @@
 // CHECK-ASAN-LINUX-CXX-STATIC: stdc++
 
 // RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
+// RUN:     -target arm-linux-gnueabi -fsanitize=address \
+// RUN:     --sysroot=%S/Inputs/basic_android_tree/sysroot \
+// RUN:   | FileCheck --check-prefix=CHECK-ASAN-ARM %s
+//
+// CHECK-ASAN-ARM: "{{(.*[^.0-9A-Z_a-z])?}}ld{{(.exe)?}}"
+// CHECK-ASAN-ARM-NOT: "-lc"
+// CHECK-ASAN-ARM: libclang_rt.asan-arm.a"
+//
+// RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
+// RUN:     -target armv7l-linux-gnueabi -fsanitize=address \
+// RUN:     --sysroot=%S/Inputs/basic_android_tree/sysroot \
+// RUN:   | FileCheck --check-prefix=CHECK-ASAN-ARMv7 %s
+//
+// CHECK-ASAN-ARMv7: "{{(.*[^.0-9A-Z_a-z])?}}ld{{(.exe)?}}"
+// CHECK-ASAN-ARMv7-NOT: "-lc"
+// CHECK-ASAN-ARMv7: libclang_rt.asan-arm.a"
+//
+
+// RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
 // RUN:     -target arm-linux-androideabi -fsanitize=address \
 // RUN:     --sysroot=%S/Inputs/basic_android_tree/sysroot \
 // RUN:   | FileCheck --check-prefix=CHECK-ASAN-ANDROID %s
@@ -49,6 +91,8 @@
 // CHECK-ASAN-ANDROID: "{{(.*[^.0-9A-Z_a-z])?}}ld{{(.exe)?}}"
 // CHECK-ASAN-ANDROID-NOT: "-lc"
 // CHECK-ASAN-ANDROID: libclang_rt.asan-arm-android.so"
+// CHECK-ASAN-ANDROID-NOT: "-lpthread"
+// CHECK-ASAN-ANDROID: "-pie"
 // CHECK-ASAN-ANDROID-NOT: "-lpthread"
 //
 // RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \

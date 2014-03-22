@@ -10,7 +10,7 @@ from lldbtest import *
 
 class ThreadAPITestCase(TestBase):
 
-    mydir = os.path.join("python_api", "thread")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @python_api_test
@@ -130,7 +130,7 @@ class ThreadAPITestCase(TestBase):
         self.runCmd("breakpoint list")
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         thread = get_stopped_thread(process, lldb.eStopReasonBreakpoint)
         self.assertTrue(thread.IsValid(), "There should be a thread stopped due to breakpoint")
@@ -152,7 +152,7 @@ class ThreadAPITestCase(TestBase):
         #self.runCmd("breakpoint list")
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         thread = get_stopped_thread(process, lldb.eStopReasonBreakpoint)
         self.assertTrue(thread.IsValid(), "There should be a thread stopped due to breakpoint")
@@ -177,7 +177,7 @@ class ThreadAPITestCase(TestBase):
         self.runCmd("breakpoint list")
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         while True:
             thread = get_stopped_thread(process, lldb.eStopReasonBreakpoint)
@@ -186,6 +186,15 @@ class ThreadAPITestCase(TestBase):
             #print "caller symbol of malloc:", caller_symbol
             if not caller_symbol:
                 self.fail("Test failed: could not locate the caller symbol of malloc")
+
+            # Our top frame may be an inlined function in malloc() (e.g., on
+            # FreeBSD).  Apply a simple heuristic of stepping out until we find
+            # a non-malloc caller
+            while caller_symbol.startswith("malloc"):
+                thread.StepOut()
+                self.assertTrue(thread.IsValid(), "Thread valid after stepping to outer malloc")
+                caller_symbol = get_caller_symbol(thread)
+
             if caller_symbol == "b(int)":
                 break
             #self.runCmd("thread backtrace")
@@ -210,7 +219,7 @@ class ThreadAPITestCase(TestBase):
         self.runCmd("breakpoint list")
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         self.assertTrue(process, PROCESS_IS_VALID)
 
@@ -251,7 +260,7 @@ class ThreadAPITestCase(TestBase):
         self.runCmd("breakpoint list")
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         self.assertTrue(process, PROCESS_IS_VALID)
 

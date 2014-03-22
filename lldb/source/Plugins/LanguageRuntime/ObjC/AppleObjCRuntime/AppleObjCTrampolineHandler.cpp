@@ -22,6 +22,7 @@
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/StreamFile.h"
 #include "lldb/Core/Value.h"
 #include "lldb/Expression/ClangExpression.h"
 #include "lldb/Expression/ClangFunction.h"
@@ -478,7 +479,7 @@ AppleObjCTrampolineHandler::AppleObjCVTables::InitializeVTableSymbols ()
                 lldb::addr_t changed_addr = changed_symbol->GetAddress().GetOpcodeLoadAddress (&target);
                 if (changed_addr != LLDB_INVALID_ADDRESS)
                 {
-                    BreakpointSP trampolines_changed_bp_sp = target.CreateBreakpoint (changed_addr, true);
+                    BreakpointSP trampolines_changed_bp_sp = target.CreateBreakpoint (changed_addr, true, false);
                     if (trampolines_changed_bp_sp)
                     {
                         m_trampolines_changed_bp_id = trampolines_changed_bp_sp->GetID();
@@ -664,7 +665,7 @@ AppleObjCTrampolineHandler::AppleObjCTrampolineHandler (const ProcessSP &process
         // step through any method dispatches.  Warn to that effect and get out of here.
         if (process_sp->CanJIT())
         {
-            process_sp->GetTarget().GetDebugger().GetErrorStream().Printf("Could not find implementation lookup function \"%s\""
+            process_sp->GetTarget().GetDebugger().GetErrorFile()->Printf ("Could not find implementation lookup function \"%s\""
                                                                           " step in through ObjC method dispatch will not work.\n",
                                                                           get_impl_name.AsCString());
         }

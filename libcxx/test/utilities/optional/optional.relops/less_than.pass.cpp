@@ -11,9 +11,11 @@
 
 // template <class T> constexpr bool operator< (const optional<T>& x, const optional<T>& y);
 
-#include <optional>
+#include <experimental/optional>
 
 #if _LIBCPP_STD_VER > 11
+
+using std::experimental::optional;
 
 struct X
 {
@@ -22,21 +24,8 @@ struct X
     constexpr X(int i) : i_(i) {}
 };
 
-namespace std
-{
-
-template <>
-struct less<X>
-{
-    constexpr
-    bool
-    operator()(const X& x, const X& y) const
-    {
-        return x.i_ < y.i_;
-    }
-};
-
-}
+constexpr bool operator < ( const X &lhs, const X &rhs )
+    { return lhs.i_ < rhs.i_ ; }
 
 #endif
 
@@ -44,7 +33,7 @@ int main()
 {
 #if _LIBCPP_STD_VER > 11
     {
-    typedef std::optional<X> O;
+    typedef optional<X> O;
     
     constexpr O o1;     // disengaged
     constexpr O o2;     // disengaged

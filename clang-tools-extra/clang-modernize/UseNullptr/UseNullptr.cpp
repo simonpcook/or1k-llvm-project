@@ -23,20 +23,29 @@
 using clang::ast_matchers::MatchFinder;
 using namespace clang::tooling;
 using namespace clang;
+namespace cl = llvm::cl;
 
-int UseNullptrTransform::apply(const FileOverrides &InputStates,
-                               const CompilationDatabase &Database,
+static cl::opt<std::string>
+UserNullMacroNames("user-null-macros",
+                   cl::desc("Comma-separated list of user-defined "
+                            "macro names that behave like NULL"),
+                   cl::cat(TransformsOptionsCategory), cl::init(""));
+
+int UseNullptrTransform::apply(const CompilationDatabase &Database,
                                const std::vector<std::string> &SourcePaths) {
   ClangTool UseNullptrTool(Database, SourcePaths);
 
   unsigned AcceptedChanges = 0;
 
+  llvm::SmallVector<llvm::StringRef, 1> MacroNames;
+  if (!UserNullMacroNames.empty()) {
+    llvm::StringRef S = UserNullMacroNames;
+    S.split(MacroNames, ",");
+  }
   MatchFinder Finder;
-  NullptrFixer Fixer(AcceptedChanges, Options().MaxRiskLevel, /*Owner=*/ *this);
+  NullptrFixer Fixer(AcceptedChanges, MacroNames, /*Owner=*/ *this);
 
   Finder.addMatcher(makeCastSequenceMatcher(), &Fixer);
-
-  setOverrides(InputStates);
 
   if (int result = UseNullptrTool.run(createActionFactory(Finder))) {
     llvm::errs() << "Error encountered during translation.\n";
@@ -56,7 +65,7 @@ struct UseNullptrFactory : TransformFactory {
     Since.Msvc = Version(10);
   }
 
-  Transform *createTransform(const TransformOptions &Opts) LLVM_OVERRIDE {
+  Transform *createTransform(const TransformOptions &Opts) override {
     return new UseNullptrTransform(Opts);
   }
 };

@@ -11,16 +11,11 @@
 #define LLD_CORE_DEFINED_ATOM_H
 
 #include "lld/Core/Atom.h"
-#include "lld/Core/Reference.h"
-
-namespace llvm {
-  template <typename T>
-  class ArrayRef;
-  class StringRef;
-}
+#include "lld/Core/LLVM.h"
 
 namespace lld {
 class File;
+class Reference;
 
 /// \brief The fundamental unit of linking.
 ///
@@ -84,7 +79,7 @@ class File;
 ///  C function place in custom section:  __attribute__((section("__foo")))
 ///                                       void foo() {} <br>
 ///    name=foo, type=code, perm=r_x, scope=global,
-///    sectionChoice=customRequired, sectionName=__foo
+///    sectionChoice=customRequired, customSectionName=__foo
 ///
 class DefinedAtom : public Atom {
 public:
@@ -97,13 +92,15 @@ public:
 
   enum Merge {
     mergeNo,                // Another atom with same name is error
-    mergeAsTentative,       // Is ANSI C tentative defintion, can be coalesced
-    mergeAsWeak,            // is C++ inline definition that was not inlined,
+    mergeAsTentative,       // Is ANSI C tentative definition, can be coalesced
+    mergeAsWeak,            // Is C++ inline definition that was not inlined,
                             // but address was not taken, so atom can be hidden
                             // by linker
-    mergeAsWeakAndAddressUsed,// is C++ definition inline definition whose
-                              // address was taken.
-    mergeByContent          // merge with other constants with same content
+    mergeAsWeakAndAddressUsed, // Is C++ definition inline definition whose
+                               // address was taken.
+    mergeSameNameAndSize,   // Another atom with different size is error
+    mergeByLargestSection,  // Choose an atom whose section is the largest.
+    mergeByContent,         // Merge with other constants with same content.
   };
 
   enum ContentType {
@@ -144,7 +141,6 @@ public:
     typeTLVInitialData,     // initial data for a TLV [Darwin]
     typeTLVInitialZeroFill, // TLV initial zero fill data [Darwin]
     typeTLVInitializerPtr,  // pointer to thread local initializer [Darwin]
-    typeDataDirectoryEntry, // linker created for data directory header [PECOFF]
     typeThreadZeroFill,     // Uninitialized thread local data(TBSS) [ELF]
     typeThreadData,         // Initialized thread local data(TDATA) [ELF]
     typeRONote,             // Identifies readonly note sections [ELF]
@@ -183,6 +179,14 @@ public:
     deadStripNormal,        // linker may dead strip this atom
     deadStripNever,         // linker must never dead strip this atom
     deadStripAlways         // linker must remove this atom if unused
+  };
+
+  enum DynamicExport {
+    /// \brief The linker may or may not export this atom dynamically depending
+    ///   on the output type and other context of the link.
+    dynamicExportNormal,
+    /// \brief The linker will always export this atom dynamically.
+    dynamicExportAlways,
   };
 
   struct Alignment {
@@ -251,6 +255,11 @@ public:
 
   /// \brief constraints on whether the linker may dead strip away this atom.
   virtual DeadStripKind deadStrip() const = 0;
+
+  /// \brief Under which conditions should this atom be dynamically exported.
+  virtual DynamicExport dynamicExport() const {
+    return dynamicExportNormal;
+  }
 
   /// \brief Returns the OS memory protections required for this atom's content
   /// at runtime.

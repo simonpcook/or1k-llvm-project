@@ -29,6 +29,7 @@
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
+#include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Thread.h"
 
 using namespace lldb;
@@ -201,7 +202,7 @@ protected:
                     }
                     else
                     {
-                        result.AppendErrorWithFormat ("invalid register set index: %zu\n", set_idx);
+                        result.AppendErrorWithFormat("invalid register set index: %" PRIu64 "\n", (uint64_t)set_idx);
                         result.SetStatus (eReturnStatusFailed);
                         break;
                     }

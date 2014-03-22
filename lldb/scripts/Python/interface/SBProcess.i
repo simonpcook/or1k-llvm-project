@@ -180,6 +180,15 @@ public:
     SetSelectedThreadByIndexID (uint32_t index_id);
     
     //------------------------------------------------------------------
+    // Queue related functions
+    //------------------------------------------------------------------
+    uint32_t
+    GetNumQueues ();
+
+    lldb::SBQueue
+    GetQueueAtIndex (uint32_t index);
+
+    //------------------------------------------------------------------
     // Stepping related functions
     //------------------------------------------------------------------
 
@@ -353,6 +362,26 @@ public:
     
     lldb::SBError
     UnloadImage (uint32_t image_token);
+
+    %feature("autodoc", "
+    Return the number of different thread-origin extended backtraces
+    this process can support as a uint32_t.
+    When the process is stopped and you have an SBThread, lldb may be
+    able to show a backtrace of when that thread was originally created,
+    or the work item was enqueued to it (in the case of a libdispatch 
+    queue).
+    ") GetNumExtendedBacktraceTypes;
+    
+    uint32_t
+    GetNumExtendedBacktraceTypes ();
+
+    %feature("autodoc", "
+    Takes an index argument, returns the name of one of the thread-origin 
+    extended backtrace methods as a str.
+    ") GetExtendedBacktraceTypeAtIndex;
+
+    const char *
+    GetExtendedBacktraceTypeAtIndex (uint32_t idx);
 
     %pythoncode %{
         def __get_is_alive__(self):

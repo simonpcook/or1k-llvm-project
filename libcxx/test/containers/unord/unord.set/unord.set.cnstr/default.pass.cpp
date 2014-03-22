@@ -21,8 +21,8 @@
 #include "../../../NotConstructible.h"
 #include "../../../test_compare.h"
 #include "../../../test_hash.h"
-#include "../../../test_allocator.h"
-#include "../../../min_allocator.h"
+#include "test_allocator.h"
+#include "min_allocator.h"
 
 int main()
 {
@@ -55,6 +55,15 @@ int main()
         assert(c.hash_function() == test_hash<std::hash<NotConstructible> >());
         assert(c.key_eq() == test_compare<std::equal_to<NotConstructible> >());
         assert(c.get_allocator() == (min_allocator<NotConstructible>()));
+        assert(c.size() == 0);
+        assert(c.empty());
+        assert(std::distance(c.begin(), c.end()) == 0);
+        assert(c.load_factor() == 0);
+        assert(c.max_load_factor() == 1);
+    }
+    {
+        std::unordered_set<int> c = {};
+        assert(c.bucket_count() == 0);
         assert(c.size() == 0);
         assert(c.empty());
         assert(std::distance(c.begin(), c.end()) == 0);

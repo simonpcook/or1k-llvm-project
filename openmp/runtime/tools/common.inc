@@ -26,6 +26,9 @@ ifndef omp_os
   ifeq ($(OS), Linux)
     export omp_os=linux
   endif
+  ifeq ($(OS), FreeBSD)
+    export omp_os=freebsd
+  endif
   ifeq ($(OS), Darwin)
     export omp_os=macos
   endif
@@ -56,10 +59,14 @@ endif
 # Setting defaults
 mode?=release
 
-ifeq "$(omp_os)" "windows"
-    compiler?=icl
+ifeq "$(filter 32 32e 64,$(arch))" ""
+    compiler?=gcc
 else
-    compiler?=icc
+    ifeq "$(omp_os)" "windows"
+        compiler?=icl
+    else
+        compiler?=icc
+    endif
 endif
 
 ifneq "$(mic)" "no"

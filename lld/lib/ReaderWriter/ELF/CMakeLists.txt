@@ -1,4 +1,5 @@
 add_lld_library(lldELF
+  ArrayOrderPass.cpp
   ELFLinkingContext.cpp
   Reader.cpp
   Writer.cpp
@@ -6,6 +7,7 @@ add_lld_library(lldELF
 
 target_link_libraries(lldELF
   lldHexagonELFTarget
+  lldMipsELFTarget
   lldPPCELFTarget
   lldPasses
   lldReaderWriter

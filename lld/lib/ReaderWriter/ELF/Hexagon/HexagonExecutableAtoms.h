@@ -7,14 +7,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_ELF_HEXAGON_EXECUTABLE_ATOM_H
-#define LLD_READER_WRITER_ELF_HEXAGON_EXECUTABLE_ATOM_H
+#ifndef LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_EXECUTABLE_ATOM_H
+#define LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_EXECUTABLE_ATOM_H
 
-#include "File.h"
+#include "ELFFile.h"
 
 namespace lld {
 namespace elf {
-typedef llvm::object::ELFType<llvm::support::little, 4, false> HexagonELFType;
+typedef llvm::object::ELFType<llvm::support::little, 2, false> HexagonELFType;
 class HexagonLinkingContext;
 
 template <class HexagonELFType> class HexagonRuntimeFile
@@ -26,4 +26,4 @@ public:
 } // elf
 } // lld
 
-#endif // LLD_READER_WRITER_ELF_HEXAGON_EXECUTABLE_ATOM_H
+#endif // LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_EXECUTABLE_ATOM_H

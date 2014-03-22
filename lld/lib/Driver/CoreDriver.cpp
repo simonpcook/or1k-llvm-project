@@ -30,7 +30,7 @@ using namespace lld;
 
 namespace {
 
-// Create enum with OPT_xxx values for each option in DarwinOptions.td
+// Create enum with OPT_xxx values for each option in CoreOptions.td
 enum {
   OPT_INVALID = 0,
 #define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM, \
@@ -66,11 +66,28 @@ public:
 
 namespace lld {
 
+static const Registry::KindStrings coreKindStrings[] = {
+  { CoreLinkingContext::TEST_RELOC_CALL32,        "call32" },
+  { CoreLinkingContext::TEST_RELOC_PCREL32,       "pcrel32" },
+  { CoreLinkingContext::TEST_RELOC_GOT_LOAD32,    "gotLoad32" },
+  { CoreLinkingContext::TEST_RELOC_GOT_USE32,     "gotUse32" },
+  { CoreLinkingContext::TEST_RELOC_LEA32_WAS_GOT, "lea32wasGot" },
+  LLD_KIND_STRING_END
+};
+
 bool CoreDriver::link(int argc, const char *argv[], raw_ostream &diagnostics) {
-  CoreLinkingContext info;
-  if (!parse(argc, argv, info))
+  CoreLinkingContext ctx;
+  if (!parse(argc, argv, ctx))
     return false;
-  return Driver::link(info);
+
+  // Register possible input file parsers.
+  ctx.registry().addSupportNativeObjects();
+  ctx.registry().addSupportYamlFiles();
+
+  ctx.registry().addKindTable(Reference::KindNamespace::testing,
+                              Reference::KindArch::all, coreKindStrings);
+
+  return Driver::link(ctx);
 }
 
 bool CoreDriver::parse(int argc, const char *argv[], CoreLinkingContext &ctx,
@@ -145,7 +162,7 @@ bool CoreDriver::parse(int argc, const char *argv[], CoreLinkingContext &ctx,
     }
   }
 
-  if (!inputGraph->numFiles()) {
+  if (!inputGraph->size()) {
     diagnostics << "No input files\n";
     return false;
   }

@@ -28,6 +28,7 @@
 #include "lldb/Symbol/LineEntry.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
+#include "lldb/Target/SystemRuntime.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadPlan.h"
@@ -92,6 +93,13 @@ public:
                     if (!success)
                         error.SetErrorStringWithFormat("invalid integer value for option '%c'", short_option);
                 }
+                case 'e':
+                {
+                    bool success;
+                    m_extended_backtrace =  Args::StringToBoolean (option_arg, false, &success);
+                    if (!success)
+                        error.SetErrorStringWithFormat("invalid boolean value for option '%c'", short_option);
+                }
                 break;
                 default:
                     error.SetErrorStringWithFormat("invalid short option character '%c'", short_option);
@@ -106,6 +114,7 @@ public:
         {
             m_count = UINT32_MAX;
             m_start = 0;
+            m_extended_backtrace = false;
         }
 
         const OptionDefinition*
@@ -121,6 +130,7 @@ public:
         // Instance variables to hold the values for command options.
         uint32_t m_count;
         uint32_t m_start;
+        bool     m_extended_backtrace;
     };
 
     CommandObjectThreadBacktrace (CommandInterpreter &interpreter) :
@@ -160,6 +170,32 @@ public:
     }
 
 protected:
+    void
+    DoExtendedBacktrace (Thread *thread, CommandReturnObject &result)
+    {
+        SystemRuntime *runtime = thread->GetProcess()->GetSystemRuntime();
+        if (runtime)
+        {
+            Stream &strm = result.GetOutputStream();
+            const std::vector<ConstString> &types = runtime->GetExtendedBacktraceTypes();
+            for (auto type : types)
+            {
+                ThreadSP ext_thread_sp = runtime->GetExtendedBacktraceThread (thread->shared_from_this(), type);
+                if (ext_thread_sp && ext_thread_sp->IsValid ())
+                {
+                    const uint32_t num_frames_with_source = 0;
+                    if (ext_thread_sp->GetStatus (strm, 
+                        m_options.m_start, 
+                        m_options.m_count, 
+                        num_frames_with_source))
+                    {
+                        DoExtendedBacktrace (ext_thread_sp.get(), result);
+                    }
+                }
+            }
+        }
+    }
+
     virtual bool
     DoExecute (Args& command, CommandReturnObject &result)
     {        
@@ -178,29 +214,36 @@ protected:
                                    num_frames_with_source))
             {
                 result.SetStatus (eReturnStatusSuccessFinishResult);
+                if (m_options.m_extended_backtrace)
+                {
+                    DoExtendedBacktrace (thread, result);
+                }
             }
         }
         else if (command.GetArgumentCount() == 1 && ::strcmp (command.GetArgumentAtIndex(0), "all") == 0)
         {
             Process *process = m_exe_ctx.GetProcessPtr();
-            Mutex::Locker locker (process->GetThreadList().GetMutex());
-            uint32_t num_threads = process->GetThreadList().GetSize();
-            for (uint32_t i = 0; i < num_threads; i++)
+            uint32_t idx = 0;
+            for (ThreadSP thread_sp : process->Threads())
             {
-                ThreadSP thread_sp = process->GetThreadList().GetThreadAtIndex(i);
+                if (idx != 0)
+                    result.AppendMessage("");
+
                 if (!thread_sp->GetStatus (strm,
                                            m_options.m_start,
                                            m_options.m_count,
                                            num_frames_with_source))
                 {
-                    result.AppendErrorWithFormat ("error displaying backtrace for thread: \"0x%4.4x\"\n", i);
+                    result.AppendErrorWithFormat ("error displaying backtrace for thread: \"0x%4.4x\"\n", idx);
                     result.SetStatus (eReturnStatusFailed);
                     return false;
                 }
+                if (m_options.m_extended_backtrace)
+                {
+                    DoExtendedBacktrace (thread_sp.get(), result);
+                }
                 
-                if (i < num_threads - 1)
-                    result.AppendMessage("");
-                    
+                ++idx;
             }
         }
         else
@@ -244,6 +287,10 @@ protected:
                     result.SetStatus (eReturnStatusFailed);
                     return false;
                 }
+                if (m_options.m_extended_backtrace)
+                {
+                    DoExtendedBacktrace (thread_sps[i].get(), result);
+                }
                 
                 if (i < num_args - 1)
                     result.AppendMessage("");
@@ -260,6 +307,7 @@ CommandObjectThreadBacktrace::CommandOptions::g_option_table[] =
 {
 { LLDB_OPT_SET_1, false, "count", 'c', OptionParser::eRequiredArgument, NULL, 0, eArgTypeCount, "How many frames to display (-1 for all)"},
 { LLDB_OPT_SET_1, false, "start", 's', OptionParser::eRequiredArgument, NULL, 0, eArgTypeFrameIndex, "Frame in which to start the backtrace"},
+{ LLDB_OPT_SET_1, false, "extended", 'e', OptionParser::eRequiredArgument, NULL, 0, eArgTypeBoolean, "Show the extended backtrace, if available"},
 { 0, false, NULL, 0, 0, NULL, 0, eArgTypeNone, NULL }
 };
 
@@ -300,9 +348,26 @@ public:
             case 'a':
                 {
                     bool success;
-                    m_avoid_no_debug =  Args::StringToBoolean (option_arg, true, &success);
+                    bool avoid_no_debug =  Args::StringToBoolean (option_arg, true, &success);
                     if (!success)
                         error.SetErrorStringWithFormat("invalid boolean value for option '%c'", short_option);
+                    else
+                    {
+                        m_step_in_avoid_no_debug = avoid_no_debug ? eLazyBoolYes : eLazyBoolNo;
+                    }
+                }
+                break;
+            
+            case 'A':
+                {
+                    bool success;
+                    bool avoid_no_debug =  Args::StringToBoolean (option_arg, true, &success);
+                    if (!success)
+                        error.SetErrorStringWithFormat("invalid boolean value for option '%c'", short_option);
+                    else
+                    {
+                        m_step_out_avoid_no_debug = avoid_no_debug ? eLazyBoolYes : eLazyBoolNo;
+                    }
                 }
                 break;
             
@@ -338,7 +403,8 @@ public:
         void
         OptionParsingStarting ()
         {
-            m_avoid_no_debug = true;
+            m_step_in_avoid_no_debug = eLazyBoolCalculate;
+            m_step_out_avoid_no_debug = eLazyBoolCalculate;
             m_run_mode = eOnlyDuringStepping;
             m_avoid_regexp.clear();
             m_step_in_target.clear();
@@ -355,7 +421,8 @@ public:
         static OptionDefinition g_option_table[];
 
         // Instance variables to hold the values for command options.
-        bool m_avoid_no_debug;
+        LazyBool m_step_in_avoid_no_debug;
+        LazyBool m_step_out_avoid_no_debug;
         RunMode m_run_mode;
         std::string m_avoid_regexp;
         std::string m_step_in_target;
@@ -474,7 +541,9 @@ protected:
                                                                 frame->GetSymbolContext(eSymbolContextEverything),
                                                                 m_options.m_step_in_target.c_str(),
                                                                 stop_other_threads,
-                                                                m_options.m_avoid_no_debug);
+                                                                m_options.m_step_in_avoid_no_debug,
+                                                                m_options.m_step_out_avoid_no_debug);
+                
                 if (new_plan_sp && !m_options.m_avoid_regexp.empty())
                 {
                     ThreadPlanStepInRange *step_in_range_plan = static_cast<ThreadPlanStepInRange *> (new_plan_sp.get());
@@ -493,7 +562,8 @@ protected:
                 new_plan_sp = thread->QueueThreadPlanForStepOverRange (abort_other_plans,
                                                                     frame->GetSymbolContext(eSymbolContextEverything).line_entry.range, 
                                                                     frame->GetSymbolContext(eSymbolContextEverything), 
-                                                                    stop_other_threads);
+                                                                    stop_other_threads,
+                                                                    m_options.m_step_out_avoid_no_debug);
             else
                 new_plan_sp = thread->QueueThreadPlanForStepSingleInstruction (true,
                                                                             abort_other_plans, 
@@ -516,7 +586,8 @@ protected:
                                                           bool_stop_other_threads, 
                                                           eVoteYes, 
                                                           eVoteNoOpinion, 
-                                                          thread->GetSelectedFrameIndex());
+                                                          thread->GetSelectedFrameIndex(),
+                                                          m_options.m_step_out_avoid_no_debug);
         }
         else
         {
@@ -591,7 +662,8 @@ g_duo_running_mode[] =
 OptionDefinition
 CommandObjectThreadStepWithTypeAndScope::CommandOptions::g_option_table[] =
 {
-{ LLDB_OPT_SET_1, false, "avoid-no-debug",  'a', OptionParser::eRequiredArgument, NULL,               0, eArgTypeBoolean,     "A boolean value that sets whether step-in will step over functions with no debug information."},
+{ LLDB_OPT_SET_1, false, "step-in-avoids-no-debug",   'a', OptionParser::eRequiredArgument, NULL,               0, eArgTypeBoolean,     "A boolean value that sets whether stepping into functions will step over functions with no debug information."},
+{ LLDB_OPT_SET_1, false, "step-out-avoids-no-debug",  'A', OptionParser::eRequiredArgument, NULL,               0, eArgTypeBoolean,     "A boolean value, if true stepping out of functions will continue to step out till it hits a function with debug information."},
 { LLDB_OPT_SET_1, false, "run-mode",        'm', OptionParser::eRequiredArgument, g_tri_running_mode, 0, eArgTypeRunMode, "Determine how to run other threads while stepping the current thread."},
 { LLDB_OPT_SET_1, false, "step-over-regexp",'r', OptionParser::eRequiredArgument, NULL,               0, eArgTypeRegularExpression,   "A regular expression that defines function names to not to stop at when stepping in."},
 { LLDB_OPT_SET_1, false, "step-in-target",  't', OptionParser::eRequiredArgument, NULL,               0, eArgTypeFunctionName,   "The name of the directly called function step in should stop at when stepping into."},

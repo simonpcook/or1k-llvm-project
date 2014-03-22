@@ -7,11 +7,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_ELF_DEFAULT_TARGETHANDLER_H
-#define LLD_READER_WRITER_ELF_DEFAULT_TARGETHANDLER_H
+#ifndef LLD_READER_WRITER_ELF_DEFAULT_TARGET_HANDLER_H
+#define LLD_READER_WRITER_ELF_DEFAULT_TARGET_HANDLER_H
 
 #include "DefaultLayout.h"
 #include "TargetHandler.h"
+#include "ELFReader.h"
+#include "DynamicLibraryWriter.h"
+#include "ExecutableWriter.h"
 
 #include "lld/ReaderWriter/ELFLinkingContext.h"
 
@@ -26,38 +29,21 @@ public:
   DefaultTargetHandler(ELFLinkingContext &context)
       : TargetHandler<ELFT>(context) {}
 
-  bool doesOverrideELFHeader() { return false; }
-
-  void setELFHeader(ELFHeader<ELFT> *elfHeader) {
-    llvm_unreachable("Target should provide implementation for function ");
-  }
-
-  /// TargetAtomHandler
-  TargetAtomHandler<ELFT> &targetAtomHandler() {
-    llvm_unreachable("Target should provide implementation for function ");
-  }
-
   const TargetRelocationHandler<ELFT> &getRelocationHandler() const {
     llvm_unreachable("Target should provide implementation for function ");
   }
 
-  /// Create a set of Default target sections that a target might needj
-  void createDefaultSections() {}
+  virtual std::unique_ptr<Reader> getObjReader(bool atomizeStrings) {
+    return std::unique_ptr<Reader>(new ELFObjectReader(atomizeStrings));
+  }
 
-  /// \brief Add a section to the current Layout
-  void addSection(Section<ELFT> *section) {}
+  virtual std::unique_ptr<Reader> getDSOReader(bool useShlibUndefines) {
+    return std::unique_ptr<Reader>(new ELFDSOReader(useShlibUndefines));
+  }
 
-  /// \brief add new symbol file
-  void addFiles(InputFiles &) {}
-
-  /// \brief Finalize the symbol values
-  void finalizeSymbolValues() {}
-
-  /// \brief allocate Commons, some architectures may move small common
-  /// symbols over to small data, this would also be used
-  void allocateCommons() {}
+  virtual std::unique_ptr<Writer> getWriter() = 0;
 };
+
 } // end namespace elf
 } // end namespace lld
-
 #endif

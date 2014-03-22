@@ -9,6 +9,7 @@
 </head>
 <body>
 
+<div id="box">
 <!--#include virtual="menu.html.incl"-->
 
 <div id="content">
@@ -153,7 +154,7 @@ directory of libisl/libcloog, i.e. ${CLOOG_INSTALL}/lib, to LD_LIBRARY_PATH by:
 
 <p>Polly can use <a href="http://www.cse.ohio-state.edu/~pouchet/software/pocc">
 PoCC</a> as an external optimizer. PoCC is a research project that provides
-an integrated version of <a href="http://pluto.sf.net">Pluto</a>, an
+an integrated version of <a href="http://pluto-compiler.sf.net">Pluto</a>, an
 advanced data-locality and tileability optimizer. Polly includes internally
 already a similar optimizer, such that in general PoCC is not needed. It is
 only recommended for people who want to compare against a different
@@ -182,6 +183,7 @@ cd scoplib-0.2.0
 ./configure --enable-mp-version --prefix=/path/to/scoplib/installation
 make && make install
 </pre>
+</div>
 </div>
 
 </body>

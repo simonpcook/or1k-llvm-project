@@ -14,7 +14,7 @@ class LoadUnloadTestCase(TestBase):
     def getCategories (self):
         return ['basic_process']
 
-    mydir = os.path.join("functionalities", "load_unload")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -146,6 +146,7 @@ class LoadUnloadTestCase(TestBase):
 
     @skipIfFreeBSD # llvm.org/pr14424 - missing FreeBSD Makefiles/testcase support
     @not_remote_testsuite_ready
+    @unittest2.expectedFailure("rdar://15367406")
     def test_lldb_process_load_and_unload_commands(self):
         """Test that lldb process load/unload command work correctly."""
 

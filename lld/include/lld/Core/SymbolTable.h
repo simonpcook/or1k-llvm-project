@@ -7,14 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_CORE_SYMBOL_TABLE_H_
-#define LLD_CORE_SYMBOL_TABLE_H_
+#ifndef LLD_CORE_SYMBOL_TABLE_H
+#define LLD_CORE_SYMBOL_TABLE_H
 
 #include "lld/Core/LLVM.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/StringRef.h"
 
 #include <cstring>
 #include <map>
@@ -107,4 +106,4 @@ private:
 
 } // namespace lld
 
-#endif // LLD_CORE_SYMBOL_TABLE_H_
+#endif // LLD_CORE_SYMBOL_TABLE_H

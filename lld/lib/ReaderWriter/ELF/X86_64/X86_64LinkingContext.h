@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_ELF_X86_64_LINKER_CONTEXT_H
-#define LLD_READER_WRITER_ELF_X86_64_LINKER_CONTEXT_H
+#ifndef LLD_READER_WRITER_ELF_X86_64_X86_64_LINKING_CONTEXT_H
+#define LLD_READER_WRITER_ELF_X86_64_X86_64_LINKING_CONTEXT_H
 
 #include "X86_64TargetHandler.h"
 
@@ -27,13 +27,13 @@ enum {
   LLD_R_X86_64_GOTRELINDEX = 1024,
 };
 
-class X86_64LinkingContext LLVM_FINAL : public ELFLinkingContext {
+class X86_64LinkingContext final : public ELFLinkingContext {
 public:
   X86_64LinkingContext(llvm::Triple triple)
       : ELFLinkingContext(triple, std::unique_ptr<TargetHandlerBase>(
                                       new X86_64TargetHandler(*this))) {}
 
-  virtual void addPasses(PassManager &) const;
+  virtual void addPasses(PassManager &);
 
   virtual uint64_t getBaseAddress() const {
     if (_baseAddress == 0)
@@ -43,7 +43,10 @@ public:
 
   virtual bool isDynamicRelocation(const DefinedAtom &,
                                    const Reference &r) const {
-    switch (r.kind()) {
+    if (r.kindNamespace() != Reference::KindNamespace::ELF)
+      return false;
+    assert(r.kindArch() == Reference::KindArch::x86_64);
+    switch (r.kindValue()) {
     case llvm::ELF::R_X86_64_RELATIVE:
     case llvm::ELF::R_X86_64_GLOB_DAT:
     case llvm::ELF::R_X86_64_COPY:
@@ -54,7 +57,10 @@ public:
   }
 
   virtual bool isPLTRelocation(const DefinedAtom &, const Reference &r) const {
-    switch (r.kind()) {
+    if (r.kindNamespace() != Reference::KindNamespace::ELF)
+      return false;
+    assert(r.kindArch() == Reference::KindArch::x86_64);
+    switch (r.kindValue()) {
     case llvm::ELF::R_X86_64_JUMP_SLOT:
     case llvm::ELF::R_X86_64_IRELATIVE:
       return true;
@@ -67,7 +73,10 @@ public:
   /// a) for supporting IFUNC - R_X86_64_IRELATIVE
   /// b) for supporting relative relocs - R_X86_64_RELATIVE
   virtual bool isRelativeReloc(const Reference &r) const {
-    switch (r.kind()) {
+    if (r.kindNamespace() != Reference::KindNamespace::ELF)
+      return false;
+    assert(r.kindArch() == Reference::KindArch::x86_64);
+    switch (r.kindValue()) {
     case llvm::ELF::R_X86_64_IRELATIVE:
     case llvm::ELF::R_X86_64_RELATIVE:
       return true;
@@ -77,10 +86,8 @@ public:
   }
 
   /// \brief Create Internal files for Init/Fini
-  std::vector<std::unique_ptr<File>> createInternalFiles();
+  void createInternalFiles(std::vector<std::unique_ptr<File> > &) const;
 
-  virtual ErrorOr<Reference::Kind> relocKindFromString(StringRef str) const;
-  virtual ErrorOr<std::string> stringFromRelocKind(Reference::Kind kind) const;
 };
 } // end namespace elf
 } // end namespace lld

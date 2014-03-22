@@ -18,7 +18,6 @@
 
 #include "Core/IncludeExcludeInfo.h"
 #include "Core/Refactoring.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Registry.h"
 #include "llvm/Support/Timer.h"
@@ -49,9 +48,6 @@ namespace ast_matchers {
 class MatchFinder;
 } // namespace ast_matchers
 } // namespace clang
-
-class FileOverrides;
-
 
 // \brief Maps main source file names to a TranslationUnitReplacements
 // structure storing replacements for that translation unit.
@@ -95,13 +91,13 @@ public:
 
   /// \brief Apply a transform to all files listed in \p SourcePaths.
   ///
-  /// \p Database must contain information for how to compile all files in \p
-  /// SourcePaths. \p InputStates contains the file contents of files in \p
-  /// SourcePaths and should take precedence over content of files on disk.
-  /// Upon return, \p ResultStates shall contain the result of performing this
-  /// transform on the files listed in \p SourcePaths.
-  virtual int apply(const FileOverrides &InputStates,
-                    const clang::tooling::CompilationDatabase &Database,
+  /// \param[in] Database Contains information for how to compile all files in
+  /// \p SourcePaths.
+  /// \param[in] SourcePaths list of sources to transform.
+  ///
+  /// \returns \li 0 if successful
+  ///          \li 1 otherwise
+  virtual int apply(const clang::tooling::CompilationDatabase &Database,
                     const std::vector<std::string> &SourcePaths) = 0;
 
   /// \brief Query if changes were made during the last call to apply().
@@ -207,15 +203,6 @@ protected:
   /// created with.
   const TransformOptions &Options() { return GlobalOptions; }
 
-  /// \brief Affords a subclass to provide file contents overrides before
-  /// applying frontend actions.
-  ///
-  /// It is an error not to call this function before calling ClangTool::run()
-  /// with the factory provided by createActionFactory().
-  void setOverrides(const FileOverrides &Overrides) {
-    this->Overrides = &Overrides;
-  }
-
   /// \brief Subclasses must call this function to create a
   /// FrontendActionFactory to pass to ClangTool.
   ///
@@ -227,7 +214,6 @@ protected:
 private:
   const std::string Name;
   const TransformOptions &GlobalOptions;
-  const FileOverrides *Overrides;
   TUReplacementsMap Replacements;
   std::string CurrentSource;
   TimingVec Timings;
@@ -304,7 +290,7 @@ struct CompilerVersions {
 ///     Since.Msvc = Version(10);
 ///   }
 ///
-///   Transform *createTransform(const TransformOptions &Opts) LLVM_OVERRIDE {
+///   Transform *createTransform(const TransformOptions &Opts) override {
 ///     return new MyTransform(Opts);
 ///   }
 /// };

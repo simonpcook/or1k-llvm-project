@@ -12,6 +12,18 @@
 
 #include "lldb/lldb-types.h"
 
+#if defined (_WIN32)
+    #if defined(EXPORT_LIBLLDB)
+        #define  LLDB_API __declspec(dllexport)
+    #elif defined(IMPORT_LIBLLDB)
+        #define  LLDB_API __declspec(dllimport)
+    #else
+        #define LLDB_API
+    #endif
+#else // defined (_MSC_VER)
+    #define LLDB_API
+#endif
+
 #if !defined(UINT32_MAX)
     #define UINT32_MAX 4294967295U
 #endif
@@ -83,6 +95,7 @@
 #define LLDB_INVALID_SIGNAL_NUMBER      INT32_MAX
 #define LLDB_INVALID_OFFSET             UINT64_MAX // Must match max of lldb::offset_t
 #define LLDB_INVALID_LINE_NUMBER        UINT32_MAX
+#define LLDB_INVALID_QUEUE_ID           0
 
 //----------------------------------------------------------------------
 /// CPU Type defintions
@@ -111,7 +124,7 @@
 #define LLDB_OPT_SET_10                 (1U << 9)
 #define LLDB_OPT_SET_FROM_TO(A, B)      (((1U << (B)) - 1) ^ (((1U << (A))-1) >> 1))
 
-#ifdef _WIN32
+#if defined (_WIN32) && !defined (MAX_PATH)
 #define MAX_PATH 260
 #endif
 

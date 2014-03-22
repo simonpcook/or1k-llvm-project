@@ -8,7 +8,7 @@ import lldbutil
 
 class ConstVariableTestCase(TestBase):
 
-    mydir = os.path.join("lang", "c", "const_variables")
+    mydir = TestBase.compute_mydir(__file__)
 
     @dsym_test
     @unittest2.expectedFailure(13314878)
@@ -17,9 +17,8 @@ class ConstVariableTestCase(TestBase):
         self.buildDsym()
         self.const_variable()
 
-    @skipIfLinux # This test works with gcc, but fails with newer version of clang on Linux due to a clang issue. Fails for icc as well. Bug number TDB.
+    @expectedFailureClang('13314878') # This test works with gcc, but fails with newer version of clang on Linux due to a clang issue. Fails for icc as well. Bug number TDB.
     @dwarf_test
-    @unittest2.expectedFailure(13314878)
     def test_with_dwarf_and_run_command(self):
         """Test interpreted and JITted expressions on constant values."""
         self.buildDwarf()

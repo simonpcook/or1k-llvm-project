@@ -18,8 +18,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Memory.h"
 
-#ifndef LLD_READER_WRITER_MACHO_FORMAT_H_
-#define LLD_READER_WRITER_MACHO_FORMAT_H_
+#ifndef LLD_READER_WRITER_MACHO_FORMAT_H
+#define LLD_READER_WRITER_MACHO_FORMAT_H
 
 namespace lld {
 namespace mach_o {
@@ -384,8 +384,8 @@ public:
 //
 class thread_command : public load_command {
 public:
-	uint32_t	fields_flavor;
-	uint32_t	fields_count;
+  uint32_t   fields_flavor;
+  uint32_t   fields_count;
 private:
   uint32_t   _cpuType;
   uint8_t   *_registerArray;
@@ -623,5 +623,4 @@ public:
 
 
 
-#endif // LLD_READER_WRITER_MACHO_FORMAT_H_
-
+#endif // LLD_READER_WRITER_MACHO_FORMAT_H

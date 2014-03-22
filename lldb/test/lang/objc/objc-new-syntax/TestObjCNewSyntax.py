@@ -12,16 +12,17 @@ from lldbtest import *
 
 class ObjCNewSyntaxTestCase(TestBase):
 
-    mydir = os.path.join("lang", "objc", "objc-new-syntax")
+    mydir = TestBase.compute_mydir(__file__)
 
-    @unittest2.expectedFailure
     @dsym_test
+    @unittest2.expectedFailure
     def test_expr_with_dsym(self):
         self.buildDsym()
         self.expr()
 
-    @unittest2.expectedFailure
     @dwarf_test
+    @skipIfLinux
+    @unittest2.expectedFailure
     def test_expr_with_dwarf(self):
         self.buildDwarf()
         self.expr()

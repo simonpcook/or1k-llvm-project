@@ -12,7 +12,6 @@
 #include "lld/Core/Atom.h"
 #include "lld/Core/DefinedAtom.h"
 #include "lld/Core/File.h"
-#include "lld/Core/InputFiles.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Resolver.h"
 #include "lld/Core/SharedLibraryAtom.h"
@@ -47,13 +46,14 @@ void SymbolTable::add(const AbsoluteAtom &atom) {
 
 void SymbolTable::add(const DefinedAtom &atom) {
   if (!atom.name().empty() &&
-      (atom.scope() != DefinedAtom::scopeTranslationUnit)) {
+      atom.scope() != DefinedAtom::scopeTranslationUnit) {
     // Named atoms cannot be merged by content.
     assert(atom.merge() != DefinedAtom::mergeByContent);
     // Track named atoms that are not scoped to file (static).
     this->addByName(atom);
+    return;
   }
-  else if ( atom.merge() == DefinedAtom::mergeByContent ) {
+  if (atom.merge() == DefinedAtom::mergeByContent) {
     // Named atoms cannot be merged by content.
     assert(atom.name().empty());
     this->addByContent(atom);
@@ -98,157 +98,205 @@ enum MergeResolution {
   MCR_First,
   MCR_Second,
   MCR_Largest,
+  MCR_SameSize,
   MCR_Error
 };
 
-static MergeResolution mergeCases[4][4] = {
-  // no        tentative     weak       weakAddressUsed
-  {
-    // first is no
-    MCR_Error,  MCR_First,   MCR_First, MCR_First
-  },
-  {
-    // first is tentative
-    MCR_Second, MCR_Largest, MCR_Second, MCR_Second
-  },
-  {
-    // first is weak
-    MCR_Second, MCR_First,   MCR_First, MCR_Second
-  },
-  {
-    // first is weakAddressUsed
-    MCR_Second, MCR_First,   MCR_First, MCR_First
-  }
+static MergeResolution mergeCases[][6] = {
+  // no          tentative      weak          weakAddress   sameNameAndSize largest
+  {MCR_Error,    MCR_First,     MCR_First,    MCR_First,    MCR_SameSize,   MCR_Largest},  // no
+  {MCR_Second,   MCR_Largest,   MCR_Second,   MCR_Second,   MCR_SameSize,   MCR_Largest},  // tentative
+  {MCR_Second,   MCR_First,     MCR_First,    MCR_Second,   MCR_SameSize,   MCR_Largest},  // weak
+  {MCR_Second,   MCR_First,     MCR_First,    MCR_First,    MCR_SameSize,   MCR_Largest},  // weakAddress
+  {MCR_SameSize, MCR_SameSize,  MCR_SameSize, MCR_SameSize, MCR_SameSize,   MCR_SameSize}, // sameSize
+  {MCR_Largest,  MCR_Largest,   MCR_Largest,  MCR_Largest,  MCR_SameSize,   MCR_Largest},  // largest
 };
 
 static MergeResolution mergeSelect(DefinedAtom::Merge first,
                                    DefinedAtom::Merge second) {
+  assert(first != DefinedAtom::mergeByContent);
+  assert(second != DefinedAtom::mergeByContent);
   return mergeCases[first][second];
 }
 
-void SymbolTable::addByName(const Atom & newAtom) {
+static uint64_t getSizeFollowReferences(const DefinedAtom *atom, uint32_t kind) {
+  uint64_t size = 0;
+redo:
+  while (atom) {
+    for (const Reference *r : *atom) {
+      if (r->kindNamespace() == Reference::KindNamespace::all &&
+          r->kindArch() == Reference::KindArch::all &&
+          r->kindValue() == kind) {
+        atom = cast<DefinedAtom>(r->target());
+        size += atom->size();
+        goto redo;
+      }
+    }
+    break;
+  }
+  return size;
+}
+
+// Returns the size of the section containing the given atom. Atoms in the same
+// section are connected by layout-before and layout-after edges, so this
+// function traverses them to get the total size of atoms in the same section.
+static uint64_t sectionSize(const DefinedAtom *atom) {
+  return atom->size()
+      + getSizeFollowReferences(atom, lld::Reference::kindLayoutBefore)
+      + getSizeFollowReferences(atom, lld::Reference::kindLayoutAfter);
+}
+
+void SymbolTable::addByName(const Atom &newAtom) {
   StringRef name = newAtom.name();
   assert(!name.empty());
   const Atom *existing = this->findByName(name);
   if (existing == nullptr) {
     // Name is not in symbol table yet, add it associate with this atom.
     _nameTable[name] = &newAtom;
+    return;
   }
-  else {
-    // Name is already in symbol table and associated with another atom.
-    bool useNew = true;
-    switch (collide(existing->definition(), newAtom.definition())) {
-      case NCR_First:
-        useNew = false;
-        break;
-      case NCR_Second:
+
+  // Name is already in symbol table and associated with another atom.
+  bool useNew = true;
+  switch (collide(existing->definition(), newAtom.definition())) {
+  case NCR_First:
+    useNew = false;
+    break;
+  case NCR_Second:
+    useNew = true;
+    break;
+  case NCR_DupDef:
+    assert(existing->definition() == Atom::definitionRegular);
+    assert(newAtom.definition() == Atom::definitionRegular);
+    switch (mergeSelect(((DefinedAtom*)existing)->merge(),
+                        ((DefinedAtom*)&newAtom)->merge())) {
+    case MCR_First:
+      useNew = false;
+      break;
+    case MCR_Second:
+      useNew = true;
+      break;
+    case MCR_Largest: {
+      uint64_t existingSize = sectionSize((DefinedAtom*)existing);
+      uint64_t newSize = sectionSize((DefinedAtom*)&newAtom);
+      useNew = (newSize >= existingSize);
+      break;
+    }
+    case MCR_SameSize: {
+      uint64_t existingSize = sectionSize((DefinedAtom*)existing);
+      uint64_t newSize = sectionSize((DefinedAtom*)&newAtom);
+      if (existingSize == newSize) {
         useNew = true;
         break;
-      case NCR_DupDef:
-        assert(existing->definition() == Atom::definitionRegular);
-        assert(newAtom.definition() == Atom::definitionRegular);
-        switch ( mergeSelect(((DefinedAtom*)existing)->merge(),
-                            ((DefinedAtom*)(&newAtom))->merge()) ) {
-          case MCR_First:
-            useNew = false;
-            break;
-          case MCR_Second:
-            useNew = true;
-            break;
-          case MCR_Largest:
-            useNew = true;
-            break;
-          case MCR_Error:
-            llvm::errs() << "Duplicate symbols: "
-                         << existing->name()
-                         << ":"
-                         << existing->file().path()
-                         << " and "
-                         << newAtom.name()
-                         << ":"
-                         << newAtom.file().path()
-                         << "\n";
-            llvm::report_fatal_error("duplicate symbol error");
-            break;
-        }
-        break;
-      case NCR_DupUndef: {
-          const UndefinedAtom* existingUndef =
-            dyn_cast<UndefinedAtom>(existing);
-          const UndefinedAtom* newUndef =
-            dyn_cast<UndefinedAtom>(&newAtom);
-          assert(existingUndef != nullptr);
-          assert(newUndef != nullptr);
-          if ( existingUndef->canBeNull() == newUndef->canBeNull() ) {
-            useNew = false;
-          }
-          else {
-            if (_context.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
-              // FIXME: need diagonstics interface for writing warning messages
-              llvm::errs() << "lld warning: undefined symbol "
-                           << existingUndef->name()
-                           << " has different weakness in "
-                           << existingUndef->file().path()
-                           << " and in "
-                           << newUndef->file().path();
-            }
-            useNew = (newUndef->canBeNull() < existingUndef->canBeNull());
-          }
-        }
-        break;
-      case NCR_DupShLib: {
-          const SharedLibraryAtom* curShLib =
-            dyn_cast<SharedLibraryAtom>(existing);
-          const SharedLibraryAtom* newShLib =
-            dyn_cast<SharedLibraryAtom>(&newAtom);
-          assert(curShLib != nullptr);
-          assert(newShLib != nullptr);
-          bool sameNullness = (curShLib->canBeNullAtRuntime()
-                                          == newShLib->canBeNullAtRuntime());
-          bool sameName = curShLib->loadName().equals(newShLib->loadName());
-          if ( !sameName ) {
-            useNew = false;
-            if (_context.warnIfCoalesableAtomsHaveDifferentLoadName()) {
-              // FIXME: need diagonstics interface for writing warning messages
-              llvm::errs() << "lld warning: shared library symbol "
-                           << curShLib->name()
-                           << " has different load path in "
-                           << curShLib->file().path()
-                           << " and in "
-                           << newShLib->file().path();
-            }
-          }
-          else if ( ! sameNullness ) {
-            useNew = false;
-            if (_context.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
-              // FIXME: need diagonstics interface for writing warning messages
-              llvm::errs() << "lld warning: shared library symbol "
-                           << curShLib->name()
-                           << " has different weakness in "
-                           << curShLib->file().path()
-                           << " and in "
-                           << newShLib->file().path();
-            }
-          }
-          else {
-            // Both shlib atoms are identical and can be coalesced.
-            useNew = false;
-          }
-        }
-        break;
-      default:
-        llvm::report_fatal_error("SymbolTable::addByName(): unhandled switch clause");
+      }
+      llvm::errs() << "Size mismatch: "
+                   << existing->name() << " (" << existingSize << ") "
+                   << newAtom.name() << " (" << newSize << ")\n";
+      // fallthrough
     }
-    if ( useNew ) {
-      // Update name table to use new atom.
-      _nameTable[name] = &newAtom;
-      // Add existing atom to replacement table.
-      _replacedAtoms[existing] = &newAtom;
+    case MCR_Error:
+      llvm::errs() << "Duplicate symbols: "
+                   << existing->name()
+                   << ":"
+                   << existing->file().path()
+                   << " and "
+                   << newAtom.name()
+                   << ":"
+                   << newAtom.file().path()
+                   << "\n";
+      llvm::report_fatal_error("duplicate symbol error");
+      break;
     }
-    else {
-      // New atom is not being used.  Add it to replacement table.
-      _replacedAtoms[&newAtom] = existing;
+    break;
+  case NCR_DupUndef: {
+    const UndefinedAtom* existingUndef = dyn_cast<UndefinedAtom>(existing);
+    const UndefinedAtom* newUndef = dyn_cast<UndefinedAtom>(&newAtom);
+    assert(existingUndef != nullptr);
+    assert(newUndef != nullptr);
+
+    bool sameCanBeNull = (existingUndef->canBeNull() == newUndef->canBeNull());
+    if (!sameCanBeNull &&
+        _context.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
+      llvm::errs() << "lld warning: undefined symbol "
+                   << existingUndef->name()
+                   << " has different weakness in "
+                   << existingUndef->file().path()
+                   << " and in " << newUndef->file().path() << "\n";
     }
+
+    const UndefinedAtom *existingFallback = existingUndef->fallback();
+    const UndefinedAtom *newFallback = newUndef->fallback();
+    bool hasDifferentFallback =
+        (existingFallback && newFallback &&
+         existingFallback->name() != newFallback->name());
+    if (hasDifferentFallback) {
+      llvm::errs() << "lld warning: undefined symbol "
+                   << existingUndef->name() << " has different fallback: "
+                   << existingFallback->name() << " in "
+                   << existingUndef->file().path() << " and "
+                   << newFallback->name() << " in "
+                   << newUndef->file().path() << "\n";
+    }
+
+    bool hasNewFallback = newUndef->fallback();
+    if (sameCanBeNull)
+      useNew = hasNewFallback;
+    else
+      useNew = (newUndef->canBeNull() < existingUndef->canBeNull());
+    break;
+  }
+  case NCR_DupShLib: {
+      const SharedLibraryAtom* curShLib =
+        dyn_cast<SharedLibraryAtom>(existing);
+      const SharedLibraryAtom* newShLib =
+        dyn_cast<SharedLibraryAtom>(&newAtom);
+      assert(curShLib != nullptr);
+      assert(newShLib != nullptr);
+      bool sameNullness = (curShLib->canBeNullAtRuntime()
+                                      == newShLib->canBeNullAtRuntime());
+      bool sameName = curShLib->loadName().equals(newShLib->loadName());
+      if (!sameName) {
+        useNew = false;
+        if (_context.warnIfCoalesableAtomsHaveDifferentLoadName()) {
+          // FIXME: need diagonstics interface for writing warning messages
+          llvm::errs() << "lld warning: shared library symbol "
+                       << curShLib->name()
+                       << " has different load path in "
+                       << curShLib->file().path()
+                       << " and in "
+                       << newShLib->file().path();
+        }
+      } else if (!sameNullness) {
+        useNew = false;
+        if (_context.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
+          // FIXME: need diagonstics interface for writing warning messages
+          llvm::errs() << "lld warning: shared library symbol "
+                       << curShLib->name()
+                       << " has different weakness in "
+                       << curShLib->file().path()
+                       << " and in "
+                       << newShLib->file().path();
+        }
+      } else {
+        // Both shlib atoms are identical and can be coalesced.
+        useNew = false;
+      }
+    }
+    break;
+  case NCR_Error:
+    llvm::errs() << "SymbolTable: error while merging " << name << "\n";
+    llvm::report_fatal_error("duplicate symbol error");
+    break;
+  }
+
+  if (useNew) {
+    // Update name table to use new atom.
+    _nameTable[name] = &newAtom;
+    // Add existing atom to replacement table.
+    _replacedAtoms[existing] = &newAtom;
+  } else {
+    // New atom is not being used.  Add it to replacement table.
+    _replacedAtoms[&newAtom] = existing;
   }
 }
 
@@ -262,20 +310,20 @@ unsigned SymbolTable::AtomMappingInfo::getHashValue(const DefinedAtom *atom) {
 
 bool SymbolTable::AtomMappingInfo::isEqual(const DefinedAtom * const l,
                                            const DefinedAtom * const r) {
-  if ( l == r )
+  if (l == r)
     return true;
-  if ( l == getEmptyKey() )
+  if (l == getEmptyKey())
     return false;
-  if ( r == getEmptyKey() )
+  if (r == getEmptyKey())
     return false;
-  if ( l == getTombstoneKey() )
+  if (l == getTombstoneKey())
     return false;
-  if ( r == getTombstoneKey() )
+  if (r == getTombstoneKey())
     return false;
 
-  if ( l->contentType() != r->contentType() )
+  if (l->contentType() != r->contentType())
     return false;
-  if ( l->size() != r->size() )
+  if (l->size() != r->size())
     return false;
   ArrayRef<uint8_t> lc = l->rawContent();
   ArrayRef<uint8_t> rc = r->rawContent();
@@ -286,13 +334,13 @@ void SymbolTable::addByContent(const DefinedAtom & newAtom) {
   // Currently only read-only constants can be merged.
   assert(newAtom.permissions() == DefinedAtom::permR__);
   AtomContentSet::iterator pos = _contentTable.find(&newAtom);
-  if ( pos == _contentTable.end() ) {
+  if (pos == _contentTable.end()) {
     _contentTable.insert(&newAtom);
     return;
   }
   const Atom* existing = *pos;
-    // New atom is not being used.  Add it to replacement table.
-    _replacedAtoms[&newAtom] = existing;
+  // New atom is not being used.  Add it to replacement table.
+  _replacedAtoms[&newAtom] = existing;
 }
 
 const Atom *SymbolTable::findByName(StringRef sym) {
@@ -306,9 +354,7 @@ bool SymbolTable::isDefined(StringRef sym) {
   const Atom *atom = this->findByName(sym);
   if (atom == nullptr)
     return false;
-  if (atom->definition() == Atom::definitionUndefined)
-    return false;
-  return true;
+  return atom->definition() != Atom::definitionUndefined;
 }
 
 void SymbolTable::addReplacement(const Atom *replaced,
@@ -329,9 +375,8 @@ unsigned int SymbolTable::size() {
 }
 
 void SymbolTable::undefines(std::vector<const UndefinedAtom *> &undefs) {
-  for (NameToAtom::iterator it = _nameTable.begin(),
-       end = _nameTable.end(); it != end; ++it) {
-    const Atom *atom = it->second;
+  for (auto it : _nameTable) {
+    const Atom *atom = it.second;
     assert(atom != nullptr);
     if (const auto undef = dyn_cast<const UndefinedAtom>(atom)) {
       AtomToAtom::iterator pos = _replacedAtoms.find(undef);
@@ -347,10 +392,9 @@ void SymbolTable::tentativeDefinitions(std::vector<StringRef> &names) {
     const Atom *atom = entry.second;
     StringRef name   = entry.first;
     assert(atom != nullptr);
-    if (const DefinedAtom *defAtom = dyn_cast<DefinedAtom>(atom) ) {
-      if ( defAtom->merge() == DefinedAtom::mergeAsTentative )
+    if (const DefinedAtom *defAtom = dyn_cast<DefinedAtom>(atom))
+      if (defAtom->merge() == DefinedAtom::mergeAsTentative)
         names.push_back(name);
-    }
   }
 }
 } // namespace lld

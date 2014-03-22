@@ -21,7 +21,6 @@
 #include "lldb/Core/Broadcaster.h"
 #include "lldb/Core/ConstString.h"
 #include "lldb/Core/Error.h"
-#include "lldb/Core/InputReader.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Core/StringList.h"
 #include "lldb/Core/ThreadSafeValue.h"
@@ -85,7 +84,7 @@ public:
     
     virtual lldb_private::Error
     DoLaunch (lldb_private::Module *exe_module, 
-              const lldb_private::ProcessLaunchInfo &launch_info);
+              lldb_private::ProcessLaunchInfo &launch_info);
     
     virtual lldb_private::Error
     WillAttachToProcessWithID (lldb::pid_t pid);
@@ -103,7 +102,7 @@ public:
     DoAttachToProcessWithID (lldb::pid_t pid, const lldb_private::ProcessAttachInfo &attach_info);
     
     virtual lldb_private::Error
-    DoAttachToProcessWithName (const char *process_name, bool wait_for_launch, const lldb_private::ProcessAttachInfo &attach_info);
+    DoAttachToProcessWithName (const char *process_name, const lldb_private::ProcessAttachInfo &attach_info);
     
     virtual void
     DidAttach ();

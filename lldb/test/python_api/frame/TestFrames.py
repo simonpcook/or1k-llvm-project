@@ -11,7 +11,7 @@ from lldbtest import *
 
 class FrameAPITestCase(TestBase):
 
-    mydir = os.path.join("python_api", "frame")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @python_api_test
@@ -21,7 +21,6 @@ class FrameAPITestCase(TestBase):
         self.buildDsym()
         self.do_get_arg_vals()
 
-    @expectedFailurei386 # llvm.org/pr17385: registers are unavailable above frame 0 in the inferior including pc
     @python_api_test
     @dwarf_test
     def test_get_arg_vals_for_call_stack_with_dwarf(self):
@@ -57,7 +56,7 @@ class FrameAPITestCase(TestBase):
                         VALID_BREAKPOINT)
 
         # Now launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         process = target.GetProcess()
         self.assertTrue(process.GetState() == lldb.eStateStopped,
@@ -143,7 +142,7 @@ class FrameAPITestCase(TestBase):
                         VALID_BREAKPOINT)
 
         # Now launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         process = target.GetProcess()
         self.assertTrue(process.GetState() == lldb.eStateStopped,
@@ -180,7 +179,7 @@ class FrameAPITestCase(TestBase):
                         VALID_BREAKPOINT)
 
         # Now launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         process = target.GetProcess()
         self.assertTrue(process.GetState() == lldb.eStateStopped,

@@ -11,7 +11,7 @@ import lldbutil
 
 class RegisterCommandsTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "register")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         TestBase.setUp(self)
@@ -19,43 +19,46 @@ class RegisterCommandsTestCase(TestBase):
 
     def test_register_commands(self):
         """Test commands related to registers, in particular vector registers."""
-        if not self.getArchitecture() in ['i386', 'x86_64']:
-            self.skipTest("This test requires i386 or x86_64 as the architecture for the inferior")
+        if not self.getArchitecture() in ['amd64', 'i386', 'x86_64']:
+            self.skipTest("This test requires x86 or x86_64 as the architecture for the inferior")
         self.buildDefault()
         self.register_commands()
 
     def test_fp_register_write(self):
         """Test commands that write to registers, in particular floating-point registers."""
-        if not self.getArchitecture() in ['i386', 'x86_64']:
-            self.skipTest("This test requires i386 or x86_64 as the architecture for the inferior")
+        if not self.getArchitecture() in ['amd64', 'i386', 'x86_64']:
+            self.skipTest("This test requires x86 or x86_64 as the architecture for the inferior")
         self.buildDefault()
         self.fp_register_write()
 
     def test_register_expressions(self):
         """Test expression evaluation with commands related to registers."""
-        if not self.getArchitecture() in ['i386', 'x86_64']:
-            self.skipTest("This test requires i386 or x86_64 as the architecture for the inferior")
+        if not self.getArchitecture() in ['amd64', 'i386', 'x86_64']:
+            self.skipTest("This test requires x86 or x86_64 as the architecture for the inferior")
         self.buildDefault()
         self.register_expressions()
 
     def test_convenience_registers(self):
         """Test convenience registers."""
-        if not self.getArchitecture() in ['x86_64']:
+        if not self.getArchitecture() in ['amd64', 'x86_64']:
             self.skipTest("This test requires x86_64 as the architecture for the inferior")
         self.buildDefault()
         self.convenience_registers()
 
+    @skipIfFreeBSD # llvm.org/pr16684
+    @expectedFailureFreeBSD("llvm.org/pr18200")
     def test_convenience_registers_with_process_attach(self):
         """Test convenience registers after a 'process attach'."""
-        if not self.getArchitecture() in ['x86_64']:
+        if not self.getArchitecture() in ['amd64', 'x86_64']:
             self.skipTest("This test requires x86_64 as the architecture for the inferior")
         self.buildDefault()
         self.convenience_registers_with_process_attach(test_16bit_regs=False)
 
-    @expectedFailureLinux("llvm.org/pr14600") # Linux doesn't support 16-bit convenience registers
+    @skipIfFreeBSD # llvm.org/pr18230
+    @expectedFailureFreeBSD("llvm.org/pr18200")
     def test_convenience_registers_16bit_with_process_attach(self):
         """Test convenience registers after a 'process attach'."""
-        if not self.getArchitecture() in ['x86_64']:
+        if not self.getArchitecture() in ['amd64', 'x86_64']:
             self.skipTest("This test requires x86_64 as the architecture for the inferior")
         self.buildDefault()
         self.convenience_registers_with_process_attach(test_16bit_regs=True)
@@ -153,7 +156,7 @@ class RegisterCommandsTestCase(TestBase):
         lldbutil.run_break_set_by_symbol (self, "main", num_expected_locations=-1)
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         process = target.GetProcess()
         self.assertTrue(process.GetState() == lldb.eStateStopped,
@@ -173,19 +176,23 @@ class RegisterCommandsTestCase(TestBase):
         self.write_and_restore(currentFrame, "mxcsr", False)
         self.write_and_restore(currentFrame, "mxcsrmask", False)
 
+        st0regname = "st0"
+        if currentFrame.FindRegister(st0regname).IsValid() == False:
+                st0regname = "stmm0"
+        if currentFrame.FindRegister(st0regname).IsValid() == False:
+                return # TODO: anything smarter here
+
         new_value = "{0x01 0x02 0x03 0x00 0x00 0x00 0x00 0x00 0x00 0x00}"
-        self.vector_write_and_read(currentFrame, "stmm0", new_value)
-        new_value = "{0x01 0x02 0x03 0x00 0x00 0x00 0x00 0x00 0x09 0x0a}"
-        self.vector_write_and_read(currentFrame, "stmm7", new_value)
+        self.vector_write_and_read(currentFrame, st0regname, new_value)
 
         new_value = "{0x01 0x02 0x03 0x00 0x00 0x00 0x00 0x00 0x09 0x0a 0x2f 0x2f 0x2f 0x2f 0x2f 0x2f}"
         self.vector_write_and_read(currentFrame, "xmm0", new_value)
         new_value = "{0x01 0x02 0x03 0x00 0x00 0x00 0x00 0x00 0x09 0x0a 0x2f 0x2f 0x2f 0x2f 0x0e 0x0f}"
         self.vector_write_and_read(currentFrame, "xmm15", new_value, False)
 
-        self.runCmd("register write stmm0 \"{0x00 0x00 0x00 0x00 0x00 0x00 0x40 0x9a 0x09 0x40}\"")
-        self.expect("register read stmm0 --format f",
-            substrs = ['stmm0 = 1234'])
+        self.runCmd("register write " + st0regname + " \"{0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00}\"")
+        self.expect("register read " + st0regname + " --format f",
+            substrs = [st0regname + ' = 0'])
 
         has_avx = False 
         registerSets = currentFrame.GetRegisters() # Returns an SBValueList.
@@ -197,7 +204,7 @@ class RegisterCommandsTestCase(TestBase):
         if has_avx:
             new_value = "{0x01 0x02 0x03 0x00 0x00 0x00 0x00 0x00 0x09 0x0a 0x2f 0x2f 0x2f 0x2f 0x0e 0x0f 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x0c 0x0d 0x0e 0x0f}"
             self.vector_write_and_read(currentFrame, "ymm0", new_value)
-            self.vector_write_and_read(currentFrame, "ymm15", new_value)
+            self.vector_write_and_read(currentFrame, "ymm7", new_value)
             self.expect("expr $ymm0", substrs = ['vector_type'])
         else:
             self.runCmd("register read ymm0")
@@ -209,7 +216,7 @@ class RegisterCommandsTestCase(TestBase):
         self.expect("expr/x $eax",
             substrs = ['unsigned int', ' = 0x'])
 
-        if self.getArchitecture() in ['x86_64']:
+        if self.getArchitecture() in ['amd64', 'x86_64']:
             self.expect("expr -- ($rax & 0xffffffff) == $eax",
                 substrs = ['true'])
 
@@ -261,7 +268,7 @@ class RegisterCommandsTestCase(TestBase):
         # Check that "register read eax" works.
         self.runCmd("register read eax")
 
-        if self.getArchitecture() in ['x86_64']:
+        if self.getArchitecture() in ['amd64', 'x86_64']:
             self.expect("expr -- ($rax & 0xffffffff) == $eax",
                 substrs = ['true'])
 

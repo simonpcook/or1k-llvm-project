@@ -7,7 +7,7 @@ from lldbtest import *
 
 class CrashingRecursiveInferiorTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "inferior-crashing", "recursive-inferior")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     def test_recursive_inferior_crashing_dsym(self):
@@ -26,7 +26,6 @@ class CrashingRecursiveInferiorTestCase(TestBase):
         self.buildDsym()
         self.recursive_inferior_crashing_registers()
 
-    @expectedFailureFreeBSD('llvm.org/pr17184')
     def test_recursive_inferior_crashing_register_dwarf(self):
         """Test that lldb reliably reads registers from the inferior after crashing (command)."""
         self.buildDwarf()
@@ -44,7 +43,6 @@ class CrashingRecursiveInferiorTestCase(TestBase):
         self.buildDsym()
         self.recursive_inferior_crashing_expr()
 
-    @expectedFailureFreeBSD('llvm.org/pr17184')
     def test_recursive_inferior_crashing_expr_dwarf(self):
         """Test that the lldb expression interpreter can read from the inferior after crashing (command)."""
         self.buildDwarf()
@@ -56,7 +54,6 @@ class CrashingRecursiveInferiorTestCase(TestBase):
         self.buildDsym()
         self.recursive_inferior_crashing_step()
 
-    @skipIfFreeBSD # llvm.org/pr17232
     def test_recursive_inferior_crashing_step_dwarf(self):
         """Test that stepping after a crash behaves correctly."""
         self.buildDwarf()
@@ -80,7 +77,7 @@ class CrashingRecursiveInferiorTestCase(TestBase):
         self.buildDsym()
         self.recursive_inferior_crashing_expr_step_expr()
 
-    @expectedFailureFreeBSD('llvm.org/pr17184')
+    @expectedFailureFreeBSD('llvm.org/pr15989') # Couldn't allocate space for the stack frame
     @expectedFailureLinux # llvm.org/pr15989 - Couldn't allocate space for the stack frame
     def test_recursive_inferior_crashing_expr_step_and_expr_dwarf(self):
         """Test that lldb expressions work before and after stepping after a crash."""
@@ -135,7 +132,7 @@ class CrashingRecursiveInferiorTestCase(TestBase):
 
         # Now launch the process, and do not stop at entry point.
         # Both argv and envp are null.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         if process.GetState() != lldb.eStateStopped:
             self.fail("Process should be in the 'stopped' state, "
@@ -216,8 +213,8 @@ class CrashingRecursiveInferiorTestCase(TestBase):
         self.expect("next",
             substrs = ['Process', expected_state])
 
-        self.expect("thread list", error=True, 
-            substrs = ['Process must be launched'])
+        if not(sys.platform.startswith("darwin")): # if stopped, we will have a process around
+            self.expect("thread list", error=True,substrs = ['Process must be launched'])
 
     def recursive_inferior_crashing_expr_step_expr(self):
         """Test that lldb expressions work before and after stepping after a crash."""

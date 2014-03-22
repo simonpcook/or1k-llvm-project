@@ -1,19 +1,18 @@
 set(LLVM_LINK_COMPONENTS support)
 
 add_clang_library(modernizeCore
-  FileOverrides.cpp
-  SyntaxCheck.cpp
+  ReplacementHandling.cpp
   Transforms.cpp
   Transform.cpp
   IncludeExcludeInfo.cpp
   PerfSupport.cpp
-  Reformatting.cpp
   IncludeDirectives.cpp
-  )
-target_link_libraries(modernizeCore
-  clangFormat
-  clangTooling
-  clangBasic
+
+  LINK_LIBS
+  clangAST
   clangASTMatchers
-  clangRewriteFrontend
+  clangBasic
+  clangFrontend
+  clangLex
+  clangTooling
   )

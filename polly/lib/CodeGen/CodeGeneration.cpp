@@ -82,7 +82,7 @@ typedef DenseMap<const char *, Value *> CharMapT;
 
 /// Class to generate LLVM-IR that calculates the value of a clast_expr.
 class ClastExpCodeGen {
-  IRBuilder<> &Builder;
+  PollyIRBuilder &Builder;
   const CharMapT &IVS;
 
   Value *codegen(const clast_name *e, Type *Ty);
@@ -91,7 +91,6 @@ class ClastExpCodeGen {
   Value *codegen(const clast_reduction *r, Type *Ty);
 
 public:
-
   // A generator for clast expressions.
   //
   // @param B The IRBuilder that defines where the code to calculate the
@@ -99,7 +98,7 @@ public:
   // @param IVMAP A Map that translates strings describing the induction
   //              variables to the Values* that represent these variables
   //              on the LLVM side.
-  ClastExpCodeGen(IRBuilder<> &B, CharMapT &IVMap);
+  ClastExpCodeGen(PollyIRBuilder &B, CharMapT &IVMap);
 
   // Generates code to calculate a given clast expression.
   //
@@ -114,6 +113,27 @@ Value *ClastExpCodeGen::codegen(const clast_name *e, Type *Ty) {
   assert(I != IVS.end() && "Clast name not found");
 
   return Builder.CreateSExtOrBitCast(I->second, Ty);
+}
+
+static APInt APInt_from_MPZ(const mpz_t mpz) {
+  uint64_t *p = NULL;
+  size_t sz;
+
+  p = (uint64_t *)mpz_export(p, &sz, -1, sizeof(uint64_t), 0, 0, mpz);
+
+  if (p) {
+    APInt A((unsigned)mpz_sizeinbase(mpz, 2), (unsigned)sz, p);
+    A = A.zext(A.getBitWidth() + 1);
+    free(p);
+
+    if (mpz_sgn(mpz) == -1)
+      return -A;
+    else
+      return A;
+  } else {
+    uint64_t val = 0;
+    return APInt(1, 1, &val);
+  }
 }
 
 Value *ClastExpCodeGen::codegen(const clast_term *e, Type *Ty) {
@@ -196,7 +216,7 @@ Value *ClastExpCodeGen::codegen(const clast_reduction *r, Type *Ty) {
   return old;
 }
 
-ClastExpCodeGen::ClastExpCodeGen(IRBuilder<> &B, CharMapT &IVMap)
+ClastExpCodeGen::ClastExpCodeGen(PollyIRBuilder &B, CharMapT &IVMap)
     : Builder(B), IVS(IVMap) {}
 
 Value *ClastExpCodeGen::codegen(const clast_expr *e, Type *Ty) {
@@ -224,7 +244,7 @@ private:
   Pass *P;
 
   // The Builder specifies the current location to code generate at.
-  IRBuilder<> &Builder;
+  PollyIRBuilder &Builder;
 
   // Map the Values from the old code to their counterparts in the new code.
   ValueMapT ValueMap;
@@ -355,12 +375,13 @@ private:
 public:
   void codegen(const clast_root *r);
 
-  ClastStmtCodeGen(Scop *scop, IRBuilder<> &B, Pass *P);
+  ClastStmtCodeGen(Scop *scop, PollyIRBuilder &B, Pass *P);
 };
 }
 
 IntegerType *ClastStmtCodeGen::getIntPtrTy() {
-  return P->getAnalysis<DataLayout>().getIntPtrType(Builder.getContext());
+  return P->getAnalysis<DataLayoutPass>().getDataLayout().getIntPtrType(
+      Builder.getContext());
 }
 
 const std::vector<std::string> &ClastStmtCodeGen::getParallelLoops() {
@@ -620,7 +641,7 @@ void ClastStmtCodeGen::codegenForOpenMP(const clast_for *For) {
   ClastVars = ClastVarsCopy;
 
   clearDomtree((*LoopBody).getParent()->getParent(),
-               P->getAnalysis<DominatorTree>());
+               P->getAnalysis<DominatorTreeWrapperPass>().getDomTree());
 
   Builder.SetInsertPoint(AfterLoop);
 }
@@ -802,7 +823,7 @@ int ClastStmtCodeGen::getNumberOfIterations(const clast_for *For) {
   int NumberOfIterations = polly::getNumberOfIterations(LoopDomain);
   if (NumberOfIterations == -1)
     return -1;
-  return NumberOfIterations / isl_int_get_si(For->stride) + 1;
+  return NumberOfIterations / mpz_get_si(For->stride) + 1;
 }
 
 void ClastStmtCodeGen::codegenForVector(const clast_for *F) {
@@ -908,7 +929,7 @@ void ClastStmtCodeGen::codegen(const clast_guard *g) {
   MergeBB->setName("polly.merge");
   BasicBlock *ThenBB = BasicBlock::Create(Context, "polly.then", F);
 
-  DominatorTree &DT = P->getAnalysis<DominatorTree>();
+  DominatorTree &DT = P->getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   DT.addNewBlock(ThenBB, CondBB);
   DT.changeImmediateDominator(MergeBB, CondBB);
 
@@ -985,7 +1006,7 @@ void ClastStmtCodeGen::codegen(const clast_root *r) {
     codegen(stmt->next);
 }
 
-ClastStmtCodeGen::ClastStmtCodeGen(Scop *scop, IRBuilder<> &B, Pass *P)
+ClastStmtCodeGen::ClastStmtCodeGen(Scop *scop, PollyIRBuilder &B, Pass *P)
     : S(scop), P(P), Builder(B), ExpGen(Builder, ClastVars) {}
 
 namespace {
@@ -1007,7 +1028,7 @@ public:
 
     BasicBlock *StartBlock = executeScopConditionally(S, this);
 
-    IRBuilder<> Builder(StartBlock->begin());
+    PollyIRBuilder Builder(StartBlock->begin());
 
     ClastStmtCodeGen CodeGen(&S, Builder, this);
     CloogInfo &C = getAnalysis<CloogInfo>();
@@ -1029,18 +1050,18 @@ public:
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequired<CloogInfo>();
     AU.addRequired<Dependences>();
-    AU.addRequired<DominatorTree>();
+    AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<RegionInfo>();
     AU.addRequired<ScalarEvolution>();
     AU.addRequired<ScopDetection>();
     AU.addRequired<ScopInfo>();
-    AU.addRequired<DataLayout>();
+    AU.addRequired<DataLayoutPass>();
     AU.addRequired<LoopInfo>();
 
     AU.addPreserved<CloogInfo>();
     AU.addPreserved<Dependences>();
     AU.addPreserved<LoopInfo>();
-    AU.addPreserved<DominatorTree>();
+    AU.addPreserved<DominatorTreeWrapperPass>();
     AU.addPreserved<ScopDetection>();
     AU.addPreserved<ScalarEvolution>();
 
@@ -1062,11 +1083,11 @@ INITIALIZE_PASS_BEGIN(CodeGeneration, "polly-codegen",
                       "Polly - Create LLVM-IR from SCoPs", false, false);
 INITIALIZE_PASS_DEPENDENCY(CloogInfo);
 INITIALIZE_PASS_DEPENDENCY(Dependences);
-INITIALIZE_PASS_DEPENDENCY(DominatorTree);
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass);
 INITIALIZE_PASS_DEPENDENCY(RegionInfo);
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);
 INITIALIZE_PASS_DEPENDENCY(ScopDetection);
-INITIALIZE_PASS_DEPENDENCY(DataLayout);
+INITIALIZE_PASS_DEPENDENCY(DataLayoutPass);
 INITIALIZE_PASS_END(CodeGeneration, "polly-codegen",
                     "Polly - Create LLVM-IR from SCoPs", false, false)
 

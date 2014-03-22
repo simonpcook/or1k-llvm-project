@@ -13,8 +13,8 @@
 
 #include <list>
 #include <cassert>
-#include "../../../DefaultOnly.h"
-#include "../../../min_allocator.h"
+#include "DefaultOnly.h"
+#include "min_allocator.h"
 
 int main()
 {
@@ -46,6 +46,11 @@ int main()
     }
     {
         std::list<int, min_allocator<int>> l((min_allocator<int>()));
+        assert(l.size() == 0);
+        assert(std::distance(l.begin(), l.end()) == 0);
+    }
+    {
+        std::list<int> l = {};
         assert(l.size() == 0);
         assert(std::distance(l.begin(), l.end()) == 0);
     }

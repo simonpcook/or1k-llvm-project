@@ -7,10 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_ELF_HEXAGON_TARGETINFO_H
-#define LLD_READER_WRITER_ELF_HEXAGON_TARGETINFO_H
-
-#include "HexagonTargetHandler.h"
+#ifndef LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_LINKING_CONTEXT_H
+#define LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_LINKING_CONTEXT_H
 
 #include "lld/ReaderWriter/ELFLinkingContext.h"
 
@@ -20,20 +18,19 @@
 namespace lld {
 namespace elf {
 
-class HexagonLinkingContext LLVM_FINAL : public ELFLinkingContext {
+typedef llvm::object::ELFType<llvm::support::little, 2, false> HexagonELFType;
+
+class HexagonLinkingContext final : public ELFLinkingContext {
 public:
-  HexagonLinkingContext(llvm::Triple triple)
-      : ELFLinkingContext(triple, std::unique_ptr<TargetHandlerBase>(
-                                      new HexagonTargetHandler(*this))) {}
+  HexagonLinkingContext(llvm::Triple triple);
 
-  virtual ErrorOr<Reference::Kind> relocKindFromString(StringRef str) const;
-  virtual ErrorOr<std::string> stringFromRelocKind(Reference::Kind kind) const;
-
-  virtual void addPasses(PassManager &) const;
+  virtual void addPasses(PassManager &);
 
   virtual bool isDynamicRelocation(const DefinedAtom &,
                                    const Reference &r) const {
-    switch (r.kind()) {
+    if (r.kindNamespace() != Reference::KindNamespace::ELF)
+      return false;
+    switch (r.kindValue()) {
     case llvm::ELF::R_HEX_RELATIVE:
     case llvm::ELF::R_HEX_GLOB_DAT:
       return true;
@@ -43,7 +40,9 @@ public:
   }
 
   virtual bool isPLTRelocation(const DefinedAtom &, const Reference &r) const {
-    switch (r.kind()) {
+    if (r.kindNamespace() != Reference::KindNamespace::ELF)
+      return false;
+    switch (r.kindValue()) {
     case llvm::ELF::R_HEX_JMP_SLOT:
       return true;
     default:
@@ -54,7 +53,9 @@ public:
   /// \brief Hexagon has only one relative relocation
   /// a) for supporting relative relocs - R_HEX_RELATIVE
   virtual bool isRelativeReloc(const Reference &r) const {
-    switch (r.kind()) {
+    if (r.kindNamespace() != Reference::KindNamespace::ELF)
+      return false;
+    switch (r.kindValue()) {
     case llvm::ELF::R_HEX_RELATIVE:
       return true;
     default:
@@ -63,10 +64,10 @@ public:
   }
 
   /// \brief Create Internal files for Init/Fini
-  std::vector<std::unique_ptr<File>> createInternalFiles();
+  void createInternalFiles(std::vector<std::unique_ptr<File> > &result) const;
 };
 
 } // elf
 } // lld
 
-#endif // LLD_READER_WRITER_ELF_HEXAGON_TARGETINFO_H
+#endif // LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_LINKING_CONTEXT_H

@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fno-rtti -emit-llvm -fdump-vtable-layouts %s -o - -cxx-abi microsoft -triple=i386-pc-win32 >%t 2>&1
+// RUN: %clang_cc1 -fno-rtti -emit-llvm -o %t.ll -fdump-vtable-layouts %s -triple=i386-pc-win32 >%t
 
 // RUN: FileCheck --check-prefix=VTABLE-C %s < %t
 // RUN: FileCheck --check-prefix=VTABLE-D %s < %t
@@ -9,16 +9,24 @@
 // RUN: FileCheck --check-prefix=TEST5 %s < %t
 // RUN: FileCheck --check-prefix=TEST6 %s < %t
 // RUN: FileCheck --check-prefix=TEST7 %s < %t
-// RUN: FileCheck --check-prefix=TEST8 %s < %t
+// RUN: FileCheck --check-prefix=TEST8-X %s < %t
+// RUN: FileCheck --check-prefix=TEST8-Z %s < %t
+// RUN: FileCheck --check-prefix=TEST8-T %s < %t
 // RUN: FileCheck --check-prefix=TEST9-Y %s < %t
 // RUN: FileCheck --check-prefix=TEST9-Z %s < %t
 // RUN: FileCheck --check-prefix=TEST9-W %s < %t
 // RUN: FileCheck --check-prefix=TEST9-T %s < %t
 // RUN: FileCheck --check-prefix=TEST10 %s < %t
+// RUN: FileCheck --check-prefix=VDTORS-Y %s < %t
+// RUN: FileCheck --check-prefix=VDTORS-U %s < %t
+// RUN: FileCheck --check-prefix=VDTORS-V %s < %t
+// RUN: FileCheck --check-prefix=VDTORS-P %s < %t
+// RUN: FileCheck --check-prefix=VDTORS-R %s < %t
 // RUN: FileCheck --check-prefix=RET-W %s < %t
 // RUN: FileCheck --check-prefix=RET-T %s < %t
+// RUN: FileCheck --check-prefix=RET-V %s < %t
 
-// RUN: FileCheck --check-prefix=MANGLING %s < %t
+// RUN: FileCheck --check-prefix=MANGLING %s < %t.ll
 
 struct Empty { };
 
@@ -36,20 +44,19 @@ struct C: virtual A {
   // VTABLE-C-NEXT: 0 | void C::f()
   // VTABLE-C-NEXT: 1 | void A::z()
 
-  // VTABLE-C: VFTable indices for 'C' (1 entries)
+  // VTABLE-C: VFTable indices for 'C' (1 entry)
   // VTABLE-C-NEXT: vbtable index 1, vfptr at offset 0
   // VTABLE-C-NEXT: 0 | void C::f()
 
   // MANGLING-DAG: @"\01??_7C@@6B@"
 
-  ~C();  // Currently required to have correct record layout, see PR16406
-  virtual void f();
+  virtual void f() {}
 };
 
 C c;
 
 struct D: virtual A {
-  // VTABLE-D: VFTable for 'D' (1 entries).
+  // VTABLE-D: VFTable for 'D' (1 entry).
   // VTABLE-D-NEXT: 0 | void D::h()
 
   // VTABLE-D: VFTable for 'A' in 'D' (2 entries).
@@ -96,17 +103,17 @@ Z z;
 namespace Test2 {
 
 struct X: virtual A, virtual B {
-  // TEST2: VFTable for 'Test2::X' (1 entries).
+  // TEST2: VFTable for 'Test2::X' (1 entry).
   // TEST2-NEXT: 0 | void Test2::X::h()
 
   // TEST2: VFTable for 'A' in 'Test2::X' (2 entries).
   // TEST2-NEXT: 0 | void A::f()
   // TEST2-NEXT: 1 | void A::z()
 
-  // TEST2: VFTable for 'B' in 'Test2::X' (1 entries).
+  // TEST2: VFTable for 'B' in 'Test2::X' (1 entry).
   // TEST2-NEXT: 0 | void B::g()
 
-  // TEST2: VFTable indices for 'Test2::X' (1 entries).
+  // TEST2: VFTable indices for 'Test2::X' (1 entry).
   // TEST2-NEXT: 0 | void Test2::X::h()
 
   // MANGLING-DAG: @"\01??_7X@Test2@@6B01@@"
@@ -148,12 +155,18 @@ struct X: virtual C {
 
   // TEST4: VFTable for 'A' in 'C' in 'Test4::X' (2 entries).
   // TEST4-NEXT: 0 | void C::f()
-  // TEST4-NEXT: [this adjustment: 12 non-virtual]
+  // TEST4-NEXT:     [this adjustment: 8 non-virtual]
   // TEST4-NEXT: 1 | void A::z()
+
+  // TEST4: Thunks for 'void C::f()' (1 entry).
+  // TEST4-NEXT: 0 | [this adjustment: 8 non-virtual]
 
   // TEST4-NOT: VFTable indices for 'Test4::X'
 
   // MANGLING-DAG: @"\01??_7X@Test4@@6B@"
+
+  // Also check the mangling of the thunk.
+  // MANGLING-DAG: define weak x86_thiscallcc void @"\01?f@C@@WPPPPPPPI@AEXXZ"
 };
 
 X x;
@@ -168,7 +181,7 @@ struct X : A {
 };
 
 struct Y : virtual X {
-  // TEST5: VFTable for 'Test5::Y' (1 entries).
+  // TEST5: VFTable for 'Test5::Y' (1 entry).
   // TEST5-NEXT: 0 | void Test5::Y::h()
 
   // TEST5: VFTable for 'A' in 'Test5::X' in 'Test5::Y' (3 entries).
@@ -176,7 +189,7 @@ struct Y : virtual X {
   // TEST5-NEXT: 1 | void A::z()
   // TEST5-NEXT: 2 | void Test5::X::g()
 
-  // TEST5: VFTable indices for 'Test5::Y' (1 entries).
+  // TEST5: VFTable indices for 'Test5::Y' (1 entry).
   // TEST5-NEXT: 0 | void Test5::Y::h()
 
   // MANGLING-DAG: @"\01??_7Y@Test5@@6B01@@"
@@ -212,11 +225,11 @@ struct X : C {
 struct Y : virtual X {
   // TEST7: VFTable for 'A' in 'C' in 'Test7::X' in 'Test7::Y' (2 entries).
   // TEST7-NEXT: 0 | void C::f()
-  // TEST7-NEXT:     [this adjustment: 12 non-virtual]
+  // TEST7-NEXT:     [this adjustment: 8 non-virtual]
   // TEST7-NEXT: 1 | void A::z()
 
   // TEST7: Thunks for 'void C::f()' (1 entry).
-  // TEST7-NEXT: 0 | this adjustment: 12 non-virtual
+  // TEST7-NEXT: 0 | [this adjustment: 8 non-virtual]
 
   // TEST7-NOT: VFTable indices for 'Test7::Y'
 
@@ -230,15 +243,16 @@ namespace Test8 {
 
 // This is a typical diamond inheritance with a shared 'A' vbase.
 struct X : D, C {
-  // TEST8: VFTable for 'D' in 'Test8::X' (1 entries).
-  // TEST8-NEXT: 0 | void D::h()
+  // TEST8-X: VFTable for 'D' in 'Test8::X' (1 entry).
+  // TEST8-X-NEXT: 0 | void D::h()
 
-  // TEST8: VFTable for 'A' in 'D' in 'Test8::X' (2 entries).
-  // TEST8-NEXT: 0 | void Test8::X::f()
-  // TEST8-NEXT: 1 | void A::z()
+  // TEST8-X: VFTable for 'A' in 'D' in 'Test8::X' (2 entries).
+  // TEST8-X-NEXT: 0 | void Test8::X::f()
+  // TEST8-X-NEXT: 1 | void A::z()
 
-  // TEST8: VFTable indices for 'Test8::X' (1 entries).
-  // TEST8-NEXT: via vbtable index 1, vfptr at offset 0
+  // TEST8-X: VFTable indices for 'Test8::X' (1 entry).
+  // TEST8-X-NEXT: via vbtable index 1, vfptr at offset 0
+  // TEST8-X-NEXT: 0 | void Test8::X::f()
 
   // MANGLING-DAG: @"\01??_7X@Test8@@6BA@@@"
   // MANGLING-DAG: @"\01??_7X@Test8@@6BD@@@"
@@ -247,6 +261,42 @@ struct X : D, C {
 };
 
 X x;
+
+// Another diamond inheritance which led to AST crashes.
+struct Y : virtual A {};
+
+struct Z : Y, C {
+  // TEST8-Z: VFTable for 'A' in 'Test8::Y' in 'Test8::Z' (2 entries).
+  // TEST8-Z-NEXT: 0 | void Test8::Z::f()
+  // TEST8-Z-NEXT: 1 | void A::z()
+
+  // TEST8-Z: VFTable indices for 'Test8::Z' (1 entry).
+  // TEST8-Z-NEXT: via vbtable index 1, vfptr at offset 0
+  // TEST8-Z-NEXT: 0 | void Test8::Z::f()
+  virtual void f();
+};
+Z z;
+
+// Another diamond inheritance which we miscompiled (PR18967).
+struct W : virtual A {
+  virtual void bar();
+};
+
+struct T : W, C {
+  // TEST8-T: VFTable for 'Test8::W' in 'Test8::T' (1 entry)
+  // TEST8-T-NEXT: 0 | void Test8::T::bar()
+
+  // TEST8-T: VFTable for 'A' in 'Test8::W' in 'Test8::T' (2 entries)
+  // TEST8-T-NEXT: 0 | void C::f()
+  // TEST8-T-NEXT:     [this adjustment: -4 non-virtual]
+  // TEST8-T-NEXT: 1 | void A::z()
+
+  // TEST8-T: Thunks for 'void C::f()' (1 entry).
+  // TEST8-T-NEXT: 0 | [this adjustment: -4 non-virtual]
+  virtual void bar();
+  int field;
+};
+T t;
 }
 
 namespace Test9 {
@@ -254,14 +304,14 @@ namespace Test9 {
 struct X : A { };
 
 struct Y : virtual X {
-  // TEST9-Y: VFTable for 'Test9::Y' (1 entries).
+  // TEST9-Y: VFTable for 'Test9::Y' (1 entry).
   // TEST9-Y-NEXT: 0 | void Test9::Y::h()
 
   // TEST9-Y: VFTable for 'A' in 'Test9::X' in 'Test9::Y' (2 entries).
   // TEST9-Y-NEXT: 0 | void A::f()
   // TEST9-Y-NEXT: 1 | void A::z()
 
-  // TEST9-Y: VFTable indices for 'Test9::Y' (1 entries).
+  // TEST9-Y: VFTable indices for 'Test9::Y' (1 entry).
   // TEST9-Y-NEXT: 0 | void Test9::Y::h()
 
   // MANGLING-DAG: @"\01??_7Y@Test9@@6B01@@"
@@ -273,14 +323,14 @@ struct Y : virtual X {
 Y y;
 
 struct Z : Y, virtual B {
-  // TEST9-Z: VFTable for 'Test9::Y' in 'Test9::Z' (1 entries).
+  // TEST9-Z: VFTable for 'Test9::Y' in 'Test9::Z' (1 entry).
   // TEST9-Z-NEXT: 0 | void Test9::Y::h()
 
   // TEST9-Z: VFTable for 'A' in 'Test9::X' in 'Test9::Y' in 'Test9::Z' (2 entries).
   // TEST9-Z-NEXT: 0 | void A::f()
   // TEST9-Z-NEXT: 1 | void A::z()
 
-  // TEST9-Z: VFTable for 'B' in 'Test9::Z' (1 entries).
+  // TEST9-Z: VFTable for 'B' in 'Test9::Z' (1 entry).
   // TEST9-Z-NEXT: 0 | void B::g()
 
   // TEST9-Z-NOT: VFTable indices for 'Test9::Z'
@@ -288,25 +338,23 @@ struct Z : Y, virtual B {
   // MANGLING-DAG: @"\01??_7Z@Test9@@6BX@1@@"
   // MANGLING-DAG: @"\01??_7Z@Test9@@6BY@1@@"
 
-  // FIXME this one is wrong:
-  // INCORRECT MANGLING-DAG: @"\01??_7Z@Test9@@6BB@@@"
-  // MANGLING-DAG-SHOULD-BE: @"\01??_7Z@Test9@@6B@"
+  // MANGLING-DAG: @"\01??_7Z@Test9@@6B@"
 };
 
 Z z;
 
 struct W : Z, D, virtual A, virtual B {
-  // TEST9-W: VFTable for 'Test9::Y' in 'Test9::Z' in 'Test9::W' (1 entries).
+  // TEST9-W: VFTable for 'Test9::Y' in 'Test9::Z' in 'Test9::W' (1 entry).
   // TEST9-W-NEXT: 0 | void Test9::Y::h()
 
   // TEST9-W: VFTable for 'A' in 'Test9::X' in 'Test9::Y' in 'Test9::Z' in 'Test9::W' (2 entries).
   // TEST9-W-NEXT: 0 | void A::f()
   // TEST9-W-NEXT: 1 | void A::z()
 
-  // TEST9-W: VFTable for 'B' in 'Test9::Z' in 'Test9::W' (1 entries).
+  // TEST9-W: VFTable for 'B' in 'Test9::Z' in 'Test9::W' (1 entry).
   // TEST9-W-NEXT: 0 | void B::g()
 
-  // TEST9-W: VFTable for 'D' in 'Test9::W' (1 entries).
+  // TEST9-W: VFTable for 'D' in 'Test9::W' (1 entry).
   // TEST9-W-NEXT: 0 | void D::h()
 
   // TEST9-W: VFTable for 'A' in 'D' in 'Test9::W' (2 entries).
@@ -315,7 +363,7 @@ struct W : Z, D, virtual A, virtual B {
   // TEST9-W-NEXT: 1 | void A::z()
 
   // TEST9-W: Thunks for 'void D::f()' (1 entry).
-  // TEST9-W-NEXT: 0 | this adjustment: -8 non-virtual
+  // TEST9-W-NEXT: 0 | [this adjustment: -8 non-virtual]
 
   // TEST9-W-NOT: VFTable indices for 'Test9::W'
 
@@ -323,46 +371,41 @@ struct W : Z, D, virtual A, virtual B {
   // MANGLING-DAG: @"\01??_7W@Test9@@6BD@@@"
   // MANGLING-DAG: @"\01??_7W@Test9@@6BX@1@@"
 
-  // FIXME: these two are wrong:
-  // INCORRECT MANGLING-DAG: @"\01??_7W@Test9@@6BB@@@"
-  // MANGLING-DAG-SHOULD-BE: @"\01??_7W@Test9@@6B@"
-  // INCORRECT MANGLING-DAG: @"\01??_7W@Test9@@6BY@1@Z@1@@"
-  // MANGLING-DAG-SHOULD-BE: @"\01??_7W@Test9@@6BY@1@@"
+  // MANGLING-DAG: @"\01??_7W@Test9@@6B@"
+  // MANGLING-DAG: @"\01??_7W@Test9@@6BY@1@@"
 };
 
 W w;
 
 struct T : Z, D, virtual A, virtual B {
-  ~T();  // Currently required to have correct record layout, see PR16406
-
-  // TEST9-T: VFTable for 'Test9::Y' in 'Test9::Z' in 'Test9::T' (1 entries).
+  // TEST9-T: VFTable for 'Test9::Y' in 'Test9::Z' in 'Test9::T' (1 entry).
   // TEST9-T-NEXT: 0 | void Test9::T::h()
 
   // TEST9-T: VFTable for 'A' in 'Test9::X' in 'Test9::Y' in 'Test9::Z' in 'Test9::T' (2 entries).
   // TEST9-T-NEXT: 0 | void Test9::T::f()
   // TEST9-T-NEXT: 1 | void Test9::T::z()
 
-  // TEST9-T: VFTable for 'B' in 'Test9::Z' in 'Test9::T' (1 entries).
+  // TEST9-T: VFTable for 'B' in 'Test9::Z' in 'Test9::T' (1 entry).
   // TEST9-T-NEXT: 0 | void Test9::T::g()
 
-  // TEST9-T: VFTable for 'D' in 'Test9::T' (1 entries).
+  // TEST9-T: VFTable for 'D' in 'Test9::T' (1 entry).
   // TEST9-T-NEXT: 0 | void Test9::T::h()
   // TEST9-T-NEXT:     [this adjustment: -8 non-virtual]
 
   // TEST9-T: Thunks for 'void Test9::T::h()' (1 entry).
-  // TEST9-T-NEXT: 0 | this adjustment: -8 non-virtual
+  // TEST9-T-NEXT: 0 | [this adjustment: -8 non-virtual]
 
   // TEST9-T: VFTable for 'A' in 'D' in 'Test9::T' (2 entries).
   // TEST9-T-NEXT: 0 | void Test9::T::f()
-  // TEST9-T-NEXT:     [this adjustment: -16 non-virtual]
+  // TEST9-T-NEXT:     [this adjustment: -8 non-virtual]
   // TEST9-T-NEXT: 1 | void Test9::T::z()
-  // TEST9-T-NEXT:     [this adjustment: -16 non-virtual]
+  // TEST9-T-NEXT:     [this adjustment: -8 non-virtual]
 
   // TEST9-T: Thunks for 'void Test9::T::f()' (1 entry).
-  // TEST9-T-NEXT: 0 | this adjustment: -16 non-virtual
+  // TEST9-T-NEXT: 0 | [this adjustment: -8 non-virtual]
 
   // TEST9-T: Thunks for 'void Test9::T::z()' (1 entry).
-  // TEST9-T-NEXT: 0 | this adjustment: -16 non-virtual
+  // TEST9-T-NEXT: 0 | [this adjustment: -8 non-virtual]
 
   // TEST9-T: VFTable indices for 'Test9::T' (4 entries).
   // TEST9-T-NEXT: via vfptr at offset 0
@@ -377,11 +420,8 @@ struct T : Z, D, virtual A, virtual B {
   // MANGLING-DAG: @"\01??_7T@Test9@@6BD@@@"
   // MANGLING-DAG: @"\01??_7T@Test9@@6BX@1@@"
 
-  // FIXME: these two are wrong:
-  // INCORRECT MANGLING-DAG: @"\01??_7T@Test9@@6BB@@@"
-  // MANGLING-DAG-SHOULD-BE: @"\01??_7T@Test9@@6B@"
-  // INCORRECT MANGLING-DAG: @"\01??_7T@Test9@@6BY@1@Z@1@@"
-  // MANGLING-DAG-SHOULD-BE: @"\01??_7T@Test9@@6BY@1@@"
+  // MANGLING-DAG: @"\01??_7T@Test9@@6B@"
+  // MANGLING-DAG: @"\01??_7T@Test9@@6BY@1@@"
 
   virtual void f();
   virtual void g();
@@ -398,7 +438,7 @@ struct X : virtual C, virtual A {
   // TEST10-NEXT: 0 | void Test10::X::f()
   // TEST10-NEXT: 1 | void A::z()
 
-  // TEST10: VFTable indices for 'Test10::X' (1 entries).
+  // TEST10: VFTable indices for 'Test10::X' (1 entry).
   // TEST10-NEXT: via vbtable index 1, vfptr at offset 0
   // TEST10-NEXT: 0 | void Test10::X::f()
   virtual void f();
@@ -406,6 +446,128 @@ struct X : virtual C, virtual A {
 
 void X::f() {}
 X x;
+}
+
+namespace Test11 {
+struct X : virtual A {};
+struct Y { virtual void g(); };
+
+struct Z : virtual X, Y {
+  // MANGLING-DAG: @"\01??_7Z@Test11@@6BY@1@@"
+  // MANGLING-DAG: @"\01??_7Z@Test11@@6BX@1@@"
+};
+
+Z z;
+
+struct W : virtual X, A {};
+
+// PR17748 FIXME this one hits UNREACHABLE:
+// W w;
+}
+
+namespace vdtors {
+struct X {
+  virtual ~X();
+  virtual void zzz();
+};
+
+struct Y : virtual X {
+  // VDTORS-Y: VFTable for 'vdtors::X' in 'vdtors::Y' (2 entries).
+  // VDTORS-Y-NEXT: 0 | vdtors::Y::~Y() [scalar deleting]
+  // VDTORS-Y-NEXT: 1 | void vdtors::X::zzz()
+
+  // VDTORS-Y-NOT: Thunks for 'vdtors::Y::~Y()'
+  virtual ~Y();
+};
+
+Y y;
+
+struct Z {
+  virtual void z();
+};
+
+struct W : Z, X {
+  // Implicit virtual dtor.
+};
+
+struct U : virtual W {
+  // VDTORS-U: VFTable for 'vdtors::Z' in 'vdtors::W' in 'vdtors::U' (1 entry).
+  // VDTORS-U-NEXT: 0 | void vdtors::Z::z()
+
+  // VDTORS-U: VFTable for 'vdtors::X' in 'vdtors::W' in 'vdtors::U' (2 entries).
+  // VDTORS-U-NEXT: 0 | vdtors::U::~U() [scalar deleting]
+  // VDTORS-U-NEXT:     [this adjustment: -4 non-virtual]
+  // VDTORS-U-NEXT: 1 | void vdtors::X::zzz()
+
+  // VDTORS-U: Thunks for 'vdtors::U::~U()' (1 entry).
+  // VDTORS-U-NEXT: 0 | [this adjustment: -4 non-virtual]
+
+  // VDTORS-U: VFTable indices for 'vdtors::U' (1 entry).
+  // VDTORS-U-NEXT: -- accessible via vbtable index 1, vfptr at offset 4 --
+  // VDTORS-U-NEXT: 0 | vdtors::U::~U() [scalar deleting]
+  virtual ~U();
+};
+
+U u;
+
+struct V : virtual W {
+  // VDTORS-V: VFTable for 'vdtors::Z' in 'vdtors::W' in 'vdtors::V' (1 entry).
+  // VDTORS-V-NEXT: 0 | void vdtors::Z::z()
+
+  // VDTORS-V: VFTable for 'vdtors::X' in 'vdtors::W' in 'vdtors::V' (2 entries).
+  // VDTORS-V-NEXT: 0 | vdtors::V::~V() [scalar deleting]
+  // VDTORS-V-NEXT:     [this adjustment: -4 non-virtual]
+  // VDTORS-V-NEXT: 1 | void vdtors::X::zzz()
+
+  // VDTORS-V: Thunks for 'vdtors::V::~V()' (1 entry).
+  // VDTORS-V-NEXT: 0 | [this adjustment: -4 non-virtual]
+
+  // VDTORS-V: VFTable indices for 'vdtors::V' (1 entry).
+  // VDTORS-V-NEXT: -- accessible via vbtable index 1, vfptr at offset 4 --
+  // VDTORS-V-NEXT: 0 | vdtors::V::~V() [scalar deleting]
+};
+
+V v;
+
+struct T : virtual X {
+  virtual ~T();
+};
+
+struct P : T, Y {
+  // VDTORS-P: VFTable for 'vdtors::X' in 'vdtors::T' in 'vdtors::P' (2 entries).
+  // VDTORS-P-NEXT: 0 | vdtors::P::~P() [scalar deleting]
+  // VDTORS-P-NEXT: 1 | void vdtors::X::zzz()
+
+  // VDTORS-P-NOT: Thunks for 'vdtors::P::~P()'
+  virtual ~P();
+};
+
+P p;
+
+struct Q {
+  virtual ~Q();
+};
+
+// PR19172: Yet another diamond we miscompiled.
+struct R : virtual Q, X {
+  // VDTORS-R: VFTable for 'vdtors::Q' in 'vdtors::R' (1 entry).
+  // VDTORS-R-NEXT: 0 | vdtors::R::~R() [scalar deleting]
+  // VDTORS-R-NEXT:     [this adjustment: -8 non-virtual]
+
+  // VDTORS-R: Thunks for 'vdtors::R::~R()' (1 entry).
+  // VDTORS-R-NEXT: 0 | [this adjustment: -8 non-virtual]
+
+  // VDTORS-R: VFTable for 'vdtors::X' in 'vdtors::R' (2 entries).
+  // VDTORS-R-NEXT: 0 | vdtors::R::~R() [scalar deleting]
+  // VDTORS-R-NEXT: 1 | void vdtors::X::zzz()
+
+  // VDTORS-R: VFTable indices for 'vdtors::R' (1 entry).
+  // VDTORS-R-NEXT: 0 | vdtors::R::~R() [scalar deleting]
+  virtual ~R();
+};
+
+R r;
+
 }
 
 namespace return_adjustment {
@@ -425,10 +587,13 @@ struct Z {
 struct W : Z {
   // RET-W: VFTable for 'return_adjustment::Z' in 'return_adjustment::W' (2 entries).
   // RET-W-NEXT: 0 | return_adjustment::X *return_adjustment::W::foo()
-  // RET-W-NEXT:     [return adjustment: vbase #1, 0 non-virtual]
+  // RET-W-NEXT:     [return adjustment (to type 'struct A *'): vbase #1, 0 non-virtual]
   // RET-W-NEXT: 1 | return_adjustment::X *return_adjustment::W::foo()
 
-  // RET-W: VFTable indices for 'return_adjustment::W' (1 entries).
+  // RET-W: Thunks for 'return_adjustment::X *return_adjustment::W::foo()' (1 entry).
+  // RET-W-NEXT: 0 | [return adjustment (to type 'struct A *'): vbase #1, 0 non-virtual]
+
+  // RET-W: VFTable indices for 'return_adjustment::W' (1 entry).
   // RET-W-NEXT: 1 | return_adjustment::X *return_adjustment::W::foo()
 
   virtual X* foo();
@@ -439,16 +604,61 @@ W y;
 struct T : W {
   // RET-T: VFTable for 'return_adjustment::Z' in 'return_adjustment::W' in 'return_adjustment::T' (3 entries).
   // RET-T-NEXT: 0 | return_adjustment::Y *return_adjustment::T::foo()
-  // RET-T-NEXT:     [return adjustment: vbase #1, 0 non-virtual]
+  // RET-T-NEXT:     [return adjustment (to type 'struct A *'): vbase #1, 0 non-virtual]
   // RET-T-NEXT: 1 | return_adjustment::Y *return_adjustment::T::foo()
-  // RET-T-NEXT:     [return adjustment: vbase #2, 0 non-virtual]
+  // RET-T-NEXT:     [return adjustment (to type 'struct return_adjustment::X *'): vbase #2, 0 non-virtual]
   // RET-T-NEXT: 2 | return_adjustment::Y *return_adjustment::T::foo()
 
-  // RET-T: VFTable indices for 'return_adjustment::T' (1 entries).
+  // RET-T: Thunks for 'return_adjustment::Y *return_adjustment::T::foo()' (2 entries).
+  // RET-T-NEXT: 0 | [return adjustment (to type 'struct A *'): vbase #1, 0 non-virtual]
+  // RET-T-NEXT: 1 | [return adjustment (to type 'struct return_adjustment::X *'): vbase #2, 0 non-virtual]
+
+  // RET-T: VFTable indices for 'return_adjustment::T' (1 entry).
   // RET-T-NEXT: 2 | return_adjustment::Y *return_adjustment::T::foo()
 
   virtual Y* foo();
 };
 
 T t;
+
+struct U : virtual A {
+  virtual void g();  // adds a vfptr
+};
+
+struct V : Z {
+  // RET-V: VFTable for 'return_adjustment::Z' in 'return_adjustment::V' (2 entries).
+  // RET-V-NEXT: 0 | return_adjustment::U *return_adjustment::V::foo()
+  // RET-V-NEXT:     [return adjustment (to type 'struct A *'): vbptr at offset 4, vbase #1, 0 non-virtual]
+  // RET-V-NEXT: 1 | return_adjustment::U *return_adjustment::V::foo()
+
+  // RET-V: Thunks for 'return_adjustment::U *return_adjustment::V::foo()' (1 entry).
+  // RET-V-NEXT: 0 | [return adjustment (to type 'struct A *'): vbptr at offset 4, vbase #1, 0 non-virtual]
+
+  // RET-V: VFTable indices for 'return_adjustment::V' (1 entry).
+  // RET-V-NEXT: 1 | return_adjustment::U *return_adjustment::V::foo()
+
+  virtual U* foo();
+};
+
+V v;
+}
+
+namespace pr17748 {
+struct A {
+  virtual void f() {}
+};
+
+struct B : virtual A {
+  B() {}
+};
+
+struct C : virtual B, A {
+  C() {}
+};
+C c;
+
+// MANGLING-DAG: @"\01??_7A@pr17748@@6B@"
+// MANGLING-DAG: @"\01??_7B@pr17748@@6B@"
+// MANGLING-DAG: @"\01??_7C@pr17748@@6BA@1@@"
+// MANGLING-DAG: @"\01??_7C@pr17748@@6BB@1@@"
 }

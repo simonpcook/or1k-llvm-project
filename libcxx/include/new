@@ -94,6 +94,7 @@ public:
 };
 
 #if defined(_LIBCPP_BUILDING_NEW) || (_LIBCPP_STD_VER > 11)
+
 class _LIBCPP_EXCEPTION_ABI bad_array_length
     : public bad_alloc
 {
@@ -102,7 +103,10 @@ public:
     virtual ~bad_array_length() _NOEXCEPT;
     virtual const char* what() const _NOEXCEPT;
 };
-#endif
+
+#define _LIBCPP_BAD_ARRAY_LENGTH_DEFINED
+
+#endif  // defined(_LIBCPP_BUILDING_NEW) || (_LIBCPP_STD_VER > 11)
 
 _LIBCPP_FUNC_VIS void __throw_bad_alloc();  // not in C++ spec
 
@@ -138,11 +142,9 @@ _LIBCPP_NEW_DELETE_VIS void* operator new[](std::size_t __sz, const std::nothrow
 _LIBCPP_NEW_DELETE_VIS void  operator delete[](void* __p) _NOEXCEPT;
 _LIBCPP_NEW_DELETE_VIS void  operator delete[](void* __p, const std::nothrow_t&) _NOEXCEPT;
 
-#undef _LIBCPP_NEW_DELETE_VIS
-
-_LIBCPP_INLINE_VISIBILITY inline void* operator new  (std::size_t, void* __p) _NOEXCEPT {return __p;}
-_LIBCPP_INLINE_VISIBILITY inline void* operator new[](std::size_t, void* __p) _NOEXCEPT {return __p;}
-_LIBCPP_INLINE_VISIBILITY inline void  operator delete  (void*, void*) _NOEXCEPT {}
-_LIBCPP_INLINE_VISIBILITY inline void  operator delete[](void*, void*) _NOEXCEPT {}
+inline _LIBCPP_INLINE_VISIBILITY void* operator new  (std::size_t, void* __p) _NOEXCEPT {return __p;}
+inline _LIBCPP_INLINE_VISIBILITY void* operator new[](std::size_t, void* __p) _NOEXCEPT {return __p;}
+inline _LIBCPP_INLINE_VISIBILITY void  operator delete  (void*, void*) _NOEXCEPT {}
+inline _LIBCPP_INLINE_VISIBILITY void  operator delete[](void*, void*) _NOEXCEPT {}
 
 #endif  // _LIBCPP_NEW

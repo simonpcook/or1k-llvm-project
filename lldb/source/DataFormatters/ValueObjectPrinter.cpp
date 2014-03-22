@@ -14,6 +14,7 @@
 // Other libraries and framework includes
 // Project includes
 #include "lldb/Core/Debugger.h"
+#include "lldb/DataFormatters/DataVisualization.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Target/Target.h"
 
@@ -22,48 +23,45 @@ using namespace lldb_private;
 
 ValueObjectPrinter::ValueObjectPrinter (ValueObject* valobj,
                                         Stream* s,
-                                        const DumpValueObjectOptions& options) :
-    m_orig_valobj(valobj),
-    m_valobj(nullptr),
-    m_stream(s),
-    options(options),
-    m_ptr_depth(options.m_max_ptr_depth),
-    m_curr_depth(0),
-    m_should_print(eLazyBoolCalculate),
-    m_is_nil(eLazyBoolCalculate),
-    m_is_ptr(eLazyBoolCalculate),
-    m_is_ref(eLazyBoolCalculate),
-    m_is_aggregate(eLazyBoolCalculate),
-    m_summary_formatter({nullptr,false}),
-    m_value(),
-    m_summary(),
-    m_error()
+                                        const DumpValueObjectOptions& options)
 {
-    assert (m_orig_valobj && "cannot print a NULL ValueObject");
-    assert (m_stream && "cannot print to a NULL Stream");
+    Init(valobj,s,options,options.m_max_ptr_depth,0);
 }
 
 ValueObjectPrinter::ValueObjectPrinter (ValueObject* valobj,
                                         Stream* s,
                                         const DumpValueObjectOptions& options,
                                         uint32_t ptr_depth,
-                                        uint32_t curr_depth) :
-    m_orig_valobj(valobj),
-    m_valobj(nullptr),
-    m_stream(s),
-    options(options),
-    m_ptr_depth(ptr_depth),
-    m_curr_depth(curr_depth),
-    m_should_print(eLazyBoolCalculate),
-    m_is_nil(eLazyBoolCalculate),
-    m_is_ptr(eLazyBoolCalculate),
-    m_is_ref(eLazyBoolCalculate),
-    m_is_aggregate(eLazyBoolCalculate),
-    m_summary_formatter({nullptr,false}),
-    m_value(),
-    m_summary(),
-    m_error()
-{ }
+                                        uint32_t curr_depth)
+{
+    Init(valobj,s,options,ptr_depth,curr_depth);
+}
+
+void
+ValueObjectPrinter::Init (ValueObject* valobj,
+                          Stream* s,
+                          const DumpValueObjectOptions& options,
+                          uint32_t ptr_depth,
+                          uint32_t curr_depth)
+{
+    m_orig_valobj = valobj;
+    m_valobj = nullptr;
+    m_stream = s;
+    this->options = options;
+    m_ptr_depth = ptr_depth;
+    m_curr_depth = curr_depth;
+    assert (m_orig_valobj && "cannot print a NULL ValueObject");
+    assert (m_stream && "cannot print to a NULL Stream");
+    m_should_print = eLazyBoolCalculate;
+    m_is_nil = eLazyBoolCalculate;
+    m_is_ptr = eLazyBoolCalculate;
+    m_is_ref = eLazyBoolCalculate;
+    m_is_aggregate = eLazyBoolCalculate;
+    m_summary_formatter = {nullptr,false};
+    m_value.assign("");
+    m_summary.assign("");
+    m_error.assign("");
+}
 
 bool
 ValueObjectPrinter::PrintValueObject ()
@@ -97,19 +95,42 @@ ValueObjectPrinter::PrintValueObject ()
 bool
 ValueObjectPrinter::GetDynamicValueIfNeeded ()
 {
+    if (m_valobj)
+        return true;
     bool update_success = m_orig_valobj->UpdateValueIfNeeded (true);
     if (!update_success)
-        return false;
-    if (options.m_use_dynamic != eNoDynamicValues)
     {
-        ValueObject *dynamic_value = m_orig_valobj->GetDynamicValue(options.m_use_dynamic).get();
-        if (dynamic_value)
-            m_valobj = dynamic_value;
-        else
-            m_valobj = m_orig_valobj;
+        m_valobj = m_orig_valobj;
     }
     else
-        m_valobj = m_orig_valobj;
+    {
+        if (m_orig_valobj->IsDynamic())
+        {
+            if (options.m_use_dynamic == eNoDynamicValues)
+            {
+                ValueObject *static_value = m_orig_valobj->GetStaticValue().get();
+                if (static_value)
+                    m_valobj = static_value;
+                else
+                    m_valobj = m_orig_valobj;
+            }
+            else
+                m_valobj = m_orig_valobj;
+        }
+        else
+        {
+            if (options.m_use_dynamic != eNoDynamicValues)
+            {
+                ValueObject *dynamic_value = m_orig_valobj->GetDynamicValue(options.m_use_dynamic).get();
+                if (dynamic_value)
+                    m_valobj = dynamic_value;
+                else
+                    m_valobj = m_orig_valobj;
+            }
+            else
+                m_valobj = m_orig_valobj;
+        }
+    }
     m_clang_type = m_valobj->GetClangType();
     m_type_flags = m_clang_type.GetTypeInfo ();
     return true;
@@ -382,7 +403,6 @@ ValueObjectPrinter::ShouldPrintChildren (bool is_failed_description,
         
         // Use a new temporary pointer depth in case we override the
         // current pointer depth below...
-        uint32_t curr_ptr_depth = m_ptr_depth;
         
         if (is_ptr || is_ref)
         {
@@ -392,7 +412,7 @@ ValueObjectPrinter::ShouldPrintChildren (bool is_failed_description,
             if (m_valobj->GetPointerValue (&ptr_address_type) == 0)
                 return false;
             
-            else if (is_ref && m_curr_depth == 0)
+            else if (is_ref && m_curr_depth == 0 && curr_ptr_depth == 0)
             {
                 // If this is the root object (depth is zero) that we are showing
                 // and it is a reference, and no pointer depth has been supplied
@@ -401,8 +421,7 @@ ValueObjectPrinter::ShouldPrintChildren (bool is_failed_description,
                 curr_ptr_depth = 1;
             }
             
-            if (curr_ptr_depth == 0)
-                return false;
+            return (curr_ptr_depth > 0);
         }
         
         TypeSummaryImpl* entry = GetSummaryFormatter();
@@ -448,7 +467,7 @@ ValueObjectPrinter::PrintChild (ValueObjectSP child_sp,
         ValueObjectPrinter child_printer(child_sp.get(),
                                          m_stream,
                                          child_options,
-                                         (IsPtr() || IsRef()) ? curr_ptr_depth - 1 : curr_ptr_depth,
+                                         (IsPtr() || IsRef()) && curr_ptr_depth >= 1 ? curr_ptr_depth - 1 : curr_ptr_depth,
                                          m_curr_depth + 1);
         child_printer.PrintValueObject();
     }
@@ -522,6 +541,55 @@ ValueObjectPrinter::PrintChildren (uint32_t curr_ptr_depth)
     }
 }
 
+bool
+ValueObjectPrinter::PrintChildrenOneLiner (bool hide_names)
+{
+    if (!GetDynamicValueIfNeeded () || m_valobj == nullptr)
+        return false;
+    
+    ValueObject* synth_m_valobj = GetValueObjectForChildrenGeneration();
+    
+    bool print_dotdotdot = false;
+    size_t num_children = GetMaxNumChildrenToPrint(print_dotdotdot);
+    
+    if (num_children)
+    {
+        m_stream->PutChar('(');
+        
+        for (uint32_t idx=0; idx<num_children; ++idx)
+        {
+            lldb::ValueObjectSP child_sp(synth_m_valobj->GetChildAtIndex(idx, true));
+            lldb::ValueObjectSP child_dyn_sp = child_sp.get() ? child_sp->GetDynamicValue(options.m_use_dynamic) : child_sp;
+            if (child_dyn_sp)
+                child_sp = child_dyn_sp;
+            if (child_sp)
+            {
+                if (idx)
+                    m_stream->PutCString(", ");
+                if (!hide_names)
+                {
+                    const char* name = child_sp.get()->GetName().AsCString();
+                    if (name && *name)
+                    {
+                        m_stream->PutCString(name);
+                        m_stream->PutCString(" = ");
+                    }
+                }
+                child_sp->DumpPrintableRepresentation(*m_stream,
+                                                      ValueObject::eValueObjectRepresentationStyleSummary,
+                                                      lldb::eFormatInvalid,
+                                                      ValueObject::ePrintableRepresentationSpecialCasesDisable);
+            }
+        }
+        
+        if (print_dotdotdot)
+            m_stream->PutCString(", ...)");
+        else
+            m_stream->PutChar(')');
+    }
+    return true;
+}
+
 void
 ValueObjectPrinter::PrintChildrenIfNeeded (bool value_printed,
                                            bool summary_printed)
@@ -532,10 +600,18 @@ ValueObjectPrinter::PrintChildrenIfNeeded (bool value_printed,
     
     uint32_t curr_ptr_depth = m_ptr_depth;
     bool print_children = ShouldPrintChildren (is_failed_description,curr_ptr_depth);
+    bool print_oneline = (curr_ptr_depth > 0 || options.m_show_types || options.m_be_raw) ? false : DataVisualization::ShouldPrintAsOneLiner(*m_valobj);
     
     if (print_children)
     {
-        PrintChildren (curr_ptr_depth);
+        if (print_oneline)
+        {
+            m_stream->PutChar(' ');
+            PrintChildrenOneLiner (false);
+            m_stream->EOL();
+        }
+        else
+            PrintChildren (curr_ptr_depth);
     }
     else if (m_curr_depth >= options.m_max_depth && IsAggregate() && ShouldPrintValueObject())
     {

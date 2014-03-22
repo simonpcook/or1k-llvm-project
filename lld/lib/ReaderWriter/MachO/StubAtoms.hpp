@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_MACHO_STUB_ATOM_H_
-#define LLD_READER_WRITER_MACHO_STUB_ATOM_H_
+#ifndef LLD_READER_WRITER_MACHO_STUB_ATOMS_H
+#define LLD_READER_WRITER_MACHO_STUB_ATOMS_H
 
 #include "llvm/ADT/ArrayRef.h"
 
@@ -31,9 +31,9 @@ namespace mach_o {
 //
 class StubBinderAtom : public SharedLibraryAtom {
 public:
-  StubBinderAtom(const File &f) : _file(f) { 
+  StubBinderAtom(const File &f) : _file(f) {
   }
-          
+
   virtual const File& file() const {
     return _file;
   }
@@ -45,7 +45,7 @@ public:
   virtual StringRef loadName() const {
     return StringRef("/usr/lib/libSystem.B.dylib");
   }
-  
+
   virtual bool canBeNullAtRuntime() const {
     return false;
   }
@@ -54,18 +54,18 @@ public:
     return Type::Unknown;
   }
 
-  virtual uint64_t size() const LLVM_OVERRIDE {
+  uint64_t size() const override {
     return 0;
   }
-  
+
 private:
   const File  &_file;
 };
 
 
 
-} // namespace mach_o 
-} // namespace lld 
+} // namespace mach_o
+} // namespace lld
 
 
-#endif // LLD_READER_WRITER_MACHO_STUB_ATOM_H_
+#endif // LLD_READER_WRITER_MACHO_STUB_ATOMS_H

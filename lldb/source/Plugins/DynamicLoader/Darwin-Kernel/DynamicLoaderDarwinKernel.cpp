@@ -19,6 +19,7 @@
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Core/State.h"
+#include "lldb/Core/StreamFile.h"
 #include "lldb/Host/Symbols.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/RegisterContext.h"
@@ -541,7 +542,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageAtFileAddress (Process *proce
     if (m_module_sp)
     {
         bool changed = false;
-        if (m_module_sp->SetLoadAddress (process->GetTarget(), 0, changed))
+        if (m_module_sp->SetLoadAddress (process->GetTarget(), 0, true, changed))
             m_load_process_stop_id = process->GetStopID();
     }
     return false;
@@ -717,7 +718,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::ReadMemoryModule (Process *process)
             {
                 if (m_uuid != exe_module->GetUUID())
                 {
-                    Stream *s = &process->GetTarget().GetDebugger().GetOutputStream();
+                    Stream *s = process->GetTarget().GetDebugger().GetOutputFile().get();
                     if (s)
                     {
                         s->Printf ("warning: Host-side kernel file has Mach-O UUID of %s but remote kernel has a UUID of %s -- a mismatched kernel file will result in a poor debugger experience.\n", 
@@ -765,7 +766,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
 
     if (IsKernel() && uuid_is_valid && m_memory_module_sp.get())
     {
-        Stream *s = &target.GetDebugger().GetOutputStream();
+        Stream *s = target.GetDebugger().GetOutputFile().get();
         if (s)
         {
             s->Printf ("Kernel UUID: %s\n", m_memory_module_sp->GetUUID().GetAsString().c_str());
@@ -809,7 +810,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
             // to be the bundle ID for this kext, e.g. "com.apple.filesystems.msdosfs", and ask the platform
             // to find it.
             PlatformSP platform_sp (target.GetPlatform());
-            if (platform_sp)
+            if (!m_module_sp && platform_sp)
             {
                 ConstString platform_name (platform_sp->GetPluginName());
                 static ConstString g_platform_name (PlatformDarwinKernel::GetPluginNameStatic());
@@ -834,7 +835,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
 
             if (IsKernel() && !m_module_sp)
             {
-                Stream *s = &target.GetDebugger().GetOutputStream();
+                Stream *s = target.GetDebugger().GetOutputFile().get();
                 if (s)
                 {
                     s->Printf ("WARNING: Unable to locate kernel binary on the debugger system.\n");
@@ -867,7 +868,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
     
     if (!m_module_sp && !IsKernel() && m_uuid.IsValid() && !m_name.empty())
     {
-        Stream *s = &target.GetDebugger().GetOutputStream();
+        Stream *s = target.GetDebugger().GetOutputFile().get();
         if (s)
         {
             s->Printf ("warning: Can't find binary/dSYM for %s (%s)\n", 
@@ -921,7 +922,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
                             const Section *memory_section = memory_section_list->FindSectionByName(ondisk_section_sp->GetName()).get();
                             if (memory_section)
                             {
-                                target.GetSectionLoadList().SetSectionLoadAddress (ondisk_section_sp, memory_section->GetFileAddress());
+                                target.SetSectionLoadAddress (ondisk_section_sp, memory_section->GetFileAddress());
                                 ++num_sections_loaded;
                             }
                         }
@@ -945,7 +946,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule (Process *p
     
     if (is_loaded && m_module_sp && IsKernel())
     {
-        Stream *s = &target.GetDebugger().GetOutputStream();
+        Stream *s = target.GetDebugger().GetOutputFile().get();
         if (s)
         {
             ObjectFile *kernel_object_file = m_module_sp->GetObjectFile();
@@ -1248,7 +1249,7 @@ DynamicLoaderDarwinKernel::ParseKextSummaries (const Address &kext_summary_addr,
     if (number_of_new_kexts_being_added == 0 && number_of_old_kexts_being_removed == 0)
         return true;
 
-    Stream *s = &m_process->GetTarget().GetDebugger().GetOutputStream();
+    Stream *s = m_process->GetTarget().GetDebugger().GetOutputFile().get();
     if (s && load_kexts)
     {
         if (number_of_new_kexts_being_added > 0 && number_of_old_kexts_being_removed > 0)
@@ -1335,7 +1336,7 @@ DynamicLoaderDarwinKernel::ParseKextSummaries (const Address &kext_summary_addr,
                     // the to_be_removed bool vector; leaving it in place once Cleared() is relatively harmless.
                 }
             }
-            m_process->GetTarget().ModulesDidUnload (unloaded_module_list);
+            m_process->GetTarget().ModulesDidUnload (unloaded_module_list, false);
         }
     }
 
@@ -1503,6 +1504,7 @@ DynamicLoaderDarwinKernel::SetNotificationBreakpointIfNeeded ()
 
         
         const bool internal_bp = true;
+        const bool hardware = false;
         const LazyBool skip_prologue = eLazyBoolNo;
         FileSpecList module_spec_list;
         module_spec_list.Append (m_kernel.GetModule()->GetFileSpec());
@@ -1511,7 +1513,8 @@ DynamicLoaderDarwinKernel::SetNotificationBreakpointIfNeeded ()
                                                                   "OSKextLoadedKextSummariesUpdated",
                                                                   eFunctionNameTypeFull,
                                                                   skip_prologue,
-                                                                  internal_bp).get();
+                                                                  internal_bp,
+                                                                  hardware).get();
 
         bp->SetCallback (DynamicLoaderDarwinKernel::BreakpointHitCallback, this, true);
         m_break_id = bp->GetID();

@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_ELF_PPC_TARGETINFO_H
-#define LLD_READER_WRITER_ELF_PPC_TARGETINFO_H
+#ifndef LLD_READER_WRITER_ELF_PPC_PPC_LINKING_CONTEXT_H
+#define LLD_READER_WRITER_ELF_PPC_PPC_LINKING_CONTEXT_H
 
 #include "PPCTargetHandler.h"
 
@@ -19,7 +19,8 @@
 
 namespace lld {
 namespace elf {
-class PPCLinkingContext LLVM_FINAL : public ELFLinkingContext {
+
+class PPCLinkingContext final : public ELFLinkingContext {
 public:
   PPCLinkingContext(llvm::Triple triple)
       : ELFLinkingContext(triple, std::unique_ptr<TargetHandlerBase>(
@@ -29,12 +30,9 @@ public:
 
   /// \brief PPC has no relative relocations defined
   virtual bool isRelativeReloc(const Reference &) const { return false; }
-
-  virtual ErrorOr<Reference::Kind> relocKindFromString(StringRef str) const;
-  virtual ErrorOr<std::string> stringFromRelocKind(Reference::Kind kind) const;
 };
 
 } // elf
 } // lld
 
-#endif // LLD_READER_WRITER_ELF_PPC_TARGETINFO_H
+#endif // LLD_READER_WRITER_ELF_PPC_PPC_LINKING_CONTEXT_H

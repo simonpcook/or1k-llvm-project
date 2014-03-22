@@ -17,8 +17,8 @@
 #ifndef LLD_DRIVER_DRIVER_H
 #define LLD_DRIVER_DRIVER_H
 
+#include "lld/Core/InputGraph.h"
 #include "lld/Core/LLVM.h"
-#include "lld/Driver/InputGraph.h"
 
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/raw_ostream.h"
@@ -38,7 +38,7 @@ class Driver {
 protected:
 
   /// Performs link using specified options
-  static bool link(const LinkingContext &context,
+  static bool link(LinkingContext &context,
                    raw_ostream &diagnostics = llvm::errs());
 
 private:
@@ -57,7 +57,6 @@ private:
   UniversalDriver() LLVM_DELETED_FUNCTION;
 };
 
-
 /// Driver for gnu/binutil 'ld' command line options.
 class GnuLdDriver : public Driver {
 public:
@@ -74,10 +73,15 @@ public:
 
 private:
   static llvm::Triple getDefaultTarget(const char *progName);
+  static bool applyEmulation(llvm::Triple &triple,
+                             llvm::opt::InputArgList &args,
+                             raw_ostream &diagnostics);
+  static void addPlatformSearchDirs(ELFLinkingContext &ctx,
+                                    llvm::Triple &triple,
+                                    llvm::Triple &baseTriple);
 
   GnuLdDriver() LLVM_DELETED_FUNCTION;
 };
-
 
 /// Driver for darwin/ld64 'ld' command line options.
 class DarwinLdDriver : public Driver {
@@ -96,7 +100,6 @@ private:
   DarwinLdDriver() LLVM_DELETED_FUNCTION;
 };
 
-
 /// Driver for Windows 'link.exe' command line options
 class WinLinkDriver : public Driver {
 public:
@@ -112,9 +115,11 @@ public:
                     bool isDirective = false);
 
 private:
+  static bool doParse(int argc, const char *argv[], PECOFFLinkingContext &info,
+                      raw_ostream &diagnostics, bool isDirective);
+
   WinLinkDriver() LLVM_DELETED_FUNCTION;
 };
-
 
 /// Driver for lld unit tests
 class CoreDriver : public Driver {

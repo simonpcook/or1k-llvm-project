@@ -61,11 +61,16 @@ public:
 
   __isl_give isl_ast_node *getAst();
 
+  /// @brief Get the run-time conditions for the Scop.
+  __isl_give isl_ast_expr *getRunCondition();
+
 private:
   Scop *S;
   isl_ast_node *Root;
+  isl_ast_expr *RunCondition;
 
   __isl_give isl_union_map *getSchedule();
+  void buildRunCondition(__isl_keep isl_ast_build *Context);
 };
 } // End namespace polly.
 
@@ -152,6 +157,10 @@ static bool astScheduleDimIsParallel(__isl_keep isl_ast_build *Build,
   isl_space *ScheduleSpace;
   unsigned Dimension, IsParallel;
 
+  if (!D->hasValidDependences()) {
+    return false;
+  }
+
   Schedule = isl_ast_build_get_schedule(Build);
   ScheduleSpace = isl_ast_build_get_schedule_space(Build);
 
@@ -164,7 +173,7 @@ static bool astScheduleDimIsParallel(__isl_keep isl_ast_build *Build,
   if (isl_union_map_is_empty(Deps)) {
     isl_union_map_free(Deps);
     isl_space_free(ScheduleSpace);
-    return 1;
+    return true;
   }
 
   ScheduleDeps = isl_map_from_union_map(Deps);
@@ -312,6 +321,35 @@ static __isl_give isl_ast_node *AtEachDomain(__isl_take isl_ast_node *Node,
   return isl_ast_node_set_annotation(Node, Id);
 }
 
+void IslAst::buildRunCondition(__isl_keep isl_ast_build *Context) {
+  // The conditions that need to be checked at run-time for this scop are
+  // available as an isl_set in the AssumedContext. We generate code for this
+  // check as follows. First, we generate an isl_pw_aff that is 1, if a certain
+  // combination of parameter values fulfills the conditions in the assumed
+  // context, and that is 0 otherwise. We then translate this isl_pw_aff into
+  // an isl_ast_expr. At run-time this expression can be evaluated and the
+  // optimized scop can be executed conditionally according to the result of the
+  // run-time check.
+
+  isl_aff *Zero =
+      isl_aff_zero_on_domain(isl_local_space_from_space(S->getParamSpace()));
+  isl_aff *One =
+      isl_aff_zero_on_domain(isl_local_space_from_space(S->getParamSpace()));
+
+  One = isl_aff_add_constant_si(One, 1);
+
+  isl_pw_aff *PwZero = isl_pw_aff_from_aff(Zero);
+  isl_pw_aff *PwOne = isl_pw_aff_from_aff(One);
+
+  PwOne = isl_pw_aff_intersect_domain(PwOne, S->getAssumedContext());
+  PwZero = isl_pw_aff_intersect_domain(
+      PwZero, isl_set_complement(S->getAssumedContext()));
+
+  isl_pw_aff *Cond = isl_pw_aff_union_max(PwZero, PwOne);
+
+  RunCondition = isl_ast_build_expr_from_pw_aff(Context, Cond);
+}
+
 IslAst::IslAst(Scop *Scop, Dependences &D) : S(Scop) {
   isl_ctx *Ctx = S->getIslCtx();
   isl_options_set_ast_build_atomic_upper_bound(Ctx, true);
@@ -345,6 +383,8 @@ IslAst::IslAst(Scop *Scop, Dependences &D) : S(Scop) {
                                                &BuildInfo);
   }
 
+  buildRunCondition(Context);
+
   Root = isl_ast_build_ast_from_schedule(Context, Schedule);
 
   isl_ast_build_free(Context);
@@ -367,7 +407,10 @@ __isl_give isl_union_map *IslAst::getSchedule() {
   return Schedule;
 }
 
-IslAst::~IslAst() { isl_ast_node_free(Root); }
+IslAst::~IslAst() {
+  isl_ast_node_free(Root);
+  isl_ast_expr_free(RunCondition);
+}
 
 /// Print a C like representation of the program.
 void IslAst::pprint(llvm::raw_ostream &OS) {
@@ -379,16 +422,28 @@ void IslAst::pprint(llvm::raw_ostream &OS) {
 
   isl_printer *P = isl_printer_to_str(S->getIslCtx());
   P = isl_printer_set_output_format(P, ISL_FORMAT_C);
+
+  P = isl_printer_print_ast_expr(P, RunCondition);
+  char *result = isl_printer_get_str(P);
+  P = isl_printer_flush(P);
+
+  OS << "\nif (" << result << ")\n\n";
+  P = isl_printer_indent(P, 4);
+
   Root = getAst();
   P = isl_ast_node_print(Root, P, Options);
-  char *result = isl_printer_get_str(P);
+  result = isl_printer_get_str(P);
   OS << result << "\n";
+  OS << "else\n";
+  OS << "    {  /* original code */ }\n\n";
   isl_printer_free(P);
   isl_ast_node_free(Root);
 }
 
-/// Create the isl_ast from this program.
 __isl_give isl_ast_node *IslAst::getAst() { return isl_ast_node_copy(Root); }
+__isl_give isl_ast_expr *IslAst::getRunCondition() {
+  return isl_ast_expr_copy(RunCondition);
+}
 
 void IslAstInfo::pprint(llvm::raw_ostream &OS) { Ast->pprint(OS); }
 
@@ -413,6 +468,9 @@ bool IslAstInfo::runOnScop(Scop &Scop) {
 }
 
 __isl_give isl_ast_node *IslAstInfo::getAst() { return Ast->getAst(); }
+__isl_give isl_ast_expr *IslAstInfo::getRunCondition() {
+  return Ast->getRunCondition();
+}
 
 void IslAstInfo::printScop(raw_ostream &OS) const {
   Function *F = S->getRegion().getEntry()->getParent();

@@ -204,7 +204,7 @@ __lldb_apple_objc_v2_get_shared_cache_class_info (void *objc_opt_ro_ptr,
     uint32_t idx = 0;
     DEBUG_PRINTF ("objc_opt_ro_ptr = %p\n", objc_opt_ro_ptr);
     DEBUG_PRINTF ("class_infos_ptr = %p\n", class_infos_ptr);
-    DEBUG_PRINTF ("class_infos_byte_size = %u (%zu class infos)\n", class_infos_byte_size, (size_t)(class_infos_byte_size/sizeof(ClassInfo)));
+    DEBUG_PRINTF ("class_infos_byte_size = %u (%" PRIu64 " class infos)\n", class_infos_byte_size, (size_t)(class_infos_byte_size/sizeof(ClassInfo)));
     if (objc_opt_ro_ptr)
     {
         const objc_opt_t *objc_opt = (objc_opt_t *)objc_opt_ro_ptr;
@@ -392,6 +392,17 @@ AppleObjCRuntimeV2::GetDynamicTypeAndAddress (ValueObject &in_value,
                 {
                     objc_class_sp->SetType (type_sp);
                     class_type_or_name.SetTypeSP (type_sp);
+                }
+                else
+                {
+                    // try to go for a ClangASTType at least
+                    TypeVendor* vendor = GetTypeVendor();
+                    if (vendor)
+                    {
+                        std::vector<ClangASTType> types;
+                        if (vendor->FindTypes(class_name, false, 1, types) && types.size() && types.at(0).IsValid())
+                            class_type_or_name.SetClangASTType(types.at(0));
+                    }
                 }
             }
         }
@@ -1818,10 +1829,12 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapDynamic(RemoteNXMapTable &hash_table
                                                            arguments,
                                                            errors))
     {
-        bool stop_others = true;
-        bool try_all_threads = false;
-        bool unwind_on_error = true;
-        bool ignore_breakpoints = true;
+        EvaluateExpressionOptions options;
+        options.SetUnwindOnError(true);
+        options.SetTryAllThreads(false);
+        options.SetStopOthers(true);
+        options.SetIgnoreBreakpoints(true);
+        options.SetTimeoutUsec(UTILITY_FUNCTION_TIMEOUT_USEC);
         
         Value return_value;
         return_value.SetValueType (Value::eValueTypeScalar);
@@ -1834,12 +1847,8 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapDynamic(RemoteNXMapTable &hash_table
         // Run the function
         ExecutionResults results = m_get_class_info_function->ExecuteFunction (exe_ctx,
                                                                                &m_get_class_info_args,
+                                                                               options,
                                                                                errors,
-                                                                               stop_others,
-                                                                               UTILITY_FUNCTION_TIMEOUT_USEC,
-                                                                               try_all_threads,
-                                                                               unwind_on_error,
-                                                                               ignore_breakpoints,
                                                                                return_value);
         
         if (results == eExecutionCompleted)
@@ -2069,10 +2078,12 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapSharedCache()
                                                                         arguments,
                                                                         errors))
     {
-        bool stop_others = true;
-        bool try_all_threads = false;
-        bool unwind_on_error = true;
-        bool ignore_breakpoints = true;
+        EvaluateExpressionOptions options;
+        options.SetUnwindOnError(true);
+        options.SetTryAllThreads(false);
+        options.SetStopOthers(true);
+        options.SetIgnoreBreakpoints(true);
+        options.SetTimeoutUsec(UTILITY_FUNCTION_TIMEOUT_USEC);
         
         Value return_value;
         return_value.SetValueType (Value::eValueTypeScalar);
@@ -2085,12 +2096,8 @@ AppleObjCRuntimeV2::UpdateISAToDescriptorMapSharedCache()
         // Run the function
         ExecutionResults results = m_get_shared_cache_class_info_function->ExecuteFunction (exe_ctx,
                                                                                             &m_get_shared_cache_class_info_args,
+                                                                                            options,
                                                                                             errors,
-                                                                                            stop_others,
-                                                                                            UTILITY_FUNCTION_TIMEOUT_USEC,
-                                                                                            try_all_threads,
-                                                                                            unwind_on_error,
-                                                                                            ignore_breakpoints,
                                                                                             return_value);
         
         if (results == eExecutionCompleted)

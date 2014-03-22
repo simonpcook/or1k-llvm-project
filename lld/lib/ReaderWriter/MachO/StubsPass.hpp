@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_MACHO_STUBS_PASS_H_
-#define LLD_READER_WRITER_MACHO_STUBS_PASS_H_
+#ifndef LLD_READER_WRITER_MACHO_STUBS_PASS_H
+#define LLD_READER_WRITER_MACHO_STUBS_PASS_H
 
 #include "llvm/ADT/DenseMap.h"
 
@@ -41,8 +41,8 @@ public:
     return true;
   }
 
-  virtual bool isCallSite(int32_t kind) {
-    return _kindHandler.isCallSite(kind);
+  virtual bool isCallSite(const Reference &ref) {
+    return _kindHandler.isCallSite(ref);
   }
 
   virtual const DefinedAtom* getStub(const Atom& target) {
@@ -123,7 +123,7 @@ public:
 
   virtual void addStubAtoms(MutableFile &mergedFile) {
     // Exit early if no stubs needed.
-    if ( _targetToStub.size() == 0 )
+    if (_targetToStub.empty())
       return;
     // Add all stubs to master file.
     for (auto it : _targetToStub) {
@@ -149,11 +149,10 @@ private:
 
   class File : public SimpleFile {
   public:
-    File(const MachOLinkingContext &context)
-        : SimpleFile(context, "MachO Stubs pass") {}
+    File(const MachOLinkingContext &context) : SimpleFile("MachO Stubs pass") {}
   };
 
-  const MachOLinkingContext                       &_context;
+  const MachOLinkingContext &_context;
   mach_o::KindHandler                            &_kindHandler;
   File                                            _file;
   llvm::DenseMap<const Atom*, const DefinedAtom*> _targetToStub;
@@ -170,4 +169,4 @@ private:
 } // namespace lld
 
 
-#endif // LLD_READER_WRITER_MACHO_STUBS_PASS_H_
+#endif // LLD_READER_WRITER_MACHO_STUBS_PASS_H

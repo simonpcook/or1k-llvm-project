@@ -10,7 +10,7 @@ import lldbutil
 
 class BreakpointAfterJoinTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "thread", "break_after_join")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @expectedFailureDarwin("llvm.org/pr15824") # thread states not properly maintained
@@ -21,8 +21,7 @@ class BreakpointAfterJoinTestCase(TestBase):
         self.breakpoint_after_join_test()
 
     @expectedFailureDarwin("llvm.org/pr15824") # thread states not properly maintained
-    @expectedFailureFreeBSD("llvm.org/pr16696") # threaded inferior not yet implemented on FreeBSD
-    @skipIfLinux # llvm.org/pr16170 -- this test causes LLDB to hang in waitpid() and the inferior is left in the Sleeping (S) state
+    @expectedFailureFreeBSD("llvm.org/pr18190") # thread states not properly maintained
     @dwarf_test
     def test_with_dwarf(self):
         """Test breakpoint handling after a thread join."""

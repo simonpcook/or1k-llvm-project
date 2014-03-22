@@ -17,6 +17,8 @@
 
 #include "lldb/Core/ConstString.h"
 #include "lldb/DataFormatters/FormatClasses.h"
+#include "lldb/DataFormatters/TypeSynthetic.h"
+#include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Target.h"
 
 #include "clang/AST/ASTContext.h"
@@ -77,6 +79,9 @@ namespace lldb_private {
 
         bool
         LibcxxWStringSummaryProvider (ValueObject& valobj, Stream& stream); // libc++ std::wstring
+
+        bool
+        LibcxxSmartPointerSummaryProvider (ValueObject& valobj, Stream& stream); // libc++ std::shared_ptr<> and std::weak_ptr<>
         
         bool
         ObjCClassSummaryProvider (ValueObject& valobj, Stream& stream);
@@ -592,10 +597,11 @@ namespace lldb_private {
             virtual
             ~LibcxxVectorBoolSyntheticFrontEnd ();
         private:
+            ClangASTType m_bool_type;
             ExecutionContextRef m_exe_ctx_ref;
             uint64_t m_count;
             lldb::addr_t m_base_data_address;
-            EvaluateExpressionOptions m_options;
+            std::map<size_t,lldb::ValueObjectSP> m_children;
         };
         
         SyntheticChildrenFrontEnd* LibcxxVectorBoolSyntheticFrontEndCreator (CXXSyntheticChildren*, lldb::ValueObjectSP);

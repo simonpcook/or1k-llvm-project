@@ -216,9 +216,9 @@ struct S7 {
 };
 
 // PR5139
-// CHECK: @_ZN2S7C1Ev
 // CHECK: @_ZN2S7C2Ev
 // CHECK: @_ZN2S7Ut_C1Ev
+// CHECK: @_ZN2S7C1Ev
 S7::S7() {}
 
 // PR5063
@@ -932,4 +932,22 @@ namespace test42 {
   };
 
   void g() { func(foo<20, X>()); }
+}
+
+namespace test43 {
+  // CHECK-LABEL: define void @_ZN6test431gEPNS_3zedIXadL_ZNS_3fooUt_3barEEEEE
+  struct foo { union { int bar; }; };
+  template <int (foo::*)>
+  struct zed {};
+  void g(zed<&foo::bar>*)
+  {}
+}
+
+namespace test44 {
+  struct foo { void bar() __restrict { }; } obj;
+
+  void f() {
+    obj.bar();
+  }
+  // CHECK-LABEL: define linkonce_odr void @_ZN6test443foo3barEv(%"struct.test44::foo"* %this)
 }

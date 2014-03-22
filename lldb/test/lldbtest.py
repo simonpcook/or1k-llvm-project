@@ -679,6 +679,34 @@ def expectedFailureDarwin(bugnumber=None):
               return wrapper
         return expectedFailureDarwin_impl
 
+def skipIfRemote(func):
+    """Decorate the item to skip tests if testing remotely."""
+    if isinstance(func, type) and issubclass(func, unittest2.TestCase):
+        raise Exception("@skipIfRemote can only be used to decorate a test method")
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from unittest2 import case
+        if lldb.remote_platform:
+            self = args[0]
+            self.skipTest("skip on remote platform")
+        else:
+            func(*args, **kwargs)
+    return wrapper
+
+def skipIfRemoteDueToDeadlock(func):
+    """Decorate the item to skip tests if testing remotely due to the test deadlocking."""
+    if isinstance(func, type) and issubclass(func, unittest2.TestCase):
+        raise Exception("@skipIfRemote can only be used to decorate a test method")
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        from unittest2 import case
+        if lldb.remote_platform:
+            self = args[0]
+            self.skipTest("skip on remote platform (deadlocks)")
+        else:
+            func(*args, **kwargs)
+    return wrapper
+
 def skipIfFreeBSD(func):
     """Decorate the item to skip tests that should be skipped on FreeBSD."""
     if isinstance(func, type) and issubclass(func, unittest2.TestCase):
@@ -801,11 +829,19 @@ class Base(unittest2.TestCase):
 
     # Keep track of the old current working directory.
     oldcwd = None
-
+    
+    @staticmethod
+    def compute_mydir(test_file):
+        '''Subclasses should call this function to correctly calculate the required "mydir" attribute as follows: 
+            
+            mydir = TestBase.compute_mydir(__file__)'''
+        test_dir = os.path.dirname(test_file)
+        return test_dir[len(os.environ["LLDB_TEST"])+1:]
+    
     def TraceOn(self):
         """Returns True if we are in trace mode (tracing detailed test execution)."""
         return traceAlways
-
+    
     @classmethod
     def setUpClass(cls):
         """
@@ -1475,7 +1511,7 @@ class Base(unittest2.TestCase):
                 cflags += "c++0x"
             else:
                 cflags += "c++11"
-        if sys.platform.startswith("darwin"):
+        if sys.platform.startswith("darwin") or sys.platform.startswith("freebsd"):
             cflags += " -stdlib=libc++"
         elif "clang" in self.getCompiler():
             cflags += " -stdlib=libstdc++"
@@ -1656,7 +1692,7 @@ class TestBase(Base):
                 self.runCmd("file %s" % arg)
                 target = self.dbg.GetSelectedTarget()
                 #
-                # SBTarget.LaunchSimple() currently not working for remote platform?
+                # SBtarget.LaunchSimple () currently not working for remote platform?
                 # johnny @ 04/23/2012
                 #
                 def DecoratedLaunchSimple(argv, envp, wd):
@@ -1684,6 +1720,18 @@ class TestBase(Base):
         if lldb.pre_flight:
             lldb.pre_flight(self)
 
+        if lldb.remote_platform:
+            #remote_test_dir = os.path.join(lldb.remote_platform_working_dir, self.mydir)
+            remote_test_dir = os.path.join(lldb.remote_platform_working_dir, 
+                                           self.getArchitecture(), 
+                                           str(self.test_number), 
+                                           self.mydir)
+            error = lldb.remote_platform.MakeDirectory(remote_test_dir, 0700)
+            if error.Success():
+                lldb.remote_platform.SetWorkingDirectory(remote_test_dir)
+            else:
+                print "error: making remote directory '%s': %s" % (remote_test_dir, error)
+    
     # utility methods that tests can use to access the current objects
     def target(self):
         if not self.dbg:
@@ -1705,6 +1753,15 @@ class TestBase(Base):
             raise Exception('Invalid debugger instance')
         return self.dbg.GetSelectedTarget().GetProcess().GetSelectedThread().GetSelectedFrame()
 
+    def get_process_working_directory(self):
+        '''Get the working directory that should be used when launching processes for local or remote processes.'''
+        if lldb.remote_platform:
+            # Remote tests set the platform working directory up in TestBase.setUp()
+            return lldb.remote_platform.GetWorkingDirectory()
+        else:
+            # local tests change directory into each test subdirectory
+            return os.getcwd() 
+    
     def tearDown(self):
         #import traceback
         #traceback.print_stack()

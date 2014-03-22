@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_READER_WRITER_MACHO_EXECUTABLE_ATOM_H_
-#define LLD_READER_WRITER_MACHO_EXECUTABLE_ATOM_H_
+#ifndef LLD_READER_WRITER_MACHO_EXECUTABLE_ATOMS_H
+#define LLD_READER_WRITER_MACHO_EXECUTABLE_ATOMS_H
 
 #include "llvm/Support/MachO.h"
 
@@ -29,9 +29,8 @@ namespace mach_o {
 //
 class CRuntimeFile : public SimpleFile {
 public:
-    CRuntimeFile(const MachOLinkingContext &context)
-      : SimpleFile(context, "C runtime"),
-        _undefMain(*this, context.entrySymbolName()) {
+  CRuntimeFile(const MachOLinkingContext &context)
+      : SimpleFile("C runtime"), _undefMain(*this, context.entrySymbolName()) {
       // only main executables need _main
       if (context.outputFileType() == llvm::MachO::MH_EXECUTE) {
         this->addAtom(_undefMain);
@@ -45,4 +44,4 @@ private:
 } // namespace mach_o
 } // namespace lld
 
-#endif // LLD_READER_WRITER_MACHO_EXECUTABLE_ATOM_H_
+#endif // LLD_READER_WRITER_MACHO_EXECUTABLE_ATOMS_H

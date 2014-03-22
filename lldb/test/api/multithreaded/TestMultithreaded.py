@@ -8,7 +8,7 @@ import subprocess
 
 class SBBreakpointCallbackCase(TestBase):
 
-    mydir = os.path.join("api", "multithreaded")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         TestBase.setUp(self)
@@ -19,7 +19,6 @@ class SBBreakpointCallbackCase(TestBase):
           self.addTearDownHook(lambda: os.remove(self.inferior))
 
     @unittest2.expectedFailure # llvm.org/pr16000: SBBreakpoint.SetCallback() does nothing
-    @skipIfFreeBSD # llvm.org/pr16696 - also build issues with libstdc++ on FreeBSD < 10.0
     @skipIfi386
     @skipIfLinuxClang # buildbot clang version unable to use libstdc++ with c++11
     def test_breakpoint_callback(self):
@@ -27,7 +26,6 @@ class SBBreakpointCallbackCase(TestBase):
         self.build_and_test('driver.cpp test_breakpoint_callback.cpp',
                             'test_breakpoint_callback')
 
-    @skipIfFreeBSD # llvm.org/pr16696
     @skipIfi386
     @skipIfLinuxClang # buildbot clang version unable to use libstdc++ with c++11
     def test_sb_api_listener_event_description(self):
@@ -36,7 +34,6 @@ class SBBreakpointCallbackCase(TestBase):
                             'test_listener_event_description')
         pass
 
-    @skipIfFreeBSD # llvm.org/pr16696
     @skipIfi386
     @skipIfLinuxClang # buildbot clang version unable to use libstdc++ with c++11
     def test_sb_api_listener_event_process_state(self):
@@ -48,10 +45,8 @@ class SBBreakpointCallbackCase(TestBase):
         pass
 
 
-    @skipIfFreeBSD # llvm.org/pr16696
     @skipIfi386
     @skipIfLinuxClang # buildbot clang version unable to use libstdc++ with c++11
-    @skipIfLinux # llvm.org/pr16016 assertion failure in ProcessPOSIX.cpp.
     def test_sb_api_listener_resume(self):
         """ Test that a process can be resumed from a non-main thread. """
         self.build_and_test('driver.cpp listener_test.cpp test_listener_resume.cpp',

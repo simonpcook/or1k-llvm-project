@@ -126,6 +126,16 @@
                         </td>
                     </tr>
 
+                    <tr><td class="header" colspan="2">Unset environment variables for process before launching.</td></tr>
+                        <td class="content">
+                            <b>(gdb)</b> unset env DEBUG<br>
+                        </td>
+                        <td class="content">
+                            <b>(lldb)</b> settings remove target.env-vars DEBUG<br>
+                            <b>(lldb)</b> set rem target.env-vars DEBUG<br>
+                        </td>
+                    </tr>
+
                     <tr><td class="header" colspan="2">Show the arguments that will be or were passed to the program when run.</td></tr>
                         <td class="content">
                             <b>(gdb)</b> show args<br>
@@ -406,6 +416,18 @@
                         <td class="content">
                             <b>(lldb)</b> breakpoint set --source-pattern regular-expression --file SourceFile<br>
                             <b>(lldb)</b> br s -p regular-expression -f file<br>
+                        </td>
+                    </tr>
+
+                    <tr><td class="header" colspan="2">Set a conditional breakpoint</td></tr>
+
+                    <tr>
+                        <td class="content">
+                            <b>(gdb)</b> break foo if strcmp(y,&quot;hello&quot;) == 0<br>
+                        </td>
+                        <td class="content">
+                            <b>(lldb)</b> breakpoint set --name foo --condition '(int)strcmp(y,&quot;hello&quot;) == 0'<br>
+                            <b>(lldb)</b> br s -n foo -c '(int)strcmp(y,&quot;hello&quot;) == 0'<br>
                         </td>
                     </tr>
 
@@ -964,8 +986,8 @@
                             <b>(gdb)</b> dump memory /tmp/mem.bin 0x1000 0x2000
                         </td>
                         <td class="content">
-                            <b>(lldb)</b> memory read --outfile /tmp/mem.bin --binary  0x1000 0x1200<br>
-                            <b>(lldb)</b> me r -o /tmp/mem.bin -b 0x1000 0x1200<br>
+                            <b>(lldb)</b> memory read --outfile /tmp/mem.bin --binary  0x1000 0x2000<br>
+                            <b>(lldb)</b> me r -o /tmp/mem.bin -b 0x1000 0x2000<br>
                         </td>
                     </tr>
                     <tr><td class="header" colspan="2">Get information about a specific heap allocation (available on Mac OS X only).</td></tr>

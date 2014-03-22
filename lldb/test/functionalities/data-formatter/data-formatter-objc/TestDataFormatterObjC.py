@@ -12,7 +12,7 @@ import lldbutil
 
 class ObjCDataFormatterTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "data-formatter", "data-formatter-objc")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
@@ -297,7 +297,7 @@ class ObjCDataFormatterTestCase(TestBase):
         self.runCmd("type summary add --summary-string \"a test\" MyClass")
         
         self.expect("frame variable *object2",
-                    substrs = ['*object2 = {',
+                    substrs = ['*object2 =',
                                'MyClass = a test',
                                'backup = ']);
         
@@ -370,7 +370,7 @@ class ObjCDataFormatterTestCase(TestBase):
     def nsstring_data_formatter_commands(self):
         self.expect('frame variable str0 str1 str2 str3 str4 str5 str6 str8 str9 str10 str11 label1 label2 processName str12',
                     substrs = ['(NSString *) str1 = ',' @"A rather short ASCII NSString object is here"',
-                    '(NSString *) str0 = ',' @"255"',
+                    # '(NSString *) str0 = ',' @"255"',
                     '(NSString *) str1 = ',' @"A rather short ASCII NSString object is here"',
                     '(NSString *) str2 = ',' @"A rather short UTF8 NSString object is here"',
                     '(NSString *) str3 = ',' @"A string made with the at sign is here"',
@@ -460,8 +460,9 @@ class ObjCDataFormatterTestCase(TestBase):
         self.expect('frame variable localhost',
                     substrs = ['<NSHost ','> localhost ((','"127.0.0.1"'])
 
-        self.expect('frame variable my_task',
-                    substrs = ['<NS','Task: 0x'])
+        if self.getArchitecture() in ['i386', 'x86_64']:
+            self.expect('frame variable my_task',
+                        substrs = ['<NS','Task: 0x'])
 
         self.expect('frame variable range_value',
                     substrs = ['NSRange: {4, 4}'])
@@ -526,20 +527,20 @@ class ObjCDataFormatterTestCase(TestBase):
 
         # check that the formatters are able to deal safely and correctly
         # with ValueObjects that the expression parser returns
-        self.expect('expression ((id)@"Hello")', matching=False,
-                    substrs = ['Hello'])
+        self.expect('expression ((id)@"Hello for long enough to avoid short string types")', matching=False,
+                    substrs = ['Hello for long enough to avoid short string types'])
 
-        self.expect('expression -d run -- ((id)@"Hello")',
-        substrs = ['Hello'])
+        self.expect('expression -d run -- ((id)@"Hello for long enough to avoid short string types")',
+        substrs = ['Hello for long enough to avoid short string types'])
 
         self.expect('expr -d run -- label1',
             substrs = ['Process Name'])
 
-        self.expect('expr -d run -- @"Hello"',
-            substrs = ['Hello'])
+        self.expect('expr -d run -- @"Hello for long enough to avoid short string types"',
+            substrs = ['Hello for long enough to avoid short string types'])
 
-        self.expect('expr -d run --object-description -- @"Hello"',
-            substrs = ['Hello'])
+        self.expect('expr -d run --object-description -- @"Hello for long enough to avoid short string types"',
+            substrs = ['Hello for long enough to avoid short string types'])
         self.expect('expr -d run --object-description -- @"Hello"', matching=False,
             substrs = ['@"Hello" Hello'])
 
@@ -571,30 +572,34 @@ class ObjCDataFormatterTestCase(TestBase):
 
         # check formatters for common Objective-C types
         self.runCmd("log timers enable")
+        expect_strings = ['(CFGregorianUnits) cf_greg_units = 1 years, 3 months, 5 days, 12 hours, 5 minutes 7 seconds',
+         '(CFRange) cf_range = location=4 length=4',
+         '(NSPoint) ns_point = (x=4, y=4)',
+         '(NSRange) ns_range = location=4, length=4',
+         '(NSRect *) ns_rect_ptr = (x=1, y=1), (width=5, height=5)',
+         '(NSRect) ns_rect = (x=1, y=1), (width=5, height=5)',
+         '(NSRectArray) ns_rect_arr = ((x=1, y=1), (width=5, height=5)), ...',
+         '(NSSize) ns_size = (width=5, height=7)',
+         '(NSSize *) ns_size_ptr = (width=5, height=7)',
+         '(CGSize) cg_size = (width=1, height=6)',
+         '(CGPoint) cg_point = (x=2, y=7)',
+         '(CGRect) cg_rect = origin=(x=1, y=2) size=(width=7, height=7)',
+         '(Rect) rect = (t=4, l=8, b=4, r=7)',
+         '(Rect *) rect_ptr = (t=4, l=8, b=4, r=7)',
+         '(Point) point = (v=7, h=12)',
+         '(Point *) point_ptr = (v=7, h=12)',
+         'name:@"TheGuyWhoHasNoName" reason:@"cuz it\'s funny"',
+         '1985',
+         'foo_selector_impl'];
+         
+        if self.getArchitecture() in ['i386', 'x86_64']:
+            expect_strings.append('(HIPoint) hi_point = (x=7, y=12)')
+            expect_strings.append('(HIRect) hi_rect = origin=(x=3, y=5) size=(width=4, height=6)')
+            expect_strings.append('(RGBColor) rgb_color = red=3 green=56 blue=35')
+            expect_strings.append('(RGBColor *) rgb_color_ptr = red=3 green=56 blue=35')
+            
         self.expect("frame variable",
-             substrs = ['(CFGregorianUnits) cf_greg_units = 1 years, 3 months, 5 days, 12 hours, 5 minutes 7 seconds',
-             '(CFRange) cf_range = location=4 length=4',
-             '(NSPoint) ns_point = (x=4, y=4)',
-             '(NSRange) ns_range = location=4, length=4',
-             '(NSRect *) ns_rect_ptr = (x=1, y=1), (width=5, height=5)',
-             '(NSRect) ns_rect = (x=1, y=1), (width=5, height=5)',
-             '(NSRectArray) ns_rect_arr = ((x=1, y=1), (width=5, height=5)), ...',
-             '(NSSize) ns_size = (width=5, height=7)',
-             '(NSSize *) ns_size_ptr = (width=5, height=7)',
-             '(CGSize) cg_size = (width=1, height=6)',
-             '(CGPoint) cg_point = (x=2, y=7)',
-             '(CGRect) cg_rect = origin=(x=1, y=2) size=(width=7, height=7)',
-             '(RGBColor) rgb_color = red=3 green=56 blue=35',
-             '(RGBColor *) rgb_color_ptr = red=3 green=56 blue=35',
-             '(Rect) rect = (t=4, l=8, b=4, r=7)',
-             '(Rect *) rect_ptr = (t=4, l=8, b=4, r=7)',
-             '(Point) point = (v=7, h=12)',
-             '(Point *) point_ptr = (v=7, h=12)',
-             '(HIPoint) hi_point = (x=7, y=12)',
-             '(HIRect) hi_rect = origin=(x=3, y=5) size=(width=4, height=6)',
-             'name:@"TheGuyWhoHasNoName" reason:@"cuz it\'s funny"',
-             '1985',
-             'foo_selector_impl'])
+             substrs = expect_strings)
         self.runCmd('log timers dump')
 
 

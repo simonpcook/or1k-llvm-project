@@ -1,3 +1,15 @@
+if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+  set(LLDB_DEFAULT_DISABLE_PYTHON 1)
+  set(LLDB_DEFAULT_DISABLE_CURSES 1)
+else()
+  set(LLDB_DEFAULT_DISABLE_PYTHON 0)
+  set(LLDB_DEFAULT_DISABLE_CURSES 0)
+endif()
+set(LLDB_DISABLE_PYTHON ${LLDB_DEFAULT_DISABLE_PYTHON} CACHE BOOL
+  "Disables the Python scripting integration.")
+set(LLDB_DISABLE_CURSES ${LLDB_DEFAULT_DISABLE_CURSES} CACHE BOOL
+  "Disables the Curses integration.")
+
 # If we are not building as a part of LLVM, build LLDB as an
 # standalone project, using LLVM as an external library:
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -8,13 +20,11 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     "Path to LLVM source code. Not necessary if using an installed LLVM.")
   set(LLDB_PATH_TO_LLVM_BUILD "" CACHE PATH
     "Path to the directory where LLVM was built or installed.")
-    
+
   set(LLDB_PATH_TO_CLANG_SOURCE "" CACHE PATH
     "Path to Clang source code. Not necessary if using an installed Clang.")
   set(LLDB_PATH_TO_CLANG_BUILD "" CACHE PATH
-    "Path to the directory where Clang was built or installed.")    
-
-  set(LLDB_DISABLE_PYTHON 1 BOOL "Disables the Python scripting integration.")
+    "Path to the directory where Clang was built or installed.")
 
   if (LLDB_PATH_TO_LLVM_SOURCE)
     if (NOT EXISTS "${LLDB_PATH_TO_LLVM_SOURCE}/cmake/config-ix.cmake")
@@ -26,20 +36,20 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
       list(APPEND CMAKE_MODULE_PATH "${LLVM_MAIN_SRC_DIR}/cmake/modules")
     endif()
   endif()
-  
+
   if (LLDB_PATH_TO_CLANG_SOURCE)
       get_filename_component(CLANG_MAIN_SRC_DIR ${LLDB_PATH_TO_CLANG_SOURCE}
                              ABSOLUTE)
-  endif()  
+  endif()
 
   list(APPEND CMAKE_MODULE_PATH "${LLDB_PATH_TO_LLVM_BUILD}/share/llvm/cmake")
 
   get_filename_component(PATH_TO_LLVM_BUILD ${LLDB_PATH_TO_LLVM_BUILD}
                          ABSOLUTE)
-                         
+
   get_filename_component(PATH_TO_CLANG_BUILD ${LLDB_PATH_TO_CLANG_BUILD}
-                         ABSOLUTE)                         
-                         
+                         ABSOLUTE)
+
   include(AddLLVM)
   include("${LLDB_PATH_TO_LLVM_BUILD}/share/llvm/cmake/LLVMConfig.cmake")
   include(HandleLLVMOptions)
@@ -48,7 +58,7 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
   set(LLVM_MAIN_INCLUDE_DIR "${LLVM_MAIN_SRC_DIR}/include")
   set(LLVM_BINARY_DIR ${CMAKE_BINARY_DIR})
-  
+
   set(CLANG_MAIN_INCLUDE_DIR "${CLANG_MAIN_SRC_DIR}/include")
 
   set(CMAKE_INCLUDE_CURRENT_DIR ON)
@@ -65,15 +75,15 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
   set(LLDB_BUILT_STANDALONE 1)
-  
-  if (LLDB_DISABLE_PYTHON)
-    add_definitions( -DLLDB_DISABLE_PYTHON )
-  endif() 
 endif()
 
-if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+if (LLDB_DISABLE_PYTHON)
   add_definitions( -DLLDB_DISABLE_PYTHON )
-endif ()
+endif()
+
+if (LLDB_DISABLE_CURSES)
+  add_definitions( -DLLDB_DISABLE_CURSES )
+endif()
 
 macro(add_lldb_definitions)
   # We don't want no semicolons on LLDB_DEFINITIONS:
@@ -83,15 +93,16 @@ macro(add_lldb_definitions)
   add_definitions( ${ARGN} )
 endmacro(add_lldb_definitions)
 
-include_directories(/usr/include/python2.7)
+if (NOT LLDB_DISABLE_PYTHON)
+  find_package(PythonLibs REQUIRED)
+  include_directories(${PYTHON_INCLUDE_DIRS})
+endif()
 include_directories(../clang/include)
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/../clang/include")
 
 # lldb requires c++11 to build. Make sure that we have a compiler and standard
 # library combination that can do that.
-if (MSVC11 OR MSVC12)
-  # Do nothing, we're good.
-elseif (NOT MSVC)
+if (NOT MSVC)
   # gcc and clang require the -std=c++0x or -std=c++11 flag.
   if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU" OR
       "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
@@ -110,24 +121,24 @@ elseif (NOT MSVC)
       endif()
     endif()
   endif()
-else()
+elseif (MSVC_VERSION LESS 1700)
   message(FATAL_ERROR "The selected compiler does not support c++11 which is "
           "required to build lldb.")
 endif()
 
-# Disable Clang warnings
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  add_lldb_definitions(
-    -Wno-deprecated-declarations # Suppress "deprecated auto_ptr" warnings
-  )
-endif()
+# Disable GCC warnings
+check_cxx_compiler_flag("-Wno-deprecated-declarations"
+                        CXX_SUPPORTS_NO_DEPRECATED_DECLARATIONS)
+if (CXX_SUPPORTS_NO_DEPRECATED_DECLARATIONS)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
+endif ()
 
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
-    AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "3.3")
-  add_lldb_definitions(
-    -Wno-deprecated-register # Suppress "deprecated register keyword" warnings
-  )
-endif()
+# Disable Clang warnings
+check_cxx_compiler_flag("-Wno-deprecated-register"
+                        CXX_SUPPORTS_NO_DEPRECATED_REGISTER)
+if (CXX_SUPPORTS_NO_DEPRECATED_REGISTER)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-register")
+endif ()
 
 # Disable MSVC warnings
 if( MSVC )
@@ -179,7 +190,10 @@ macro(add_lldb_library name)
   else()
     set(libkind STATIC)
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+  #PIC not needed on Win
+  if (NOT MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+  endif()
   add_library(${name} ${libkind} ${srcs})
   #if (LLVM_COMMON_DEPENDS)
   ##add_dependencies(${name} ${LLVM_COMMON_DEPENDS})
@@ -196,7 +210,6 @@ macro(add_lldb_library name)
   target_link_libraries(${name} ${LLVM_USED_LIBS})
   llvm_config(${name} ${LLVM_LINK_COMPONENTS})
   target_link_libraries(${name} ${LLVM_COMMON_LIBS})
-  link_system_libs(${name})
   if (LLVM_COMMON_DEPENDS)
     add_dependencies(${name} ${LLVM_COMMON_DEPENDS})
   endif()
@@ -221,7 +234,6 @@ macro(add_lldb_executable name)
   add_executable(${name} ${ALL_FILES})
   #target_link_libraries(${name} ${CLANG_USED_LIBS})
   #llvm_config( ${name} ${LLVM_LINK_COMPONENTS} )
-  #link_system_libs( ${name} )
   #if (LLVM_COMMON_DEPENDS)
   #add_dependencies(${name} ${LLVM_COMMON_DEPENDS})
   #endif()
@@ -250,16 +262,28 @@ if (CMAKE_SYSTEM_NAME MATCHES "Darwin")
   find_library(SECURITY_LIBRARY Security)
   find_library(DEBUG_SYMBOLS_LIBRARY DebugSymbols PATHS "/System/Library/PrivateFrameworks")
 
-  set(LIBXML2_INCLUDE_DIR "/usr/include/libxml2")
-  list(APPEND system_libs xml2)
+  if (NOT LIBXML2_FOUND)
+    find_package(LibXml2)
+  endif ()
+  list(APPEND system_libs xml2 ncurses panel)
   list(APPEND system_libs ${CARBON_LIBRARY} ${FOUNDATION_LIBRARY}
   ${CORE_FOUNDATION_LIBRARY} ${CORE_SERVICES_LIBRARY} ${SECURITY_LIBRARY}
   ${DEBUG_SYMBOLS_LIBRARY})
 endif()
 
-# On FreeBSD, link libexecinfo because libc is missing  backtrace()
-if (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
-  list(APPEND system_libs execinfo)
+# Disable RTTI by default
+if(NOT LLDB_REQUIRES_RTTI)
+  if (NOT MSVC)
+    if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU" OR
+        "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
+      #gnu && clang compilers
+      set(LLDB_COMPILE_FLAGS "-fno-rtti")
+    endif() #GNU or CLANG
+  else()
+    #MSVC
+    set(LLDB_COMPILE_FLAGS "/GR-")
+  endif() #NOT MSVC
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LLDB_COMPILE_FLAGS}")
 endif()
 
 #add_subdirectory(include)

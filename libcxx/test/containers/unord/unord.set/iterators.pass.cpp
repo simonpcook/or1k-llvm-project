@@ -23,7 +23,7 @@
 #include <unordered_set>
 #include <cassert>
 
-#include "../../min_allocator.h"
+#include "min_allocator.h"
 
 int main()
 {
@@ -115,10 +115,13 @@ int main()
         C::const_iterator cii{};
         assert ( ii1 == ii2 );
         assert ( ii1 == ii4 );
-        assert ( ii1 == cii );
 
-        assert ( !(ii1 != ii2 ));
-        assert ( !(ii1 != cii ));
+        assert (!(ii1 != ii2 ));
+
+        assert ( (ii1 == cii ));
+        assert ( (cii == ii1 ));
+        assert (!(ii1 != cii ));
+        assert (!(cii != ii1 ));
     }
 #endif
 }

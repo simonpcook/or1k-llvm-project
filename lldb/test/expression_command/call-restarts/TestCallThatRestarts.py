@@ -7,9 +7,9 @@ import lldb
 import lldbutil
 from lldbtest import *
 
-class ExprCommandWithTimeoutsTestCase(TestBase):
+class ExprCommandThatRestartsTestCase(TestBase):
 
-    mydir = os.path.join("expression_command", "call-restarts")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -26,8 +26,6 @@ class ExprCommandWithTimeoutsTestCase(TestBase):
         self.buildDsym()
         self.call_function()
 
-    @skipIfFreeBSD # llvm.org/pr15278
-    @skipIfLinux # llvm.org/pr15278: handle expressions that generate signals on Linux
     @dwarf_test
     def test_with_dwarf(self):
         """Test calling std::String member function."""
@@ -45,7 +43,7 @@ class ExprCommandWithTimeoutsTestCase(TestBase):
 
         
     def call_function(self):
-        """Test calling function with timeout."""
+        """Test calling function that hits a signal and restarts."""
         exe_name = "a.out"
         exe = os.path.join(os.getcwd(), exe_name)
 
@@ -56,7 +54,7 @@ class ExprCommandWithTimeoutsTestCase(TestBase):
         self.assertTrue(breakpoint.GetNumLocations() > 0, VALID_BREAKPOINT)
 
         # Launch the process, and do not stop at the entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         self.assertTrue(process, PROCESS_IS_VALID)
 

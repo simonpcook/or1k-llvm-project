@@ -7,15 +7,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_CORE_UNDEFINED_ATOM_H_
-#define LLD_CORE_UNDEFINED_ATOM_H_
+#ifndef LLD_CORE_UNDEFINED_ATOM_H
+#define LLD_CORE_UNDEFINED_ATOM_H
 
 #include "lld/Core/Atom.h"
 
 namespace lld {
 
 /// An UndefinedAtom has no content.
-/// It exists as a place holder for a future atom.
+/// It exists as a placeholder for a future atom.
 class UndefinedAtom : public Atom {
 public:
   /// Whether this undefined symbol needs to be resolved,
@@ -71,4 +71,4 @@ protected:
 
 } // namespace lld
 
-#endif // LLD_CORE_UNDEFINED_ATOM_H_
+#endif // LLD_CORE_UNDEFINED_ATOM_H

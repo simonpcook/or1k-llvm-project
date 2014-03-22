@@ -20,6 +20,34 @@
 
 #include "ELFHeader.h"
 
+struct ELFNote
+{
+    elf::elf_word n_namesz;
+    elf::elf_word n_descsz;
+    elf::elf_word n_type;
+
+    std::string n_name;
+
+    ELFNote() : n_namesz(0), n_descsz(0), n_type(0)
+    {
+    }
+
+    /// Parse an ELFNote entry from the given DataExtractor starting at position
+    /// \p offset.
+    ///
+    /// @param[in] data
+    ///    The DataExtractor to read from.
+    ///
+    /// @param[in,out] offset
+    ///    Pointer to an offset in the data.  On return the offset will be
+    ///    advanced by the number of bytes read.
+    ///
+    /// @return
+    ///    True if the ELFRel entry was successfully read and false otherwise.
+    bool
+    Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
+};
+
 //------------------------------------------------------------------------------
 /// @class ObjectFileELF
 /// @brief Generic ELF object file reader.
@@ -90,6 +118,11 @@ public:
     virtual bool
     ParseHeader();
 
+    virtual bool
+    SetLoadAddress (lldb_private::Target &target,
+                    lldb::addr_t value,
+                    bool value_is_offset);
+
     virtual lldb::ByteOrder
     GetByteOrder() const;
 
@@ -127,7 +160,7 @@ public:
     GetDependentModules(lldb_private::FileSpecList& files);
 
     virtual lldb_private::Address
-    GetImageInfoAddress();
+    GetImageInfoAddress(lldb_private::Target *target);
     
     virtual lldb_private::Address
     GetEntryPointAddress ();
@@ -157,6 +190,11 @@ private:
                   const lldb_private::FileSpec* file,
                   lldb::offset_t offset,
                   lldb::offset_t length);
+
+    ObjectFileELF (const lldb::ModuleSP &module_sp,
+                   lldb::DataBufferSP& data_sp,
+                   const lldb::ProcessSP &process_sp,
+                   lldb::addr_t header_addr);
 
     typedef std::vector<elf::ELFProgramHeader>  ProgramHeaderColl;
     typedef ProgramHeaderColl::iterator         ProgramHeaderCollIter;
@@ -269,6 +307,32 @@ private:
                            lldb::user_id_t start_id,
                            const ELFSectionHeaderInfo *rela_hdr,
                            lldb::user_id_t section_id);
+
+    /// Relocates debug sections
+    unsigned
+    RelocateDebugSections(const elf::ELFSectionHeader *rel_hdr, lldb::user_id_t rel_id);
+
+    unsigned
+    RelocateSection(lldb_private::Symtab* symtab, const elf::ELFHeader *hdr, const elf::ELFSectionHeader *rel_hdr,
+                    const elf::ELFSectionHeader *symtab_hdr, const elf::ELFSectionHeader *debug_hdr,
+                    lldb_private::DataExtractor &rel_data, lldb_private::DataExtractor &symtab_data,
+                    lldb_private::DataExtractor &debug_data, lldb_private::Section* rel_section);
+
+    /// Loads the section name string table into m_shstr_data.  Returns the
+    /// number of bytes constituting the table.
+    size_t
+    GetSectionHeaderStringTable();
+
+    /// Utility method for looking up a section given its name.  Returns the
+    /// index of the corresponding section or zero if no section with the given
+    /// name can be found (note that section indices are always 1 based, and so
+    /// section index 0 is never valid).
+    lldb::user_id_t
+    GetSectionIndexByName(const char *name);
+
+    // Returns the ID of the first section that has the given type.
+    lldb::user_id_t
+    GetSectionIndexByType(unsigned type);
 
     /// Returns the section header with the given id or NULL.
     const ELFSectionHeaderInfo *

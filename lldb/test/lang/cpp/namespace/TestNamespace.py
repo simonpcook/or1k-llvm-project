@@ -10,7 +10,7 @@ import lldbutil
 
 class NamespaceTestCase(TestBase):
 
-    mydir = os.path.join("lang", "cpp", "namespace")
+    mydir = TestBase.compute_mydir(__file__)
 
     # rdar://problem/8668674
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
@@ -22,7 +22,6 @@ class NamespaceTestCase(TestBase):
 
     # rdar://problem/8668674
     @expectedFailureGcc # llvm.org/pr15302: lldb does not print 'anonymous namespace' when the inferior is built with GCC (4.7)
-    @expectedFailureFreeBSD('llvm.org/pr15302')
     @dwarf_test
     def test_with_dwarf_and_run_command(self):
         """Test that anonymous and named namespace variables display correctly."""

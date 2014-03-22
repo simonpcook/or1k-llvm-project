@@ -30,17 +30,25 @@ DIRS +=	ObjectContainer/Universal-Mach-O ObjectFile/Mach-O
 DIRS += SymbolVendor/MacOSX
 #DIRS += Process/MacOSX-User
 DIRS += Process/mach-core
+DIRS += SystemRuntime/MacOSX
 endif
 
 ifeq ($(HOST_OS),Linux)
 DIRS += DynamicLoader/MacOSX-DYLD
 DIRS += Process/Linux Process/POSIX
 DIRS += Process/elf-core
+DIRS += JITLoader/GDB
+endif
+
+ifeq ($(HOST_OS),MingW)
+DIRS += Process/elf-core
+DIRS += JITLoader/GDB
 endif
 
 ifneq (,$(filter $(HOST_OS), FreeBSD GNU/kFreeBSD))
 DIRS += Process/FreeBSD Process/POSIX
 DIRS += Process/elf-core
+DIRS += JITLoader/GDB
 endif
 
 include $(LLDB_LEVEL)/Makefile

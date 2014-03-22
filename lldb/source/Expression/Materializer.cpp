@@ -443,10 +443,26 @@ public:
             return;
         }
         
+        Error valobj_error = valobj_sp->GetError();
+        
+        if (valobj_error.Fail())
+        {
+            err.SetErrorStringWithFormat("couldn't get the value of variable %s: %s", m_variable_sp->GetName().AsCString(), valobj_error.AsCString());
+            return;
+        }
+        
         if (m_is_reference)
         {
             DataExtractor valobj_extractor;
-            valobj_sp->GetData(valobj_extractor);
+            Error extract_error;
+            valobj_sp->GetData(valobj_extractor, extract_error);
+            
+            if (!extract_error.Success())
+            {
+                err.SetErrorStringWithFormat("couldn't read contents of reference variable %s: %s", m_variable_sp->GetName().AsCString(), extract_error.AsCString());
+                return;
+            }
+            
             lldb::offset_t offset = 0;
             lldb::addr_t reference_addr = valobj_extractor.GetAddress(&offset);
             
@@ -461,17 +477,13 @@ public:
         }
         else
         {
-            Error get_address_error;
-            lldb::ValueObjectSP addr_of_valobj_sp = valobj_sp->AddressOf(get_address_error);
-            if (get_address_error.Success())
+            AddressType address_type = eAddressTypeInvalid;
+            const bool scalar_is_load_address = false;
+            lldb::addr_t addr_of_valobj = valobj_sp->GetAddressOf(scalar_is_load_address, &address_type);
+            if (addr_of_valobj != LLDB_INVALID_ADDRESS)
             {
-                DataExtractor valobj_extractor;
-                addr_of_valobj_sp->GetData(valobj_extractor);
-                lldb::offset_t offset = 0;
-                lldb::addr_t addr_of_valobj_addr = valobj_extractor.GetAddress(&offset);
-                
                 Error write_error;
-                map.WritePointerToMemory(load_addr, addr_of_valobj_addr, write_error);
+                map.WritePointerToMemory(load_addr, addr_of_valobj, write_error);
                 
                 if (!write_error.Success())
                 {
@@ -482,8 +494,14 @@ public:
             else
             {
                 DataExtractor data;
-                valobj_sp->GetData(data);
-                
+                Error extract_error;
+                valobj_sp->GetData(data, extract_error);
+                if (!extract_error.Success())
+                {
+                    err.SetErrorStringWithFormat("couldn't get the value of %s: %s", m_variable_sp->GetName().AsCString(), extract_error.AsCString());
+                    return;
+                }
+                    
                 if (m_temporary_allocation != LLDB_INVALID_ADDRESS)
                 {
                     err.SetErrorStringWithFormat("trying to create a temporary region for %s but one exists", m_variable_sp->GetName().AsCString());
@@ -498,13 +516,19 @@ public:
                     }
                     else
                     {
-                        err.SetErrorStringWithFormat("size of variable %s disagrees with the ValueObject's size", m_variable_sp->GetName().AsCString());
+                        err.SetErrorStringWithFormat("size of variable %s (%" PRIu64 ") disagrees with the ValueObject's size (%" PRIu64 ")",
+                                                     m_variable_sp->GetName().AsCString(),
+                                                     m_variable_sp->GetType()->GetByteSize(),
+                                                     data.GetByteSize());
                     }
                     return;
                 }
                 
                 size_t bit_align = m_variable_sp->GetType()->GetClangLayoutType().GetTypeBitAlign();
                 size_t byte_align = (bit_align + 7) / 8;
+                
+                if (!byte_align)
+                    byte_align = 1;
                 
                 Error alloc_error;
                 
@@ -742,6 +766,9 @@ public:
             size_t bit_align = m_type.GetTypeBitAlign();
             size_t byte_align = (bit_align + 7) / 8;
             
+            if (!byte_align)
+                byte_align = 1;
+            
             Error alloc_error;
             
             m_temporary_allocation = map.Malloc(byte_size, byte_align, lldb::ePermissionsReadable | lldb::ePermissionsWritable, IRMemoryMap::eAllocationPolicyMirror, alloc_error);
@@ -839,7 +866,7 @@ public:
                                                             name,
                                                             address,
                                                             eAddressTypeLoad,
-                                                            ret->GetByteSize());
+                                                            map.GetAddressByteSize());
         }
         
         ret->ValueUpdated();

@@ -110,7 +110,7 @@ public:
 }  // end anonymous namespace.
 
 static bool CanPrefixSysroot(StringRef Path) {
-#if defined(_WIN32)
+#if defined(LLVM_ON_WIN32)
   return !Path.empty() && llvm::sys::path::is_separator(Path[0]);
 #else
   return llvm::sys::path::is_absolute(Path);
@@ -328,7 +328,7 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
       llvm::sys::path::append(P, "../../../include");
       AddPath(P.str(), System, false);
       AddPath("/mingw/include", System, false);
-#if defined(_WIN32)
+#if defined(LLVM_ON_WIN32)
       AddPath("c:/mingw/include", System, false); 
 #endif
     }
@@ -395,25 +395,22 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
     break;
   case llvm::Triple::MinGW32:
     // mingw-w64 C++ include paths (i686-w64-mingw32 and x86_64-w64-mingw32)
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.5.0");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.5.1");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.5.2");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.5.3");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.5.4");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.6.0");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.6.1");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.6.2");
-    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.6.3");
     AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.7.0");
+    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.7.1");
+    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.7.2");
+    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.7.3");
+    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.8.0");
+    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.8.1");
+    AddMinGW64CXXPaths(HSOpts.ResourceDir, "4.8.2");
     // mingw.org C++ include paths
-    AddMinGWCPlusPlusIncludePaths("/mingw/lib/gcc", "mingw32", "4.5.2"); //MSYS
-#if defined(_WIN32)
-    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.6.2");
-    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.6.1");
-    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.5.2");
-    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.5.0");
-    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.4.0");
-    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.3.0");
+#if defined(LLVM_ON_WIN32)
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.7.0");
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.7.1");
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.7.2");
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.7.3");
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.8.0");
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.8.1");
+    AddMinGWCPlusPlusIncludePaths("c:/MinGW/lib/gcc", "mingw32", "4.8.2");
 #endif
     break;
   case llvm::Triple::DragonFly:
@@ -421,11 +418,6 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
       AddPath("/usr/include/c++/4.7", CXXSystem, false);
     else
       AddPath("/usr/include/c++/4.4", CXXSystem, false);
-    break;
-  case llvm::Triple::FreeBSD:
-    // FreeBSD 8.0
-    // FreeBSD 7.3
-    AddGnuCPlusPlusIncludePaths("/usr/include/c++/4.2", "", "", "", triple);
     break;
   case llvm::Triple::OpenBSD: {
     std::string t = triple.getTriple();
@@ -474,15 +466,17 @@ void InitHeaderSearch::AddDefaultIncludePaths(const LangOptions &Lang,
     if (HSOpts.UseLibcxx) {
       if (triple.isOSDarwin()) {
         // On Darwin, libc++ may be installed alongside the compiler in
-        // lib/c++/v1.
+        // include/c++/v1.
         if (!HSOpts.ResourceDir.empty()) {
           // Remove version from foo/lib/clang/version
           StringRef NoVer = llvm::sys::path::parent_path(HSOpts.ResourceDir);
           // Remove clang from foo/lib/clang
-          SmallString<128> P = llvm::sys::path::parent_path(NoVer);
-          
-          // Get foo/lib/c++/v1
-          llvm::sys::path::append(P, "c++", "v1");
+          StringRef Lib = llvm::sys::path::parent_path(NoVer);
+          // Remove lib from foo/lib
+          SmallString<128> P = llvm::sys::path::parent_path(Lib);
+
+          // Get foo/include/c++/v1
+          llvm::sys::path::append(P, "include", "c++", "v1");
           AddUnmappedPath(P.str(), CXXSystem, false);
         }
       }

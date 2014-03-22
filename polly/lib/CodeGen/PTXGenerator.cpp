@@ -17,15 +17,15 @@
 #include "polly/ScopDetection.h"
 #include "polly/ScopInfo.h"
 
-#include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/Module.h"
 #include "llvm/PassManager.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/Analysis/Dominators.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -33,11 +33,10 @@
 using namespace llvm;
 using namespace polly;
 
-PTXGenerator::PTXGenerator(IRBuilder<> &Builder, Pass *P,
+PTXGenerator::PTXGenerator(PollyIRBuilder &Builder, Pass *P,
                            const std::string &Triple)
     : Builder(Builder), P(P), GPUTriple(Triple), GridWidth(1), GridHeight(1),
       BlockWidth(1), BlockHeight(1), OutputBytes(0) {
-
   InitializeGPUDataTypes();
 }
 

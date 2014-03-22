@@ -19,7 +19,6 @@
 #include "lld/ReaderWriter/Writer.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/Allocator.h"
@@ -27,11 +26,13 @@
 #include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileOutputBuffer.h"
+#include <memory>
 
 namespace lld {
 namespace elf {
 
 template <typename ELFT> class DefaultLayout;
+template <typename ELFT> class ScriptLayout;
 
 /// \brief A segment can be divided into segment slices
 ///        depending on how the segments can be split
@@ -102,8 +103,8 @@ private:
   uint64_t _memSize;
 };
 
-/// \brief A segment contains a set of sections, that have similiar properties
-//  the sections are already seperated based on different flags and properties
+/// \brief A segment contains a set of sections, that have similar properties
+//  the sections are already separated based on different flags and properties
 //  the segment is just a way to concatenate sections to segments
 template<class ELFT>
 class Segment : public Chunk<ELFT> {
@@ -158,7 +159,8 @@ public:
   void assignVirtualAddress(uint64_t &addr);
 
   // Write the Segment
-  void write(ELFWriter *writer, llvm::FileOutputBuffer &buffer);
+  void write(ELFWriter *writer, TargetLayout<ELFT> &layout,
+             llvm::FileOutputBuffer &buffer);
 
   int64_t flags() const;
 
@@ -296,7 +298,7 @@ protected:
 };
 
 /// \brief A Program Header segment contains a set of chunks instead of sections
-/// The segment doesnot contain any slice
+/// The segment doesn't contain any slice
 template <class ELFT> class ProgramHeaderSegment : public Segment<ELFT> {
 public:
   ProgramHeaderSegment(const ELFLinkingContext &context)
@@ -455,8 +457,8 @@ template <class ELFT> void Segment<ELFT>::assignOffsets(uint64_t startOffset) {
       }
       uint64_t newOffset = llvm::RoundUpToAlignment(curOffset, (*si)->align2());
       SegmentSlice<ELFT> *slice = nullptr;
-      // If the newOffset computed is more than a page away, lets create
-      // a seperate segment, so that memory is not used up while running
+      // If the newOffset computed is more than a page away, let's create
+      // a separate segment, so that memory is not used up while running
       if (((newOffset - curOffset) > this->_context.getPageSize()) &&
           (_outputMagic != ELFLinkingContext::OutputMagic::NMAGIC &&
            _outputMagic != ELFLinkingContext::OutputMagic::OMAGIC)) {
@@ -547,7 +549,7 @@ template <class ELFT> void Segment<ELFT>::assignVirtualAddress(uint64_t &addr) {
       // Check if the segment is of type TLS
       // The sections that belong to the TLS segment have their
       // virtual addresses that are relative To TP
-      Section<ELFT> *currentSection = llvm::dyn_cast<Section<ELFT> >(section);
+      Section<ELFT> *currentSection = dyn_cast<Section<ELFT> >(section);
       if (currentSection)
         isTLSSegment = (currentSection->getSegmentType() == llvm::ELF::PT_TLS);
 
@@ -568,10 +570,10 @@ template <class ELFT> void Segment<ELFT>::assignVirtualAddress(uint64_t &addr) {
       if (isTLSSegment)
         tlsStartAddr += section->memSize();
       section->setMemSize(addr + section->memSize() - section->virtualAddr());
-      // TBSS section is special that it doesnot contribute to memory of any
-      // segment, If we see a tbss section, dont add memory size to addr
+      // TBSS section is special in that it doesn't contribute to memory of any
+      // segment. If we see a tbss section, don't add memory size to addr
       // The fileOffset is automatically taken care of since TBSS section does
-      // not endup using file size
+      // not end up using file size
       if (section->order() != DefaultLayout<ELFT>::ORDER_TBSS)
         addr += section->memSize();
     }
@@ -581,10 +583,11 @@ template <class ELFT> void Segment<ELFT>::assignVirtualAddress(uint64_t &addr) {
 
 // Write the Segment
 template <class ELFT>
-void Segment<ELFT>::write(ELFWriter *writer, llvm::FileOutputBuffer &buffer) {
+void Segment<ELFT>::write(ELFWriter *writer, TargetLayout<ELFT> &layout,
+                          llvm::FileOutputBuffer &buffer) {
   for (auto slice : slices())
     for (auto section : slice->sections())
-      section->write(writer, buffer);
+      section->write(writer, layout, buffer);
 }
 
 template<class ELFT>

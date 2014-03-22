@@ -10,13 +10,14 @@
 #include "lld/Driver/Driver.h"
 
 #include "lld/Core/LLVM.h"
-#include "lld/Core/InputFiles.h"
 #include "lld/Core/Instrumentation.h"
 #include "lld/Core/PassManager.h"
 #include "lld/Core/Parallel.h"
 #include "lld/Core/Resolver.h"
 #include "lld/ReaderWriter/Reader.h"
 #include "lld/ReaderWriter/Writer.h"
+#include "lld/Passes/RoundTripNativePass.h"
+#include "lld/Passes/RoundTripYAMLPass.h"
 
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -24,12 +25,15 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <mutex>
 
 namespace lld {
 
 /// This is where the link is actually performed.
-bool Driver::link(const LinkingContext &context, raw_ostream &diagnostics) {
+bool Driver::link(LinkingContext &context, raw_ostream &diagnostics) {
   // Honor -mllvm
   if (!context.llvmOptions().empty()) {
     unsigned numArgs = context.llvmOptions().size();
@@ -41,44 +45,38 @@ bool Driver::link(const LinkingContext &context, raw_ostream &diagnostics) {
     llvm::cl::ParseCommandLineOptions(numArgs + 1, args);
   }
   InputGraph &inputGraph = context.inputGraph();
-  if (!inputGraph.numFiles())
+  if (!inputGraph.size())
     return false;
+
+  bool fail = false;
 
   // Read inputs
   ScopedTask readTask(getDefaultDomain(), "Read Args");
-  std::vector<std::vector<std::unique_ptr<File> > > files(
-      inputGraph.numFiles());
-  size_t index = 0;
-  std::atomic<bool> fail(false);
   TaskGroup tg;
-  std::vector<std::unique_ptr<LinkerInput> > linkerInputs;
+  std::mutex diagnosticsMutex;
   for (auto &ie : inputGraph.inputElements()) {
-    if (ie->kind() == InputElement::Kind::File) {
-      FileNode *fileNode = (llvm::dyn_cast<FileNode>)(ie.get());
-      auto linkerInput = fileNode->createLinkerInput(context);
-      if (!linkerInput) {
-        llvm::outs() << fileNode->errStr(error_code(linkerInput)) << "\n";
-        return false;
-      }
-      linkerInputs.push_back(std::move(*linkerInput));
-    }
-    else {
-      llvm_unreachable("Not handling other types of InputElements");
-    }
-  }
-  for (const auto &input : linkerInputs) {
-    if (context.logInputFiles())
-      llvm::outs() << input->getUserPath() << "\n";
+    // Skip Hidden elements.
+    if (ie->isHidden())
+      continue;
+    tg.spawn([&] {
+      // Writes to the same output stream is not guaranteed to be thread-safe.
+      // We buffer the diagnostics output to a separate string-backed output
+      // stream, acquire the lock, and then print it out.
+      std::string buf;
+      llvm::raw_string_ostream stream(buf);
 
-    tg.spawn([ &, index]{
-      if (error_code ec = context.parseFile(*input, files[index])) {
-        diagnostics << "Failed to read file: " << input->getUserPath() << ": "
-                    << ec.message() << "\n";
+      if (error_code ec = ie->parse(context, stream)) {
+        FileNode *fileNode = dyn_cast<FileNode>(ie.get());
+        stream << fileNode->errStr(ec) << "\n";
         fail = true;
-        return;
+      }
+
+      stream.flush();
+      if (!buf.empty()) {
+        std::lock_guard<std::mutex> lock(diagnosticsMutex);
+        diagnostics << buf;
       }
     });
-    ++index;
   }
   tg.sync();
   readTask.end();
@@ -86,40 +84,55 @@ bool Driver::link(const LinkingContext &context, raw_ostream &diagnostics) {
   if (fail)
     return false;
 
-  InputFiles inputs;
+  std::unique_ptr<SimpleFileNode> fileNode(
+      new SimpleFileNode("Internal Files"));
 
-  for (auto &f : inputGraph.internalFiles())
-    inputs.appendFile(*f.get());
+  InputGraph::FileVectorT internalFiles;
+  context.createInternalFiles(internalFiles);
 
-  for (auto &f : files)
-    inputs.appendFiles(f);
+  if (internalFiles.size())
+    fileNode->addFiles(std::move(internalFiles));
 
   // Give target a chance to add files.
-  context.addImplicitFiles(inputs);
+  InputGraph::FileVectorT implicitFiles;
+  context.createImplicitFiles(implicitFiles);
+  if (implicitFiles.size())
+    fileNode->addFiles(std::move(implicitFiles));
 
-  // assign an ordinal to each file so sort() can preserve command line order
-  inputs.assignFileOrdinals();
+  context.inputGraph().insertOneElementAt(std::move(fileNode),
+                                          InputGraph::Position::BEGIN);
+
+  context.inputGraph().assignOrdinals();
+
+  context.inputGraph().doPostProcess();
 
   // Do core linking.
   ScopedTask resolveTask(getDefaultDomain(), "Resolve");
-  Resolver resolver(context, inputs);
-  if (resolver.resolve()) {
-    if (!context.allowRemainingUndefines())
-      return false;
-  }
-  MutableFile &merged = resolver.resultFile();
+  Resolver resolver(context);
+  if (!resolver.resolve())
+    return false;
+  std::unique_ptr<MutableFile> merged = resolver.resultFile();
   resolveTask.end();
 
   // Run passes on linked atoms.
   ScopedTask passTask(getDefaultDomain(), "Passes");
   PassManager pm;
   context.addPasses(pm);
+
+#ifndef NDEBUG
+  llvm::Optional<std::string> env = llvm::sys::Process::GetEnv("LLD_RUN_ROUNDTRIP_TEST");
+  if (env.hasValue() && !env.getValue().empty()) {
+    pm.add(std::unique_ptr<Pass>(new RoundTripYAMLPass(context)));
+    pm.add(std::unique_ptr<Pass>(new RoundTripNativePass(context)));
+  }
+#endif
+
   pm.runOnFile(merged);
   passTask.end();
 
   // Give linked atoms to Writer to generate output file.
   ScopedTask writeTask(getDefaultDomain(), "Write");
-  if (error_code ec = context.writeFile(merged)) {
+  if (error_code ec = context.writeFile(*merged)) {
     diagnostics << "Failed to write file '" << context.outputPath()
                 << "': " << ec.message() << "\n";
     return false;

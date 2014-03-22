@@ -28,6 +28,8 @@
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/Target.h"
 
+#include "llvm/ADT/StringRef.h"
+
 #include <vector>
 
 using namespace lldb;
@@ -60,14 +62,6 @@ CheckTargetForWatchpointOperations(Target *target, CommandReturnObject &result)
     }
     // Target passes our checks, return true.
     return true;
-}
-
-// FIXME: This doesn't seem to be the right place for this functionality.
-#include "llvm/ADT/StringRef.h"
-static inline void StripLeadingSpaces(llvm::StringRef &Str)
-{
-    while (!Str.empty() && isspace(Str[0]))
-        Str = Str.substr(1);
 }
 
 // Equivalent class: {"-", "to", "To", "TO"} of range specifier array.
@@ -397,7 +391,7 @@ protected:
         {
             // No watchpoint selected; enable all currently set watchpoints.
             target->EnableAllWatchpoints();
-            result.AppendMessageWithFormat("All watchpoints enabled. (%lu watchpoints)\n", num_watchpoints);
+            result.AppendMessageWithFormat("All watchpoints enabled. (%" PRIu64 " watchpoints)\n", (uint64_t)num_watchpoints);
             result.SetStatus(eReturnStatusSuccessFinishNoResult);
         }
         else
@@ -476,7 +470,7 @@ protected:
             // No watchpoint selected; disable all currently set watchpoints.
             if (target->DisableAllWatchpoints())
             {
-                result.AppendMessageWithFormat("All watchpoints disabled. (%lu watchpoints)\n", num_watchpoints);
+                result.AppendMessageWithFormat("All watchpoints disabled. (%" PRIu64 " watchpoints)\n", (uint64_t)num_watchpoints);
                 result.SetStatus(eReturnStatusSuccessFinishNoResult);
             }
             else
@@ -564,7 +558,7 @@ protected:
             else
             {
                 target->RemoveAllWatchpoints();
-                result.AppendMessageWithFormat("All watchpoints removed. (%lu watchpoints)\n", num_watchpoints);
+                result.AppendMessageWithFormat("All watchpoints removed. (%" PRIu64 " watchpoints)\n", (uint64_t)num_watchpoints);
             }
             result.SetStatus (eReturnStatusSuccessFinishNoResult);
         }
@@ -706,7 +700,7 @@ protected:
         if (command.GetArgumentCount() == 0)
         {
             target->IgnoreAllWatchpoints(m_options.m_ignore_count);
-            result.AppendMessageWithFormat("All watchpoints ignored. (%lu watchpoints)\n", num_watchpoints);
+            result.AppendMessageWithFormat("All watchpoints ignored. (%" PRIu64 " watchpoints)\n", (uint64_t)num_watchpoints);
             result.SetStatus (eReturnStatusSuccessFinishNoResult);
         }
         else
@@ -939,7 +933,7 @@ public:
         SetHelpLong(
     "Examples: \n\
     \n\
-        watchpoint set variable -w read_wriate my_global_var \n\
+        watchpoint set variable -w read_write my_global_var \n\
         # Watch my_global_var for read/write access, with the region to watch corresponding to the byte size of the data type.\n");
 
         CommandArgumentEntry arg;
@@ -1099,8 +1093,8 @@ protected:
         }
         else
         {
-            result.AppendErrorWithFormat("Watchpoint creation failed (addr=0x%" PRIx64 ", size=%lu, variable expression='%s').\n",
-                                         addr, size, command.GetArgumentAtIndex(0));
+            result.AppendErrorWithFormat("Watchpoint creation failed (addr=0x%" PRIx64 ", size=%" PRIu64 ", variable expression='%s').\n",
+                                         addr, (uint64_t)size, command.GetArgumentAtIndex(0));
             if (error.AsCString(NULL))
                 result.AppendError(error.AsCString());
             result.SetStatus(eReturnStatusFailed);
@@ -1256,11 +1250,11 @@ protected:
 
         // Use expression evaluation to arrive at the address to watch.
         EvaluateExpressionOptions options;
-        options.SetCoerceToId(false)
-        .SetUnwindOnError(true)
-        .SetKeepInMemory(false)
-        .SetRunOthers(true)
-        .SetTimeoutUsec(0);
+        options.SetCoerceToId(false);
+        options.SetUnwindOnError(true);
+        options.SetKeepInMemory(false);
+        options.SetTryAllThreads(true);
+        options.SetTimeoutUsec(0);
         
         ExecutionResults expr_result = target->EvaluateExpression (expr, 
                                                                    frame, 
@@ -1308,8 +1302,8 @@ protected:
         }
         else
         {
-            result.AppendErrorWithFormat("Watchpoint creation failed (addr=0x%" PRIx64 ", size=%lu).\n",
-                                         addr, size);
+            result.AppendErrorWithFormat("Watchpoint creation failed (addr=0x%" PRIx64 ", size=%" PRIu64 ").\n",
+                                         addr, (uint64_t)size);
             if (error.AsCString(NULL))
                 result.AppendError(error.AsCString());
             result.SetStatus(eReturnStatusFailed);

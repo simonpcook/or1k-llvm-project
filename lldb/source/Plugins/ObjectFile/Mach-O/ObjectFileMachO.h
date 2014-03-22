@@ -89,6 +89,11 @@ public:
     virtual bool
     ParseHeader ();
 
+    virtual bool
+    SetLoadAddress(lldb_private::Target &target,
+                   lldb::addr_t value,
+                   bool value_is_offset);
+    
     virtual lldb::ByteOrder
     GetByteOrder () const;
     
@@ -152,13 +157,18 @@ public:
     virtual uint32_t
     GetVersion (uint32_t *versions, uint32_t num_versions);
 
-protected:
-
+    virtual uint32_t
+    GetMinimumOSVersion (uint32_t *versions, uint32_t num_versions);
+    
+    virtual uint32_t
+    GetSDKVersion (uint32_t *versions, uint32_t num_versions);
+    
     static bool
     ParseHeader (lldb_private::DataExtractor &data,
                  lldb::offset_t *data_offset_ptr,
                  llvm::MachO::mach_header &header);
     
+protected:
     
     static bool
     GetUUID (const llvm::MachO::mach_header &header,
@@ -192,6 +202,8 @@ protected:
     llvm::MachO::dysymtab_command m_dysymtab;
     std::vector<llvm::MachO::segment_command_64> m_mach_segments;
     std::vector<llvm::MachO::section_64> m_mach_sections;
+    std::vector<uint32_t> m_min_os_versions;
+    std::vector<uint32_t> m_sdk_versions;
     typedef lldb_private::RangeVector<uint32_t, uint32_t> FileRangeArray;
     lldb_private::Address  m_entry_point_address;
     FileRangeArray m_thread_context_offsets;

@@ -148,6 +148,12 @@ public:
 
     bool
     SetPlatformFileSpec (const lldb::SBFileSpec &platform_file);
+             
+    lldb::SBFileSpec
+    GetRemoteInstallFileSpec ();
+
+    bool
+    SetRemoteInstallFileSpec (lldb::SBFileSpec &file);
 
     %feature("docstring", "Returns the UUID of the module as a Python string."
     ) GetUUIDString;
@@ -223,6 +229,9 @@ public:
 
     lldb::SBTypeList
     FindTypes (const char* type);
+
+    lldb::SBType
+    GetTypeByID (lldb::user_id_t uid);
 
     lldb::SBType
     GetBasicType(lldb::BasicType type);

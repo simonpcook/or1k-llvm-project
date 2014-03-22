@@ -20,6 +20,7 @@
 #include "lldb/Core/Stream.h"
 #include "lldb/Core/StreamFile.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
+#include "lldb/Target/SystemRuntime.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Symbol/SymbolContext.h"
@@ -432,7 +433,6 @@ SBThread::SetThread (const ThreadSP& lldb_object_sp)
     m_opaque_sp->SetThreadSP (lldb_object_sp);
 }
 
-
 lldb::tid_t
 SBThread::GetThreadID () const
 {
@@ -507,6 +507,34 @@ SBThread::GetQueueName () const
     return name;
 }
 
+lldb::queue_id_t
+SBThread::GetQueueID () const
+{
+    queue_id_t id = LLDB_INVALID_QUEUE_ID;
+    Mutex::Locker api_locker;
+    ExecutionContext exe_ctx (m_opaque_sp.get(), api_locker);
+
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
+    if (exe_ctx.HasThreadScope())
+    {
+        Process::StopLocker stop_locker;
+        if (stop_locker.TryLock(&exe_ctx.GetProcessPtr()->GetRunLock()))
+        {
+            id = exe_ctx.GetThreadPtr()->GetQueueID();
+        }
+        else
+        {
+            if (log)
+                log->Printf ("SBThread(%p)::GetQueueID() => error: process is running", exe_ctx.GetThreadPtr());
+        }
+    }
+    
+    if (log)
+        log->Printf ("SBThread(%p)::GetQueueID () => 0x%" PRIx64, exe_ctx.GetThreadPtr(), id);
+
+    return id;
+}
+
 SBError
 SBThread::ResumeNewPlan (ExecutionContext &exe_ctx, ThreadPlan *new_plan)
 {
@@ -573,11 +601,13 @@ SBThread::StepOver (lldb::RunMode stop_other_threads)
         {
             if (frame_sp->HasDebugInformation ())
             {
+                const LazyBool avoid_no_debug = eLazyBoolCalculate;
                 SymbolContext sc(frame_sp->GetSymbolContext(eSymbolContextEverything));
                 new_plan_sp = thread->QueueThreadPlanForStepOverRange (abort_other_plans,
                                                                     sc.line_entry.range,
                                                                     sc,
-                                                                    stop_other_threads);
+                                                                    stop_other_threads,
+                                                                    avoid_no_debug);
             }
             else
             {
@@ -622,14 +652,16 @@ SBThread::StepInto (const char *target_name, lldb::RunMode stop_other_threads)
 
         if (frame_sp && frame_sp->HasDebugInformation ())
         {
-            bool avoid_code_without_debug_info = true;
+            const LazyBool step_out_avoids_code_without_debug_info = eLazyBoolCalculate;
+            const LazyBool step_in_avoids_code_without_debug_info = eLazyBoolCalculate;
             SymbolContext sc(frame_sp->GetSymbolContext(eSymbolContextEverything));
             new_plan_sp = thread->QueueThreadPlanForStepInRange (abort_other_plans,
                                                               sc.line_entry.range,
                                                               sc,
                                                               target_name,
                                                               stop_other_threads,
-                                                              avoid_code_without_debug_info);
+                                                              step_in_avoids_code_without_debug_info,
+                                                              step_out_avoids_code_without_debug_info);
         }
         else
         {
@@ -662,13 +694,15 @@ SBThread::StepOut ()
 
         Thread *thread = exe_ctx.GetThreadPtr();
 
+        const LazyBool avoid_no_debug = eLazyBoolCalculate;
         ThreadPlanSP new_plan_sp(thread->QueueThreadPlanForStepOut (abort_other_plans,
                                                                   NULL, 
                                                                   false, 
                                                                   stop_other_threads, 
                                                                   eVoteYes, 
                                                                   eVoteNoOpinion,
-                                                                  0));
+                                                                  0,
+                                                                  avoid_no_debug));
                                                                   
         // This returns an error, we should use it!
         ResumeNewPlan (exe_ctx, new_plan_sp.get());
@@ -1251,4 +1285,69 @@ SBThread::GetDescription (SBStream &description) const
         strm.PutCString ("No value");
     
     return true;
+}
+
+SBThread
+SBThread::GetExtendedBacktraceThread (const char *type)
+{
+    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
+    Mutex::Locker api_locker;
+    ExecutionContext exe_ctx (m_opaque_sp.get(), api_locker);
+    SBThread sb_origin_thread;
+
+    if (exe_ctx.HasThreadScope())
+    {
+        Process::StopLocker stop_locker;
+        if (stop_locker.TryLock(&exe_ctx.GetProcessPtr()->GetRunLock()))
+        {
+            ThreadSP real_thread(exe_ctx.GetThreadSP());
+            if (real_thread)
+            {
+                ConstString type_const (type);
+                Process *process = exe_ctx.GetProcessPtr();
+                if (process)
+                {
+                    SystemRuntime *runtime = process->GetSystemRuntime();
+                    if (runtime)
+                    {
+                        ThreadSP new_thread_sp (runtime->GetExtendedBacktraceThread (real_thread, type_const));
+                        if (new_thread_sp)
+                        {
+                            // Save this in the Process' ExtendedThreadList so a strong pointer retains the
+                            // object.
+                            process->GetExtendedThreadList().AddThread (new_thread_sp);
+                            sb_origin_thread.SetThread (new_thread_sp);
+                            if (log)
+                            {
+                                const char *queue_name = new_thread_sp->GetQueueName();
+                                if (queue_name == NULL)
+                                    queue_name = "";
+                                log->Printf ("SBThread(%p)::GetExtendedBacktraceThread() => new extended Thread created (%p) with queue_id 0x%" PRIx64 " queue name '%s'", exe_ctx.GetThreadPtr(), new_thread_sp.get(), new_thread_sp->GetQueueID(), queue_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            if (log)
+                log->Printf ("SBThread(%p)::GetExtendedBacktraceThread() => error: process is running", exe_ctx.GetThreadPtr());
+        }
+    }
+
+    if (log && sb_origin_thread.IsValid() == false)
+    {
+        log->Printf("SBThread(%p)::GetExtendedBacktraceThread() is not returning a Valid thread", exe_ctx.GetThreadPtr());
+    }
+    return sb_origin_thread;
+}
+
+uint32_t
+SBThread::GetExtendedBacktraceOriginatingIndexID ()
+{
+    ThreadSP thread_sp(m_opaque_sp->GetThreadSP());
+    if (thread_sp)
+        return thread_sp->GetExtendedBacktraceOriginatingIndexID();
+    return LLDB_INVALID_INDEX32;
 }

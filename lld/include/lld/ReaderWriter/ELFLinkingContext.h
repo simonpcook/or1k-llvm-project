@@ -14,6 +14,7 @@
 #include "lld/Core/PassManager.h"
 #include "lld/Core/Pass.h"
 #include "lld/Core/range.h"
+#include "lld/Core/STDExtras.h"
 
 #include "lld/ReaderWriter/Reader.h"
 #include "lld/ReaderWriter/Writer.h"
@@ -22,6 +23,7 @@
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/ELF.h"
 
+#include <map>
 #include <memory>
 
 namespace lld {
@@ -35,6 +37,13 @@ template <typename ELFT> class TargetHandler;
 class TargetHandlerBase {
 public:
   virtual ~TargetHandlerBase() {}
+  virtual void registerRelocationNames(Registry &) = 0;
+
+  virtual std::unique_ptr<Reader> getObjReader(bool) = 0;
+
+  virtual std::unique_ptr<Reader> getDSOReader(bool) = 0;
+
+  virtual std::unique_ptr<Writer> getWriter() = 0;
 };
 
 class ELFLinkingContext : public LinkingContext {
@@ -44,9 +53,9 @@ public:
   /// creates.
   enum class OutputMagic : uint8_t {
     DEFAULT, // The default mode, no specific magic set
-    NMAGIC,  // Disallow shared libraries and dont align sections
+    NMAGIC,  // Disallow shared libraries and don't align sections
              // PageAlign Data, Mark Text Segment/Data segment RW
-    OMAGIC   // Disallow shared libraries and dont align sections,
+    OMAGIC   // Disallow shared libraries and don't align sections,
              // Mark Text Segment/Data segment RW
   };
 
@@ -77,7 +86,7 @@ public:
                                    const Reference &) const {
     return false;
   }
-  virtual bool validateImpl(raw_ostream &diagnostics);
+  bool validateImpl(raw_ostream &diagnostics) override;
 
   /// \brief Does the linker allow dynamic libraries to be linked with ?
   /// This is true when the output mode of the executable is set to be
@@ -89,11 +98,10 @@ public:
     return true;
   }
 
-  virtual error_code
-  parseFile(LinkerInput &input,
-            std::vector<std::unique_ptr<File> > &result) const;
-
   static std::unique_ptr<ELFLinkingContext> create(llvm::Triple);
+
+  /// \brief Use Elf_Rela format to output relocation tables.
+  virtual bool isRelaOutputFormat() const { return true; }
 
   /// \brief Does this relocation belong in the dynamic plt relocation table?
   ///
@@ -121,6 +129,11 @@ public:
   /// \brief Does the output have dynamic sections.
   virtual bool isDynamic() const;
 
+  /// \brief Are we creating a shared library ?
+  virtual bool isDynamicLibrary() const {
+    return _outputELFType == llvm::ELF::ET_DYN;
+  }
+
   /// \brief Is the relocation a relative relocation
   virtual bool isRelativeReloc(const Reference &r) const;
 
@@ -130,7 +143,8 @@ public:
     return static_cast<lld::elf::TargetHandler<ELFT> &>(*_targetHandler.get());
   }
 
-  virtual void addPasses(PassManager &pm) const;
+  TargetHandlerBase *targetHandler() const { return _targetHandler.get(); }
+  void addPasses(PassManager &pm) override;
 
   void setTriple(llvm::Triple trip) { _triple = trip; }
   void setNoInhibitExec(bool v) { _noInhibitExec = v; }
@@ -156,12 +170,10 @@ public:
   virtual void setNoAllowDynamicLibraries() { _noAllowDynamicLibraries = true; }
 
   /// Searches directories for a match on the input File
-  llvm::ErrorOr<StringRef>
-  searchLibrary(StringRef libName,
-                const std::vector<StringRef> &searchPath) const;
+  ErrorOr<StringRef> searchLibrary(StringRef libName) const;
 
   /// Get the entry symbol name
-  virtual StringRef entrySymbolName() const;
+  StringRef entrySymbolName() const override;
 
   /// add to the list of initializer functions
   void addInitFunction(StringRef name) { _initFunctions.push_back(name); }
@@ -206,16 +218,37 @@ public:
     return _rpathLinkList;
   }
 
+  bool addUndefinedAtomsFromSharedLibrary(const SharedLibraryFile *s) override {
+    if (_undefinedAtomsFromFile.find(s) != _undefinedAtomsFromFile.end())
+      return false;
+    _undefinedAtomsFromFile[s] = true;
+    return true;
+  }
+
+  /// \brief Helper function to allocate strings.
+  StringRef allocateString(StringRef ref) const {
+    char *x = _allocator.Allocate<char>(ref.size() + 1);
+    memcpy(x, ref.data(), ref.size());
+    x[ref.size()] = '\0';
+    return x;
+  }
+
+  // add search path to list.
+  virtual bool addSearchPath(StringRef ref) {
+    _inputSearchPaths.push_back(ref);
+    return true;
+  }
+
 private:
   ELFLinkingContext() LLVM_DELETED_FUNCTION;
 
 protected:
   ELFLinkingContext(llvm::Triple, std::unique_ptr<TargetHandlerBase>);
 
-  virtual Writer &writer() const;
+  Writer &writer() const override;
 
   /// Method to create a internal file for an undefined symbol
-  virtual std::unique_ptr<File> createUndefinedSymbolFile();
+  std::unique_ptr<File> createUndefinedSymbolFile() const override;
 
   uint16_t _outputELFType; // e.g ET_EXEC
   llvm::Triple _triple;
@@ -230,10 +263,7 @@ protected:
   bool _noAllowDynamicLibraries;
   OutputMagic _outputMagic;
   StringRefVector _inputSearchPaths;
-  mutable llvm::BumpPtrAllocator _alloc;
-  std::unique_ptr<Reader> _elfReader;
   std::unique_ptr<Writer> _writer;
-  std::unique_ptr<Reader> _linkerScriptReader;
   StringRef _dynamicLinkerPath;
   StringRefVector _initFunctions;
   StringRefVector _finiFunctions;
@@ -241,6 +271,7 @@ protected:
   StringRef _soname;
   StringRefVector _rpathList;
   StringRefVector _rpathLinkList;
+  std::map<const SharedLibraryFile *, bool> _undefinedAtomsFromFile;
 };
 } // end namespace lld
 

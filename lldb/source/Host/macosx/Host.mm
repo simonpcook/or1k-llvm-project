@@ -363,7 +363,7 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //    StreamFile command_file;
 //    command_file.GetFile().Open (temp_file_path, 
 //                                 File::eOpenOptionWrite | File::eOpenOptionCanCreate,
-//                                 File::ePermissionsDefault);
+//                                 lldb::eFilePermissionsDefault);
 //    
 //    if (!command_file.GetFile().IsValid())
 //        return LLDB_INVALID_PROCESS_ID;
@@ -994,9 +994,6 @@ Host::GetOSKernelDescription (std::string &s)
     s.clear();
     return false;
 }
-    
-#include <libxml/parser.h>
-#include <libxml/tree.h>
 
 bool
 Host::GetOSVersion 
@@ -1006,86 +1003,70 @@ Host::GetOSVersion
     uint32_t &update
 )
 {
-    static const char *version_plist_file = "/System/Library/CoreServices/SystemVersion.plist";
-    char buffer[256];
-    const char *product_version_str = NULL;
-    
-    CFCReleaser<CFURLRef> plist_url(CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
-                                                                            (UInt8 *) version_plist_file,
-                                                                            strlen (version_plist_file), NO));
-    if (plist_url.get())
+    static uint32_t g_major = 0;
+    static uint32_t g_minor = 0;
+    static uint32_t g_update = 0;
+
+    if (g_major == 0)
     {
-        CFCReleaser<CFPropertyListRef> property_list;
-        CFCReleaser<CFStringRef>       error_string;
-        CFCReleaser<CFDataRef>         resource_data;
-        SInt32                         error_code;
- 
-        // Read the XML file.
-        if (CFURLCreateDataAndPropertiesFromResource (kCFAllocatorDefault,
-                                                      plist_url.get(),
-                                                      resource_data.ptr_address(),
-                                                      NULL,
-                                                      NULL,
-                                                      &error_code))
+        static const char *version_plist_file = "/System/Library/CoreServices/SystemVersion.plist";
+        char buffer[256];
+        const char *product_version_str = NULL;
+        
+        CFCReleaser<CFURLRef> plist_url(CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+                                                                                (UInt8 *) version_plist_file,
+                                                                                strlen (version_plist_file), NO));
+        if (plist_url.get())
         {
-               // Reconstitute the dictionary using the XML data.
-            property_list = CFPropertyListCreateFromXMLData (kCFAllocatorDefault,
-                                                              resource_data.get(),
-                                                              kCFPropertyListImmutable,
-                                                              error_string.ptr_address());
-            if (CFGetTypeID(property_list.get()) == CFDictionaryGetTypeID())
+            CFCReleaser<CFPropertyListRef> property_list;
+            CFCReleaser<CFStringRef>       error_string;
+            CFCReleaser<CFDataRef>         resource_data;
+            SInt32                         error_code;
+     
+            // Read the XML file.
+            if (CFURLCreateDataAndPropertiesFromResource (kCFAllocatorDefault,
+                                                          plist_url.get(),
+                                                          resource_data.ptr_address(),
+                                                          NULL,
+                                                          NULL,
+                                                          &error_code))
             {
-                CFDictionaryRef property_dict = (CFDictionaryRef) property_list.get();
-                CFStringRef product_version_key = CFSTR("ProductVersion");
-                CFPropertyListRef product_version_value;
-                product_version_value = CFDictionaryGetValue(property_dict, product_version_key);
-                if (product_version_value && CFGetTypeID(product_version_value) == CFStringGetTypeID())
+                   // Reconstitute the dictionary using the XML data.
+                property_list = CFPropertyListCreateFromXMLData (kCFAllocatorDefault,
+                                                                  resource_data.get(),
+                                                                  kCFPropertyListImmutable,
+                                                                  error_string.ptr_address());
+                if (CFGetTypeID(property_list.get()) == CFDictionaryGetTypeID())
                 {
-                    CFStringRef product_version_cfstr = (CFStringRef) product_version_value;
-                    product_version_str = CFStringGetCStringPtr(product_version_cfstr, kCFStringEncodingUTF8);
-                    if (product_version_str != NULL) {
-                        if (CFStringGetCString(product_version_cfstr, buffer, 256, kCFStringEncodingUTF8))
-                            product_version_str = buffer;
+                    CFDictionaryRef property_dict = (CFDictionaryRef) property_list.get();
+                    CFStringRef product_version_key = CFSTR("ProductVersion");
+                    CFPropertyListRef product_version_value;
+                    product_version_value = CFDictionaryGetValue(property_dict, product_version_key);
+                    if (product_version_value && CFGetTypeID(product_version_value) == CFStringGetTypeID())
+                    {
+                        CFStringRef product_version_cfstr = (CFStringRef) product_version_value;
+                        product_version_str = CFStringGetCStringPtr(product_version_cfstr, kCFStringEncodingUTF8);
+                        if (product_version_str != NULL) {
+                            if (CFStringGetCString(product_version_cfstr, buffer, 256, kCFStringEncodingUTF8))
+                                product_version_str = buffer;
+                        }
                     }
                 }
             }
         }
+        if (product_version_str)
+            Args::StringToVersion(product_version_str, g_major, g_minor, g_update);
     }
     
-
-    if (product_version_str)
+    if (g_major != 0)
     {
-        Args::StringToVersion(product_version_str, major, minor, update);
+        major = g_major;
+        minor = g_minor;
+        update = g_update;
         return true;
     }
-    else
-        return false;
-
-}
-
-static bool
-GetMacOSXProcessName (const ProcessInstanceInfoMatch *match_info_ptr,
-                      ProcessInstanceInfo &process_info)
-{
-    if (process_info.ProcessIDIsValid())
-    {
-        char process_name[MAXCOMLEN * 2 + 1];
-        int name_len = ::proc_name(process_info.GetProcessID(), process_name, MAXCOMLEN * 2);
-        if (name_len == 0)
-            return false;
-        
-        if (match_info_ptr == NULL || NameMatches(process_name,
-                                                  match_info_ptr->GetNameMatchType(),
-                                                  match_info_ptr->GetProcessInfo().GetName()))
-        {
-            process_info.GetExecutableFile().SetFile (process_name, false);
-            return true;
-        }
-    }
-    process_info.GetExecutableFile().Clear();
     return false;
 }
-
 
 static bool
 GetMacOSXProcessCPUType (ProcessInstanceInfo &process_info)
@@ -1313,30 +1294,6 @@ Host::GetProcessInfo (lldb::pid_t pid, ProcessInstanceInfo &process_info)
     return false;
 }
 
-static short
-GetPosixspawnFlags (ProcessLaunchInfo &launch_info)
-{
-    short flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
-    if (launch_info.GetFlags().Test (eLaunchFlagExec))
-        flags |= POSIX_SPAWN_SETEXEC;           // Darwin specific posix_spawn flag
-    
-    if (launch_info.GetFlags().Test (eLaunchFlagDebug))
-        flags |= POSIX_SPAWN_START_SUSPENDED;   // Darwin specific posix_spawn flag
-    
-    if (launch_info.GetFlags().Test (eLaunchFlagDisableASLR))
-        flags |= _POSIX_SPAWN_DISABLE_ASLR;     // Darwin specific posix_spawn flag
-        
-    if (launch_info.GetLaunchInSeparateProcessGroup())
-        flags |= POSIX_SPAWN_SETPGROUP;
-    
-//#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
-//    // Close all files exception those with file actions if this is supported.
-//    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;       
-//#endif
-    
-    return flags;
-}
-
 #if !NO_XPC_SERVICES
 static void
 PackageXPCArguments (xpc_object_t message, const char *prefix, const Args& args)
@@ -1517,7 +1474,22 @@ LaunchProcessXPC (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t 
     
     // Posix spawn stuff.
     xpc_dictionary_set_int64(message, LauncherXPCServiceCPUTypeKey, launch_info.GetArchitecture().GetMachOCPUType());
-    xpc_dictionary_set_int64(message, LauncherXPCServicePosixspawnFlagsKey, GetPosixspawnFlags(launch_info));
+    xpc_dictionary_set_int64(message, LauncherXPCServicePosixspawnFlagsKey, Host::GetPosixspawnFlags(launch_info));
+    const ProcessLaunchInfo::FileAction *file_action = launch_info.GetFileActionForFD(STDIN_FILENO);
+    if (file_action && file_action->GetPath())
+    {
+        xpc_dictionary_set_string(message, LauncherXPCServiceStdInPathKeyKey, file_action->GetPath());
+    }
+    file_action = launch_info.GetFileActionForFD(STDOUT_FILENO);
+    if (file_action && file_action->GetPath())
+    {
+        xpc_dictionary_set_string(message, LauncherXPCServiceStdOutPathKeyKey, file_action->GetPath());
+    }
+    file_action = launch_info.GetFileActionForFD(STDERR_FILENO);
+    if (file_action && file_action->GetPath())
+    {
+        xpc_dictionary_set_string(message, LauncherXPCServiceStdErrPathKeyKey, file_action->GetPath());
+    }
     
     xpc_object_t reply = xpc_connection_send_message_with_reply_sync(conn, message);
     xpc_type_t returnType = xpc_get_type(reply);
@@ -1560,200 +1532,19 @@ LaunchProcessXPC (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t 
 #endif
 }
 
-static Error
-LaunchProcessPosixSpawn (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t &pid)
-{
-    Error error;
-    Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_HOST | LIBLLDB_LOG_PROCESS));
-    
-    posix_spawnattr_t attr;
-    error.SetError( ::posix_spawnattr_init (&attr), eErrorTypePOSIX);
-    
-    if (error.Fail() || log)
-        error.PutToLog(log, "::posix_spawnattr_init ( &attr )");
-    if (error.Fail())
-        return error;
-
-    // Make a quick class that will cleanup the posix spawn attributes in case
-    // we return in the middle of this function.
-    lldb_utility::CleanUp <posix_spawnattr_t *, int> posix_spawnattr_cleanup(&attr, posix_spawnattr_destroy);
-    
-    sigset_t no_signals;
-    sigset_t all_signals;
-    sigemptyset (&no_signals);
-    sigfillset (&all_signals);
-    ::posix_spawnattr_setsigmask(&attr, &no_signals);
-    ::posix_spawnattr_setsigdefault(&attr, &all_signals);
-
-    short flags = GetPosixspawnFlags(launch_info);
-    error.SetError( ::posix_spawnattr_setflags (&attr, flags), eErrorTypePOSIX);
-    if (error.Fail() || log)
-        error.PutToLog(log, "::posix_spawnattr_setflags ( &attr, flags=0x%8.8x )", flags);
-    if (error.Fail())
-        return error;
-    
-#if !defined(__arm__)
-    
-    // We don't need to do this for ARM, and we really shouldn't now that we
-    // have multiple CPU subtypes and no posix_spawnattr call that allows us
-    // to set which CPU subtype to launch...
-    const ArchSpec &arch_spec = launch_info.GetArchitecture();
-    cpu_type_t cpu = arch_spec.GetMachOCPUType();
-    if (cpu != 0 && 
-        cpu != UINT32_MAX && 
-        cpu != LLDB_INVALID_CPUTYPE)
-    {
-        size_t ocount = 0;
-        error.SetError( ::posix_spawnattr_setbinpref_np (&attr, 1, &cpu, &ocount), eErrorTypePOSIX);
-        if (error.Fail() || log)
-            error.PutToLog(log, "::posix_spawnattr_setbinpref_np ( &attr, 1, cpu_type = 0x%8.8x, count => %llu )", cpu, (uint64_t)ocount);
-        
-        if (error.Fail() || ocount != 1)
-            return error;
-    }
-    
-#endif
-    
-    const char *tmp_argv[2];
-    char * const *argv = (char * const*)launch_info.GetArguments().GetConstArgumentVector();
-    char * const *envp = (char * const*)launch_info.GetEnvironmentEntries().GetConstArgumentVector();
-    if (argv == NULL)
-    {
-        // posix_spawn gets very unhappy if it doesn't have at least the program
-        // name in argv[0]. One of the side affects I have noticed is the environment
-        // variables don't make it into the child process if "argv == NULL"!!!
-        tmp_argv[0] = exe_path;
-        tmp_argv[1] = NULL;
-        argv = (char * const*)tmp_argv;
-    }
-
-    const char *working_dir = launch_info.GetWorkingDirectory();
-    if (working_dir)
-    {
-        // No more thread specific current working directory
-        if (__pthread_chdir (working_dir) < 0) {
-            if (errno == ENOENT) {
-                error.SetErrorStringWithFormat("No such file or directory: %s", working_dir);
-            } else if (errno == ENOTDIR) {
-                error.SetErrorStringWithFormat("Path doesn't name a directory: %s", working_dir);
-            } else {
-                error.SetErrorStringWithFormat("An unknown error occurred when changing directory for process execution.");
-            }
-            return error;
-        }
-    }
-    
-    const size_t num_file_actions = launch_info.GetNumFileActions ();
-    if (num_file_actions > 0)
-    {
-        posix_spawn_file_actions_t file_actions;
-        error.SetError( ::posix_spawn_file_actions_init (&file_actions), eErrorTypePOSIX);
-        if (error.Fail() || log)
-            error.PutToLog(log, "::posix_spawn_file_actions_init ( &file_actions )");
-        if (error.Fail())
-            return error;
-
-        // Make a quick class that will cleanup the posix spawn attributes in case
-        // we return in the middle of this function.
-        lldb_utility::CleanUp <posix_spawn_file_actions_t *, int> posix_spawn_file_actions_cleanup (&file_actions, posix_spawn_file_actions_destroy);
-
-        for (size_t i=0; i<num_file_actions; ++i)
-        {
-            const ProcessLaunchInfo::FileAction *launch_file_action = launch_info.GetFileActionAtIndex(i);
-            if (launch_file_action)
-            {
-                if (!ProcessLaunchInfo::FileAction::AddPosixSpawnFileAction (&file_actions,
-                                                                             launch_file_action,
-                                                                             log,
-                                                                             error))
-                    return error;
-            }
-        }
-        
-        error.SetError (::posix_spawnp (&pid, 
-                                        exe_path, 
-                                        &file_actions, 
-                                        &attr, 
-                                        argv,
-                                        envp),
-                        eErrorTypePOSIX);
-
-        if (error.Fail() || log)
-        {
-            error.PutToLog(log, "::posix_spawnp ( pid => %i, path = '%s', file_actions = %p, attr = %p, argv = %p, envp = %p )",
-                           pid, 
-                           exe_path, 
-                           &file_actions, 
-                           &attr, 
-                           argv, 
-                           envp);
-            if (log)
-            {
-                for (int ii=0; argv[ii]; ++ii)
-                    log->Printf("argv[%i] = '%s'", ii, argv[ii]);
-            }
-        }
-
-    }
-    else
-    {
-        error.SetError (::posix_spawnp (&pid, 
-                                        exe_path, 
-                                        NULL, 
-                                        &attr, 
-                                        argv,
-                                        envp),
-                        eErrorTypePOSIX);
-
-        if (error.Fail() || log)
-        {
-            error.PutToLog(log, "::posix_spawnp ( pid => %i, path = '%s', file_actions = NULL, attr = %p, argv = %p, envp = %p )",
-                           pid, 
-                           exe_path, 
-                           &attr, 
-                           argv, 
-                           envp);
-            if (log)
-            {
-                for (int ii=0; argv[ii]; ++ii)
-                    log->Printf("argv[%i] = '%s'", ii, argv[ii]);
-            }
-        }
-    }
-    
-    if (working_dir)
-    {
-        // No more thread specific current working directory
-        __pthread_fchdir (-1);
-    }
-    
-    return error;
-}
-
 static bool
-ShouldLaunchUsingXPC(const char *exe_path, ProcessLaunchInfo &launch_info)
+ShouldLaunchUsingXPC(ProcessLaunchInfo &launch_info)
 {
     bool result = false;
 
 #if !NO_XPC_SERVICES    
-    const char *debugserver = "/debugserver";
-    int len = strlen(debugserver);
-    int exe_len = strlen(exe_path);
-    if (exe_len >= len)
+    bool launchingAsRoot = launch_info.GetUserID() == 0;
+    bool currentUserIsRoot = Host::GetEffectiveUserID() == 0;
+    
+    if (launchingAsRoot && !currentUserIsRoot)
     {
-        const char *part = exe_path + (exe_len - len);
-        if (strcmp(part, debugserver) == 0)
-        {
-            // We are dealing with debugserver.
-            bool launchingAsRoot = launch_info.GetUserID() == 0;
-            bool currentUserIsRoot = Host::GetEffectiveUserID() == 0;
-            
-            if (launchingAsRoot && !currentUserIsRoot)
-            {
-                // If current user is already root, we don't need XPC's help.
-                result = true;
-            }
-        }
+        // If current user is already root, we don't need XPC's help.
+        result = true;
     }
 #endif
     
@@ -1810,7 +1601,7 @@ Host::LaunchProcess (ProcessLaunchInfo &launch_info)
     
     ::pid_t pid = LLDB_INVALID_PROCESS_ID;
     
-    if (ShouldLaunchUsingXPC(exe_path, launch_info))
+    if (ShouldLaunchUsingXPC(launch_info))
     {
         error = LaunchProcessXPC(exe_path, launch_info, pid);
     }
@@ -1984,10 +1775,3 @@ Host::GetAuxvData(lldb_private::Process *process)
 {
     return lldb::DataBufferSP();
 }
-
-uint32_t
-Host::MakeDirectory (const char* path, mode_t mode)
-{
-    return ::mkdir(path,mode);
-}
-

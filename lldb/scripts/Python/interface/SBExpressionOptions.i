@@ -71,6 +71,20 @@ public:
     void
     SetTryAllThreads (bool run_others = true);
     
+    bool
+    GetStopOthers () const;
+    
+    %feature("docstring", "Sets whether to stop other threads at all while running expressins.  If false, TryAllThreads does nothing.") SetTryAllThreads;
+    void
+    SetStopOthers (bool stop_others = true);
+    
+    bool
+    GetTrapExceptions () const;
+    
+    %feature("docstring", "Sets whether to abort expression evaluation if an exception is thrown while executing.  Don't set this to false unless you know the function you are calling traps all exceptions itself.") SetTryAllThreads;
+    void
+    SetTrapExceptions (bool trap_exceptions = true);
+    
 protected:
 
     SBExpressionOptions (lldb_private::EvaluateExpressionOptions &expression_options);

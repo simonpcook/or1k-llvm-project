@@ -14,6 +14,7 @@
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Symbol/Symbol.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
 
@@ -55,6 +56,8 @@ DYLDRendezvous::DYLDRendezvous(Process *process)
       m_added_soentries(),
       m_removed_soentries()
 {
+    m_thread_info.valid = false;
+
     // Cache a copy of the executable path
     if (m_process)
     {
@@ -284,9 +287,26 @@ bool
 DYLDRendezvous::ReadSOEntryFromMemory(lldb::addr_t addr, SOEntry &entry)
 {
     entry.clear();
+
+    entry.link_addr = addr;
     
     if (!(addr = ReadPointer(addr, &entry.base_addr)))
         return false;
+
+    // mips adds an extra load offset field to the link map struct on
+    // FreeBSD and NetBSD (need to validate other OSes).
+    // http://svnweb.freebsd.org/base/head/sys/sys/link_elf.h?revision=217153&view=markup#l57
+    const ArchSpec &arch = m_process->GetTarget().GetArchitecture();
+    if (arch.GetCore() == ArchSpec::eCore_mips64)
+    {
+        assert (arch.GetTriple().getOS() == llvm::Triple::FreeBSD ||
+                arch.GetTriple().getOS() == llvm::Triple::NetBSD);
+        addr_t mips_l_offs;
+        if (!(addr = ReadPointer(addr, &mips_l_offs)))
+            return false;
+        if (mips_l_offs != 0 && mips_l_offs != entry.base_addr)
+            return false;
+    }
     
     if (!(addr = ReadPointer(addr, &entry.path_addr)))
         return false;
@@ -303,6 +323,51 @@ DYLDRendezvous::ReadSOEntryFromMemory(lldb::addr_t addr, SOEntry &entry)
     entry.path = ReadStringFromMemory(entry.path_addr);
     
     return true;
+}
+
+
+bool
+DYLDRendezvous::FindMetadata(const char *name, PThreadField field, uint32_t& value)
+{
+    Target& target = m_process->GetTarget();
+
+    SymbolContextList list;
+    if (!target.GetImages().FindSymbolsWithNameAndType (ConstString(name), eSymbolTypeAny, list))
+        return false;
+
+    Address address = list[0].symbol->GetAddress();
+    addr_t addr = address.GetLoadAddress (&target);
+    if (addr == LLDB_INVALID_ADDRESS)
+        return false;
+
+    Error error;
+    value = (uint32_t)m_process->ReadUnsignedIntegerFromMemory(addr + field*sizeof(uint32_t), sizeof(uint32_t), 0, error);
+    if (error.Fail())
+        return false;
+
+    if (field == eSize)
+        value /= 8; // convert bits to bytes
+
+    return true;
+}
+
+const DYLDRendezvous::ThreadInfo&
+DYLDRendezvous::GetThreadInfo()
+{
+    if (!m_thread_info.valid)
+    {
+        bool ok = true;
+
+        ok &= FindMetadata ("_thread_db_pthread_dtvp", eOffset, m_thread_info.dtv_offset);
+        ok &= FindMetadata ("_thread_db_dtv_dtv", eSize, m_thread_info.dtv_slot_size);
+        ok &= FindMetadata ("_thread_db_link_map_l_tls_modid", eOffset, m_thread_info.modid_offset);
+        ok &= FindMetadata ("_thread_db_dtv_t_pointer_val", eOffset, m_thread_info.tls_offset);
+
+        if (ok)
+            m_thread_info.valid = true;
+    }
+
+    return m_thread_info;
 }
 
 void

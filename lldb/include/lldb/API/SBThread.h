@@ -94,6 +94,9 @@ public:
     const char *
     GetQueueName() const;
 
+    lldb::queue_id_t
+    GetQueueID() const;
+
     void
     StepOver (lldb::RunMode stop_other_threads = lldb::eOnlyDuringStepping);
 
@@ -198,6 +201,12 @@ public:
     bool
     GetStatus (lldb::SBStream &status) const;
 
+    SBThread
+    GetExtendedBacktraceThread (const char *type);
+
+    uint32_t
+    GetExtendedBacktraceOriginatingIndexID ();
+
 protected:
     friend class SBBreakpoint;
     friend class SBBreakpointLocation;
@@ -205,6 +214,8 @@ protected:
     friend class SBProcess;
     friend class SBDebugger;
     friend class SBValue;
+    friend class lldb_private::QueueImpl;
+    friend class SBQueueItem;
 
     void
     SetThread (const lldb::ThreadSP& lldb_object_sp);

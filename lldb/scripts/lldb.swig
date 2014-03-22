@@ -10,7 +10,7 @@
 %define DOCSTRING
 "The lldb module contains the public APIs for Python binding.
 
-Some of the important classes are describe here:
+Some of the important classes are described here:
 
 o SBTarget: Represents the target program running under the debugger.
 o SBProcess: Represents the process associated with the target program.
@@ -72,14 +72,16 @@ import os
 #include "lldb/API/SBFrame.h"
 #include "lldb/API/SBFunction.h"
 #include "lldb/API/SBHostOS.h"
-#include "lldb/API/SBInputReader.h"
 #include "lldb/API/SBInstruction.h"
 #include "lldb/API/SBInstructionList.h"
 #include "lldb/API/SBLineEntry.h"
 #include "lldb/API/SBListener.h"
 #include "lldb/API/SBModule.h"
 #include "lldb/API/SBModuleSpec.h"
+#include "lldb/API/SBPlatform.h"
 #include "lldb/API/SBProcess.h"
+#include "lldb/API/SBQueue.h"
+#include "lldb/API/SBQueueItem.h"
 #include "lldb/API/SBSection.h"
 #include "lldb/API/SBSourceManager.h"
 #include "lldb/API/SBStream.h"
@@ -136,14 +138,16 @@ import os
 %include "./Python/interface/SBFrame.i"
 %include "./Python/interface/SBFunction.i"
 %include "./Python/interface/SBHostOS.i"
-%include "./Python/interface/SBInputReader.i"
 %include "./Python/interface/SBInstruction.i"
 %include "./Python/interface/SBInstructionList.i"
 %include "./Python/interface/SBLineEntry.i"
 %include "./Python/interface/SBListener.i"
 %include "./Python/interface/SBModule.i"
 %include "./Python/interface/SBModuleSpec.i"
+%include "./Python/interface/SBPlatform.i"
 %include "./Python/interface/SBProcess.i"
+%include "./Python/interface/SBQueue.i"
+%include "./Python/interface/SBQueueItem.i"
 %include "./Python/interface/SBSection.i"
 %include "./Python/interface/SBSourceManager.i"
 %include "./Python/interface/SBStream.i"

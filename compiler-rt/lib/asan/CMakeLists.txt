@@ -1,7 +1,15 @@
 # Build for the AddressSanitizer runtime support library.
 
+if(APPLE)
+# Don't set rpath for the ASan libraries. Developers are encouraged to ship
+# their binaries together with the corresponding ASan runtime libraries,
+# so they'll anyway need to fix the rpath and the install name.
+set(CMAKE_BUILD_WITH_INSTALL_RPATH OFF)
+endif()
+
 set(ASAN_SOURCES
   asan_allocator2.cc
+  asan_activation.cc
   asan_fake_stack.cc
   asan_globals.cc
   asan_interceptors.cc
@@ -23,45 +31,36 @@ set(ASAN_SOURCES
 
 include_directories(..)
 
-if (NOT MSVC)
-  set(ASAN_CFLAGS
-    ${SANITIZER_COMMON_CFLAGS}
-    -fno-rtti)
-else()
-  set(ASAN_CFLAGS
-    ${SANITIZER_COMMON_CFLAGS}
-    /GR-)
+if(ANDROID)
+  include_directories(${COMPILER_RT_EXTRA_ANDROID_HEADERS})
 endif()
+
+set(ASAN_CFLAGS ${SANITIZER_COMMON_CFLAGS})
+append_no_rtti_flag(ASAN_CFLAGS)
 
 set(ASAN_COMMON_DEFINITIONS
   ASAN_HAS_EXCEPTIONS=1)
 
 if(ANDROID)
   list(APPEND ASAN_COMMON_DEFINITIONS
-    ASAN_FLEXIBLE_MAPPING_AND_OFFSET=0
-    ASAN_NEEDS_SEGV=0
     ASAN_LOW_MEMORY=1)
-elseif(MSVC)
-  list(APPEND ASAN_COMMON_DEFINITIONS
-    ASAN_FLEXIBLE_MAPPING_AND_OFFSET=0
-    ASAN_NEEDS_SEGV=0)
-else()
-  list(APPEND ASAN_COMMON_DEFINITIONS
-    ASAN_FLEXIBLE_MAPPING_AND_OFFSET=1
-    ASAN_NEEDS_SEGV=1)
 endif()
 
-# Architectures supported by ASan.
-filter_available_targets(ASAN_SUPPORTED_ARCH
-  x86_64 i386 powerpc64)
+if (NOT MSVC)
+  set(ASAN_ASM_SOURCES asan_asm_instrumentation.S)
+  set_source_files_properties(${ASAN_ASM_SOURCES} PROPERTIES LANGUAGE C)
+  list(APPEND ASAN_SOURCES ${ASAN_ASM_SOURCES})
+endif()
 
 # Compile ASan sources into an object library.
 if(APPLE)
-  add_compiler_rt_osx_object_library(RTAsan
-    ARCH ${ASAN_SUPPORTED_ARCH}
-    SOURCES ${ASAN_SOURCES}
-    CFLAGS ${ASAN_CFLAGS}
-    DEFS ${ASAN_COMMON_DEFINITIONS})
+  foreach(os ${SANITIZER_COMMON_SUPPORTED_DARWIN_OS})
+    add_compiler_rt_darwin_object_library(RTAsan ${os}
+      ARCH ${ASAN_SUPPORTED_ARCH}
+      SOURCES ${ASAN_SOURCES}
+      CFLAGS ${ASAN_CFLAGS}
+      DEFS ${ASAN_COMMON_DEFINITIONS})
+  endforeach()
 elseif(ANDROID)
   add_library(RTAsan.arm.android OBJECT ${ASAN_SOURCES})
   set_target_compile_flags(RTAsan.arm.android ${ASAN_CFLAGS})
@@ -76,21 +75,20 @@ else()
 endif()
 
 # Build ASan runtimes shipped with Clang.
-set(ASAN_RUNTIME_LIBRARIES)
+add_custom_target(asan)
 if(APPLE)
-  add_compiler_rt_osx_dynamic_runtime(clang_rt.asan_osx_dynamic
-    ARCH ${ASAN_SUPPORTED_ARCH}
-    SOURCES $<TARGET_OBJECTS:RTAsan.osx>
-            $<TARGET_OBJECTS:RTInterception.osx>
-            $<TARGET_OBJECTS:RTSanitizerCommon.osx>
-            $<TARGET_OBJECTS:RTLSanCommon.osx>
-    CFLAGS ${ASAN_CFLAGS}
-    DEFS ${ASAN_COMMON_DEFINITIONS}
-    # Dynamic lookup is needed because shadow scale and offset are
-    # provided by the instrumented modules.
-    LINKFLAGS "-framework Foundation"
-              "-undefined dynamic_lookup")
-  list(APPEND ASAN_RUNTIME_LIBRARIES clang_rt.asan_osx_dynamic)
+  foreach (os ${SANITIZER_COMMON_SUPPORTED_DARWIN_OS})
+    add_compiler_rt_darwin_dynamic_runtime(clang_rt.asan_${os}_dynamic ${os}
+      ARCH ${ASAN_SUPPORTED_ARCH}
+      SOURCES $<TARGET_OBJECTS:RTAsan.${os}>
+              $<TARGET_OBJECTS:RTInterception.${os}>
+              $<TARGET_OBJECTS:RTSanitizerCommon.${os}>
+              $<TARGET_OBJECTS:RTLSanCommon.${os}>
+      CFLAGS ${ASAN_CFLAGS}
+      DEFS ${ASAN_COMMON_DEFINITIONS})
+    add_dependencies(asan clang_rt.asan_${os}_dynamic)
+  endforeach()
+
 elseif(ANDROID)
   add_library(clang_rt.asan-arm-android SHARED
     $<TARGET_OBJECTS:RTAsan.arm.android>
@@ -100,8 +98,8 @@ elseif(ANDROID)
     ${ASAN_CFLAGS})
   set_property(TARGET clang_rt.asan-arm-android APPEND PROPERTY
     COMPILE_DEFINITIONS ${ASAN_COMMON_DEFINITIONS})
-  target_link_libraries(clang_rt.asan-arm-android dl)
-  list(APPEND ASAN_RUNTIME_LIBRARIES clang_rt.asan-arm-android)
+  target_link_libraries(clang_rt.asan-arm-android dl log)
+  add_dependencies(asan clang_rt.asan-arm-android)
 else()
   # Build separate libraries for each target.
   foreach(arch ${ASAN_SUPPORTED_ARCH})
@@ -110,7 +108,7 @@ else()
       $<TARGET_OBJECTS:RTInterception.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>)
-    if (NOT MSVC)
+    if (NOT WIN32)
       # We can't build Leak Sanitizer on Windows yet.
       list(APPEND ASAN_RUNTIME_OBJECTS $<TARGET_OBJECTS:RTLSanCommon.${arch}>)
     endif()
@@ -119,10 +117,10 @@ else()
       SOURCES ${ASAN_RUNTIME_OBJECTS}
       CFLAGS ${ASAN_CFLAGS}
       DEFS ${ASAN_COMMON_DEFINITIONS})
-    list(APPEND ASAN_RUNTIME_LIBRARIES clang_rt.asan-${arch})
+    add_dependencies(asan clang_rt.asan-${arch})
     if (UNIX AND NOT ${arch} STREQUAL "i386")
       add_sanitizer_rt_symbols(clang_rt.asan-${arch} asan.syms.extra)
-      list(APPEND ASAN_RUNTIME_LIBRARIES clang_rt.asan-${arch}-symbols)
+      add_dependencies(asan clang_rt.asan-${arch}-symbols)
     endif()
 
     if (WIN32)
@@ -130,15 +128,17 @@ else()
       SOURCES asan_dll_thunk.cc
       CFLAGS ${ASAN_CFLAGS} -DASAN_DLL_THUNK
       DEFS ${ASAN_COMMON_DEFINITIONS})
-      list(APPEND ASAN_RUNTIME_LIBRARIES clang_rt.asan_dll_thunk-${arch})
+      add_dependencies(asan clang_rt.asan_dll_thunk-${arch})
     endif()
   endforeach()
 endif()
 
 add_compiler_rt_resource_file(asan_blacklist asan_blacklist.txt)
+add_dependencies(asan asan_blacklist)
+add_dependencies(compiler-rt asan)
 
-if(LLVM_INCLUDE_TESTS)
+add_subdirectory(scripts)
+
+if(COMPILER_RT_INCLUDE_TESTS)
   add_subdirectory(tests)
 endif()
-
-add_subdirectory(lit_tests)

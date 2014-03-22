@@ -64,6 +64,18 @@ public:
     
     void
     SetTryAllThreads (bool run_others = true);
+    
+    bool
+    GetStopOthers() const;
+    
+    void
+    SetStopOthers(bool stop_others = true);
+
+    bool
+    GetTrapExceptions () const;
+    
+    void
+    SetTrapExceptions (bool trap_exceptions = true);
 
 protected:
 

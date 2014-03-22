@@ -1,19 +1,27 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -fno-lax-vector-conversions %s
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -fsyntax-only -verify -fno-lax-vector-conversions %s
 
 typedef __attribute__(( ext_vector_type(2) )) float float2;
+typedef __attribute__(( ext_vector_type(3) )) float float3;
 typedef __attribute__(( ext_vector_type(4) )) int int4;
 typedef __attribute__(( ext_vector_type(8) )) short short8;
 typedef __attribute__(( ext_vector_type(4) )) float float4;
 typedef float t3 __attribute__ ((vector_size (16)));
+typedef __typeof__(sizeof(int)) size_t;
+typedef unsigned long ulong2 __attribute__ ((ext_vector_type(2)));
+typedef size_t stride4 __attribute__((ext_vector_type(4)));
 
 static void test() {
     float2 vec2;
+    float3 vec3;
     float4 vec4, vec4_2;
     int4 ivec4;
     short8 ish8;
     t3 vec4_3;
     int *ptr;
     int i;
+
+    vec3 += vec2; // expected-error {{can't convert between vector values of different size}}
+    vec4 += vec3; // expected-error {{can't convert between vector values of different size}}
     
     vec4 = 5.0f;
     vec4 = (float4)5.0f;
@@ -41,7 +49,7 @@ static void test() {
     ivec4 += (int4)vec4;
     ivec4 -= ivec4;
     ivec4 |= ivec4;
-    ivec4 += ptr; // expected-error {{can't convert between vector values of different size ('int4' and 'int *')}}
+    ivec4 += ptr; // expected-error {{can't convert between vector and non-scalar values ('int4' and 'int *')}}
 }
 
 typedef __attribute__(( ext_vector_type(2) )) float2 vecfloat2; // expected-error{{invalid vector element type 'float2'}}
@@ -49,4 +57,35 @@ typedef __attribute__(( ext_vector_type(2) )) float2 vecfloat2; // expected-erro
 void inc(float2 f2) {
   f2++; // expected-error{{cannot increment value of type 'float2'}}
   __real f2; // expected-error{{invalid type 'float2' to __real operator}}
+}
+
+typedef enum
+{
+    uchar_stride = 1,
+    uchar4_stride = 4,
+    ushort4_stride = 8,
+    short4_stride = 8,
+    uint4_stride = 16,
+    int4_stride = 16,
+    float4_stride = 16,
+} PixelByteStride;
+
+stride4 RDar15091442_get_stride4(int4 x, PixelByteStride pixelByteStride);
+stride4 RDar15091442_get_stride4(int4 x, PixelByteStride pixelByteStride)
+{
+    stride4 stride;
+    // This previously caused an assertion failure.
+    stride.lo = ((ulong2) x) * pixelByteStride; // no-warning
+    return stride;
+}
+
+// rdar://16196902
+typedef __attribute__((ext_vector_type(4))) float float32x4_t;
+
+typedef float C3DVector3 __attribute__((ext_vector_type(3)));
+
+extern float32x4_t vabsq_f32(float32x4_t __a);
+
+C3DVector3 Func(const C3DVector3 a) {
+    return (C3DVector3)vabsq_f32((float32x4_t)a); // expected-error {{invalid conversion between ext-vector type 'float32x4_t' and 'C3DVector3'}}
 }

@@ -177,7 +177,7 @@ public:
     ///     A pointer to this object if either the directory or filename
     ///     is valid, NULL otherwise.
     //------------------------------------------------------------------
-    operator bool() const;
+    explicit operator bool() const;
 
     //------------------------------------------------------------------
     /// Logical NOT operator.
@@ -420,6 +420,21 @@ public:
     FileType
     GetFileType () const;
 
+    //------------------------------------------------------------------
+    /// Return the current permissions of the path.
+    ///
+    /// Returns a bitmask for the current permissions of the file
+    /// ( zero or more of the permission bits defined in
+    /// File::Permissions).
+    ///
+    /// @return
+    ///     Zero if the file doesn't exist or we are unable to get
+    ///     information for the file, otherwise one or more permission
+    ///     bits from the File::Permissions enumeration.
+    //------------------------------------------------------------------
+    uint32_t
+    GetPermissions () const;
+    
     bool
     IsDirectory () const
     {
@@ -519,7 +534,7 @@ public:
     ///     as many bytes as possible.
     ///
     /// @return
-    ///     A shared pointer to the memeory mapped data. This shared
+    ///     A shared pointer to the memory mapped data. This shared
     ///     pointer can contain a NULL DataBuffer pointer, so the contained
     ///     pointer must be checked prior to using it.
     //------------------------------------------------------------------
@@ -636,7 +651,7 @@ public:
     void
     RemoveLastPathComponent ();
     
-    const char*
+    ConstString
     GetLastPathComponent () const;
     
     //------------------------------------------------------------------

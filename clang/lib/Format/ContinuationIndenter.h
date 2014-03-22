@@ -18,6 +18,7 @@
 
 #include "Encoding.h"
 #include "clang/Format/Format.h"
+#include "llvm/Support/Regex.h"
 
 namespace clang {
 class SourceManager;
@@ -115,29 +116,34 @@ private:
   ///
   /// This includes implicitly concatenated strings, strings that will be broken
   /// by clang-format and string literals with escaped newlines.
-  bool NextIsMultilineString(const LineState &State);
+  bool nextIsMultilineString(const LineState &State);
 
   FormatStyle Style;
   SourceManager &SourceMgr;
   WhitespaceManager &Whitespaces;
   encoding::Encoding Encoding;
   bool BinPackInconclusiveFunctions;
+  llvm::Regex CommentPragmasRegex;
 };
 
 struct ParenState {
-  ParenState(unsigned Indent, unsigned LastSpace, bool AvoidBinPacking,
-             bool NoLineBreak)
-      : Indent(Indent), LastSpace(LastSpace), FirstLessLess(0),
-        BreakBeforeClosingBrace(false), QuestionColumn(0),
+  ParenState(unsigned Indent, unsigned IndentLevel, unsigned LastSpace,
+             bool AvoidBinPacking, bool NoLineBreak)
+      : Indent(Indent), IndentLevel(IndentLevel), LastSpace(LastSpace),
+        FirstLessLess(0), BreakBeforeClosingBrace(false), QuestionColumn(0),
         AvoidBinPacking(AvoidBinPacking), BreakBeforeParameter(false),
         NoLineBreak(NoLineBreak), ColonPos(0), StartOfFunctionCall(0),
         StartOfArraySubscripts(0), NestedNameSpecifierContinuation(0),
         CallContinuation(0), VariablePos(0), ContainsLineBreak(false),
-        ContainsUnwrappedBuilder(0) {}
+        ContainsUnwrappedBuilder(0), AlignColons(true),
+        ObjCSelectorNameFound(false) {}
 
   /// \brief The position to which a specific parenthesis level needs to be
   /// indented.
   unsigned Indent;
+
+  /// \brief The number of indentation levels of the block.
+  unsigned IndentLevel;
 
   /// \brief The position of the last space on each level.
   ///
@@ -207,6 +213,20 @@ struct ParenState {
   /// builder-type call on one line.
   bool ContainsUnwrappedBuilder;
 
+  /// \brief \c true if the colons of the curren ObjC method expression should
+  /// be aligned.
+  ///
+  /// Not considered for memoization as it will always have the same value at
+  /// the same token.
+  bool AlignColons;
+
+  /// \brief \c true if at least one selector name was found in the current
+  /// ObjC method expression.
+  ///
+  /// Not considered for memoization as it will always have the same value at
+  /// the same token.
+  bool ObjCSelectorNameFound;
+
   bool operator<(const ParenState &Other) const {
     if (Indent != Other.Indent)
       return Indent < Other.Indent;
@@ -250,7 +270,7 @@ struct LineState {
   unsigned Column;
 
   /// \brief The token that needs to be next formatted.
-  const FormatToken *NextToken;
+  FormatToken *NextToken;
 
   /// \brief \c true if this line contains a continued for-loop section.
   bool LineContainsContinuedForLoopSection;

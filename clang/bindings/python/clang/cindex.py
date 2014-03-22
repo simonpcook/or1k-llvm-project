@@ -266,6 +266,29 @@ class SourceRange(Structure):
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def __contains__(self, other):
+        """Useful to detect the Token/Lexer bug"""
+        if not isinstance(other, SourceLocation):
+            return False
+        if other.file is None and self.start.file is None:
+            pass
+        elif ( self.start.file.name != other.file.name or 
+               other.file.name != self.end.file.name):
+            # same file name
+            return False
+        # same file, in between lines
+        if self.start.line < other.line < self.end.line:
+            return True
+        elif self.start.line == other.line:
+            # same file first line
+            if self.start.column <= other.column:
+                return True
+        elif other.line == self.end.line:
+            # same file last line
+            if other.column <= self.end.column:
+                return True
+        return False
+
     def __repr__(self):
         return "<SourceRange start %r, end %r>" % (self.start, self.end)
 
@@ -1499,6 +1522,50 @@ TypeKind.VARIABLEARRAY = TypeKind(115)
 TypeKind.DEPENDENTSIZEDARRAY = TypeKind(116)
 TypeKind.MEMBERPOINTER = TypeKind(117)
 
+class RefQualifierKind(object):
+    """Describes a specific ref-qualifier of a type."""
+
+    # The unique kind objects, indexed by id.
+    _kinds = []
+    _name_map = None
+
+    def __init__(self, value):
+        if value >= len(RefQualifierKind._kinds):
+            num_kinds = value - len(RefQualifierKind._kinds) + 1
+            RefQualifierKind._kinds += [None] * num_kinds
+        if RefQualifierKind._kinds[value] is not None:
+            raise ValueError, 'RefQualifierKind already loaded'
+        self.value = value
+        RefQualifierKind._kinds[value] = self
+        RefQualifierKind._name_map = None
+
+    def from_param(self):
+        return self.value
+
+    @property
+    def name(self):
+        """Get the enumeration name of this kind."""
+        if self._name_map is None:
+            self._name_map = {}
+            for key, value in RefQualifierKind.__dict__.items():
+                if isinstance(value, RefQualifierKind):
+                    self._name_map[value] = key
+        return self._name_map[self]
+
+    @staticmethod
+    def from_id(id):
+        if (id >= len(RefQualifierKind._kinds) or
+                RefQualifierKind._kinds[id] is None):
+            raise ValueError, 'Unknown type kind %d' % id
+        return RefQualifierKind._kinds[id]
+
+    def __repr__(self):
+        return 'RefQualifierKind.%s' % (self.name,)
+
+RefQualifierKind.NONE = RefQualifierKind(0)
+RefQualifierKind.LVALUE = RefQualifierKind(1)
+RefQualifierKind.RVALUE = RefQualifierKind(2)
+
 class Type(Structure):
     """
     The type of an element in the abstract syntax tree.
@@ -1697,6 +1764,13 @@ class Type(Structure):
         """
         return conf.lib.clang_Type_getOffsetOf(self, c_char_p(fieldname))
 
+    def get_ref_qualifier(self):
+        """
+        Retrieve the ref-qualifier of the type.
+        """
+        return RefQualifierKind.from_id(
+                conf.lib.clang_Type_getCXXRefQualifier(self))
+
     @property
     def spelling(self):
         """Retrieve the spelling of this Type."""
@@ -1746,7 +1820,7 @@ SpellingCache = {
             # 5 : CompletionChunk.Kind("CurrentParameter"),
             6: '(',   # CompletionChunk.Kind("LeftParen"),
             7: ')',   # CompletionChunk.Kind("RightParen"),
-            8: ']',   # CompletionChunk.Kind("LeftBracket"),
+            8: '[',   # CompletionChunk.Kind("LeftBracket"),
             9: ']',   # CompletionChunk.Kind("RightBracket"),
             10: '{',  # CompletionChunk.Kind("LeftBrace"),
             11: '}',  # CompletionChunk.Kind("RightBrace"),
@@ -2427,7 +2501,7 @@ class CompilationDatabaseError(Exception):
     constants in this class.
     """
 
-    # An unknown error occured
+    # An unknown error occurred
     ERROR_UNKNOWN = 0
 
     # The database could not be loaded
@@ -2533,6 +2607,14 @@ class CompilationDatabase(ClangObject):
         return conf.lib.clang_CompilationDatabase_getCompileCommands(self,
                                                                      filename)
 
+    def getAllCompileCommands(self):
+        """
+        Get an iterable object providing all the CompileCommands available from
+        the database.
+        """
+        return conf.lib.clang_CompilationDatabase_getAllCompileCommands(self)
+
+
 class Token(Structure):
     """Represents a single token from the preprocessor.
 
@@ -2598,6 +2680,11 @@ functionList = [
    [c_char_p, POINTER(c_uint)],
    c_object_p,
    CompilationDatabase.from_result),
+
+  ("clang_CompilationDatabase_getAllCompileCommands",
+   [c_object_p],
+   c_object_p,
+   CompileCommands.from_result),
 
   ("clang_CompilationDatabase_getCompileCommands",
    [c_object_p, c_char_p],
@@ -2715,11 +2802,6 @@ functionList = [
   ("clang_getArraySize",
    [Type],
    c_longlong),
-
-  ("clang_Type_getClassType",
-   [Type],
-   Type,
-   Type.from_result),
 
   ("clang_getFieldDeclBitWidth",
    [Cursor],
@@ -3164,6 +3246,11 @@ functionList = [
    [Type],
    c_longlong),
 
+  ("clang_Type_getClassType",
+   [Type],
+   Type,
+   Type.from_result),
+
   ("clang_Type_getOffsetOf",
    [Type, c_char_p],
    c_longlong),
@@ -3171,6 +3258,10 @@ functionList = [
   ("clang_Type_getSizeOf",
    [Type],
    c_longlong),
+
+  ("clang_Type_getCXXRefQualifier",
+   [Type],
+   c_uint),
 ]
 
 class LibclangError(Exception):

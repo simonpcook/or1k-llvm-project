@@ -186,13 +186,15 @@ ProcessPOSIX::GetFilePath(
     if (file_action)
     {
         if (file_action->GetAction () == ProcessLaunchInfo::FileAction::eFileActionOpen)
+        {
             path = file_action->GetPath();
             // By default the stdio paths passed in will be pseudo-terminal
             // (/dev/pts). If so, convert to using a different default path
             // instead to redirect I/O to the debugger console. This should
             //  also handle user overrides to /dev/null or a different file.
-            if (::strncmp(path, pts_name, ::strlen(pts_name)) == 0)
+            if (!path || ::strncmp(path, pts_name, ::strlen(pts_name)) == 0)
                 path = default_path;
+        }
     }
 
     return path;
@@ -200,7 +202,7 @@ ProcessPOSIX::GetFilePath(
 
 Error
 ProcessPOSIX::DoLaunch (Module *module,
-                       const ProcessLaunchInfo &launch_info)
+                        ProcessLaunchInfo &launch_info)
 {
     Error error;
     assert(m_monitor == NULL);
@@ -289,12 +291,11 @@ ProcessPOSIX::GetImageInfoAddress()
 {
     Target *target = &GetTarget();
     ObjectFile *obj_file = target->GetExecutableModule()->GetObjectFile();
-    Address addr = obj_file->GetImageInfoAddress();
+    Address addr = obj_file->GetImageInfoAddress(target);
 
-    if (addr.IsValid()) 
+    if (addr.IsValid())
         return addr.GetLoadAddress(target);
-    else
-        return LLDB_INVALID_ADDRESS;
+    return LLDB_INVALID_ADDRESS;
 }
 
 Error
@@ -350,6 +351,31 @@ ProcessPOSIX::DoDestroy()
     }
 
     return error;
+}
+
+void
+ProcessPOSIX::DoDidExec()
+{
+    Target *target = &GetTarget();
+    if (target)
+    {
+        PlatformSP platform_sp (target->GetPlatform());
+        assert (platform_sp.get());
+        if (platform_sp)
+        {
+            ProcessInstanceInfo process_info;
+            platform_sp->GetProcessInfo(GetID(), process_info);
+            ModuleSP exe_module_sp;
+            FileSpecList executable_search_paths (Target::GetDefaultExecutableSearchPaths());
+            Error error = platform_sp->ResolveExecutable(process_info.GetExecutableFile(),
+                                                   target->GetArchitecture(),
+                                                   exe_module_sp,
+                                                   executable_search_paths.GetSize() ? &executable_search_paths : NULL);
+            if (!error.Success())
+                return;
+            target->SetExecutableModule(exe_module_sp, true);
+        }
+    }
 }
 
 void
@@ -426,7 +452,7 @@ ProcessPOSIX::SendMessage(const ProcessMessage &message)
         break;
 
     case ProcessMessage::eNewThreadMessage:
-        {
+    {
         lldb::tid_t  new_tid = message.GetChildTID();
         if (WaitingForInitialStop(new_tid))
         {
@@ -437,8 +463,18 @@ ProcessPOSIX::SendMessage(const ProcessMessage &message)
         StopAllThreads(message.GetTID());
         SetPrivateState(eStateStopped);
         break;
-        }
     }
+
+    case ProcessMessage::eExecMessage:
+    {
+        assert(thread);
+        thread->SetState(eStateStopped);
+        StopAllThreads(message.GetTID());
+        SetPrivateState(eStateStopped);
+        break;
+    }
+    }
+
 
     m_message_queue.push(message);
 }
@@ -598,20 +634,6 @@ ProcessPOSIX::DoDeallocateMemory(lldb::addr_t addr)
     return error;
 }
 
-addr_t
-ProcessPOSIX::ResolveIndirectFunction(const Address *address, Error &error)
-{
-    addr_t function_addr = LLDB_INVALID_ADDRESS;
-    if (address == NULL) {
-        error.SetErrorStringWithFormat("unable to determine direct function call for NULL address");
-    } else if (!InferiorCall(this, address, function_addr)) {
-        function_addr = LLDB_INVALID_ADDRESS;
-        error.SetErrorStringWithFormat("unable to determine direct function call for indirect function %s",
-                                       address->CalculateSymbolContextSymbol()->GetName().AsCString());
-    }
-    return function_addr;
-}
-
 size_t
 ProcessPOSIX::GetSoftwareBreakpointTrapOpcode(BreakpointSite* bp_site)
 {
@@ -621,14 +643,14 @@ ProcessPOSIX::GetSoftwareBreakpointTrapOpcode(BreakpointSite* bp_site)
     const uint8_t *opcode = NULL;
     size_t opcode_size = 0;
 
-    switch (arch.GetCore())
+    switch (arch.GetMachine())
     {
     default:
         assert(false && "CPU type not supported!");
         break;
 
-    case ArchSpec::eCore_x86_32_i386:
-    case ArchSpec::eCore_x86_64_x86_64:
+    case llvm::Triple::x86:
+    case llvm::Triple::x86_64:
         opcode = g_i386_opcode;
         opcode_size = sizeof(g_i386_opcode);
         break;

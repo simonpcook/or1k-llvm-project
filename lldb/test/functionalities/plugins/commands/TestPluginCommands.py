@@ -11,13 +11,14 @@ import lldbutil
 
 class PluginCommandTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "plugins", "commands")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
         TestBase.setUp(self)
         self.lib_dir = os.environ["LLDB_LIB_DIR"]
 
+    @expectedFailureFreeBSD('llvm.org/pr17430')
     @skipIfi386 # This test links against liblldb.so. Thus, the test requires a 32-bit liblldb.so.
     def test_load_plugin(self):
         """Test that plugins that load commands work correctly."""

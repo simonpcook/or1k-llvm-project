@@ -1,7 +1,7 @@
 /*
  * kmp_affinity.cpp -- affinity management
- * $Revision: 42613 $
- * $Date: 2013-08-23 13:29:50 -0500 (Fri, 23 Aug 2013) $
+ * $Revision: 42810 $
+ * $Date: 2013-11-07 12:06:33 -0600 (Thu, 07 Nov 2013) $
  */
 
 
@@ -21,7 +21,7 @@
 #include "kmp_str.h"
 
 
-#if KMP_OS_WINDOWS || KMP_OS_LINUX
+#if KMP_AFFINITY_SUPPORTED
 
 //
 // Print the affinity mask to the character array in a pretty format.
@@ -320,7 +320,7 @@ __kmp_affinity_cmp_Address_child_num(const void *a, const void *b)
 // When sorting by labels, __kmp_affinity_assign_child_nums() must first be
 // called to renumber the labels from [0..n] and place them into the child_num
 // vector of the address object.  This is done in case the labels used for
-// the children at one node of the heirarchy differ from those used for
+// the children at one node of the hierarchy differ from those used for
 // another node at the same level.  Example:  suppose the machine has 2 nodes
 // with 2 packages each.  The first node contains packages 601 and 602, and
 // second node contains packages 603 and 604.  If we try to sort the table
@@ -1740,7 +1740,7 @@ __kmp_affinity_create_cpuinfo_map(AddrUnsPair **address2os, int *line,
 
     //
     // Scan of the file, and count the number of "processor" (osId) fields,
-    // and find the higest value of <n> for a node_<n> field.
+    // and find the highest value of <n> for a node_<n> field.
     //
     char buf[256];
     unsigned num_records = 0;
@@ -1885,7 +1885,19 @@ __kmp_affinity_create_cpuinfo_map(AddrUnsPair **address2os, int *line,
                 if ((p == NULL) || (sscanf(p + 1, "%u\n", &val) != 1)) goto no_val;
                 if (threadInfo[num_avail][osIdIndex] != UINT_MAX) goto dup_field;
                 threadInfo[num_avail][osIdIndex] = val;
+#if KMP_OS_LINUX && USE_SYSFS_INFO
+                char path[256];
+                snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%u/topology/physical_package_id",
+                    threadInfo[num_avail][osIdIndex]);
+                __kmp_read_from_file(path, "%u", &threadInfo[num_avail][pkgIdIndex]);
+
+                snprintf(path, sizeof(path),
+                    "/sys/devices/system/cpu/cpu%u/topology/core_id",
+                    threadInfo[num_avail][osIdIndex]);
+                __kmp_read_from_file(path, "%u", &threadInfo[num_avail][coreIdIndex]);
                 continue;
+#else
             }
             char s2[] = "physical id";
             if (strncmp(buf, s2, sizeof(s2) - 1) == 0) {
@@ -1906,6 +1918,7 @@ __kmp_affinity_create_cpuinfo_map(AddrUnsPair **address2os, int *line,
                 if (threadInfo[num_avail][coreIdIndex] != UINT_MAX) goto dup_field;
                 threadInfo[num_avail][coreIdIndex] = val;
                 continue;
+#endif // KMP_OS_LINUX && USE_SYSFS_INFO
             }
             char s4[] = "thread id";
             if (strncmp(buf, s4, sizeof(s4) - 1) == 0) {
@@ -2499,7 +2512,7 @@ __kmp_create_masks(unsigned *maxIndex, unsigned *numUnique,
     KMP_CPU_SET(address2os[0].second, sum);
     for (i = 1; i < numAddrs; i++) {
         //
-        // If this thread is sufficiently close to the leader (withing the
+        // If this thread is sufficiently close to the leader (within the
         // granularity setting), then set the bit for this os thread in the
         // affinity mask for this group, and go on to the next thread.
         //
@@ -3058,8 +3071,6 @@ __kmp_affinity_process_placelist(kmp_affin_mask_t **out_masks,
     int setSize = 0;
 
     for (;;) {
-        int start, count, stride;
-
         __kmp_process_place(&scan, osId2Mask, maxOsId, tempMask, &setSize);
 
         //
@@ -3090,7 +3101,7 @@ __kmp_affinity_process_placelist(kmp_affin_mask_t **out_masks,
           "bad explicit places list");
         next = scan;
         SKIP_DIGITS(next);
-        count = __kmp_str_to_int(scan, *next);
+        int count = __kmp_str_to_int(scan, *next);
         KMP_ASSERT(count >= 0);
         scan = next;
 
@@ -3112,7 +3123,7 @@ __kmp_affinity_process_placelist(kmp_affin_mask_t **out_masks,
                     // Use a temp var in case macro is changed to evaluate
                     // args multiple times.
                     //
-                    if (KMP_CPU_ISSET(j - stride, tempMask)) {
+                    if (KMP_CPU_ISSET(j - 1, tempMask)) {
                         KMP_CPU_SET(j, tempMask);
                         setSize++;
                     }
@@ -3159,7 +3170,7 @@ __kmp_affinity_process_placelist(kmp_affin_mask_t **out_masks,
           "bad explicit places list");
         next = scan;
         SKIP_DIGITS(next);
-        stride = __kmp_str_to_int(scan, *next);
+        int stride = __kmp_str_to_int(scan, *next);
         KMP_DEBUG_ASSERT(stride >= 0);
         scan = next;
         stride *= sign;
@@ -3357,7 +3368,7 @@ __kmp_aux_affinity_initialize(void)
     kmp_i18n_id_t msg_id = kmp_i18n_null;
 
     //
-    // For backward compatiblity, setting KMP_CPUINFO_FILE =>
+    // For backward compatibility, setting KMP_CPUINFO_FILE =>
     // KMP_TOPOLOGY_METHOD=cpuinfo
     //
     if ((__kmp_cpuinfo_file != NULL) &&
@@ -4044,7 +4055,7 @@ __kmp_affinity_set_place(int gtid)
       gtid, th->th.th_new_place, th->th.th_current_place));
 
     //
-    // Check that the new place is withing this thread's partition.
+    // Check that the new place is within this thread's partition.
     //
     KMP_DEBUG_ASSERT(th->th.th_affin_mask != NULL);
     KMP_DEBUG_ASSERT(th->th.th_new_place >= 0);
@@ -4532,9 +4543,4 @@ void __kmp_balanced_affinity( int tid, int nthreads )
 
 # endif /* KMP_MIC */
 
-#elif KMP_OS_DARWIN
-    // affinity not supported
-#else
-    #error "Unknown or unsupported OS"
-#endif // KMP_OS_WINDOWS || KMP_OS_LINUX
-
+#endif // KMP_AFFINITY_SUPPORTED

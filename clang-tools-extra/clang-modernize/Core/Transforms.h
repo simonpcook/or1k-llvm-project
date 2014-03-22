@@ -17,9 +17,8 @@
 #ifndef CLANG_MODERNIZE_TRANSFORMS_H
 #define CLANG_MODERNIZE_TRANSFORMS_H
 
-#include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/StringRef.h"
-
+#include "llvm/Support/CommandLine.h"
 #include <vector>
 
 // Forward declarations
@@ -37,6 +36,9 @@ template <typename T>
 Transform *ConstructTransform(const TransformOptions &Options) {
   return new T(Options);
 }
+
+/// \brief To group transforms together when printing the help.
+extern llvm::cl::OptionCategory TransformCategory;
 
 /// \brief Class encapsulating the creation of command line bool options
 /// for each transform and instantiating transforms chosen by the user.

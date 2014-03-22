@@ -11,16 +11,32 @@
 
 // template <class T> constexpr bool operator==(const optional<T>& x, const optional<T>& y);
 
-#include <optional>
+#include <experimental/optional>
 #include <type_traits>
 #include <cassert>
+
+#if _LIBCPP_STD_VER > 11
+
+using std::experimental::optional;
+
+struct X
+{
+    int i_;
+
+    constexpr X(int i) : i_(i) {}
+};
+
+constexpr bool operator == ( const X &lhs, const X &rhs )
+    { return lhs.i_ == rhs.i_ ; }
+    
+#endif
 
 int main()
 {
 #if _LIBCPP_STD_VER > 11
     {
-    typedef int T;
-    typedef std::optional<T> O;
+    typedef X T;
+    typedef optional<T> O;
     
     constexpr O o1;     // disengaged
     constexpr O o2;     // disengaged

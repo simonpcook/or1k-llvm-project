@@ -10,6 +10,7 @@ version_patch = 1;
 
 from optparse import OptionParser
 import os
+import string
 from subprocess import *
 import sys
 
@@ -21,6 +22,8 @@ import metabuild
 p = OptionParser()
 p.add_option('--with-llvm-config', metavar='PATH',
              help='use given llvm-config script')
+p.add_option('--with-cxx-compiler', metavar='PATH',
+             help='use given C++ compiler')
 p.add_option('--prefix', metavar='PATH',
              help='install to given prefix')
 p.add_option('--libexecdir', metavar='PATH',
@@ -60,15 +63,23 @@ def llvm_config(args):
     print "Please ensure that llvm-config is in your $PATH, or use --with-llvm-config."
     sys.exit(1)
 
+llvm_version = string.split(string.replace(llvm_config(['--version']), 'svn', ''), '.')
+llvm_system_libs = ''
+if (int(llvm_version[0]) == 3 and int(llvm_version[1]) >= 5) or int(llvm_version[0]) > 3:
+    llvm_system_libs = llvm_config(['--system-libs'])
 llvm_bindir = llvm_config(['--bindir'])
 llvm_core_libs = llvm_config(['--libs', 'core', 'bitreader', 'bitwriter']) + ' ' + \
+                 llvm_system_libs + ' ' + \
                  llvm_config(['--ldflags'])
 llvm_cxxflags = llvm_config(['--cxxflags']) + ' -fno-exceptions -fno-rtti'
 
-llvm_clang_cxx = os.path.join(llvm_bindir, 'clang++')
 llvm_clang = os.path.join(llvm_bindir, 'clang')
 llvm_link = os.path.join(llvm_bindir, 'llvm-link')
 llvm_opt = os.path.join(llvm_bindir, 'opt')
+
+cxx_compiler = options.with_cxx_compiler
+if not cxx_compiler:
+  cxx_compiler = os.path.join(llvm_bindir, 'clang++')
 
 available_targets = {
   'r600--' : { 'devices' :
@@ -76,7 +87,9 @@ available_targets = {
                 {'gpu' : 'cypress', 'aliases' : ['hemlock']},
                 {'gpu' : 'barts',   'aliases' : ['turks', 'caicos']},
                 {'gpu' : 'cayman',  'aliases' : ['aruba']},
-                {'gpu' : 'tahiti',  'aliases' : ['pitcairn', 'verde', 'oland']}]},
+                {'gpu' : 'tahiti',  'aliases' : ['pitcairn', 'verde', 'oland', 'bonaire', 'kabini', 'kaveri', 'hawaii']}]},
+  'nvptx--'   : { 'devices' : [{'gpu' : '', 'aliases' : []}] },
+  'nvptx64--'   : { 'devices' : [{'gpu' : '', 'aliases' : []}] },
   'nvptx--nvidiacl'   : { 'devices' : [{'gpu' : '', 'aliases' : []}] },
   'nvptx64--nvidiacl' : { 'devices' : [{'gpu' : '', 'aliases' : []}] }
 }
@@ -96,8 +109,8 @@ b.rule("LLVM_LINK", command = llvm_link + " -o $out $in",
 b.rule("OPT", command = llvm_opt + " -O3 -o $out $in",
        description = 'OPT $out')
 
-c_compiler_rule(b, "LLVM_TOOL_CXX", 'LLVM-CXX', llvm_clang_cxx, llvm_cxxflags)
-b.rule("LLVM_TOOL_LINK", llvm_clang_cxx + " -o $out $in %s" % llvm_core_libs, 'LINK $out')
+c_compiler_rule(b, "LLVM_TOOL_CXX", 'CXX', cxx_compiler, llvm_cxxflags)
+b.rule("LLVM_TOOL_LINK", cxx_compiler + " -o $out $in %s" % llvm_core_libs, 'LINK $out')
 
 prepare_builtins = os.path.join('utils', 'prepare-builtins')
 b.build(os.path.join('utils', 'prepare-builtins.o'), "LLVM_TOOL_CXX",
@@ -107,6 +120,8 @@ b.build(prepare_builtins, "LLVM_TOOL_LINK",
 
 b.rule("PREPARE_BUILTINS", "%s -o $out $in" % prepare_builtins,
        'PREPARE-BUILTINS $out')
+b.rule("PYTHON_GEN", "python < $in > $out", "PYTHON_GEN $out")
+b.build('generic/lib/convert.cl', "PYTHON_GEN", ['generic/lib/gen_convert.py'])
 
 manifest_deps = set([sys.argv[0], os.path.join(srcdir, 'build', 'metabuild.py'),
                      os.path.join(srcdir, 'build', 'ninja_syntax.py')])
@@ -143,12 +158,15 @@ for target in targets:
   for device in available_targets[target]['devices']:
     # The rule for building a .bc file for the specified architecture using clang.
     clang_bc_flags = "-target %s -I`dirname $in` %s " \
+                     "-fno-builtin " \
                      "-Dcl_clang_storage_class_specifiers " \
                      "-Dcl_khr_fp64 " \
+                     "-Dcles_khr_int64 " \
+                     "-D__CLC_INTERNAL " \
                      "-emit-llvm" % (target, clang_cl_includes)
     if device['gpu'] != '':
       clang_bc_flags += ' -mcpu=' + device['gpu']
-    clang_bc_rule = "CLANG_CL_BC_" + target
+    clang_bc_rule = "CLANG_CL_BC_" + target + "_" + device['gpu']
     c_compiler_rule(b, clang_bc_rule, "LLVM-CC", llvm_clang, clang_bc_flags)
 
     objects = []
@@ -194,25 +212,27 @@ for target in targets:
     install_files_bc.append((builtins_bc, builtins_bc))
     install_deps.append(builtins_bc)
     for alias in device['aliases']:
-      b.rule("CREATE_ALIAS", "ln -fs %s $out" % os.path.basename(builtins_bc)
+      # Ninja cannot have multiple rules with same name so append suffix
+      ruleName = "CREATE_ALIAS_{0}_for_{1}".format(alias, device['gpu'])
+      b.rule(ruleName, "ln -fs %s $out" % os.path.basename(builtins_bc)
              ,"CREATE-ALIAS $out")
 
       alias_file = os.path.join('built_libs', alias + '-' + target + '.bc')
-      b.build(alias_file, "CREATE_ALIAS", builtins_bc)
+      b.build(alias_file, ruleName, builtins_bc)
       install_files_bc.append((alias_file, alias_file))
       install_deps.append(alias_file)
     b.default(builtins_bc)
 
 
-install_cmd = ' && '.join(['mkdir -p $(DESTDIR)/%(dst)s && cp -r %(src)s $(DESTDIR)/%(dst)s' % 
+install_cmd = ' && '.join(['mkdir -p ${DESTDIR}/%(dst)s && cp -r %(src)s ${DESTDIR}/%(dst)s' %
                            {'src': file,
                             'dst': libexecdir}
                            for (file, dest) in install_files_bc])
-install_cmd = ' && '.join(['%(old)s && mkdir -p $(DESTDIR)/%(dst)s && cp -r %(srcdir)s/generic/include/clc $(DESTDIR)/%(dst)s' %
+install_cmd = ' && '.join(['%(old)s && mkdir -p ${DESTDIR}/%(dst)s && cp -r %(srcdir)s/generic/include/clc ${DESTDIR}/%(dst)s' %
                            {'old': install_cmd,
                             'dst': includedir,
                             'srcdir': srcdir}])
-install_cmd = ' && '.join(['%(old)s && mkdir -p $(DESTDIR)/%(dst)s && cp -r libclc.pc $(DESTDIR)/%(dst)s' %
+install_cmd = ' && '.join(['%(old)s && mkdir -p ${DESTDIR}/%(dst)s && cp -r libclc.pc ${DESTDIR}/%(dst)s' %
                            {'old': install_cmd, 
                             'dst': pkgconfigdir}])
   

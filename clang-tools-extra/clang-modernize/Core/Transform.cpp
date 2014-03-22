@@ -14,7 +14,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "Core/Transform.h"
-#include "Core/FileOverrides.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceManager.h"
@@ -38,7 +37,7 @@ public:
   ActionFactory(MatchFinder &Finder, Transform &Owner)
   : Finder(Finder), Owner(Owner) {}
 
-  virtual FrontendAction *create() LLVM_OVERRIDE {
+  virtual FrontendAction *create() override {
     return new FactoryAdaptor(Finder, Owner);
   }
 
@@ -53,14 +52,14 @@ private:
     }
 
     virtual bool BeginSourceFileAction(CompilerInstance &CI,
-                                       StringRef Filename) LLVM_OVERRIDE {
+                                       StringRef Filename) override {
       if (!ASTFrontendAction::BeginSourceFileAction(CI, Filename))
         return false;
 
       return Owner.handleBeginSource(CI, Filename);
     }
 
-    virtual void EndSourceFileAction() LLVM_OVERRIDE {
+    virtual void EndSourceFileAction() override {
       Owner.handleEndSource();
       return ASTFrontendAction::EndSourceFileAction();
     }
@@ -76,7 +75,7 @@ private:
 } // namespace
 
 Transform::Transform(llvm::StringRef Name, const TransformOptions &Options)
-    : Name(Name), GlobalOptions(Options), Overrides(0) {
+    : Name(Name), GlobalOptions(Options) {
   Reset();
 }
 
@@ -95,9 +94,6 @@ bool Transform::isFileModifiable(const SourceManager &SM,
 }
 
 bool Transform::handleBeginSource(CompilerInstance &CI, StringRef Filename) {
-  assert(Overrides != 0 && "Subclass transform didn't provide InputState");
-
-  Overrides->applyOverrides(CI.getSourceManager());
   CurrentSource = Filename;
 
   if (Options().EnableTiming) {
@@ -138,10 +134,10 @@ Version Version::getFromString(llvm::StringRef VersionStr) {
   llvm::StringRef MajorStr, MinorStr;
   Version V;
 
-  llvm::tie(MajorStr, MinorStr) = VersionStr.split('.');
+  std::tie(MajorStr, MinorStr) = VersionStr.split('.');
   if (!MinorStr.empty()) {
     llvm::StringRef Ignore;
-    llvm::tie(MinorStr, Ignore) = MinorStr.split('.');
+    std::tie(MinorStr, Ignore) = MinorStr.split('.');
     if (MinorStr.getAsInteger(10, V.Minor))
       return Version();
   }

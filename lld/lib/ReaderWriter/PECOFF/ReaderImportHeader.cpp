@@ -66,7 +66,7 @@
 ///   fn_in_dll();     // is equivalent to (*_imp__fn_in_dll)();
 ///
 /// It's just the compiler rewrites code for you so that you don't need to
-/// handle the indirection youself.
+/// handle the indirection yourself.
 ///
 /// Note 2: __declspec(dllimport) is mandatory for data but optional for
 /// function. For a function, the linker creates a jump table with the original
@@ -79,8 +79,8 @@
 ///
 /// The above functions do the same thing. fn's content is a JMP instruction to
 /// branch to the address pointed by _imp__fn. The latter may be a little bit
-/// slower than the former because it will execute the extra JMP instruction, but
-/// that's usually negligible.
+/// slower than the former because it will execute the extra JMP instruction,
+/// but that's usually negligible.
 ///
 /// If a function is dllimport'ed, which is usually done in a header file,
 /// mangled name will be used at compile time so the jump table will not be
@@ -125,6 +125,7 @@
 #include "lld/Core/File.h"
 #include "lld/Core/Error.h"
 #include "lld/Core/SharedLibraryAtom.h"
+#include "lld/ReaderWriter/PECOFFLinkingContext.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Object/COFF.h"
@@ -143,70 +144,60 @@
 #include <cstring>
 
 using namespace lld;
+using namespace lld::pecoff;
 using namespace llvm;
 
 namespace lld {
-namespace coff {
 
 namespace {
+
+uint8_t FuncAtomContent[] = { 0xff, 0x25, 0x00, 0x00, 0x00, 0x00, // jmp *0x0
+                              0xcc, 0xcc // int 3; int 3
+};
 
 /// The defined atom for jump table.
 class FuncAtom : public COFFLinkerInternalAtom {
 public:
   FuncAtom(const File &file, StringRef symbolName)
-      : COFFLinkerInternalAtom(file, std::vector<uint8_t>(rawContent),
-                               symbolName) {}
+      : COFFLinkerInternalAtom(
+            file, /*oridnal*/ 0,
+            std::vector<uint8_t>(FuncAtomContent,
+                                 FuncAtomContent + sizeof(FuncAtomContent)),
+            symbolName) {}
 
-  virtual uint64_t ordinal() const { return 0; }
-  virtual Scope scope() const { return scopeGlobal; }
-  virtual ContentType contentType() const { return typeCode; }
-  virtual Alignment alignment() const { return Alignment(1); }
-  virtual ContentPermissions permissions() const { return permR_X; }
-
-private:
-  static std::vector<uint8_t> rawContent;
+  uint64_t ordinal() const override { return 0; }
+  Scope scope() const override { return scopeGlobal; }
+  ContentType contentType() const override { return typeCode; }
+  Alignment alignment() const override { return Alignment(1); }
+  ContentPermissions permissions() const override { return permR_X; }
 };
-
-// MSVC doesn't seem to like C++11 initializer list, so initialize the
-// vector from an array.
-namespace {
-uint8_t FuncAtomContent[] = {
-  0xff, 0x25, 0x00, 0x00, 0x00, 0x00,  // jmp *0x0
-  0x90, 0x90                           // nop; nop
-};
-} // anonymous namespace
-
-std::vector<uint8_t> FuncAtom::rawContent(
-    FuncAtomContent, FuncAtomContent + sizeof(FuncAtomContent));
 
 class FileImportLibrary : public File {
 public:
-  FileImportLibrary(const LinkingContext &context,
-                    std::unique_ptr<llvm::MemoryBuffer> mb,
-                    llvm::error_code &ec)
-      : File(mb->getBufferIdentifier(), kindSharedLibrary), _context(context) {
+  FileImportLibrary(std::unique_ptr<MemoryBuffer> mb, error_code &ec)
+      : File(mb->getBufferIdentifier(), kindSharedLibrary) {
     const char *buf = mb->getBufferStart();
     const char *end = mb->getBufferEnd();
 
     // The size of the string that follows the header.
     uint32_t dataSize = *reinterpret_cast<const support::ulittle32_t *>(
-        buf + offsetof(COFF::ImportHeader, SizeOfData));
+                             buf + offsetof(COFF::ImportHeader, SizeOfData));
 
     // Check if the total size is valid.
-    if (end - buf != sizeof(COFF::ImportHeader) + dataSize) {
-      ec = make_error_code(native_reader_error::unknown_file_format);
+    if (std::size_t(end - buf) != sizeof(COFF::ImportHeader) + dataSize) {
+      ec = make_error_code(NativeReaderError::unknown_file_format);
       return;
     }
 
     uint16_t hint = *reinterpret_cast<const support::ulittle16_t *>(
-        buf + offsetof(COFF::ImportHeader, OrdinalHint));
+                         buf + offsetof(COFF::ImportHeader, OrdinalHint));
     StringRef symbolName(buf + sizeof(COFF::ImportHeader));
     StringRef dllName(buf + sizeof(COFF::ImportHeader) + symbolName.size() + 1);
 
     // TypeInfo is a bitfield. The least significant 2 bits are import
     // type, followed by 3 bit import name type.
     uint16_t typeInfo = *reinterpret_cast<const support::ulittle16_t *>(
-        buf + offsetof(COFF::ImportHeader, TypeInfo));
+                             buf + offsetof(COFF::ImportHeader, TypeInfo));
     int type = typeInfo & 0x3;
     int nameType = (typeInfo >> 2) & 0x7;
 
@@ -215,38 +206,37 @@ public:
     // have name if it's imported by ordinal.
     StringRef importName = symbolNameToImportName(symbolName, nameType);
 
-    const COFFSharedLibraryAtom *dataAtom = addSharedLibraryAtom(
-        hint, symbolName, importName, dllName);
+    const COFFSharedLibraryAtom *dataAtom =
+        addSharedLibraryAtom(hint, symbolName, importName, dllName);
     if (type == llvm::COFF::IMPORT_CODE)
       addDefinedAtom(symbolName, dllName, dataAtom);
 
     ec = error_code::success();
   }
 
-  virtual const atom_collection<DefinedAtom> &defined() const {
+  const atom_collection<DefinedAtom> &defined() const override {
     return _definedAtoms;
   }
 
-  virtual const atom_collection<UndefinedAtom> &undefined() const {
+  const atom_collection<UndefinedAtom> &undefined() const override {
     return _noUndefinedAtoms;
   }
 
-  virtual const atom_collection<SharedLibraryAtom> &sharedLibrary() const {
+  const atom_collection<SharedLibraryAtom> &sharedLibrary() const override {
     return _sharedLibraryAtoms;
   }
 
-  virtual const atom_collection<AbsoluteAtom> &absolute() const {
+  const atom_collection<AbsoluteAtom> &absolute() const override {
     return _noAbsoluteAtoms;
   }
 
-  virtual const LinkingContext &getLinkingContext() const { return _context; }
-
 private:
-  const COFFSharedLibraryAtom *
-  addSharedLibraryAtom(uint16_t hint, StringRef symbolName,
-                       StringRef importName, StringRef dllName) {
-    auto *atom = new (_alloc) COFFSharedLibraryAtom(
-        *this, hint, symbolName, importName, dllName);
+  const COFFSharedLibraryAtom *addSharedLibraryAtom(uint16_t hint,
+                                                    StringRef symbolName,
+                                                    StringRef importName,
+                                                    StringRef dllName) {
+    auto *atom = new (_alloc)
+        COFFSharedLibraryAtom(*this, hint, symbolName, importName, dllName);
     _sharedLibraryAtoms._atoms.push_back(atom);
     return atom;
   }
@@ -263,7 +253,6 @@ private:
 
   atom_collection_vector<DefinedAtom> _definedAtoms;
   atom_collection_vector<SharedLibraryAtom> _sharedLibraryAtoms;
-  const LinkingContext &_context;
   mutable llvm::BumpPtrAllocator _alloc;
 
   // Does the same thing as StringRef::ltrim() but removes at most one
@@ -301,27 +290,54 @@ private:
   }
 };
 
+class COFFImportLibraryReader : public Reader {
+public:
+  bool canParse(file_magic magic, StringRef,
+                const MemoryBuffer &mb) const override {
+    if (mb.getBufferSize() < sizeof(COFF::ImportHeader))
+      return false;
+    return (magic == llvm::sys::fs::file_magic::coff_import_library);
+  }
+
+  error_code
+  parseFile(std::unique_ptr<MemoryBuffer> &mb, const class Registry &,
+            std::vector<std::unique_ptr<File> > &result) const override {
+    error_code ec;
+    auto file = std::unique_ptr<File>(new FileImportLibrary(std::move(mb), ec));
+    if (ec)
+      return ec;
+    result.push_back(std::move(file));
+    return error_code::success();
+  }
+};
+
 } // end anonymous namespace
+
+namespace pecoff {
 
 error_code parseCOFFImportLibrary(const LinkingContext &targetInfo,
                                   std::unique_ptr<MemoryBuffer> &mb,
-                                  std::vector<std::unique_ptr<File>> &result) {
+                                  std::vector<std::unique_ptr<File> > &result) {
   // Check the file magic.
   const char *buf = mb->getBufferStart();
   const char *end = mb->getBufferEnd();
   // Error if the file is too small or does not start with the magic.
   if (end - buf < static_cast<ptrdiff_t>(sizeof(COFF::ImportHeader)) ||
       memcmp(buf, "\0\0\xFF\xFF", 4))
-    return make_error_code(native_reader_error::unknown_file_format);
+    return make_error_code(NativeReaderError::unknown_file_format);
 
   error_code ec;
-  auto file = std::unique_ptr<File>(
-      new FileImportLibrary(targetInfo, std::move(mb), ec));
+  auto file = std::unique_ptr<File>(new FileImportLibrary(std::move(mb), ec));
   if (ec)
     return ec;
   result.push_back(std::move(file));
   return error_code::success();
 }
 
-} // end namespace coff
+} // end namespace pecoff
+
+void Registry::addSupportCOFFImportLibraries() {
+  add(std::unique_ptr<Reader>(new COFFImportLibraryReader()));
+}
+
 } // end namespace lld

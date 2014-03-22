@@ -10,7 +10,7 @@ from lldbtest import *
 
 class BreakpointConditionsTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "breakpoint", "breakpoint_conditions")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
@@ -34,14 +34,12 @@ class BreakpointConditionsTestCase(TestBase):
         self.buildDsym()
         self.breakpoint_conditions_python()
 
-    @expectedFailureFreeBSD('llvm.org/pr17213')
     @dwarf_test
     def test_breakpoint_condition_with_dwarf_and_run_command(self):
         """Exercise breakpoint condition with 'breakpoint modify -c <expr> id'."""
         self.buildDwarf()
         self.breakpoint_conditions()
 
-    @expectedFailureFreeBSD('llvm.org/pr17213')
     @dwarf_test
     def test_breakpoint_condition_inline_with_dwarf_and_run_command(self):
         """Exercise breakpoint condition inline with 'breakpoint set'."""
@@ -175,7 +173,7 @@ class BreakpointConditionsTestCase(TestBase):
             startstr = 'val == 3')
 
         # Now launch the process, and do not stop at entry point.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
         self.assertTrue(process, PROCESS_IS_VALID)
 
         # Frame #0 should be on self.line1 and the break condition should hold.

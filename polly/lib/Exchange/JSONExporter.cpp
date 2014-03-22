@@ -18,7 +18,6 @@
 #include "polly/ScopPass.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Assembly/Writer.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/system_error.h"
@@ -133,7 +132,7 @@ bool JSONExporter::runOnScop(Scop &scop) {
 
   // Write to file.
   std::string ErrInfo;
-  tool_output_file F(FileName.c_str(), ErrInfo);
+  tool_output_file F(FileName.c_str(), ErrInfo, llvm::sys::fs::F_Text);
 
   std::string FunctionName = R.getEntry()->getParent()->getName();
   errs() << "Writing JScop '" << R.getNameStr() << "' in function '"

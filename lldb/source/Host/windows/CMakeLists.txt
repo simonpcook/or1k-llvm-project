@@ -6,4 +6,5 @@ add_lldb_library(lldbHostWindows
   Mutex.cpp
   Condition.cpp
   Windows.cpp
+  EditLineWin.cpp
   )

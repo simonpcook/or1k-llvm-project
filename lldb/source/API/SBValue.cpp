@@ -96,7 +96,24 @@ public:
     bool
     IsValid ()
     {
-        return m_valobj_sp.get() != NULL;
+        if (m_valobj_sp.get() == NULL)
+            return false;
+        else
+        {
+            // FIXME: This check is necessary but not sufficient.  We for sure don't want to touch SBValues whose owning
+            // targets have gone away.  This check is a little weak in that it enforces that restriction when you call
+            // IsValid, but since IsValid doesn't lock the target, you have no guarantee that the SBValue won't go
+            // invalid after you call this...
+            // Also, an SBValue could depend on data from one of the modules in the target, and those could go away
+            // independently of the target, for instance if a module is unloaded.  But right now, neither SBValues
+            // nor ValueObjects know which modules they depend on.  So I have no good way to make that check without
+            // tracking that in all the ValueObject subclasses.
+            TargetSP target_sp = m_valobj_sp->GetTargetSP();
+            if (target_sp && target_sp->IsValid())
+                return true;
+            else
+                return false;
+        }
     }
     
     lldb::ValueObjectSP
@@ -120,6 +137,8 @@ public:
         Target *target = value_sp->GetTargetSP().get();
         if (target)
             api_locker.Lock(target->GetAPIMutex());
+        else
+            return ValueObjectSP();
         
         ProcessSP process_sp(value_sp->GetProcessSP());
         if (process_sp && !stop_locker.TryLock (&process_sp->GetRunLock()))
@@ -276,7 +295,7 @@ SBValue::IsValid ()
     // If this function ever changes to anything that does more than just
     // check if the opaque shared pointer is non NULL, then we need to update
     // all "if (m_opaque_sp)" code in this file.
-    return m_opaque_sp.get() != NULL && m_opaque_sp->GetRootSP().get() != NULL;
+    return m_opaque_sp.get() != NULL && m_opaque_sp->IsValid() && m_opaque_sp->GetRootSP().get() != NULL;
 }
 
 void
@@ -473,7 +492,7 @@ SBValue::GetType()
     TypeImplSP type_sp;
     if (value_sp)
     {
-        type_sp.reset (new TypeImpl(value_sp->GetClangType()));
+        type_sp.reset (new TypeImpl(value_sp->GetTypeImpl()));
         sb_type.SetSP(type_sp);
     }
     if (log)
@@ -671,7 +690,7 @@ SBValue::CreateChildAtOffset (const char *name, uint32_t offset, SBType type)
         TypeImplSP type_sp (type.GetSP());
         if (type.IsValid())
         {
-            sb_value.SetSP(value_sp->GetSyntheticChildAtOffset(offset, type_sp->GetClangASTType(), true),GetPreferDynamicValue(),GetPreferSyntheticValue(), name);
+            sb_value.SetSP(value_sp->GetSyntheticChildAtOffset(offset, type_sp->GetClangASTType(false), true),GetPreferDynamicValue(),GetPreferSyntheticValue(), name);
         }
     }
     Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_API));
@@ -696,7 +715,7 @@ SBValue::Cast (SBType type)
     lldb::ValueObjectSP value_sp(GetSP(locker));
     TypeImplSP type_sp (type.GetSP());
     if (value_sp && type_sp)
-        sb_value.SetSP(value_sp->Cast(type_sp->GetClangASTType()),GetPreferDynamicValue(),GetPreferSyntheticValue());
+        sb_value.SetSP(value_sp->Cast(type_sp->GetClangASTType(false)),GetPreferDynamicValue(),GetPreferSyntheticValue());
     return sb_value;
 }
 
@@ -761,17 +780,17 @@ SBValue::CreateValueFromAddress(const char* name, lldb::addr_t address, SBType s
     lldb::TypeImplSP type_impl_sp (sb_type.GetSP());
     if (value_sp && type_impl_sp)
     {
-        ClangASTType pointee_ast_type(type_impl_sp->GetClangASTType().GetPointerType ());
-        if (pointee_ast_type)
+        ClangASTType pointer_ast_type(type_impl_sp->GetClangASTType(false).GetPointerType ());
+        if (pointer_ast_type)
         {
             lldb::DataBufferSP buffer(new lldb_private::DataBufferHeap(&address,sizeof(lldb::addr_t)));
             
             ExecutionContext exe_ctx (value_sp->GetExecutionContextRef());
             ValueObjectSP ptr_result_valobj_sp(ValueObjectConstResult::Create (exe_ctx.GetBestExecutionContextScope(),
-                                                                               pointee_ast_type,
+                                                                               pointer_ast_type,
                                                                                ConstString(name),
                                                                                buffer,
-                                                                               lldb::endian::InlHostByteOrder(),
+                                                                               exe_ctx.GetByteOrder(),
                                                                                exe_ctx.GetAddressByteSize()));
             
             if (ptr_result_valobj_sp)
@@ -808,7 +827,7 @@ SBValue::CreateValueFromData (const char* name, SBData data, SBType type)
         ExecutionContext exe_ctx (value_sp->GetExecutionContextRef());
         
         new_value_sp = ValueObjectConstResult::Create (exe_ctx.GetBestExecutionContextScope(),
-                                                       type.m_opaque_sp->GetClangASTType(),
+                                                       type.m_opaque_sp->GetClangASTType(false),
                                                        ConstString(name),
                                                        *data.m_opaque_sp,
                                                        LLDB_INVALID_ADDRESS);
@@ -1048,11 +1067,12 @@ SBValue::GetValueAsSigned(SBError& error, int64_t fail_value)
     lldb::ValueObjectSP value_sp(GetSP(locker));
     if (value_sp)
     {
-        Scalar scalar;
-        if (value_sp->ResolveValue (scalar))
-            return scalar.SLongLong (fail_value);
-        else
-            error.SetErrorString ("could not resolve value");
+        bool success = true;
+        uint64_t ret_val = fail_value;
+        ret_val = value_sp->GetValueAsSigned(fail_value, &success);
+        if (!success)
+            error.SetErrorString("could not resolve value");
+        return ret_val;
     }
     else
         error.SetErrorStringWithFormat ("could not get SBValue: %s", locker.GetError().AsCString());
@@ -1068,11 +1088,12 @@ SBValue::GetValueAsUnsigned(SBError& error, uint64_t fail_value)
     lldb::ValueObjectSP value_sp(GetSP(locker));
     if (value_sp)
     {
-        Scalar scalar;
-        if (value_sp->ResolveValue (scalar))
-            return scalar.ULongLong(fail_value);
-        else
+        bool success = true;
+        uint64_t ret_val = fail_value;
+        ret_val = value_sp->GetValueAsUnsigned(fail_value, &success);
+        if (!success)
             error.SetErrorString("could not resolve value");
+        return ret_val;
     }
     else
         error.SetErrorStringWithFormat ("could not get SBValue: %s", locker.GetError().AsCString());
@@ -1087,9 +1108,7 @@ SBValue::GetValueAsSigned(int64_t fail_value)
     lldb::ValueObjectSP value_sp(GetSP(locker));
     if (value_sp)
     {
-        Scalar scalar;
-        if (value_sp->ResolveValue (scalar))
-            return scalar.SLongLong(fail_value);
+        return value_sp->GetValueAsSigned(fail_value);
     }
     return fail_value;
 }
@@ -1101,9 +1120,7 @@ SBValue::GetValueAsUnsigned(uint64_t fail_value)
     lldb::ValueObjectSP value_sp(GetSP(locker));
     if (value_sp)
     {
-        Scalar scalar;
-        if (value_sp->ResolveValue (scalar))
-            return scalar.ULongLong(fail_value);
+        return value_sp->GetValueAsUnsigned(fail_value);
     }
     return fail_value;
 }
@@ -1552,8 +1569,9 @@ SBValue::GetData ()
     if (value_sp)
     {
         DataExtractorSP data_sp(new DataExtractor());
-        value_sp->GetData(*data_sp);
-        if (data_sp->GetByteSize() > 0)
+        Error error;
+        value_sp->GetData(*data_sp, error);
+        if (error.Success())
             *sb_data = data_sp;
     }
     if (log)

@@ -16,7 +16,6 @@
 #ifndef POLLY_TEMP_SCOP_EXTRACTION_H
 #define POLLY_TEMP_SCOP_EXTRACTION_H
 
-#include "polly/MayAliasSet.h"
 #include "polly/ScopDetection.h"
 
 #include "llvm/Analysis/RegionPass.h"
@@ -29,7 +28,6 @@ class DataLayout;
 using namespace llvm;
 
 namespace polly {
-class MayAliasSetInfo;
 
 //===---------------------------------------------------------------------===//
 /// @brief A memory access described by a SCEV expression and the access type.
@@ -79,7 +77,6 @@ public:
 };
 
 class Comparison {
-
   const SCEV *LHS;
   const SCEV *RHS;
 
@@ -112,7 +109,7 @@ typedef std::map<const Loop *, const SCEV *> LoopBoundMapType;
 /// Mapping BBs to its condition constrains
 typedef std::map<const BasicBlock *, BBCond> BBCondMapType;
 
-typedef std::vector<std::pair<IRAccess, Instruction *> > AccFuncSetType;
+typedef std::vector<std::pair<IRAccess, Instruction *>> AccFuncSetType;
 typedef std::map<const BasicBlock *, AccFuncSetType> AccFuncMapType;
 
 //===---------------------------------------------------------------------===//
@@ -134,15 +131,12 @@ class TempScop {
   // Access function of bbs.
   const AccFuncMapType &AccFuncMap;
 
-  // The alias information about this SCoP.
-  MayAliasSetInfo *MayASInfo;
-
   friend class TempScopInfo;
 
   explicit TempScop(Region &r, LoopBoundMapType &loopBounds,
                     BBCondMapType &BBCmps, AccFuncMapType &accFuncMap)
       : R(r), MaxLoopDepth(0), LoopBounds(loopBounds), BBConds(BBCmps),
-        AccFuncMap(accFuncMap), MayASInfo(new MayAliasSetInfo()) {}
+        AccFuncMap(accFuncMap) {}
 
 public:
   ~TempScop();
@@ -236,7 +230,7 @@ class TempScopInfo : public FunctionPass {
   PostDominatorTree *PDT;
 
   // Target data for element size computing.
-  DataLayout *TD;
+  const DataLayout *TD;
 
   // Remember the bounds of loops, to help us build iteration domain of BBs.
   LoopBoundMapType LoopBounds;

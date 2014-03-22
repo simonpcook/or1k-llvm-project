@@ -19,7 +19,7 @@
 // Project includes
 #include "lldb/Interpreter/Args.h"
 #include "lldb/Core/Debugger.h"
-#include "lldb/Core/InputReader.h"
+#include "lldb/Core/IOHandler.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/Section.h"
@@ -49,6 +49,7 @@
 #include "lldb/Symbol/UnwindPlan.h"
 #include "lldb/Symbol/VariableList.h"
 #include "lldb/Target/Process.h"
+#include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/StackFrame.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadSpec.h"
@@ -677,6 +678,9 @@ protected:
 
 class CommandObjectTargetVariable : public CommandObjectParsed
 {
+    static const uint32_t SHORT_OPTION_FILE = 0x66696c65;   // 'file'
+    static const uint32_t SHORT_OPTION_SHLB = 0x73686c62;   // 'shlb'
+
 public:
     CommandObjectTargetVariable (CommandInterpreter &interpreter) :
         CommandObjectParsed (interpreter,
@@ -687,8 +691,12 @@ public:
         m_option_group (interpreter),
         m_option_variable (false), // Don't include frame options
         m_option_format (eFormatDefault),
-        m_option_compile_units    (LLDB_OPT_SET_1, false, "file", 'file', 0, eArgTypeFilename, "A basename or fullpath to a file that contains global variables. This option can be specified multiple times."),
-        m_option_shared_libraries (LLDB_OPT_SET_1, false, "shlib",'shlb', 0, eArgTypeFilename, "A basename or fullpath to a shared library to use in the search for global variables. This option can be specified multiple times."),
+        m_option_compile_units    (LLDB_OPT_SET_1, false, "file",
+                                   SHORT_OPTION_FILE, 0, eArgTypeFilename,
+                                   "A basename or fullpath to a file that contains global variables. This option can be specified multiple times."),
+        m_option_shared_libraries (LLDB_OPT_SET_1, false, "shlib",
+                                   SHORT_OPTION_SHLB, 0, eArgTypeFilename,
+                                   "A basename or fullpath to a shared library to use in the search for global variables. This option can be specified multiple times."),
         m_varobj_options()
     {
         CommandArgumentEntry arg;
@@ -1762,7 +1770,7 @@ LookupFunctionInModule (CommandInterpreter &interpreter,
         if (num_matches)
         {
             strm.Indent ();
-            strm.Printf("%zu match%s found in ", num_matches, num_matches > 1 ? "es" : "");
+            strm.Printf("%" PRIu64 " match%s found in ", (uint64_t)num_matches, num_matches > 1 ? "es" : "");
             DumpFullpath (strm, &module->GetFileSpec(), 0);
             strm.PutCString(":\n");
             DumpSymbolContextList (interpreter.GetExecutionContext().GetBestExecutionContextScope(), strm, sc_list, verbose);
@@ -1793,13 +1801,11 @@ LookupTypeInModule (CommandInterpreter &interpreter,
         if (num_matches)
         {
             strm.Indent ();
-            strm.Printf("%zu match%s found in ", num_matches, num_matches > 1 ? "es" : "");
+            strm.Printf("%" PRIu64 " match%s found in ", (uint64_t)num_matches, num_matches > 1 ? "es" : "");
             DumpFullpath (strm, &module->GetFileSpec(), 0);
             strm.PutCString(":\n");
-            const uint32_t num_types = type_list.GetSize();
-            for (uint32_t i=0; i<num_types; ++i)
+            for (TypeSP type_sp : type_list.Types())
             {
-                TypeSP type_sp (type_list.GetTypeAtIndex(i));
                 if (type_sp)
                 {
                     // Resolve the clang type so that any forward references
@@ -2201,7 +2207,7 @@ protected:
                 const size_t num_modules = target->GetImages().GetSize();
                 if (num_modules > 0)
                 {
-                    result.GetOutputStream().Printf("Dumping symbol table for %zu modules.\n", num_modules);
+                    result.GetOutputStream().Printf("Dumping symbol table for %" PRIu64 " modules.\n", (uint64_t)num_modules);
                     for (size_t image_idx = 0; image_idx<num_modules; ++image_idx)
                     {
                         if (num_dumped > 0)
@@ -2334,7 +2340,7 @@ protected:
                 const size_t num_modules = target->GetImages().GetSize();
                 if (num_modules > 0)
                 {
-                    result.GetOutputStream().Printf("Dumping sections for %zu modules.\n", num_modules);
+                    result.GetOutputStream().Printf("Dumping sections for %" PRIu64 " modules.\n", (uint64_t)num_modules);
                     for (size_t image_idx = 0;  image_idx<num_modules; ++image_idx)
                     {
                         num_dumped++;
@@ -2442,7 +2448,7 @@ protected:
                 const size_t num_modules = target_modules.GetSize();
                 if (num_modules > 0)
                 {
-                    result.GetOutputStream().Printf("Dumping debug symbols for %zu modules.\n", num_modules);
+                    result.GetOutputStream().Printf("Dumping debug symbols for %" PRIu64 " modules.\n", (uint64_t)num_modules);
                     for (uint32_t image_idx = 0;  image_idx<num_modules; ++image_idx)
                     {
                         if (DumpModuleSymbolVendor (result.GetOutputStream(), target_modules.GetModulePointerAtIndexUnlocked(image_idx)))
@@ -2895,7 +2901,8 @@ protected:
                                     if (m_slide_option.GetOptionValue().OptionWasSet())
                                     {
                                         const addr_t slide = m_slide_option.GetOptionValue().GetCurrentValue();
-                                        module->SetLoadAddress (*target, slide, changed);
+                                        const bool slide_is_offset = true;
+                                        module->SetLoadAddress (*target, slide, slide_is_offset, changed);
                                     }
                                     else
                                     {
@@ -3402,9 +3409,9 @@ protected:
                             ref_count = module_sp.use_count() - 1;
                         }
                         if (width)
-                            strm.Printf("{%*zu}", width, ref_count);
+                            strm.Printf("{%*" PRIu64 "}", width, (uint64_t)ref_count);
                         else
-                            strm.Printf("{%zu}", ref_count);
+                            strm.Printf("{%" PRIu64 "}", (uint64_t)ref_count);
                     }
                     break;
 
@@ -4760,7 +4767,9 @@ private:
 // CommandObjectTargetStopHookAdd
 //-------------------------------------------------------------------------
 
-class CommandObjectTargetStopHookAdd : public CommandObjectParsed
+class CommandObjectTargetStopHookAdd :
+    public CommandObjectParsed,
+    public IOHandlerDelegateMultiline
 {
 public:
 
@@ -4927,9 +4936,10 @@ public:
 
     CommandObjectTargetStopHookAdd (CommandInterpreter &interpreter) :
         CommandObjectParsed (interpreter,
-                             "target stop-hook add ",
+                             "target stop-hook add",
                              "Add a hook to be executed when the target stops.",
                              "target stop-hook add"),
+        IOHandlerDelegateMultiline ("DONE", IOHandlerDelegate::Completion::LLDBCommand),
         m_options (interpreter)
     {
     }
@@ -4938,102 +4948,61 @@ public:
     {
     }
 
-    static size_t 
-    ReadCommandsCallbackFunction (void *baton, 
-                                  InputReader &reader, 
-                                  lldb::InputReaderAction notification,
-                                  const char *bytes, 
-                                  size_t bytes_len)
-    {
-        StreamSP out_stream = reader.GetDebugger().GetAsyncOutputStream();
-        Target::StopHook *new_stop_hook = ((Target::StopHook *) baton);
-        static bool got_interrupted;
-        bool batch_mode = reader.GetDebugger().GetCommandInterpreter().GetBatchCommandMode();
-
-        switch (notification)
-        {
-        case eInputReaderActivate:
-            if (!batch_mode)
-            {
-                out_stream->Printf ("%s\n", "Enter your stop hook command(s).  Type 'DONE' to end.");
-                if (reader.GetPrompt())
-                    out_stream->Printf ("%s", reader.GetPrompt());
-                out_stream->Flush();
-            }
-            got_interrupted = false;
-            break;
-
-        case eInputReaderDeactivate:
-            break;
-
-        case eInputReaderReactivate:
-            if (reader.GetPrompt() && !batch_mode)
-            {
-                out_stream->Printf ("%s", reader.GetPrompt());
-                out_stream->Flush();
-            }
-            got_interrupted = false;
-            break;
-
-        case eInputReaderAsynchronousOutputWritten:
-            break;
-            
-        case eInputReaderGotToken:
-            if (bytes && bytes_len && baton)
-            {
-                StringList *commands = new_stop_hook->GetCommandPointer();
-                if (commands)
-                {
-                    commands->AppendString (bytes, bytes_len); 
-                }
-            }
-            if (!reader.IsDone() && reader.GetPrompt() && !batch_mode)
-            {
-                out_stream->Printf ("%s", reader.GetPrompt());
-                out_stream->Flush();
-            }
-            break;
-            
-        case eInputReaderInterrupt:
-            {
-                // Finish, and cancel the stop hook.
-                new_stop_hook->GetTarget()->RemoveStopHookByID(new_stop_hook->GetID());
-                if (!batch_mode)
-                {
-                    out_stream->Printf ("Stop hook cancelled.\n");
-                    out_stream->Flush();
-                }
-                
-                reader.SetIsDone (true);
-            }
-            got_interrupted = true;
-            break;
-            
-        case eInputReaderEndOfFile:
-            reader.SetIsDone (true);
-            break;
-            
-        case eInputReaderDone:
-            if (!got_interrupted && !batch_mode)
-            {
-                out_stream->Printf ("Stop hook #%" PRIu64 " added.\n", new_stop_hook->GetID());
-                out_stream->Flush();
-            }
-            break;
-        }
-
-        return bytes_len;
-    }
-
 protected:
+    
+    virtual void
+    IOHandlerActivated (IOHandler &io_handler)
+    {
+        StreamFileSP output_sp(io_handler.GetOutputStreamFile());
+        if (output_sp)
+        {
+            output_sp->PutCString("Enter your stop hook command(s).  Type 'DONE' to end.\n");
+            output_sp->Flush();
+        }
+    }
+    
+    
+    virtual void
+    IOHandlerInputComplete (IOHandler &io_handler, std::string &line)
+    {
+        if (m_stop_hook_sp)
+        {
+            if (line.empty())
+            {
+                StreamFileSP error_sp(io_handler.GetErrorStreamFile());
+                if (error_sp)
+                {
+                    error_sp->Printf("error: stop hook #%" PRIu64 " aborted, no commands.\n", m_stop_hook_sp->GetID());
+                    error_sp->Flush();
+                }
+                Target *target = m_interpreter.GetDebugger().GetSelectedTarget().get();
+                if (target)
+                    target->RemoveStopHookByID(m_stop_hook_sp->GetID());
+            }
+            else
+            {
+                m_stop_hook_sp->GetCommandPointer()->SplitIntoLines(line);
+                StreamFileSP output_sp(io_handler.GetOutputStreamFile());
+                if (output_sp)
+                {
+                    output_sp->Printf("Stop hook #%" PRIu64 " added.\n", m_stop_hook_sp->GetID());
+                    output_sp->Flush();
+                }
+            }
+            m_stop_hook_sp.reset();
+        }
+        io_handler.SetIsDone(true);
+    }
+    
     bool
     DoExecute (Args& command, CommandReturnObject &result)
     {
+        m_stop_hook_sp.reset();
+        
         Target *target = m_interpreter.GetDebugger().GetSelectedTarget().get();
         if (target)
         {
-            Target::StopHookSP new_hook_sp;
-            target->AddStopHook (new_hook_sp);
+            Target::StopHookSP new_hook_sp = target->CreateStopHook();
 
             //  First step, make the specifier.
             std::unique_ptr<SymbolContextSpecifier> specifier_ap;
@@ -5106,31 +5075,12 @@ protected:
             }
             else
             {
-                // Otherwise gather up the command list, we'll push an input reader and suck the data from that directly into
-                // the new stop hook's command string.
-                InputReaderSP reader_sp (new InputReader(m_interpreter.GetDebugger()));
-                if (!reader_sp)
-                {
-                    result.AppendError("out of memory\n");
-                    result.SetStatus (eReturnStatusFailed);
-                    target->RemoveStopHookByID (new_hook_sp->GetID());
-                    return false;
-                }
-                
-                Error err (reader_sp->Initialize (CommandObjectTargetStopHookAdd::ReadCommandsCallbackFunction,
-                                                  new_hook_sp.get(), // baton
-                                                  eInputReaderGranularityLine,  // token size, to pass to callback function
-                                                  "DONE",                       // end token
-                                                  "> ",                         // prompt
-                                                  true));                       // echo input
-                if (!err.Success())
-                {
-                    result.AppendError (err.AsCString());
-                    result.SetStatus (eReturnStatusFailed);
-                    target->RemoveStopHookByID (new_hook_sp->GetID());
-                    return false;
-                }
-                m_interpreter.GetDebugger().PushInputReader (reader_sp);
+                m_stop_hook_sp = new_hook_sp;
+                m_interpreter.GetLLDBCommandsFromIOHandler ("> ",   // Prompt
+                                                            *this,  // IOHandlerDelegate
+                                                            true,   // Run IOHandler in async mode
+                                                            NULL);  // Baton for the "io_handler" that will be passed back into our IOHandlerDelegate functions
+
             }
             result.SetStatus (eReturnStatusSuccessFinishNoResult);
         }
@@ -5144,6 +5094,7 @@ protected:
     }
 private:
     CommandOptions m_options;
+    Target::StopHookSP m_stop_hook_sp;
 };
 
 OptionDefinition

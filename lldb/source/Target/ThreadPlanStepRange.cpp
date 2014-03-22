@@ -382,7 +382,7 @@ ThreadPlanStepRange::SetNextBranchBreakpoint ()
         {
             const bool is_internal = true;
             run_to_address = instructions->GetInstructionAtIndex(branch_index)->GetAddress();
-            m_next_branch_bp_sp = GetTarget().CreateBreakpoint(run_to_address, is_internal);
+            m_next_branch_bp_sp = GetTarget().CreateBreakpoint(run_to_address, is_internal, false);
             if (m_next_branch_bp_sp)
             {
                 if (log)
@@ -443,8 +443,8 @@ ThreadPlanStepRange::NextRangeBreakpointExplainsStop (lldb::StopInfoSP stop_info
             }
         }
         if (log)
-            log->Printf ("ThreadPlanStepRange::NextRangeBreakpointExplainsStop - Hit next range breakpoint which has %zu owners - explains stop: %u.",
-                        num_owners,
+            log->Printf ("ThreadPlanStepRange::NextRangeBreakpointExplainsStop - Hit next range breakpoint which has %" PRIu64 " owners - explains stop: %u.",
+                        (uint64_t)num_owners,
                         explains_stop);
         ClearNextBranchBreakpoint();
         return  explains_stop;

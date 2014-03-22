@@ -11,7 +11,7 @@ import lldbutil
 
 class HelloWatchLocationTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "watchpoint", "hello_watchlocation")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
@@ -21,7 +21,7 @@ class HelloWatchLocationTestCase(TestBase):
         self.setTearDownCleanup(dictionary=self.d)
         self.hello_watchlocation()
 
-    @expectedFailureFreeBSD('llvm.org/pr16706') # Watchpoints fail on FreeBSD
+    @expectedFailureFreeBSD("llvm.org/pr18832")
     @dwarf_test
     def test_hello_watchlocation_with_dwarf(self):
         """Test watching a location with '-x size' option."""

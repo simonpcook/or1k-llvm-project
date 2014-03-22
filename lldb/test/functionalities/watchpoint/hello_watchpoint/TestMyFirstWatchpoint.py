@@ -13,7 +13,7 @@ class HelloWatchpointTestCase(TestBase):
     def getCategories (self):
         return ['basic_process']
 
-    mydir = os.path.join("functionalities", "watchpoint", "hello_watchpoint")
+    mydir = TestBase.compute_mydir(__file__)
 
     @dsym_test
     def test_hello_watchpoint_with_dsym_using_watchpoint_set(self):
@@ -22,7 +22,6 @@ class HelloWatchpointTestCase(TestBase):
         self.setTearDownCleanup(dictionary=self.d)
         self.hello_watchpoint()
 
-    @expectedFailureFreeBSD('llvm.org/pr16706') # Watchpoints fail on FreeBSD
     @dwarf_test
     def test_hello_watchpoint_with_dwarf_using_watchpoint_set(self):
         """Test a simple sequence of watchpoint creation and watchpoint hit."""

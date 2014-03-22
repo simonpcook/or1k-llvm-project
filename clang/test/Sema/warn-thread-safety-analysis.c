@@ -1,4 +1,4 @@
-// RUN: %clang -fsyntax-only -verify -Wthread-safety -Wthread-safety-beta -fcxx-exceptions %s
+// RUN: %clang_cc1 -fsyntax-only -verify -Wthread-safety -Wthread-safety-beta %s
 
 #define LOCKABLE            __attribute__ ((lockable))
 #define SCOPED_LOCKABLE     __attribute__ ((scoped_lockable))
@@ -31,15 +31,12 @@ struct Foo {
   struct Mutex *mu_;
 };
 
-// Define mutex lock/unlock functions.
-void mutex_exclusive_lock(struct Mutex *mu) EXCLUSIVE_LOCK_FUNCTION(mu) {
-}
-
-void mutex_shared_lock(struct Mutex *mu) SHARED_LOCK_FUNCTION(mu) {
-}
-
-void mutex_unlock(struct Mutex *mu) UNLOCK_FUNCTION(mu) {
-}
+// Declare mutex lock/unlock functions.
+void mutex_exclusive_lock(struct Mutex *mu) EXCLUSIVE_LOCK_FUNCTION(mu);
+void mutex_shared_lock(struct Mutex *mu) SHARED_LOCK_FUNCTION(mu);
+void mutex_unlock(struct Mutex *mu) UNLOCK_FUNCTION(mu);
+void mutex_shared_unlock(struct Mutex *mu) __attribute__((release_shared_capability(mu)));
+void mutex_exclusive_unlock(struct Mutex *mu) __attribute__((release_capability(mu)));
 
 // Define global variables.
 struct Mutex mu1;
@@ -103,8 +100,8 @@ int main() {
 
   Foo_func3(5);
 
-  set_value(&a_, 0); // expected-warning{{calling function 'setA' requires exclusive lock on 'foo_.mu_'}}
-  get_value(b_); // expected-warning{{calling function 'getB' requires shared lock on 'foo_.mu_'}}
+  set_value(&a_, 0); // expected-warning{{calling function 'set_value' requires exclusive lock on 'foo_.mu_'}}
+  get_value(b_); // expected-warning{{calling function 'get_value' requires shared lock on 'foo_.mu_'}}
   mutex_exclusive_lock(foo_.mu_);
   set_value(&a_, 1);
   mutex_unlock(foo_.mu_);
@@ -118,6 +115,14 @@ int main() {
   c_ = 1;
   (void)(*d_ == 1);
   mutex_unlock(foo_.mu_);
+
+  mutex_exclusive_lock(&mu1);
+  mutex_shared_unlock(&mu1); // expected-warning {{unlocking 'mu1' using shared access, expected exclusive access}}
+  mutex_exclusive_unlock(&mu1);
+
+  mutex_shared_lock(&mu1);
+  mutex_exclusive_unlock(&mu1); // expected-warning {{unlocking 'mu1' using exclusive access, expected shared access}}
+  mutex_shared_unlock(&mu1);
 
   return 0;
 }

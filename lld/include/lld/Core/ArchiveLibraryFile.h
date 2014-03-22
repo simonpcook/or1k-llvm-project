@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_CORE_ARCHIVE_LIBRARY_FILE_H_
-#define LLD_CORE_ARCHIVE_LIBRARY_FILE_H_
+#ifndef LLD_CORE_ARCHIVE_LIBRARY_FILE_H
+#define LLD_CORE_ARCHIVE_LIBRARY_FILE_H
 
 #include "lld/Core/File.h"
 
@@ -33,16 +33,14 @@ public:
   /// specified name and return the File object for that member, or nullptr.
   virtual const File *find(StringRef name, bool dataSymbolOnly) const = 0;
 
-  virtual const LinkingContext &getLinkingContext() const { return _context; }
+  virtual error_code
+  parseAllMembers(std::vector<std::unique_ptr<File>> &result) const = 0;
 
 protected:
   /// only subclasses of ArchiveLibraryFile can be instantiated
-  ArchiveLibraryFile(const LinkingContext &context, StringRef path)
-      : File(path, kindArchiveLibrary), _context(context) {}
-
-  const LinkingContext &_context;
+  ArchiveLibraryFile(StringRef path) : File(path, kindArchiveLibrary) {}
 };
 
 } // namespace lld
 
-#endif // LLD_CORE_ARCHIVE_LIBRARY_FILE_H_
+#endif // LLD_CORE_ARCHIVE_LIBRARY_FILE_H

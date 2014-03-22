@@ -7,16 +7,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_CORE_TARGET_INFO_H
-#define LLD_CORE_TARGET_INFO_H
+#ifndef LLD_CORE_LINKING_CONTEXT_H
+#define LLD_CORE_LINKING_CONTEXT_H
 
 #include "lld/Core/Error.h"
+#include "lld/Core/InputGraph.h"
 #include "lld/Core/LLVM.h"
-#include "lld/Core/LinkerInput.h"
 #include "lld/Core/range.h"
 #include "lld/Core/Reference.h"
 
-#include "lld/Driver/InputGraph.h"
 #include "lld/ReaderWriter/Reader.h"
 
 #include "llvm/Support/ErrorOr.h"
@@ -25,29 +24,23 @@
 #include <string>
 #include <vector>
 
-namespace llvm {
-class Triple;
-}
-
 namespace lld {
 class PassManager;
 class File;
 class Writer;
-class InputFiles;
 class InputGraph;
+class InputElement;
+class SharedLibraryFile;
 
 /// \brief The LinkingContext class encapsulates "what and how" to link.
 ///
 /// The base class LinkingContext contains the options needed by core linking.
 /// Subclasses of LinkingContext have additional options needed by specific
-/// Readers
-/// and Writers. For example, ELFLinkingContext has methods that supplies
-/// options
-/// to the ELF Reader and Writer.
-class LinkingContext : public Reader {
+/// Writers. For example, ELFLinkingContext has methods that supplies
+/// options to the ELF Writer and ELF Passes.
+class LinkingContext {
 public:
-  /// \brief The types of output file that the linker
-  /// creates.
+  /// \brief The types of output file that the linker creates.
   enum class OutputFileType : uint8_t {
     Default, // The default output type for this target
     YAML,    // The output type is set to YAML
@@ -82,6 +75,7 @@ public:
   /// reference). Only Atoms with scope scopeLinkageUnit or scopeGlobal can
   /// be kept live using this method.
   const std::vector<StringRef> &deadStripRoots() const {
+    assert(_deadStrip && "only applicable when deadstripping enabled");
     return _deadStripRoots;
   }
 
@@ -89,6 +83,7 @@ public:
   /// deadStrip() returns true.
   void addDeadStripRoot(StringRef symbolName) {
     assert(_deadStrip && "only applicable when deadstripping enabled");
+    assert(!symbolName.empty() && "Empty symbol cannot be a dead strip root");
     _deadStripRoots.push_back(symbolName);
   }
 
@@ -163,6 +158,11 @@ public:
   /// to be an error.
   bool allowShlibUndefines() const { return _allowShlibUndefines; }
 
+  /// Add undefined symbols from shared libraries ?
+  virtual bool addUndefinedAtomsFromSharedLibrary(const SharedLibraryFile *) {
+    return true;
+  }
+
   /// If true, core linking will write the path to each input file to stdout
   /// (i.e. llvm::outs()) as it is used.  This is used to implement the -t
   /// linker option.
@@ -220,14 +220,14 @@ public:
 
   /// This method adds undefined symbols specified by the -u option to the to
   /// the list of undefined symbols known to the linker. This option essentially
-  /// forces an undefined symbol to be create. You may also need to call
+  /// forces an undefined symbol to be created. You may also need to call
   /// addDeadStripRoot() for the symbol if your platform supports dead
   /// stripping, so that the symbol will not be removed from the output.
   void addInitialUndefinedSymbol(StringRef symbolName) {
     _initialUndefinedSymbols.push_back(symbolName);
   }
 
-  /// Iterators for symbols that appear on the command line
+  /// Iterators for symbols that appear on the command line.
   typedef std::vector<StringRef> StringRefVector;
   typedef StringRefVector::iterator StringRefVectorIter;
   typedef StringRefVector::const_iterator StringRefVectorConstIter;
@@ -236,7 +236,7 @@ public:
   /// during link. Flavors can override this function in their LinkingContext
   /// to add more internal files. These internal files are positioned before
   /// the actual input files.
-  virtual std::vector<std::unique_ptr<lld::File> > createInternalFiles();
+  virtual void createInternalFiles(std::vector<std::unique_ptr<File> > &) const;
 
   /// Return the list of undefined symbols that are specified in the
   /// linker command line, using the -u option.
@@ -265,63 +265,53 @@ public:
   /// Set the various output file types that the linker would
   /// create
   bool setOutputFileType(StringRef outputFileType) {
-    StringRef lowerOutputFileType = outputFileType.lower();
-    if (lowerOutputFileType == "yaml")
+    if (outputFileType.equals_lower("yaml"))
       _outputFileType = OutputFileType::YAML;
-    else if (lowerOutputFileType == "native")
+    else if (outputFileType.equals_lower("native"))
       _outputFileType = OutputFileType::YAML;
     else
       return false;
     return true;
   }
 
-  /// Returns the output file that that the linker needs to create
+  /// Returns the output file type that that the linker needs to create.
   OutputFileType outputFileType() const { return _outputFileType; }
 
-  /// Abstract method to parse a supplied input file buffer into one or
-  /// more lld::File objects. Subclasses of LinkingContext must implement this
-  /// method.
-  ///
-  /// \param input This is an in-memory read-only copy of the input file.
-  /// If the resulting lld::File object will contain pointers into
-  /// this memory buffer, the lld::File object should take ownership
-  /// of the buffer.  Otherwise core linking will maintain ownership of the
-  /// buffer and delete it at some point.
-  ///
-  /// \param [out] result The instantiated lld::File object is returned here.
-  /// The \p result is a vector because some input files parse into more than
-  /// one lld::File (e.g. YAML).
-  virtual error_code
-  parseFile(LinkerInput &input,
-            std::vector<std::unique_ptr<File> > &result) const = 0;
+  /// Accessor for Register object embedded in LinkingContext.
+  const Registry &registry() const { return _registry; }
+  Registry &registry() { return _registry; }
 
   /// This method is called by core linking to give the Writer a chance
   /// to add file format specific "files" to set of files to be linked. This is
   /// how file format specific atoms can be added to the link.
-  virtual void addImplicitFiles(InputFiles &) const;
+  virtual bool createImplicitFiles(std::vector<std::unique_ptr<File> > &) const;
 
   /// This method is called by core linking to build the list of Passes to be
   /// run on the merged/linked graph of all input files.
-  virtual void addPasses(PassManager &pm) const;
+  virtual void addPasses(PassManager &pm);
 
   /// Calls through to the writeFile() method on the specified Writer.
   ///
   /// \param linkedFile This is the merged/linked graph of all input file Atoms.
   virtual error_code writeFile(const File &linkedFile) const;
 
-  /// @}
+  /// nextFile returns the next file that needs to be processed by the resolver.
+  /// The LinkingContext's can override the default behavior to change the way
+  /// the resolver operates. This uses the currentInputElement. When there are
+  /// no more files to be processed an appropriate InputGraphError is
+  /// returned. Ordinals are assigned to files returned by nextFile, which means
+  /// ordinals would be assigned in the way files are resolved.
+  virtual ErrorOr<File &> nextFile();
 
-  /// \name Methods needed by YAML I/O and error messages to convert Kind values
-  /// to and from strings.
-  /// @{
+  /// Set the resolver state for the current Input element This is used by the
+  /// InputGraph to decide the next file that needs to be processed for various
+  /// types of nodes in the InputGraph. The resolver state is nothing but a
+  /// bitmask of various types of states that the resolver handles when adding
+  /// atoms.
+  virtual void setResolverState(uint32_t resolverState);
 
-  /// Abstract method to parse a kind name string into an integral
-  /// Reference::Kind
-  virtual ErrorOr<Reference::Kind> relocKindFromString(StringRef str) const = 0;
-
-  /// Abstract method to return the name for a given integral
-  /// Reference::Kind.
-  virtual ErrorOr<std::string> stringFromRelocKind(Reference::Kind k) const = 0;
+  /// Return the next ordinal and Increment it.
+  virtual uint64_t getNextOrdinalAndIncrement() const { return _nextOrdinal++; }
 
   /// @}
 
@@ -332,10 +322,12 @@ protected:
   virtual Writer &writer() const = 0;
 
   /// Method to create a internal file for the entry symbol
-  virtual std::unique_ptr<File> createEntrySymbolFile();
+  virtual std::unique_ptr<File> createEntrySymbolFile() const;
+  std::unique_ptr<File> createEntrySymbolFile(StringRef filename) const;
 
   /// Method to create a internal file for an undefined symbol
-  virtual std::unique_ptr<File> createUndefinedSymbolFile();
+  virtual std::unique_ptr<File> createUndefinedSymbolFile() const;
+  std::unique_ptr<File> createUndefinedSymbolFile(StringRef filename) const;
 
   StringRef _outputPath;
   StringRef _entrySymbolName;
@@ -352,15 +344,18 @@ protected:
   OutputFileType _outputFileType;
   std::vector<StringRef> _deadStripRoots;
   std::vector<const char *> _llvmOptions;
-  std::unique_ptr<Reader> _yamlReader;
   StringRefVector _initialUndefinedSymbols;
   std::unique_ptr<InputGraph> _inputGraph;
-  llvm::BumpPtrAllocator _allocator;
+  mutable llvm::BumpPtrAllocator _allocator;
+  InputElement *_currentInputElement;
+  mutable uint64_t _nextOrdinal;
+  Registry _registry;
 
 private:
   /// Validate the subclass bits. Only called by validate.
   virtual bool validateImpl(raw_ostream &diagnostics) = 0;
 };
+
 } // end namespace lld
 
 #endif

@@ -17,7 +17,7 @@
 
 namespace cl = llvm::cl;
 
-static cl::OptionCategory TransformCategory("Transforms");
+cl::OptionCategory TransformCategory("Transforms");
 
 Transforms::~Transforms() {
   for (std::vector<Transform *>::iterator I = ChosenTransforms.begin(),
@@ -61,7 +61,7 @@ Transforms::createSelectedTransforms(const TransformOptions &GlobalOptions,
     if (!OptionEnabled)
       continue;
 
-    llvm::OwningPtr<TransformFactory> Factory(I->instantiate());
+    std::unique_ptr<TransformFactory> Factory(I->instantiate());
     if (Factory->supportsCompilers(RequiredVersions))
       ChosenTransforms.push_back(Factory->createTransform(GlobalOptions));
     else if (ExplicitlyEnabled)

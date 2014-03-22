@@ -15,13 +15,12 @@
 
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_deadlock_detector_interface.h"
 #include "tsan_clock.h"
 #include "tsan_defs.h"
 #include "tsan_mutex.h"
 
 namespace __tsan {
-
-class SlabCache;
 
 class StackTrace {
  public:
@@ -68,8 +67,8 @@ struct SyncVar {
   bool is_broken;
   bool is_linker_init;
   SyncVar *next;  // In SyncTab hashtable.
+  DDMutex dd;
 
-  uptr GetMemoryConsumption();
   u64 GetId() const {
     // 47 lsb is addr, then 14 bits is low part of uid, then 3 zero bits.
     return GetLsb((u64)addr | (uid << 47), 61);
@@ -97,8 +96,6 @@ class SyncTab {
   SyncVar* GetAndRemove(ThreadState *thr, uptr pc, uptr addr);
 
   SyncVar* Create(ThreadState *thr, uptr pc, uptr addr);
-
-  uptr GetMemoryConsumption(uptr *nsync);
 
  private:
   struct Part {

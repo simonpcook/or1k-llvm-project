@@ -8,11 +8,11 @@ import lldbutil
 
 class BlocksTestCase(TestBase):
 
-    mydir = os.path.join("lang", "c", "blocks")
+    mydir = TestBase.compute_mydir(__file__)
     lines = []
 
-    @unittest2.expectedFailure
     @dsym_test
+    @unittest2.expectedFailure
     def test_expr_with_dsym(self):
         self.buildDsym()
         self.expr()

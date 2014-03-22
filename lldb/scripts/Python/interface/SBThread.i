@@ -121,17 +121,49 @@ public:
     SBValue
     GetStopReturnValue ();
 
+    %feature("autodoc", "
+    Returns a unique thread identifier (type lldb::tid_t, typically a 64-bit type)
+    for the current SBThread that will remain constant throughout the thread's
+    lifetime in this process and will not be reused by another thread during this
+    process lifetime.  On Mac OS X systems, this is a system-wide unique thread
+    identifier; this identifier is also used by other tools like sample which helps
+    to associate data from those tools with lldb.  See related GetIndexID.
+    ")
+    GetThreadID;
     lldb::tid_t
     GetThreadID () const;
 
+    %feature("autodoc", "
+    Return the index number for this SBThread.  The index number is the same thing
+    that a user gives as an argument to 'thread select' in the command line lldb.
+    These numbers start at 1 (for the first thread lldb sees in a debug session)
+    and increments up throughout the process lifetime.  An index number will not be
+    reused for a different thread later in a process - thread 1 will always be
+    associated with the same thread.  See related GetThreadID.
+    This method returns a uint32_t index number, takes no arguments.
+    ")
+    GetIndexID;
     uint32_t
     GetIndexID () const;
 
     const char *
     GetName () const;
 
+    %feature("autodoc", "
+    Return the queue name associated with this thread, if any, as a str.
+    For example, with a libdispatch (aka Grand Central Dispatch) queue.
+    ") GetQueueName;
+
     const char *
     GetQueueName() const;
+
+    %feature("autodoc", "
+    Return the dispatch_queue_id for this thread, if any, as a lldb::queue_id_t.
+    For example, with a libdispatch (aka Grand Central Dispatch) queue.
+    ") GetQueueID;
+
+    lldb::queue_id_t
+    GetQueueID() const;
 
     void
     StepOver (lldb::RunMode stop_other_threads = lldb::eOnlyDuringStepping);
@@ -226,7 +258,32 @@ public:
 
     bool
     operator != (const lldb::SBThread &rhs) const;
-             
+
+    %feature("autodoc","
+    Given an argument of str to specify the type of thread-origin extended
+    backtrace to retrieve, query whether the origin of this thread is 
+    available.  An SBThread is retured; SBThread.IsValid will return true
+    if an extended backtrace was available.  The returned SBThread is not
+    a part of the SBProcess' thread list and it cannot be manipulated like
+    normal threads -- you cannot step or resume it, for instance -- it is
+    intended to used primarily for generating a backtrace.  You may request
+    the returned thread's own thread origin in turn.
+    ") GetExtendedBacktraceThread;
+    lldb::SBThread
+    GetExtendedBacktraceThread (const char *type);
+
+    %feature("autodoc","
+    Takes no arguments, returns a uint32_t.
+    If this SBThread is an ExtendedBacktrace thread, get the IndexID of the
+    original thread that this ExtendedBacktrace thread represents, if 
+    available.  The thread that was running this backtrace in the past may
+    not have been registered with lldb's thread index (if it was created,
+    did its work, and was destroyed without lldb ever stopping execution).
+    In that case, this ExtendedBacktrace thread's IndexID will be returned.
+    ") GetExtendedBacktraceOriginatingIndexID;
+    uint32_t
+    GetExtendedBacktraceOriginatingIndexID();
+
     %pythoncode %{
         class frames_access(object):
             '''A helper object that will lazily hand out frames for a thread when supplied an index.'''
@@ -280,6 +337,9 @@ public:
 
         __swig_getmethods__["queue"] = GetQueueName
         if _newclass: queue = property(GetQueueName, None, doc='''A read only property that returns the dispatch queue name of this thread as a string.''')
+
+        __swig_getmethods__["queue_id"] = GetQueueID
+        if _newclass: queue_id = property(GetQueueID, None, doc='''A read only property that returns the dispatch queue id of this thread as an integer.''')
 
         __swig_getmethods__["stop_reason"] = GetStopReason
         if _newclass: stop_reason = property(GetStopReason, None, doc='''A read only property that returns an lldb enumeration value (see enumerations that start with "lldb.eStopReason") that represents the reason this thread stopped.''')

@@ -113,10 +113,18 @@ public:
     /// @param[in] target
     ///     The target in which to apply the section load addresses.
     ///
-    /// @param[in] offset
-    ///     The offset to apply to all file addresses for all top 
-    ///     level sections in the object file as each section load
-    ///     address is being set.
+    /// @param[in] value
+    ///     if \a value_is_offset is true, then value is the offset to
+    ///     apply to all file addresses for all top level sections in
+    ///     the object file as each section load address is being set.
+    ///     If \a value_is_offset is false, then "value" is the new
+    ///     absolute base address for the image.
+    ///
+    /// @param[in] value_is_offset
+    ///     If \b true, then \a value is an offset to apply to each
+    ///     file address of each top level section.
+    ///     If \b false, then \a value is the image base address that
+    ///     will be used to rigidly slide all loadable sections.
     ///
     /// @param[out] changed
     ///     If any section load addresses were changed in \a target,
@@ -133,7 +141,8 @@ public:
     //------------------------------------------------------------------
     bool
     SetLoadAddress (Target &target, 
-                    lldb::addr_t offset, 
+                    lldb::addr_t value,
+                    bool value_is_offset,
                     bool &changed);
     
     //------------------------------------------------------------------
@@ -570,6 +579,18 @@ public:
     }
 
     const FileSpec &
+    GetRemoteInstallFileSpec () const
+    {
+        return m_remote_install_file;
+    }
+    
+    void
+    SetRemoteInstallFileSpec (const FileSpec &file)
+    {
+        m_remote_install_file = file;
+    }
+    
+    const FileSpec &
     GetSymbolFileFileSpec () const
     {
         return m_symfile_spec;
@@ -682,11 +703,25 @@ public:
     uint32_t
     GetVersion (uint32_t *versions, uint32_t num_versions);
 
-    // Load an object file from memory.
+    //------------------------------------------------------------------
+    /// Load an object file from memory. 
+    ///
+    /// If available, the size of the object file in memory may be 
+    /// passed to avoid additional round trips to process memory. 
+    /// If the size is not provided, a default value is used. This
+    /// value should be large enough to enable the ObjectFile plugins
+    /// to read the header of the object file without going back to the
+    /// process. 
+    ///
+    /// @return 
+    ///     The object file loaded from memory or NULL, if the operation 
+    ///     failed (see the `error` for more information in that case).
+    //------------------------------------------------------------------
     ObjectFile *
     GetMemoryObjectFile (const lldb::ProcessSP &process_sp, 
                          lldb::addr_t header_addr,
-                         Error &error);
+                         Error &error,
+                         size_t size_to_read = 512);
     //------------------------------------------------------------------
     /// Get the symbol vendor interface for the current architecture.
     ///
@@ -1059,6 +1094,7 @@ protected:
     lldb_private::UUID          m_uuid;         ///< Each module is assumed to have a unique identifier to help match it up to debug symbols.
     FileSpec                    m_file;         ///< The file representation on disk for this module (if there is one).
     FileSpec                    m_platform_file;///< The path to the module on the platform on which it is being debugged
+    FileSpec                    m_remote_install_file;  ///< If set when debugging on remote platforms, this module will be installed at this location
     FileSpec                    m_symfile_spec; ///< If this path is valid, then this is the file that _will_ be used as the symbol file for this module
     ConstString                 m_object_name;  ///< The name an object within this module that is selected, or empty of the module is represented by \a m_file.
     uint64_t                    m_object_offset;

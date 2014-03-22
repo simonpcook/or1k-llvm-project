@@ -19,6 +19,7 @@
 #include "lldb/Core/Timer.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/Mutex.h"
+#include "lldb/Interpreter/ScriptInterpreterPython.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 
@@ -28,22 +29,26 @@
 #include "Plugins/ABI/MacOSX-arm/ABIMacOSX_arm.h"
 #include "Plugins/ABI/SysV-x86_64/ABISysV_x86_64.h"
 #include "Plugins/Disassembler/llvm/DisassemblerLLVMC.h"
+#include "Plugins/DynamicLoader/POSIX-DYLD/DynamicLoaderPOSIXDYLD.h"
 #include "Plugins/Instruction/ARM/EmulateInstructionARM.h"
-#include "Plugins/SymbolVendor/MacOSX/SymbolVendorMacOSX.h"
-#include "Plugins/SymbolVendor/ELF/SymbolVendorELF.h"
+#include "Plugins/JITLoader/GDB/JITLoaderGDB.h"
+#include "Plugins/LanguageRuntime/CPlusPlus/ItaniumABI/ItaniumABILanguageRuntime.h"
 #include "Plugins/ObjectContainer/BSD-Archive/ObjectContainerBSDArchive.h"
 #include "Plugins/ObjectFile/ELF/ObjectFileELF.h"
+#include "Plugins/ObjectFile/PECOFF/ObjectFilePECOFF.h"
+#include "Plugins/Platform/FreeBSD/PlatformFreeBSD.h"
+#include "Plugins/Platform/Linux/PlatformLinux.h"
+#include "Plugins/Platform/POSIX/PlatformPOSIX.h"
+#include "Plugins/Platform/Windows/PlatformWindows.h"
+#include "Plugins/Process/elf-core/ProcessElfCore.h"
+#include "Plugins/SymbolVendor/MacOSX/SymbolVendorMacOSX.h"
+#include "Plugins/SymbolVendor/ELF/SymbolVendorELF.h"
 #include "Plugins/SymbolFile/DWARF/SymbolFileDWARF.h"
 #include "Plugins/SymbolFile/DWARF/SymbolFileDWARFDebugMap.h"
 #include "Plugins/SymbolFile/Symtab/SymbolFileSymtab.h"
 #include "Plugins/UnwindAssembly/x86/UnwindAssembly-x86.h"
 #include "Plugins/UnwindAssembly/InstEmulation/UnwindAssemblyInstEmulation.h"
-#include "Plugins/ObjectFile/PECOFF/ObjectFilePECOFF.h"
-#include "Plugins/DynamicLoader/POSIX-DYLD/DynamicLoaderPOSIXDYLD.h"
-#include "Plugins/Platform/FreeBSD/PlatformFreeBSD.h"
-#include "Plugins/Platform/Linux/PlatformLinux.h"
-#include "Plugins/Platform/POSIX/PlatformPOSIX.h"
-#include "Plugins/LanguageRuntime/CPlusPlus/ItaniumABI/ItaniumABILanguageRuntime.h"
+
 #ifndef LLDB_DISABLE_PYTHON
 #include "Plugins/OperatingSystem/Python/OperatingSystemPython.h"
 #endif
@@ -59,13 +64,11 @@
 #include "Plugins/Platform/MacOSX/PlatformRemoteiOS.h"
 #include "Plugins/Platform/MacOSX/PlatformDarwinKernel.h"
 #include "Plugins/Platform/MacOSX/PlatformiOSSimulator.h"
+#include "Plugins/SystemRuntime/MacOSX/SystemRuntimeMacOSX.h"
 #endif
 
 #include "Plugins/Process/mach-core/ProcessMachCore.h"
 
-#if defined(__linux__) or defined(__FreeBSD__)
-#include "Plugins/Process/elf-core/ProcessElfCore.h"
-#endif
 
 #if defined (__linux__)
 #include "Plugins/Process/Linux/ProcessLinux.h"
@@ -114,12 +117,16 @@ lldb_private::Initialize ()
         DynamicLoaderPOSIXDYLD::Initialize ();
         PlatformFreeBSD::Initialize();
         PlatformLinux::Initialize();
+        PlatformWindows::Initialize();
         SymbolFileDWARFDebugMap::Initialize();
         ItaniumABILanguageRuntime::Initialize();
 #ifndef LLDB_DISABLE_PYTHON
+        ScriptInterpreterPython::InitializePrivate();
         OperatingSystemPython::Initialize();
 #endif
-
+        JITLoaderGDB::Initialize();
+        ProcessElfCore::Initialize();
+        
 #if defined (__APPLE__)
         //----------------------------------------------------------------------
         // Apple/Darwin hosted plugins
@@ -137,6 +144,7 @@ lldb_private::Initialize ()
         PlatformRemoteiOS::Initialize();
         PlatformMacOSX::Initialize();
         PlatformiOSSimulator::Initialize();
+        SystemRuntimeMacOSX::Initialize();
 #endif
 #if defined (__linux__)
         //----------------------------------------------------------------------
@@ -148,9 +156,6 @@ lldb_private::Initialize ()
         ProcessFreeBSD::Initialize();
 #endif
 
-#if defined(__linux__) or defined(__FreeBSD__)
-        ProcessElfCore::Initialize();
-#endif
         //----------------------------------------------------------------------
         // Platform agnostic plugins
         //----------------------------------------------------------------------
@@ -181,7 +186,6 @@ lldb_private::Terminate ()
     
     // Terminate and unload and loaded system or user LLDB plug-ins
     PluginManager::Terminate();
-
     ABIMacOSX_i386::Terminate();
     ABIMacOSX_arm::Terminate();
     ABISysV_x86_64::Terminate();
@@ -198,12 +202,15 @@ lldb_private::Terminate ()
     DynamicLoaderPOSIXDYLD::Terminate ();
     PlatformFreeBSD::Terminate();
     PlatformLinux::Terminate();
+    PlatformWindows::Terminate();
     SymbolFileDWARFDebugMap::Terminate();
     ItaniumABILanguageRuntime::Terminate();
 #ifndef LLDB_DISABLE_PYTHON
     OperatingSystemPython::Terminate();
 #endif
-
+    JITLoaderGDB::Terminate();
+    ProcessElfCore::Terminate();
+    
 #if defined (__APPLE__)
     DynamicLoaderMacOSXDYLD::Terminate();
     DynamicLoaderDarwinKernel::Terminate();
@@ -218,6 +225,7 @@ lldb_private::Terminate ()
     PlatformDarwinKernel::Terminate();
     PlatformRemoteiOS::Terminate();
     PlatformiOSSimulator::Terminate();
+    SystemRuntimeMacOSX::Terminate();
 #endif
 
     Debugger::SettingsTerminate ();
@@ -230,9 +238,6 @@ lldb_private::Terminate ()
     ProcessFreeBSD::Terminate();
 #endif
 
-#if defined(__linux__) or defined(__FreeBSD__)
-    ProcessElfCore::Terminate();
-#endif
     ProcessGDBRemote::Terminate();
     DynamicLoaderStatic::Terminate();
 
@@ -408,6 +413,8 @@ lldb_private::NameMatches (const char *name,
         llvm::StringRef match_sref(match);
         switch (match_type)
         {
+        case eNameMatchIgnore: // This case cannot occur: tested before
+            return true;
         case eNameMatchEquals:      return name_sref == match_sref;
         case eNameMatchContains:    return name_sref.find (match_sref) != llvm::StringRef::npos;
         case eNameMatchStartsWith:  return name_sref.startswith (match_sref);

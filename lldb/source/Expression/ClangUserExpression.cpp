@@ -95,15 +95,9 @@ ClangUserExpression::~ClangUserExpression ()
 
 clang::ASTConsumer *
 ClangUserExpression::ASTTransformer (clang::ASTConsumer *passthrough)
-{    
-    ClangASTContext *clang_ast_context = m_target->GetScratchClangASTContext();
-    
-    if (!clang_ast_context)
-        return NULL;
-    
-    if (!m_result_synthesizer.get())
-        m_result_synthesizer.reset(new ASTResultSynthesizer(passthrough,
-                                                            *m_target));
+{
+    m_result_synthesizer.reset(new ASTResultSynthesizer(passthrough,
+                                                        *m_target));
     
     return m_result_synthesizer.get();
 }
@@ -402,20 +396,20 @@ ApplyObjcCastHack(std::string &expr)
 // hopefully we'll figure out a way to #include the same environment as is
 // present in the original source file rather than try to hack specific type
 // definitions in as needed.
-static void
-ApplyUnicharHack(std::string &expr)
-{
-#define UNICHAR_HACK_FROM "unichar"
-#define UNICHAR_HACK_TO   "unsigned short"
-    
-    size_t from_offset;
-    
-    while ((from_offset = expr.find(UNICHAR_HACK_FROM)) != expr.npos)
-        expr.replace(from_offset, sizeof(UNICHAR_HACK_FROM) - 1, UNICHAR_HACK_TO);
-    
-#undef UNICHAR_HACK_TO
-#undef UNICHAR_HACK_FROM
-}
+//static void
+//ApplyUnicharHack(std::string &expr)
+//{
+//#define UNICHAR_HACK_FROM "unichar"
+//#define UNICHAR_HACK_TO   "unsigned short"
+//
+//    size_t from_offset;
+//
+//    while ((from_offset = expr.find(UNICHAR_HACK_FROM)) != expr.npos)
+//        expr.replace(from_offset, sizeof(UNICHAR_HACK_FROM) - 1, UNICHAR_HACK_TO);
+//
+//#undef UNICHAR_HACK_TO
+//#undef UNICHAR_HACK_FROM
+//}
 
 bool
 ClangUserExpression::Parse (Stream &error_stream, 
@@ -715,40 +709,11 @@ ClangUserExpression::PrepareToExecuteJITExpression (Stream &error_stream,
         
         if (!materialize_error.Success())
         {
-            error_stream.Printf("Couldn't materialize struct: %s\n", materialize_error.AsCString());
+            error_stream.Printf("Couldn't materialize: %s\n", materialize_error.AsCString());
             return false;
         }
     }
     return true;
-}
-
-ThreadPlan *
-ClangUserExpression::GetThreadPlanToExecuteJITExpression (Stream &error_stream,
-                                                          ExecutionContext &exe_ctx)
-{
-    lldb::addr_t struct_address;
-            
-    lldb::addr_t object_ptr = 0;
-    lldb::addr_t cmd_ptr = 0;
-    
-    PrepareToExecuteJITExpression (error_stream, exe_ctx, struct_address, object_ptr, cmd_ptr);
-    
-    // FIXME: This should really return a ThreadPlanCallUserExpression, in order to make sure that we don't release the
-    // ClangUserExpression resources before the thread plan finishes execution in the target.  But because we are 
-    // forcing unwind_on_error to be true here, in practical terms that can't happen.
-    
-    const bool stop_others = true;
-    const bool unwind_on_error = true;
-    const bool ignore_breakpoints = false;
-    return ClangFunction::GetThreadPlanToCallFunction (exe_ctx, 
-                                                       m_jit_start_addr, 
-                                                       struct_address, 
-                                                       error_stream,
-                                                       stop_others,
-                                                       unwind_on_error,
-                                                       ignore_breakpoints,
-                                                       (m_needs_object_ptr ? &object_ptr : NULL),
-                                                       (m_needs_object_ptr && m_objectivec) ? &cmd_ptr : NULL);
 }
 
 bool
@@ -790,12 +755,9 @@ ClangUserExpression::FinalizeJITExecution (Stream &error_stream,
 ExecutionResults
 ClangUserExpression::Execute (Stream &error_stream,
                               ExecutionContext &exe_ctx,
-                              bool unwind_on_error,
-                              bool ignore_breakpoints,
+                              const EvaluateExpressionOptions& options,
                               ClangUserExpression::ClangUserExpressionSP &shared_ptr_to_me,
-                              lldb::ClangExpressionVariableSP &result,
-                              bool run_others,
-                              uint32_t timeout_usec)
+                              lldb::ClangExpressionVariableSP &result)
 {
     // The expression log is quite verbose, and if you're just tracking the execution of the
     // expression, it's quite convenient to have these logs come out with the STEP log as well.
@@ -861,18 +823,28 @@ ClangUserExpression::Execute (Stream &error_stream,
         }
         else
         {
-            const bool stop_others = true;
-            const bool try_all_threads = run_others;
-            
+            if (!exe_ctx.HasThreadScope())
+            {
+                error_stream.Printf("ClangUserExpression::Execute called with no thread selected.");
+                return eExecutionSetupError;
+            }
+                
             Address wrapper_address (m_jit_start_addr);
+            
+            llvm::SmallVector <lldb::addr_t, 3> args;
+            
+            if (m_needs_object_ptr) {
+                args.push_back(object_ptr);
+                if (m_objectivec)
+                    args.push_back(cmd_ptr);
+            }
+            
+            args.push_back(struct_address);
+            
             lldb::ThreadPlanSP call_plan_sp(new ThreadPlanCallUserExpression (exe_ctx.GetThreadRef(), 
                                                                               wrapper_address, 
-                                                                              struct_address, 
-                                                                              stop_others, 
-                                                                              unwind_on_error,
-                                                                              ignore_breakpoints,
-                                                                              (m_needs_object_ptr ? &object_ptr : NULL),
-                                                                              ((m_needs_object_ptr && m_objectivec) ? &cmd_ptr : NULL),
+                                                                              args,
+                                                                              options,
                                                                               shared_ptr_to_me));
             
             if (!call_plan_sp || !call_plan_sp->ValidatePlan (&error_stream))
@@ -890,12 +862,8 @@ ClangUserExpression::Execute (Stream &error_stream,
                 exe_ctx.GetProcessPtr()->SetRunningUserExpression(true);
                 
             ExecutionResults execution_result = exe_ctx.GetProcessRef().RunThreadPlan (exe_ctx, 
-                                                                                       call_plan_sp, 
-                                                                                       stop_others, 
-                                                                                       try_all_threads, 
-                                                                                       unwind_on_error,
-                                                                                       ignore_breakpoints,
-                                                                                       timeout_usec, 
+                                                                                       call_plan_sp,
+                                                                                       options,
                                                                                        error_stream);
             
             if (exe_ctx.GetProcessPtr())
@@ -917,15 +885,21 @@ ClangUserExpression::Execute (Stream &error_stream,
                 if (error_desc)
                     error_stream.Printf ("Execution was interrupted, reason: %s.", error_desc);
                 else
-                    error_stream.Printf ("Execution was interrupted.");
+                    error_stream.PutCString ("Execution was interrupted.");
                     
-                if ((execution_result == eExecutionInterrupted && unwind_on_error)
-                    || (execution_result == eExecutionHitBreakpoint && ignore_breakpoints))
-                    error_stream.Printf ("\nThe process has been returned to the state before expression evaluation.");
+                if ((execution_result == eExecutionInterrupted && options.DoesUnwindOnError())
+                    || (execution_result == eExecutionHitBreakpoint && options.DoesIgnoreBreakpoints()))
+                    error_stream.PutCString ("\nThe process has been returned to the state before expression evaluation.");
                 else
-                    error_stream.Printf ("\nThe process has been left at the point where it was interrupted, use \"thread return -x\" to return to the state before expression evaluation.");
+                    error_stream.PutCString ("\nThe process has been left at the point where it was interrupted, use \"thread return -x\" to return to the state before expression evaluation.");
 
                 return execution_result;
+            }
+            else if (execution_result == eExecutionStoppedForDebug)
+            {
+                    error_stream.PutCString ("Execution was halted at the first instruction of the expression function because \"debug\" was requested.\n"
+                                             "Use \"thread return -x\" to return to the state before expression evaluation.");
+                    return execution_result;
             }
             else if (execution_result != eExecutionCompleted)
             {
@@ -952,48 +926,17 @@ ClangUserExpression::Execute (Stream &error_stream,
 
 ExecutionResults
 ClangUserExpression::Evaluate (ExecutionContext &exe_ctx,
-                               lldb_private::ExecutionPolicy execution_policy,
-                               lldb::LanguageType language,
-                               ResultType desired_type,
-                               bool unwind_on_error,
-                               bool ignore_breakpoints,
+                               const EvaluateExpressionOptions& options,
                                const char *expr_cstr,
                                const char *expr_prefix,
                                lldb::ValueObjectSP &result_valobj_sp,
-                               bool run_others,
-                               uint32_t timeout_usec)
-{
-    Error error;
-    return EvaluateWithError (exe_ctx,
-                              execution_policy,
-                              language,
-                              desired_type,
-                              unwind_on_error,
-                              ignore_breakpoints,
-                              expr_cstr,
-                              expr_prefix,
-                              result_valobj_sp,
-                              error,
-                              run_others,
-                              timeout_usec);
-}
-
-ExecutionResults
-ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
-                                        lldb_private::ExecutionPolicy execution_policy,
-                                        lldb::LanguageType language,
-                                        ResultType desired_type,
-                                        bool unwind_on_error,
-                                        bool ignore_breakpoints,
-                                        const char *expr_cstr,
-                                        const char *expr_prefix,
-                                        lldb::ValueObjectSP &result_valobj_sp,
-                                        Error &error,
-                                        bool run_others,
-                                        uint32_t timeout_usec)
+                               Error &error)
 {
     Log *log(lldb_private::GetLogIfAnyCategoriesSet (LIBLLDB_LOG_EXPRESSIONS | LIBLLDB_LOG_STEP));
 
+    lldb_private::ExecutionPolicy execution_policy = options.GetExecutionPolicy();
+    const lldb::LanguageType language = options.GetLanguage();
+    const ResultType desired_type = options.DoesCoerceToId() ? ClangUserExpression::eResultTypeId : ClangUserExpression::eResultTypeAny;
     ExecutionResults execution_results = eExecutionSetupError;
     
     Process *process = exe_ctx.GetProcessPtr();
@@ -1051,13 +994,10 @@ ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
                 log->Printf("== [ClangUserExpression::Evaluate] Executing expression ==");
 
             execution_results = user_expression_sp->Execute (error_stream, 
-                                                             exe_ctx, 
-                                                             unwind_on_error,
-                                                             ignore_breakpoints,
-                                                             user_expression_sp, 
-                                                             expr_result,
-                                                             run_others,
-                                                             timeout_usec);
+                                                             exe_ctx,
+                                                             options,
+                                                             user_expression_sp,
+                                                             expr_result);
             
             if (execution_results != eExecutionCompleted)
             {
@@ -1090,7 +1030,9 @@ ClangUserExpression::EvaluateWithError (ExecutionContext &exe_ctx,
     }
     
     if (result_valobj_sp.get() == NULL)
-        result_valobj_sp = ValueObjectConstResult::Create (NULL, error);
+    {
+        result_valobj_sp = ValueObjectConstResult::Create (exe_ctx.GetBestExecutionContextScope(), error);
+    }
 
     return execution_results;
 }

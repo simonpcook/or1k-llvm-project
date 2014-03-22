@@ -1,7 +1,7 @@
 /*
  * z_Linux_util.c -- platform specific routines.
- * $Revision: 42582 $
- * $Date: 2013-08-09 06:30:22 -0500 (Fri, 09 Aug 2013) $
+ * $Revision: 42847 $
+ * $Date: 2013-11-26 09:10:01 -0600 (Tue, 26 Nov 2013) $
  */
 
 
@@ -22,7 +22,9 @@
 #include "kmp_i18n.h"
 #include "kmp_io.h"
 
-#include <alloca.h>
+#if !KMP_OS_FREEBSD
+# include <alloca.h>
+#endif
 #include <unistd.h>
 #include <math.h>               // HUGE_VAL.
 #include <sys/time.h>
@@ -32,7 +34,7 @@
 
 #if KMP_OS_LINUX
 # include <sys/sysinfo.h>
-# if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+# if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 // We should really include <futex.h>, but that causes compatibility problems on different
 // Linux* OS distributions that either require that you include (or break when you try to include)
 // <pci/types.h>.
@@ -48,12 +50,21 @@
 #elif KMP_OS_DARWIN
 # include <sys/sysctl.h>
 # include <mach/mach.h>
+#elif KMP_OS_FREEBSD
+# include <sys/sysctl.h>
+# include <pthread_np.h>
 #endif
 
 
 #include <dirent.h>
 #include <ctype.h>
 #include <fcntl.h>
+
+// For non-x86 architecture
+#if KMP_COMPILER_GCC && !(KMP_ARCH_X86 || KMP_ARCH_X86_64)
+# include <stdbool.h>
+# include <ffi.h>
+#endif
 
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
@@ -99,7 +110,7 @@ __kmp_print_cond( char *buffer, kmp_cond_align_t *cond )
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
 
-#if KMP_OS_LINUX
+#if KMP_OS_LINUX && KMP_AFFINITY_SUPPORTED
 
 /*
  * Affinity support
@@ -112,7 +123,7 @@ __kmp_print_cond( char *buffer, kmp_cond_align_t *cond )
  * stone forever.
  */
 
-#  if KMP_ARCH_X86
+#  if KMP_ARCH_X86 || KMP_ARCH_ARM
 #   ifndef __NR_sched_setaffinity
 #    define __NR_sched_setaffinity  241
 #   elif __NR_sched_setaffinity != 241
@@ -221,7 +232,7 @@ __kmp_affinity_determine_capable(const char *env_var)
     // then we don't have to search for an appropriate size.
     gCode = syscall( __NR_sched_getaffinity, 0, KMP_CPU_SET_SIZE_LIMIT, buf );
     KA_TRACE(30, ( "__kmp_affinity_determine_capable: "
-       "intial getaffinity call returned %d errno = %d\n",
+       "initial getaffinity call returned %d errno = %d\n",
        gCode, errno));
 
     //if ((gCode < 0) && (errno == ENOSYS))
@@ -429,12 +440,12 @@ __kmp_change_thread_affinity_mask( int gtid, kmp_affin_mask_t *new_mask,
     }
 }
 
-#endif // KMP_OS_LINUX
+#endif // KMP_OS_LINUX && KMP_AFFINITY_SUPPORTED
 
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 
 int
 __kmp_futex_determine_capable()
@@ -451,7 +462,7 @@ __kmp_futex_determine_capable()
     return retval;
 }
 
-#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
+#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
 
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
@@ -590,7 +601,7 @@ static kmp_int32
 __kmp_set_stack_info( int gtid, kmp_info_t *th )
 {
     int            stack_data;
-#if KMP_OS_LINUX
+#if KMP_OS_LINUX || KMP_OS_FREEBSD
     /* Linux* OS only -- no pthread_getattr_np support on OS X* */
     pthread_attr_t attr;
     int            status;
@@ -605,8 +616,13 @@ __kmp_set_stack_info( int gtid, kmp_info_t *th )
         /* Fetch the real thread attributes */
         status = pthread_attr_init( &attr );
         KMP_CHECK_SYSFAIL( "pthread_attr_init", status );
+#if KMP_OS_FREEBSD
+        status = pthread_attr_get_np( pthread_self(), &attr );
+        KMP_CHECK_SYSFAIL( "pthread_attr_get_np", status );
+#else
         status = pthread_getattr_np( pthread_self(), &attr );
         KMP_CHECK_SYSFAIL( "pthread_getattr_np", status );
+#endif
         status = pthread_attr_getstack( &attr, &addr, &size );
         KMP_CHECK_SYSFAIL( "pthread_attr_getstack", status );
         KA_TRACE( 60, ( "__kmp_set_stack_info: T#%d pthread_attr_getstack returned size: %lu, "
@@ -623,16 +639,14 @@ __kmp_set_stack_info( int gtid, kmp_info_t *th )
         TCW_PTR(th->th.th_info.ds.ds_stacksize, size);
         TCW_4(th->th.th_info.ds.ds_stackgrow, FALSE);
         return TRUE;
-    } else {
-#endif /* KMP_OS_LINUX */
-        /* Use incremental refinement starting from initial conservative estimate */
-        TCW_PTR(th->th.th_info.ds.ds_stacksize, 0);
-        TCW_PTR(th -> th.th_info.ds.ds_stackbase, &stack_data);
-        TCW_4(th->th.th_info.ds.ds_stackgrow, TRUE);
-        return FALSE;
-#if KMP_OS_LINUX
     }
-#endif /* KMP_OS_LINUX */
+#endif /* KMP_OS_LINUX || KMP_OS_FREEBSD */
+
+    /* Use incremental refinement starting from initial conservative estimate */
+    TCW_PTR(th->th.th_info.ds.ds_stacksize, 0);
+    TCW_PTR(th -> th.th_info.ds.ds_stackbase, &stack_data);
+    TCW_4(th->th.th_info.ds.ds_stackgrow, TRUE);
+    return FALSE;
 }
 
 static void*
@@ -657,12 +671,8 @@ __kmp_launch_worker( void *thr )
     __kmp_itt_thread_name( gtid );
 #endif /* USE_ITT_BUILD */
 
-#if KMP_OS_LINUX
+#if KMP_AFFINITY_SUPPORTED
     __kmp_affinity_set_init_mask( gtid, FALSE );
-#elif KMP_OS_DARWIN
-    // affinity not supported
-#else
-    #error "Unknown or unsupported OS"
 #endif
 
 #ifdef KMP_CANCEL_THREADS
@@ -690,7 +700,7 @@ __kmp_launch_worker( void *thr )
     KMP_CHECK_SYSFAIL( "pthread_sigmask", status );
 #endif /* KMP_BLOCK_SIGNALS */
 
-#if KMP_OS_LINUX
+#if KMP_OS_LINUX || KMP_OS_FREEBSD
     if ( __kmp_stkoffset > 0 && gtid > 0 ) {
         padding = alloca( gtid * __kmp_stkoffset );
     }
@@ -1994,6 +2004,16 @@ __kmp_get_xproc( void ) {
             KMP_INFORM( AssumedNumCPU );
         }; // if
 
+    #elif KMP_OS_FREEBSD
+
+        int mib[] = { CTL_HW, HW_NCPU };
+        size_t len = sizeof( r );
+        if ( sysctl( mib, 2, &r, &len, NULL, 0 ) < 0 ) {
+            r = 0;
+            KMP_WARNING( CantGetNumAvailCPU );
+            KMP_INFORM( AssumedNumCPU );
+        }
+
     #else
 
         #error "Unknown or unsupported OS."
@@ -2004,43 +2024,21 @@ __kmp_get_xproc( void ) {
 
 } // __kmp_get_xproc
 
-/*
-    Parse /proc/cpuinfo file for processor frequency, return frequency in Hz, or ~ 0 in case of
-    error.
-*/
-static
-kmp_uint64
-__kmp_get_frequency_from_proc(
-) {
+int
+__kmp_read_from_file( char const *path, char const *format, ... )
+{
+    int result;
+    va_list args;
 
-    kmp_uint64 result = ~ 0;
-    FILE *     file   = NULL;
-    double     freq   = HUGE_VAL;
-    int        rc;
+    va_start(args, format);
+    FILE *f = fopen(path, "rb");
+    if ( f == NULL )
+        return 0;
+    result = vfscanf(f, format, args);
+    fclose(f);
 
-    //
-    // FIXME - use KMP_CPUINFO_FILE here if it is set!!!
-    //
-    file = fopen( "/proc/cpuinfo", "r" );
-    if ( file == NULL ) {
-        return result;
-    }; // if
-    for ( ; ; ) {
-        rc = fscanf( file, "cpu MHz : %lf\n", & freq );  // Try to scan frequency.
-        if ( rc == 1 ) {                                 // Success.
-            break;
-        }; // if
-        fscanf( file, "%*[^\n]\n" );                     // Failure -- skip line.
-    }; // for
-    fclose( file );
-    if ( freq == HUGE_VAL || freq <= 0 ) {
-        return result;
-    }; // if
-    result = (kmp_uint64)( freq * 1.0E+6 );
-    KA_TRACE( 5, ( "cpu frequency from /proc/cpuinfo: %" KMP_UINT64_SPEC "\n", result ) );
     return result;
-} // func __kmp_get_frequency_from_proc
-
+}
 
 void
 __kmp_runtime_initialize( void )
@@ -2058,15 +2056,6 @@ __kmp_runtime_initialize( void )
             __kmp_query_cpuid( &__kmp_cpuinfo );
         }; // if
     #endif /* KMP_ARCH_X86 || KMP_ARCH_X86_64 */
-
-    if ( __kmp_cpu_frequency == 0 ) {
-        // First try nominal frequency.
-        __kmp_cpu_frequency = __kmp_cpuinfo.frequency;
-        if ( __kmp_cpu_frequency == 0 || __kmp_cpu_frequency == ~ 0 ) {
-            // Next Try to get CPU frequency from /proc/cpuinfo.
-            __kmp_cpu_frequency = __kmp_get_frequency_from_proc();
-        }; // if
-    }; // if
 
     __kmp_xproc = __kmp_get_xproc();
 
@@ -2146,12 +2135,8 @@ __kmp_runtime_destroy( void )
     if ( status != 0 && status != EBUSY ) {
         KMP_SYSFAIL( "pthread_cond_destroy", status );
     }
-    #if KMP_OS_LINUX
+    #if KMP_AFFINITY_SUPPORTED
         __kmp_affinity_uninitialize();
-    #elif KMP_OS_DARWIN
-        // affinity not supported
-    #else
-        #error "Unknown or unsupported OS"
     #endif
 
     __kmp_init_runtime = FALSE;
@@ -2268,6 +2253,11 @@ __kmp_is_address_mapped( void * addr ) {
             found = 1;
         }; // if
 
+    #elif KMP_OS_FREEBSD
+
+        // FIXME(FreeBSD): Implement this.
+        found = 1;
+
     #else
 
         #error "Unknown or unsupported OS"
@@ -2306,7 +2296,7 @@ __kmp_get_load_balance( int max )
         ret_avg = averages[1];// 5 min
     } else if ( ( __kmp_load_balance_interval >= 600 ) && ( res == 3 ) ) {
         ret_avg = averages[2];// 15 min
-    } else {// Error occured
+    } else {// Error occurred
         return -1;
     }
 
@@ -2535,6 +2525,43 @@ __kmp_get_load_balance( int max )
 # endif // KMP_OS_DARWIN
 
 #endif // USE_LOAD_BALANCE
+
+
+#if KMP_COMPILER_GCC && !(KMP_ARCH_X86 || KMP_ARCH_X86_64)
+
+int __kmp_invoke_microtask( microtask_t pkfn, int gtid, int tid, int argc,
+        void *p_argv[] )
+{
+    int argc_full = argc + 2;
+    int i;
+    ffi_cif cif;
+    ffi_type *types[argc_full];
+    void *args[argc_full];
+    void *idp[2];
+
+    /* We're only passing pointers to the target. */
+    for (i = 0; i < argc_full; i++)
+        types[i] = &ffi_type_pointer;
+
+    /* Ugly double-indirection, but that's how it goes... */
+    idp[0] = &gtid;
+    idp[1] = &tid;
+    args[0] = &idp[0];
+    args[1] = &idp[1];
+
+    for (i = 0; i < argc; i++)
+        args[2 + i] = &p_argv[i];
+
+    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, argc_full,
+                &ffi_type_void, types) != FFI_OK)
+        abort();
+
+    ffi_call(&cif, (void (*)(void))pkfn, NULL, args);
+
+    return 1;
+}
+
+#endif // KMP_COMPILER_GCC && !(KMP_ARCH_X86 || KMP_ARCH_X86_64)
 
 // end of file //
 

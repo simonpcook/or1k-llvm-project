@@ -7,15 +7,17 @@ from lldbtest import *
 
 class AssertingInferiorTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "inferior-assert")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @unittest2.expectedFailure("rdar://15367233")
     def test_inferior_asserting_dsym(self):
         """Test that lldb reliably catches the inferior asserting (command)."""
         self.buildDsym()
         self.inferior_asserting()
 
-    @expectedFailurei386 # llvm.org/pr17384: lldb needs to be aware of linux-vdso.so to unwind stacks properly
+    @expectedFailurei386 # llvm.org/pr17384: lldb needs to be aware of linux-vdso.so to unwind stacks properly'
+    @unittest2.expectedFailure("rdar://15367233")
     def test_inferior_asserting_dwarf(self):
         """Test that lldb reliably catches the inferior asserting (command)."""
         self.buildDwarf()
@@ -27,13 +29,14 @@ class AssertingInferiorTestCase(TestBase):
         self.buildDsym()
         self.inferior_asserting_registers()
 
-    @expectedFailureFreeBSD('llvm.org/pr17184')
     def test_inferior_asserting_register_dwarf(self):
         """Test that lldb reliably reads registers from the inferior after asserting (command)."""
         self.buildDwarf()
         self.inferior_asserting_registers()
 
     @expectedFailurei386 # llvm.org/pr17384: lldb needs to be aware of linux-vdso.so to unwind stacks properly
+    @expectedFailureFreeBSD('llvm.org/pr18533') # PC in __assert frame is outside of function
+    @expectedFailureLinux('') # PC in __GI___assert_fail frame is just after the function (this is a no-return so there is no epilogue afterwards)
     def test_inferior_asserting_disassemble(self):
         """Test that lldb reliably disassembles frames after asserting (command)."""
         self.buildDefault()
@@ -46,24 +49,28 @@ class AssertingInferiorTestCase(TestBase):
         self.inferior_asserting_python()
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @unittest2.expectedFailure("rdar://15367233")
     def test_inferior_asserting_expr(self):
         """Test that the lldb expression interpreter can read from the inferior after asserting (command)."""
         self.buildDsym()
         self.inferior_asserting_expr()
 
     @expectedFailurei386 # llvm.org/pr17384: lldb needs to be aware of linux-vdso.so to unwind stacks properly
+    @unittest2.expectedFailure("rdar://15367233")
     def test_inferior_asserting_expr(self):
         """Test that the lldb expression interpreter can read from the inferior after asserting (command)."""
         self.buildDwarf()
         self.inferior_asserting_expr()
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @unittest2.expectedFailure("rdar://15367233")
     def test_inferior_asserting_step(self):
         """Test that lldb functions correctly after stepping through a call to assert()."""
         self.buildDsym()
         self.inferior_asserting_step()
 
     @expectedFailurei386 # llvm.org/pr17384: lldb needs to be aware of linux-vdso.so to unwind stacks properly
+    @unittest2.expectedFailure("rdar://15367233")
     def test_inferior_asserting_step(self):
         """Test that lldb functions correctly after stepping through a call to assert()."""
         self.buildDwarf()
@@ -114,7 +121,7 @@ class AssertingInferiorTestCase(TestBase):
 
         # Now launch the process, and do not stop at entry point.
         # Both argv and envp are null.
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
 
         if process.GetState() != lldb.eStateStopped:
             self.fail("Process should be in the 'stopped' state, "
@@ -149,7 +156,7 @@ class AssertingInferiorTestCase(TestBase):
         self.assertTrue(target, VALID_TARGET)
 
         # Launch the process, and do not stop at the entry point.
-        target.LaunchSimple(None, None, os.getcwd())
+        target.LaunchSimple (None, None, self.get_process_working_directory())
         self.check_stop_reason()
 
         process = target.GetProcess()
@@ -164,9 +171,13 @@ class AssertingInferiorTestCase(TestBase):
 
             self.runCmd("frame select " + str(frame.GetFrameID()), RUN_SUCCEEDED)
 
-            # TODO: Disassembly does not specify '->' for the PC for a non-terminal frame for a function with a tail call.
+            # Don't expect the function name to be in the disassembly as the assert
+            # function might be a no-return function where the PC is past the end
+            # of the function and in the next function. We also can't back the PC up
+            # because we don't know how much to back it up by on targets with opcodes
+            # that have differing sizes
             self.expect("disassemble -a %s" % frame.GetPC(),
-                substrs = [frame.GetFunctionName()])
+                substrs = ['->'])
 
     def check_expr_in_main(self, thread):
         depth = thread.GetNumFrames()
@@ -195,7 +206,7 @@ class AssertingInferiorTestCase(TestBase):
         self.assertTrue(target, VALID_TARGET)
 
         # Launch the process, and do not stop at the entry point.
-        target.LaunchSimple(None, None, os.getcwd())
+        target.LaunchSimple (None, None, self.get_process_working_directory())
         self.check_stop_reason()
 
         process = target.GetProcess()
@@ -217,7 +228,7 @@ class AssertingInferiorTestCase(TestBase):
 
         # Launch the process, and do not stop at the entry point.
         self.set_breakpoint(self.line)
-        target.LaunchSimple(None, None, os.getcwd())
+        target.LaunchSimple (None, None, self.get_process_working_directory())
 
         self.expect("thread list", STOPPED_DUE_TO_BREAKPOINT,
             substrs = ['main.c:%d' % self.line,

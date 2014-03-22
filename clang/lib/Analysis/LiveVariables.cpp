@@ -211,8 +211,6 @@ class TransferFunctions : public StmtVisitor<TransferFunctions> {
   LiveVariables::LivenessValues &val;
   LiveVariables::Observer *observer;
   const CFGBlock *currentBlock;
-
-  void markLogicalExprLeaves(const Expr *E);
 public:
   TransferFunctions(LiveVariablesImpl &im,
                     LiveVariables::LivenessValues &Val,
@@ -369,28 +367,12 @@ void TransferFunctions::VisitBinaryOperator(BinaryOperator *B) {
         if (observer)
           observer->observerKill(DR);
       }
-  } else if (B->isLogicalOp()) {
-    // Leaf expressions in the logical operator tree are live until we reach the
-    // outermost logical operator. Static analyzer relies on this behaviour.
-    markLogicalExprLeaves(B->getLHS()->IgnoreParens());
-    markLogicalExprLeaves(B->getRHS()->IgnoreParens());
   }
-}
-
-void TransferFunctions::markLogicalExprLeaves(const Expr *E) {
-  const BinaryOperator *B = dyn_cast<BinaryOperator>(E);
-  if (!B || !B->isLogicalOp()) {
-    val.liveStmts = LV.SSetFact.add(val.liveStmts, E);
-    return;
-  }
-
-  markLogicalExprLeaves(B->getLHS()->IgnoreParens());
-  markLogicalExprLeaves(B->getRHS()->IgnoreParens());
 }
 
 void TransferFunctions::VisitBlockExpr(BlockExpr *BE) {
   AnalysisDeclContext::referenced_decls_iterator I, E;
-  llvm::tie(I, E) =
+  std::tie(I, E) =
     LV.analysisContext.getReferencedBlockVars(BE->getBlockDecl());
   for ( ; I != E ; ++I) {
     const VarDecl *VD = *I;
@@ -407,9 +389,8 @@ void TransferFunctions::VisitDeclRefExpr(DeclRefExpr *DR) {
 }
 
 void TransferFunctions::VisitDeclStmt(DeclStmt *DS) {
-  for (DeclStmt::decl_iterator DI=DS->decl_begin(), DE = DS->decl_end();
-       DI != DE; ++DI)
-    if (VarDecl *VD = dyn_cast<VarDecl>(*DI)) {
+  for (const auto *DI : DS->decls())
+    if (const auto *VD = dyn_cast<VarDecl>(DI)) {
       if (!isAlwaysAlive(VD))
         val.liveDecls = LV.DSetFact.remove(val.liveDecls, VD);
     }
@@ -599,16 +580,6 @@ LiveVariables::computeLiveness(AnalysisDeclContext &AC,
   return new LiveVariables(LV);
 }
 
-static bool compare_entries(const CFGBlock *A, const CFGBlock *B) {
-  return A->getBlockID() < B->getBlockID();
-}
-
-static bool compare_vd_entries(const Decl *A, const Decl *B) {
-  SourceLocation ALoc = A->getLocStart();
-  SourceLocation BLoc = B->getLocStart();
-  return ALoc.getRawEncoding() < BLoc.getRawEncoding();
-}
-
 void LiveVariables::dumpBlockLiveness(const SourceManager &M) {
   getImpl(impl).dumpBlockLiveness(M);
 }
@@ -620,7 +591,9 @@ void LiveVariablesImpl::dumpBlockLiveness(const SourceManager &M) {
        it != ei; ++it) {
     vec.push_back(it->first);    
   }
-  std::sort(vec.begin(), vec.end(), compare_entries);
+  std::sort(vec.begin(), vec.end(), [](const CFGBlock *A, const CFGBlock *B) {
+    return A->getBlockID() < B->getBlockID();
+  });
 
   std::vector<const VarDecl*> declVec;
 
@@ -637,9 +610,11 @@ void LiveVariablesImpl::dumpBlockLiveness(const SourceManager &M) {
           se = vals.liveDecls.end(); si != se; ++si) {
       declVec.push_back(*si);      
     }
-    
-    std::sort(declVec.begin(), declVec.end(), compare_vd_entries);
-    
+
+    std::sort(declVec.begin(), declVec.end(), [](const Decl *A, const Decl *B) {
+      return A->getLocStart() < B->getLocStart();
+    });
+
     for (std::vector<const VarDecl*>::iterator di = declVec.begin(),
          de = declVec.end(); di != de; ++di) {
       llvm::errs() << " " << (*di)->getDeclName().getAsString()

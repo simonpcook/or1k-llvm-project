@@ -8,7 +8,7 @@ from lldbtest import *
 
 class HelloWorldTestCase(TestBase):
 
-    mydir = os.path.join("python_api", "hello_world")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @python_api_test
@@ -117,7 +117,7 @@ class HelloWorldTestCase(TestBase):
         # rdar://problem/8364687
         # SBTarget.Launch() issue (or is there some race condition)?
 
-        process = target.LaunchSimple(None, None, os.getcwd())
+        process = target.LaunchSimple (None, None, self.get_process_working_directory())
         # The following isn't needed anymore, rdar://8364687 is fixed.
         #
         # Apply some dances after LaunchProcess() in order to break at "main".

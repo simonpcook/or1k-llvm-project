@@ -8,7 +8,7 @@ import lldbutil
 
 class ChangedInferiorTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "inferior-changed")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     def test_inferior_crashing_dsym(self):
@@ -21,7 +21,6 @@ class ChangedInferiorTestCase(TestBase):
         self.setTearDownCleanup(dictionary=d)
         self.inferior_not_crashing()
 
-    @expectedFailureFreeBSD('llvm.org/pr17184')
     def test_inferior_crashing_dwarf(self):
         """Test lldb reloads the inferior after it was changed during the session."""
         self.buildDwarf()

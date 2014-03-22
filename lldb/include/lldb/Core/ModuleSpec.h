@@ -288,7 +288,7 @@ public:
     }
 
     
-    operator bool () const
+    explicit operator bool () const
     {
         if (m_file)
             return true;
@@ -370,7 +370,6 @@ public:
             if (dumped_something)
                 strm.PutCString(", ");
             strm.Printf("object_mod_time = 0x%" PRIx64, m_object_mod_time.GetAsSecondsSinceJan1_1970());
-            dumped_something = true;
         }
     }
 

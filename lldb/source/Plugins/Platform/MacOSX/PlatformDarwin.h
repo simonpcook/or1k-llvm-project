@@ -99,6 +99,13 @@ public:
     LaunchProcess (lldb_private::ProcessLaunchInfo &launch_info);
 
     virtual lldb::ProcessSP
+    DebugProcess (lldb_private::ProcessLaunchInfo &launch_info,
+                  lldb_private::Debugger &debugger,
+                  lldb_private::Target *target,       // Can be NULL, if NULL create a new target, else use existing one
+                  lldb_private::Listener &listener,
+                  lldb_private::Error &error);
+
+    virtual lldb::ProcessSP
     Attach (lldb_private::ProcessAttachInfo &attach_info,
             lldb_private::Debugger &debugger,
             lldb_private::Target *target,       // Can be NULL, if NULL create a new target, else use existing one
@@ -120,7 +127,17 @@ public:
     virtual int32_t
     GetResumeCountForLaunchInfo (lldb_private::ProcessLaunchInfo &launch_info);
 
+    virtual void
+    CalculateTrapHandlerSymbolNames ();
+
 protected:
+
+    void
+    ReadLibdispatchOffsetsAddress (lldb_private::Process *process);
+
+    void
+    ReadLibdispatchOffsets (lldb_private::Process *process);
+
     virtual lldb_private::Error
     GetSharedModuleWithLocalCache (const lldb_private::ModuleSpec &module_spec,
                                    lldb::ModuleSP &module_sp,
@@ -128,8 +145,8 @@ protected:
                                    lldb::ModuleSP *old_module_sp_ptr,
                                    bool *did_create_ptr);
 
-    std::string m_developer_directory;
-    
+    std::string                 m_developer_directory;
+
     const char *
     GetDeveloperDirectory();
     

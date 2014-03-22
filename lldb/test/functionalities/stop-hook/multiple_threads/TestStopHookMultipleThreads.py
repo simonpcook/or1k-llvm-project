@@ -10,7 +10,7 @@ from lldbtest import *
 
 class StopHookForMultipleThreadsTestCase(TestBase):
 
-    mydir = os.path.join("functionalities", "stop-hook", "multiple_threads")
+    mydir = TestBase.compute_mydir(__file__)
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
@@ -20,7 +20,7 @@ class StopHookForMultipleThreadsTestCase(TestBase):
         self.setTearDownCleanup(dictionary=self.d)
         self.stop_hook_multiple_threads()
 
-    @skipIfLinux # llvm.org/pr15037 -- stop hooks sometimes fail to fire on Linux
+    @expectedFailureLinux('llvm.org/pr15037') # -- stop hooks sometimes fail to fire on Linux
     @dwarf_test
     def test_stop_hook_multiple_threads_with_dwarf(self):
         """Test that lldb stop-hook works for multiple threads."""

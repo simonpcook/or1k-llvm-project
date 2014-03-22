@@ -19,7 +19,7 @@ from lldbtest import *
 
 class APIDefaultConstructorTestCase(TestBase):
 
-    mydir = os.path.join("python_api", "default-constructor")
+    mydir = TestBase.compute_mydir(__file__)
 
     @python_api_test
     def test_SBAddress(self):
@@ -162,16 +162,6 @@ class APIDefaultConstructorTestCase(TestBase):
         # Do fuzz testing on the invalid obj, it should not crash lldb.
         import sb_function
         sb_function.fuzz_obj(obj)
-
-    @python_api_test
-    def test_SBInputReader(self):
-        obj = lldb.SBInputReader()
-        if self.TraceOn():
-            print obj
-        self.assertFalse(obj)
-        # Do fuzz testing on the invalid obj, it should not crash lldb.
-        import sb_inputreader
-        sb_inputreader.fuzz_obj(obj)
 
     @python_api_test
     def test_SBInstruction(self):

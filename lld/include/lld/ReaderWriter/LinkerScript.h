@@ -16,14 +16,17 @@
 #define LLD_READER_WRITER_LINKER_SCRIPT_H
 
 #include "lld/Core/LLVM.h"
+#include "lld/Core/range.h"
 
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
+
+#include <memory>
+#include <vector>
 
 namespace lld {
 namespace script {
@@ -33,18 +36,20 @@ public:
     unknown,
     eof,
     identifier,
+    comma,
     l_paren,
     r_paren,
     kw_entry,
     kw_group,
     kw_output_format,
+    kw_output_arch,
     kw_as_needed
   };
 
   Token() : _kind(unknown) {}
   Token(StringRef range, Kind kind) : _range(range), _kind(kind) {}
 
-  void dump(llvm::raw_ostream &os) const;
+  void dump(raw_ostream &os) const;
 
   StringRef _range;
   Kind _kind;
@@ -52,7 +57,7 @@ public:
 
 class Lexer {
 public:
-  explicit Lexer(std::unique_ptr<llvm::MemoryBuffer> mb)
+  explicit Lexer(std::unique_ptr<MemoryBuffer> mb)
       : _buffer(mb->getBuffer()) {
     _sourceManager.AddNewSourceBuffer(mb.release(), llvm::SMLoc());
   }
@@ -75,15 +80,11 @@ private:
 
 class Command {
 public:
-  enum class Kind {
-    Entry,
-    OutputFormat,
-    Group,
-  };
+  enum class Kind { Entry, OutputFormat, OutputArch, Group, };
 
   Kind getKind() const { return _kind; }
 
-  virtual void dump(llvm::raw_ostream &os) const = 0;
+  virtual void dump(raw_ostream &os) const = 0;
 
   virtual ~Command() {}
 
@@ -96,21 +97,49 @@ private:
 
 class OutputFormat : public Command {
 public:
-  explicit OutputFormat(StringRef format)
-      : Command(Kind::OutputFormat), _format(format) {}
+  explicit OutputFormat(StringRef format) : Command(Kind::OutputFormat) {
+    _formats.push_back(format);
+  }
 
   static bool classof(const Command *c) {
     return c->getKind() == Kind::OutputFormat;
   }
 
-  virtual void dump(llvm::raw_ostream &os) const {
-    os << "OUTPUT_FORMAT(" << getFormat() << ")\n";
+  void dump(raw_ostream &os) const override {
+    os << "OUTPUT_FORMAT(";
+    for (auto fb = _formats.begin(), fe = _formats.end(); fb != fe; ++fb) {
+      if (fb != _formats.begin())
+        os << ",";
+      os << *fb;
+    }
+    os << ")\n";
   }
 
-  StringRef getFormat() const { return _format; }
+  virtual void addOutputFormat(StringRef format) { _formats.push_back(format); }
+
+  range<StringRef *> getFormats() { return _formats; }
 
 private:
-  StringRef _format;
+  std::vector<StringRef> _formats;
+};
+
+class OutputArch : public Command {
+public:
+  explicit OutputArch(StringRef arch)
+      : Command(Kind::OutputArch), _arch(arch) {}
+
+  static bool classof(const Command *c) {
+    return c->getKind() == Kind::OutputArch;
+  }
+
+  void dump(raw_ostream &os) const override {
+    os << "OUTPUT_arch(" << getArch() << ")\n";
+  }
+
+  StringRef getArch() const { return _arch; }
+
+private:
+  StringRef _arch;
 };
 
 struct Path {
@@ -133,7 +162,7 @@ public:
 
   static bool classof(const Command *c) { return c->getKind() == Kind::Group; }
 
-  virtual void dump(llvm::raw_ostream &os) const {
+  void dump(raw_ostream &os) const override {
     os << "GROUP(";
     bool first = true;
     for (const auto &path : getPaths()) {
@@ -165,7 +194,7 @@ public:
     return c->getKind() == Kind::Entry;
   }
 
-  virtual void dump(llvm::raw_ostream &os) const {
+  void dump(raw_ostream &os) const override {
     os << "ENTRY(" << _entryName << ")\n";
   }
 
@@ -179,7 +208,7 @@ private:
 
 class LinkerScript {
 public:
-  void dump(llvm::raw_ostream &os) const {
+  void dump(raw_ostream &os) const {
     for (const auto &c : _commands)
       c->dump(os);
   }
@@ -211,7 +240,10 @@ private:
     return true;
   }
 
+  bool isNextToken(Token::Kind kind) { return (_tok._kind == kind); }
+
   OutputFormat *parseOutputFormat();
+  OutputArch *parseOutputArch();
   Group *parseGroup();
   bool parseAsNeeded(std::vector<Path> &paths);
   Entry *parseEntry();

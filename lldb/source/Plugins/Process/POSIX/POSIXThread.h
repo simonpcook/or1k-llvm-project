@@ -59,6 +59,9 @@ public:
     virtual lldb::RegisterContextSP
     CreateRegisterContextForFrame (lldb_private::StackFrame *frame);
 
+    virtual lldb::addr_t
+    GetThreadPointer ();
+
     //--------------------------------------------------------------------------
     // These functions provide a mapping from the register offset
     // back to the register index or name for use in debugging or log
@@ -123,6 +126,7 @@ protected:
     void CrashNotify(const ProcessMessage &message);
     void ThreadNotify(const ProcessMessage &message);
     void ExitNotify(const ProcessMessage &message);
+    void ExecNotify(const ProcessMessage &message);
 
     lldb_private::Unwind *
     GetUnwinder();

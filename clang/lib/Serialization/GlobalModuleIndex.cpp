@@ -228,8 +228,9 @@ GlobalModuleIndex::readIndex(StringRef Path) {
   IndexPath += Path;
   llvm::sys::path::append(IndexPath, IndexFileName);
 
-  llvm::OwningPtr<llvm::MemoryBuffer> Buffer;
-  if (llvm::MemoryBuffer::getFile(IndexPath, Buffer) != llvm::errc::success)
+  std::unique_ptr<llvm::MemoryBuffer> Buffer;
+  if (llvm::MemoryBuffer::getFile(IndexPath.c_str(), Buffer) !=
+      llvm::errc::success)
     return std::make_pair((GlobalModuleIndex *)0, EC_NotFound);
 
   /// \brief The bitstream reader from which we'll read the AST file.
@@ -246,8 +247,9 @@ GlobalModuleIndex::readIndex(StringRef Path) {
       Cursor.Read(8) != 'I') {
     return std::make_pair((GlobalModuleIndex *)0, EC_IOError);
   }
-  
-  return std::make_pair(new GlobalModuleIndex(Buffer.take(), Cursor), EC_None);
+
+  return std::make_pair(new GlobalModuleIndex(Buffer.release(), Cursor),
+                        EC_None);
 }
 
 void
@@ -467,7 +469,7 @@ namespace {
 
 bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
   // Open the module file.
-  OwningPtr<llvm::MemoryBuffer> Buffer;
+  std::unique_ptr<llvm::MemoryBuffer> Buffer;
   std::string ErrorStr;
   Buffer.reset(FileMgr.getBufferForFile(File, &ErrorStr, /*isVolatile=*/true));
   if (!Buffer) {
@@ -591,10 +593,10 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
     if (State == ASTBlock && Code == IDENTIFIER_TABLE && Record[0] > 0) {
       typedef OnDiskChainedHashTable<InterestingASTIdentifierLookupTrait>
         InterestingIdentifierTable;
-      llvm::OwningPtr<InterestingIdentifierTable>
-        Table(InterestingIdentifierTable::Create(
-                (const unsigned char *)Blob.data() + Record[0],
-                (const unsigned char *)Blob.data()));
+      std::unique_ptr<InterestingIdentifierTable> Table(
+          InterestingIdentifierTable::Create(
+              (const unsigned char *)Blob.data() + Record[0],
+              (const unsigned char *)Blob.data()));
       for (InterestingIdentifierTable::data_iterator D = Table->data_begin(),
                                                      DEnd = Table->data_end();
            D != DEnd; ++D) {
@@ -806,13 +808,12 @@ GlobalModuleIndex::writeIndex(FileManager &FileMgr, StringRef Path) {
     return EC_IOError;
 
   // Remove the old index file. It isn't relevant any more.
-  bool OldIndexExisted;
-  llvm::sys::fs::remove(IndexPath.str(), OldIndexExisted);
+  llvm::sys::fs::remove(IndexPath.str());
 
   // Rename the newly-written index file to the proper name.
   if (llvm::sys::fs::rename(IndexTmpPath.str(), IndexPath.str())) {
     // Rename failed; just remove the 
-    llvm::sys::fs::remove(IndexTmpPath.str(), OldIndexExisted);
+    llvm::sys::fs::remove(IndexTmpPath.str());
     return EC_IOError;
   }
 
@@ -834,7 +835,7 @@ namespace {
       End = Idx.key_end();
     }
 
-    virtual StringRef Next() {
+    StringRef Next() override {
       if (Current == End)
         return StringRef();
 

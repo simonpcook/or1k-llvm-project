@@ -307,14 +307,16 @@ MachProcess::SetState(nub_state_t new_state)
 }
 
 void
-MachProcess::Clear()
+MachProcess::Clear(bool detaching)
 {
     // Clear any cached thread list while the pid and task are still valid
 
     m_task.Clear();
     // Now clear out all member variables
     m_pid = INVALID_NUB_PROCESS;
-    CloseChildFileDescriptors();
+    if (!detaching)
+        CloseChildFileDescriptors();
+        
     m_path.clear();
     m_args.clear();
     SetState(eStateUnloaded);
@@ -554,7 +556,8 @@ MachProcess::Detach()
     m_task.Clear();
 
     // Clear out any notion of the process we once were
-    Clear();
+    const bool detaching = true;
+    Clear(detaching);
 
     SetState(eStateDetached);
 
@@ -861,19 +864,19 @@ MachProcess::DisableBreakpoint(nub_addr_t addr, bool remove)
                         }
                         else
                         {
-                            DNBLogError("MachProcess::DisableBreakpoint ( addr = 0x%8.8llx, remove = %d ) memory write failed when restoring original opcode", addr, remove);
+                            DNBLogError("MachProcess::DisableBreakpoint ( addr = 0x%8.8llx, remove = %d ) memory write failed when restoring original opcode", (uint64_t)addr, remove);
                         }
                     }
                     else
                     {
-                        DNBLogWarning("MachProcess::DisableBreakpoint ( addr = 0x%8.8llx, remove = %d ) expected a breakpoint opcode but didn't find one.", addr, remove);
+                        DNBLogWarning("MachProcess::DisableBreakpoint ( addr = 0x%8.8llx, remove = %d ) expected a breakpoint opcode but didn't find one.", (uint64_t)addr, remove);
                         // Set verify to true and so we can check if the original opcode has already been restored
                         verify = true;
                     }
                 }
                 else
                 {
-                    DNBLogThreadedIf(LOG_BREAKPOINTS | LOG_VERBOSE, "MachProcess::DisableBreakpoint ( addr = 0x%8.8llx, remove = %d ) is not enabled", addr, remove);
+                    DNBLogThreadedIf(LOG_BREAKPOINTS | LOG_VERBOSE, "MachProcess::DisableBreakpoint ( addr = 0x%8.8llx, remove = %d ) is not enabled", (uint64_t)addr, remove);
                     // Set verify to true and so we can check if the original opcode is there
                     verify = true;
                 }
@@ -1121,13 +1124,12 @@ MachProcess::ExceptionMessageBundleComplete()
                             uint32_t info_array_count = 0;
                             if (m_task.ReadMemory(info_array_count_addr, 4, &info_array_count) == 4)
                             {
-                                DNBLog ("info_array_count is 0x%x", info_array_count);
                                 if (info_array_count == 0)
                                     m_did_exec = true;
                             }
                             else
                             {
-                                DNBLog ("error: failed to read all_image_infos.infoArrayCount from 0x%8.8llx", info_array_count_addr);
+                                DNBLog ("error: failed to read all_image_infos.infoArrayCount from 0x%8.8llx", (uint64_t)info_array_count_addr);
                             }
                         }
                         break;

@@ -16,6 +16,7 @@
 #include "lldb/Core/DataBuffer.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Core/FileSpecList.h"
+#include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
@@ -23,6 +24,8 @@
 #include "lldb/Core/Stream.h"
 #include "lldb/Symbol/DWARFCallFrameInfo.h"
 #include "lldb/Symbol/SymbolContext.h"
+#include "lldb/Target/SectionLoadList.h"
+#include "lldb/Target/Target.h"
 #include "lldb/Host/Host.h"
 
 #include "llvm/ADT/PointerUnion.h"
@@ -69,6 +72,18 @@ public:
     static unsigned
     RelocSymbol64(const ELFRelocation &rel);
 
+    static unsigned
+    RelocOffset32(const ELFRelocation &rel);
+
+    static unsigned
+    RelocOffset64(const ELFRelocation &rel);
+
+    static unsigned
+    RelocAddend32(const ELFRelocation &rel);
+
+    static unsigned
+    RelocAddend64(const ELFRelocation &rel);
+
 private:
     typedef llvm::PointerUnion<ELFRel*, ELFRela*> RelocUnion;
 
@@ -77,9 +92,9 @@ private:
 
 ELFRelocation::ELFRelocation(unsigned type)
 { 
-    if (type == DT_REL)
+    if (type == DT_REL || type == SHT_REL)
         reloc = new ELFRel();
-    else if (type == DT_RELA)
+    else if (type == DT_RELA || type == SHT_RELA)
         reloc = new ELFRela();
     else {
         assert(false && "unexpected relocation type");
@@ -140,7 +155,81 @@ ELFRelocation::RelocSymbol64(const ELFRelocation &rel)
         return ELFRela::RelocSymbol64(*rel.reloc.get<ELFRela*>());
 }
 
+unsigned
+ELFRelocation::RelocOffset32(const ELFRelocation &rel)
+{
+    if (rel.reloc.is<ELFRel*>())
+        return rel.reloc.get<ELFRel*>()->r_offset;
+    else
+        return rel.reloc.get<ELFRela*>()->r_offset;
+}
+
+unsigned
+ELFRelocation::RelocOffset64(const ELFRelocation &rel)
+{
+    if (rel.reloc.is<ELFRel*>())
+        return rel.reloc.get<ELFRel*>()->r_offset;
+    else
+        return rel.reloc.get<ELFRela*>()->r_offset;
+}
+
+unsigned
+ELFRelocation::RelocAddend32(const ELFRelocation &rel)
+{
+    if (rel.reloc.is<ELFRel*>())
+        return 0;
+    else
+        return rel.reloc.get<ELFRela*>()->r_addend;
+}
+
+unsigned
+ELFRelocation::RelocAddend64(const ELFRelocation &rel)
+{
+    if (rel.reloc.is<ELFRel*>())
+        return 0;
+    else
+        return rel.reloc.get<ELFRela*>()->r_addend;
+}
+
 } // end anonymous namespace
+
+bool
+ELFNote::Parse(const DataExtractor &data, lldb::offset_t *offset)
+{
+    // Read all fields.
+    if (data.GetU32(offset, &n_namesz, 3) == NULL)
+        return false;
+
+    // The name field is required to be nul-terminated, and n_namesz
+    // includes the terminating nul in observed implementations (contrary
+    // to the ELF-64 spec).  A special case is needed for cores generated
+    // by some older Linux versions, which write a note named "CORE"
+    // without a nul terminator and n_namesz = 4.
+    if (n_namesz == 4)
+    {
+        char buf[4];
+        if (data.ExtractBytes (*offset, 4, data.GetByteOrder(), buf) != 4)
+            return false;
+        if (strncmp (buf, "CORE", 4) == 0)
+        {
+            n_name = "CORE";
+            *offset += 4;
+            return true;
+        }
+    }
+
+    const char *cstr = data.GetCStr(offset, llvm::RoundUpToAlignment (n_namesz, 4));
+    if (cstr == NULL)
+    {
+        Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_SYMBOLS));
+        if (log)
+            log->Printf("Failed to parse note name lacking nul terminator");
+
+        return false;
+    }
+    n_name = cstr;
+    return true;
+}
 
 //------------------------------------------------------------------
 // Static methods.
@@ -220,6 +309,22 @@ ObjectFileELF::CreateMemoryInstance (const lldb::ModuleSP &module_sp,
                                      const lldb::ProcessSP &process_sp, 
                                      lldb::addr_t header_addr)
 {
+    if (data_sp && data_sp->GetByteSize() > (llvm::ELF::EI_NIDENT))
+    {
+        const uint8_t *magic = data_sp->GetBytes();
+        if (ELFHeader::MagicBytesMatch(magic))
+        {
+            unsigned address_size = ELFHeader::AddressSizeInBytes(magic);
+            if (address_size == 4 || address_size == 8)
+            {
+                std::auto_ptr<ObjectFileELF> objfile_ap(new ObjectFileELF(module_sp, data_sp, process_sp, header_addr));
+                ArchSpec spec;
+                if (objfile_ap->GetArchitecture(spec) &&
+                    objfile_ap->SetModulesArchitecture(spec))
+                    return objfile_ap.release();
+            }
+        }
+    }
     return NULL;
 }
 
@@ -412,6 +517,19 @@ ObjectFileELF::ObjectFileELF (const lldb::ModuleSP &module_sp,
     m_gnu_debuglink_file.clear();
 }
 
+ObjectFileELF::ObjectFileELF (const lldb::ModuleSP &module_sp,
+                              DataBufferSP& data_sp,
+                              const lldb::ProcessSP &process_sp,
+                              addr_t header_addr) :
+    ObjectFile(module_sp, process_sp, LLDB_INVALID_ADDRESS, data_sp),
+    m_header(),
+    m_program_headers(),
+    m_section_headers(),
+    m_filespec_ap()
+{
+    ::memset(&m_header, 0, sizeof(m_header));
+}
+
 ObjectFileELF::~ObjectFileELF()
 {
 }
@@ -420,6 +538,47 @@ bool
 ObjectFileELF::IsExecutable() const
 {
     return m_header.e_entry != 0;
+}
+
+bool
+ObjectFileELF::SetLoadAddress (Target &target,
+                               lldb::addr_t value,
+                               bool value_is_offset)
+{
+    ModuleSP module_sp = GetModule();
+    if (module_sp)
+    {
+        size_t num_loaded_sections = 0;
+        SectionList *section_list = GetSectionList ();
+        if (section_list)
+        {
+            if (value_is_offset)
+            {
+                const size_t num_sections = section_list->GetSize();
+                size_t sect_idx = 0;
+
+                for (sect_idx = 0; sect_idx < num_sections; ++sect_idx)
+                {
+                    // Iterate through the object file sections to find all
+                    // of the sections that have SHF_ALLOC in their flag bits.
+                    SectionSP section_sp (section_list->GetSectionAtIndex (sect_idx));
+                    // if (section_sp && !section_sp->IsThreadSpecific())
+                    if (section_sp && section_sp->Test(SHF_ALLOC))
+                    {
+                        if (target.GetSectionLoadList().SetSectionLoadAddress (section_sp, section_sp->GetFileAddress() + value))
+                            ++num_loaded_sections;
+                    }
+                }
+                return num_loaded_sections > 0;
+            }
+            else
+            {
+                // Not sure how to slide an ELF file given the base address
+                // of the ELF file in memory
+            }
+        }
+    }
+    return false; // If it changed
 }
 
 ByteOrder
@@ -515,7 +674,7 @@ ObjectFileELF::GetDependentModules(FileSpecList &files)
 }
 
 Address
-ObjectFileELF::GetImageInfoAddress()
+ObjectFileELF::GetImageInfoAddress(Target *target)
 {
     if (!ParseDynamicSymbols())
         return Address();
@@ -545,6 +704,17 @@ ObjectFileELF::GetImageInfoAddress()
             // size of d_tag.
             addr_t offset = i * dynsym_hdr->sh_entsize + GetAddressByteSize();
             return Address(dynsym_section_sp, offset);
+        }
+        else if (symbol.d_tag == DT_MIPS_RLD_MAP && target)
+        {
+            addr_t offset = i * dynsym_hdr->sh_entsize + GetAddressByteSize();
+            addr_t dyn_base = dynsym_section_sp->GetLoadBaseAddress(target);
+            if (dyn_base == LLDB_INVALID_ADDRESS)
+                return Address();
+            Address addr;
+            Error error;
+            if (target->ReadPointerFromMemory(dyn_base + offset, false, error, addr))
+                return addr;
         }
     }
 
@@ -673,42 +843,26 @@ ParseNoteGNUBuildID(DataExtractor &data, lldb_private::UUID &uuid)
 {
     // Try to parse the note section (ie .note.gnu.build-id|.notes|.note|...) and get the build id.
     // BuildID documentation: https://fedoraproject.org/wiki/Releases/FeatureBuildId
-    struct
-    {
-        uint32_t name_len;  // Length of note name
-        uint32_t desc_len;  // Length of note descriptor
-        uint32_t type;      // Type of note (1 is ABI_TAG, 3 is BUILD_ID)
-    } notehdr;
     lldb::offset_t offset = 0;
     static const uint32_t g_gnu_build_id = 3; // NT_GNU_BUILD_ID from elf.h
 
     while (true)
     {
-        if (data.GetU32 (&offset, &notehdr, 3) == NULL)
+        ELFNote note = ELFNote();
+        if (!note.Parse(data, &offset))
             return false;
 
-        notehdr.name_len = llvm::RoundUpToAlignment (notehdr.name_len, 4);
-        notehdr.desc_len = llvm::RoundUpToAlignment (notehdr.desc_len, 4);
-
-        lldb::offset_t offset_next_note = offset + notehdr.name_len + notehdr.desc_len;
-
         // 16 bytes is UUID|MD5, 20 bytes is SHA1
-        if ((notehdr.type == g_gnu_build_id) && (notehdr.name_len == 4) &&
-            (notehdr.desc_len == 16 || notehdr.desc_len == 20))
+        if (note.n_name == "GNU" && (note.n_type == g_gnu_build_id) &&
+            (note.n_descsz == 16 || note.n_descsz == 20))
         {
-            char name[4];
-            if (data.GetU8 (&offset, name, 4) == NULL)
+            uint8_t uuidbuf[20]; 
+            if (data.GetU8 (&offset, &uuidbuf, note.n_descsz) == NULL)
                 return false;
-            if (!strcmp(name, "GNU"))
-            {
-                uint8_t uuidbuf[20]; 
-                if (data.GetU8 (&offset, &uuidbuf, notehdr.desc_len) == NULL)
-                    return false;
-                uuid.SetBytes (uuidbuf, notehdr.desc_len);
-                return true;
-            }
+            uuid.SetBytes (uuidbuf, note.n_descsz);
+            return true;
         }
-        offset = offset_next_note;
+        offset += llvm::RoundUpToAlignment(note.n_descsz, 4);
     }
     return false;
 }
@@ -1040,8 +1194,9 @@ ObjectFileELF::ParseSymbols (Symtab *symtab,
         
         const char *symbol_name = strtab_data.PeekCStr(symbol.st_name);
 
-        // No need to add symbols that have no names
-        if (symbol_name == NULL || symbol_name[0] == '\0')
+        // No need to add non-section symbols that have no names
+        if (symbol.getType() != STT_SECTION &&
+            (symbol_name == NULL || symbol_name[0] == '\0'))
             continue;
 
         //symbol.Dump (&strm, i, &strtab_data, section_list);
@@ -1151,7 +1306,7 @@ ObjectFileELF::ParseSymbols (Symtab *symtab,
         }
 
         uint64_t symbol_value = symbol.st_value;
-        if (symbol_section_sp)
+        if (symbol_section_sp && CalculateType() != ObjectFile::Type::eTypeObjectFile)
             symbol_value -= symbol_section_sp->GetFileAddress();
         bool is_global = symbol.getBinding() == STB_GLOBAL;
         uint32_t flags = symbol.st_other << 8 | symbol.st_info;
@@ -1449,6 +1604,136 @@ ObjectFileELF::ParseTrampolineSymbols(Symtab *symbol_table,
                                 strtab_data);
 }
 
+unsigned
+ObjectFileELF::RelocateSection(Symtab* symtab, const ELFHeader *hdr, const ELFSectionHeader *rel_hdr,
+                const ELFSectionHeader *symtab_hdr, const ELFSectionHeader *debug_hdr,
+                DataExtractor &rel_data, DataExtractor &symtab_data,
+                DataExtractor &debug_data, Section* rel_section)
+{
+    ELFRelocation rel(rel_hdr->sh_type);
+    lldb::addr_t offset = 0;
+    const unsigned num_relocations = rel_hdr->sh_size / rel_hdr->sh_entsize;
+    typedef unsigned (*reloc_info_fn)(const ELFRelocation &rel);
+    reloc_info_fn reloc_type;
+    reloc_info_fn reloc_symbol;
+
+    if (hdr->Is32Bit())
+    {
+        reloc_type = ELFRelocation::RelocType32;
+        reloc_symbol = ELFRelocation::RelocSymbol32;
+    }
+    else
+    {
+        reloc_type = ELFRelocation::RelocType64;
+        reloc_symbol = ELFRelocation::RelocSymbol64;
+    }
+
+    for (unsigned i = 0; i < num_relocations; ++i)
+    {
+        if (rel.Parse(rel_data, &offset) == false)
+            break;
+
+        Symbol* symbol = NULL;
+
+        if (hdr->Is32Bit())
+        {
+            switch (reloc_type(rel)) {
+            case R_386_32:
+            case R_386_PC32:
+            default:
+                assert(false && "unexpected relocation type");
+            }
+        } else {
+            switch (reloc_type(rel)) {
+            case R_X86_64_64:
+            {
+                symbol = symtab->FindSymbolByID(reloc_symbol(rel));
+                if (symbol)
+                {
+                    addr_t value = symbol->GetAddress().GetFileAddress();
+                    DataBufferSP& data_buffer_sp = debug_data.GetSharedDataBuffer();
+                    uint64_t* dst = reinterpret_cast<uint64_t*>(data_buffer_sp->GetBytes() + rel_section->GetFileOffset() + ELFRelocation::RelocOffset64(rel));
+                    *dst = value + ELFRelocation::RelocAddend64(rel);
+                }
+                break;
+            }
+            case R_X86_64_32:
+            case R_X86_64_32S:
+            {
+                symbol = symtab->FindSymbolByID(reloc_symbol(rel));
+                if (symbol)
+                {
+                    addr_t value = symbol->GetAddress().GetFileAddress();
+                    value += ELFRelocation::RelocAddend32(rel);
+                    assert((reloc_type(rel) == R_X86_64_32 && (value <= UINT32_MAX)) ||
+                           (reloc_type(rel) == R_X86_64_32S &&
+                            ((int64_t)value <= INT32_MAX && (int64_t)value >= INT32_MIN)));
+                    uint32_t truncated_addr = (value & 0xFFFFFFFF);
+                    DataBufferSP& data_buffer_sp = debug_data.GetSharedDataBuffer();
+                    uint32_t* dst = reinterpret_cast<uint32_t*>(data_buffer_sp->GetBytes() + rel_section->GetFileOffset() + ELFRelocation::RelocOffset32(rel));
+                    *dst = truncated_addr;
+                }
+                break;
+            }
+            case R_X86_64_PC32:
+            default:
+                assert(false && "unexpected relocation type");
+            }
+        }
+    }
+
+    return 0;
+}
+
+unsigned
+ObjectFileELF::RelocateDebugSections(const ELFSectionHeader *rel_hdr, user_id_t rel_id)
+{
+    assert(rel_hdr->sh_type == SHT_RELA || rel_hdr->sh_type == SHT_REL);
+
+    // Parse in the section list if needed.
+    SectionList *section_list = GetSectionList();
+    if (!section_list)
+        return 0;
+
+    // Section ID's are ones based.
+    user_id_t symtab_id = rel_hdr->sh_link + 1;
+    user_id_t debug_id = rel_hdr->sh_info + 1;
+
+    const ELFSectionHeader *symtab_hdr = GetSectionHeaderByIndex(symtab_id);
+    if (!symtab_hdr)
+        return 0;
+
+    const ELFSectionHeader *debug_hdr = GetSectionHeaderByIndex(debug_id);
+    if (!debug_hdr)
+        return 0;
+
+    Section *rel = section_list->FindSectionByID(rel_id).get();
+    if (!rel)
+        return 0;
+
+    Section *symtab = section_list->FindSectionByID(symtab_id).get();
+    if (!symtab)
+        return 0;
+
+    Section *debug = section_list->FindSectionByID(debug_id).get();
+    if (!debug)
+        return 0;
+
+    DataExtractor rel_data;
+    DataExtractor symtab_data;
+    DataExtractor debug_data;
+
+    if (ReadSectionData(rel, rel_data) &&
+        ReadSectionData(symtab, symtab_data) &&
+        ReadSectionData(debug, debug_data))
+    {
+        RelocateSection(m_symtab_ap.get(), &m_header, rel_hdr, symtab_hdr, debug_hdr,
+                        rel_data, symtab_data, debug_data, debug);
+    }
+
+    return 0;
+}
+
 Symtab *
 ObjectFileELF::GetSymtab()
 {
@@ -1508,6 +1793,25 @@ ObjectFileELF::GetSymtab()
                 assert(reloc_header);
 
                 ParseTrampolineSymbols (m_symtab_ap.get(), symbol_id, reloc_header, reloc_id);
+            }
+        }
+    }
+
+    for (SectionHeaderCollIter I = m_section_headers.begin();
+         I != m_section_headers.end(); ++I)
+    {
+        if (I->sh_type == SHT_RELA || I->sh_type == SHT_REL)
+        {
+            if (CalculateType() == eTypeObjectFile)
+            {
+                const char *section_name = I->section_name.AsCString("");
+                if (strstr(section_name, ".rela.debug") ||
+                    strstr(section_name, ".rel.debug"))
+                {
+                    const ELFSectionHeader &reloc_header = *I;
+                    user_id_t reloc_id = SectionIndex(I);
+                    RelocateDebugSections(&reloc_header, reloc_id);
+                }
             }
         }
     }

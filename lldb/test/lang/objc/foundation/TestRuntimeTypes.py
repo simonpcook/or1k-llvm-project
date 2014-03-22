@@ -11,7 +11,7 @@ import lldbutil
 @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
 class RuntimeTypesTestCase(TestBase):
 
-    mydir = os.path.join("lang", "objc", "foundation")
+    mydir = TestBase.compute_mydir(__file__)
 
     @dsym_test
     def test_break_with_dsym(self):
@@ -46,7 +46,7 @@ class RuntimeTypesTestCase(TestBase):
 
         # The length property should be usable.
         self.expect("expression str.length", VARIABLES_DISPLAYED_CORRECTLY,
-            substrs = ["(unsigned long long)"])
+            patterns = [r"(\(unsigned long long\))|\(NSUInteger\)"])
 
         # Static methods on NSString should work.
         self.expect("expr [NSString stringWithCString:\"foo\" encoding:1]", VALID_TYPE,

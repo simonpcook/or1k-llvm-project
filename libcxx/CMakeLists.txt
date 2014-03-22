@@ -44,7 +44,7 @@ option(LIBCXX_ENABLE_CXX0X "Enable -std=c++0x and use of c++0x language features
 option(LIBCXX_ENABLE_SHARED "Build libc++ as a shared library." ON)
 option(LIBCXX_INSTALL_SUPPORT_HEADERS "Install libc++ support headers." ON)
 
-set(CXXABIS none libcxxabi libcxxrt libsupc++)
+set(CXXABIS none libcxxabi libcxxrt libstdc++ libsupc++)
 if (NOT DEFINED LIBCXX_CXX_ABI)
   set(LIBCXX_CXX_ABI "none")
 endif()
@@ -133,13 +133,22 @@ macro(setup_abi_lib abipathvar abidefines abilibs abifiles abidirs)
     )
 endmacro()
 
-if ("${LIBCXX_CXX_ABI}" STREQUAL "libsupc++")
+if ("${LIBCXX_CXX_ABI}" STREQUAL "libstdc++" OR
+    "${LIBCXX_CXX_ABI}" STREQUAL "libsupc++")
   set(_LIBSUPCXX_INCLUDE_FILES
     cxxabi.h bits/c++config.h bits/os_defines.h bits/cpu_defines.h
     bits/cxxabi_tweaks.h bits/cxxabi_forced.h
     )
-  setup_abi_lib("LIBCXX_LIBSUPCXX_INCLUDE_PATHS" "-D__GLIBCXX__"
-    "supc++" "${_LIBSUPCXX_INCLUDE_FILES}" "bits"
+  if ("${LIBCXX_CXX_ABI}" STREQUAL "libstdc++")
+    set(_LIBSUPCXX_DEFINES "-DLIBSTDCXX")
+    set(_LIBSUPCXX_LIBNAME stdc++)
+  else()
+    set(_LIBSUPCXX_DEFINES "")
+    set(_LIBSUPCXX_LIBNAME supc++)
+  endif()
+  setup_abi_lib("LIBCXX_LIBSUPCXX_INCLUDE_PATHS"
+    "-D__GLIBCXX__ ${_LIBSUPCXX_DEFINES}"
+    "${_LIBSUPCXX_LIBNAME}" "${_LIBSUPCXX_INCLUDE_FILES}" "bits"
     )
 elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxabi")
   setup_abi_lib("LIBCXX_LIBCXXABI_INCLUDE_PATHS" ""
@@ -151,7 +160,7 @@ elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxrt")
     )
 elseif (NOT "${LIBCXX_CXX_ABI}" STREQUAL "none")
   message(FATAL_ERROR
-    "Currently libsupc++, libcxxabi, libcxxrt and none are "
+    "Currently libstdc++, libsupc++, libcxxabi, libcxxrt and none are "
     "supported for c++ abi."
     )
 endif ()
@@ -171,7 +180,7 @@ if (MSVC)
   # headers.
 else()
   if (LIBCXX_HAS_NOSTDINCXX_FLAG)
-    set(LIBCXX_CXX_REQUIRED_FLAGS -nostdinc++)
+    list(APPEND LIBCXX_CXX_REQUIRED_FLAGS -nostdinc++)
   endif()
   if (LIBCXX_ENABLE_CXX0X AND LIBCXX_HAS_STDCXX0X_FLAG)
     list(APPEND LIBCXX_CXX_REQUIRED_FLAGS -std=c++0x)
@@ -185,7 +194,11 @@ macro(append_if list condition var)
 endmacro()
 
 # Get warning flags
-append_if(LIBCXX_CXX_WARNING_FLAGS LIBCXX_HAS_WALL_FLAG -Wall)
+if (NOT MSVC)
+  append_if(LIBCXX_CXX_WARNING_FLAGS LIBCXX_HAS_WALL_FLAG -Wall)
+  list(APPEND LIBCXX_CXX_REQUIRED_FLAGS -Werror=return-type)
+endif()
+
 append_if(LIBCXX_CXX_WARNING_FLAGS LIBCXX_HAS_W_FLAG -W)
 append_if(LIBCXX_CXX_WARNING_FLAGS LIBCXX_HAS_WNO_UNUSED_PARAMETER_FLAG -Wno-unused-parameter)
 append_if(LIBCXX_CXX_WARNING_FLAGS LIBCXX_HAS_WWRITE_STRINGS_FLAG -Wwrite-strings)
@@ -242,17 +255,25 @@ if (NOT LIBCXX_ENABLE_SHARED)
 endif()
 
 # This is the _ONLY_ place where add_definitions is called.
-add_definitions(
- ${LIBCXX_CXX_REQUIRED_FLAGS}
- ${LIBCXX_CXX_WARNING_FLAGS}
- ${LIBCXX_CXX_FEATURE_FLAGS}
- )
+if (MSVC)
+  add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+endif()
+
+string(REPLACE ";" " " LIBCXX_CXX_REQUIRED_FLAGS "${LIBCXX_CXX_REQUIRED_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LIBCXX_CXX_REQUIRED_FLAGS}")
+
+string(REPLACE ";" " " LIBCXX_CXX_WARNING_FLAGS "${LIBCXX_CXX_WARNING_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LIBCXX_CXX_WARNING_FLAGS}")
+
+string(REPLACE ";" " " LIBCXX_CXX_FEATURE_FLAGS "${LIBCXX_CXX_FEATURE_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LIBCXX_CXX_FEATURE_FLAGS}")
 
 #===============================================================================
 # Setup Source Code
 #===============================================================================
 
 include_directories(include)
+add_subdirectory(include)
 
 # Add source code. This also contains all of the logic for deciding linker flags
 # soname, etc...

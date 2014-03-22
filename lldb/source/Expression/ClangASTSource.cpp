@@ -316,7 +316,27 @@ ClangASTSource::CompleteType (clang::ObjCInterfaceDecl *interface_decl)
         dumper.ToLog(log, "      [COID] ");    
     }
     
+    Decl *original_decl = NULL;
+    ASTContext *original_ctx = NULL;
+    
+    if (m_ast_importer->ResolveDeclOrigin(interface_decl, &original_decl, &original_ctx))
+    {
+        if (ObjCInterfaceDecl *original_iface_decl = dyn_cast<ObjCInterfaceDecl>(original_decl))
+        {
+            ObjCInterfaceDecl *complete_iface_decl = GetCompleteObjCInterface(original_iface_decl);
+            
+            if (complete_iface_decl && (complete_iface_decl != original_iface_decl))
+            {
+                m_ast_importer->SetDeclOrigin(interface_decl, original_iface_decl);
+            }
+        }
+    }
+    
     m_ast_importer->CompleteObjCInterfaceDecl (interface_decl);
+    
+    if (interface_decl->getSuperClass() &&
+        interface_decl->getSuperClass() != interface_decl)
+        CompleteType(interface_decl->getSuperClass());
     
     if (log)
     {
@@ -969,6 +989,9 @@ ClangASTSource::FindObjCMethodDecls (NameSearchContext &context)
         }
     }     
     ss.Flush();
+    
+    if (strstr(ss.GetData(), "$__lldb"))
+        return; // we don't need any results
     
     ConstString selector_name(ss.GetData());
     
@@ -1771,14 +1794,14 @@ NameSearchContext::AddFunDecl (const ClangASTType &type)
     
     if (func_proto_type)
     {        
-        unsigned NumArgs = func_proto_type->getNumArgs();
+        unsigned NumArgs = func_proto_type->getNumParams();
         unsigned ArgIndex;
         
         SmallVector<ParmVarDecl *, 5> parm_var_decls;
                 
         for (ArgIndex = 0; ArgIndex < NumArgs; ++ArgIndex)
         {
-            QualType arg_qual_type (func_proto_type->getArgType(ArgIndex));
+            QualType arg_qual_type (func_proto_type->getParamType(ArgIndex));
             
             parm_var_decls.push_back(ParmVarDecl::Create (*ast,
                                                           const_cast<DeclContext*>(m_decl_context),

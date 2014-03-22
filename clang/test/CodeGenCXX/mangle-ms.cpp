@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -cxx-abi microsoft -triple=i386-pc-win32 | FileCheck %s
-// RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -cxx-abi microsoft -triple=x86_64-pc-win32 | FileCheck -check-prefix X64 %s
+// RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -triple=i386-pc-win32 -std=c++98 | FileCheck %s
+// RUN: %clang_cc1 -fblocks -emit-llvm %s -o - -triple=x86_64-pc-win32 -std=c++98| FileCheck -check-prefix X64 %s
 
 int a;
 // CHECK-DAG: @"\01?a@@3HA"
@@ -95,9 +95,17 @@ extern int * const h1 = &a;
 // CHECK-DAG: @"\01?h1@@3QAHA"
 extern const int * const h2 = &a;
 // CHECK-DAG: @"\01?h2@@3QBHB"
+extern int * const __restrict h3 = &a;
+// CHECK-DAG: @"\01?h3@@3QIAHIA"
+// X64-DAG: @"\01?h3@@3QEIAHEIA"
 
 int i[10][20];
 // CHECK-DAG: @"\01?i@@3PAY0BE@HA"
+
+typedef int (*FunT)(int, int);
+FunT FunArr[10][20];
+// CHECK-DAG: @"\01?FunArr@@3PAY0BE@P6AHHH@ZA"
+// X64-DAG: @"\01?FunArr@@3PAY0BE@P6AHHH@ZA"
 
 int (__stdcall *j)(signed char, unsigned char);
 // CHECK-DAG: @"\01?j@@3P6GHCE@ZA"
@@ -304,3 +312,56 @@ inline int templated_inline_function_with_local_type() {
 int call_templated_inline_function_with_local_type() {
   return templated_inline_function_with_local_type<int>();
 }
+
+// PR17371
+struct OverloadedNewDelete {
+  // __cdecl
+  void *operator new(__SIZE_TYPE__);
+  void *operator new[](__SIZE_TYPE__);
+  void operator delete(void *);
+  void operator delete[](void *);
+  // __thiscall
+  int operator+(int);
+};
+
+void *OverloadedNewDelete::operator new(__SIZE_TYPE__ s) { return 0; }
+void *OverloadedNewDelete::operator new[](__SIZE_TYPE__ s) { return 0; }
+void OverloadedNewDelete::operator delete(void *) { }
+void OverloadedNewDelete::operator delete[](void *) { }
+int OverloadedNewDelete::operator+(int x) { return x; };
+
+// CHECK-DAG: ??2OverloadedNewDelete@@SAPAXI@Z
+// CHECK-DAG: ??_UOverloadedNewDelete@@SAPAXI@Z
+// CHECK-DAG: ??3OverloadedNewDelete@@SAXPAX@Z
+// CHECK-DAG: ??_VOverloadedNewDelete@@SAXPAX@Z
+// CHECK-DAG: ??HOverloadedNewDelete@@QAEHH@Z
+
+// X64-DAG:   ??2OverloadedNewDelete@@SAPEAX_K@Z
+// X64-DAG:   ??_UOverloadedNewDelete@@SAPEAX_K@Z
+// X64-DAG:   ??3OverloadedNewDelete@@SAXPEAX@Z
+// X64-DAG:   ??_VOverloadedNewDelete@@SAXPEAX@Z
+// X64-DAG:   ??HOverloadedNewDelete@@QEAAHH@Z
+
+// Indirecting the function type through a typedef will require a calling
+// convention adjustment before building the method decl.
+
+typedef void *__thiscall OperatorNewType(__SIZE_TYPE__);
+typedef void __thiscall OperatorDeleteType(void *);
+
+struct TypedefNewDelete {
+  OperatorNewType operator new;
+  OperatorNewType operator new[];
+  OperatorDeleteType operator delete;
+  OperatorDeleteType operator delete[];
+};
+
+void *TypedefNewDelete::operator new(__SIZE_TYPE__ s) { return 0; }
+void *TypedefNewDelete::operator new[](__SIZE_TYPE__ s) { return 0; }
+void TypedefNewDelete::operator delete(void *) { }
+void TypedefNewDelete::operator delete[](void *) { }
+
+// CHECK-DAG: ??2TypedefNewDelete@@SAPAXI@Z
+// CHECK-DAG: ??_UTypedefNewDelete@@SAPAXI@Z
+// CHECK-DAG: ??3TypedefNewDelete@@SAXPAX@Z
+// CHECK-DAG: ??_VTypedefNewDelete@@SAXPAX@Z
+

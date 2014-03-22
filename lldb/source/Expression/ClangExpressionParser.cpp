@@ -16,6 +16,7 @@
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Disassembler.h"
 #include "lldb/Core/Stream.h"
+#include "lldb/Core/StreamFile.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Expression/ClangASTSource.h"
 #include "lldb/Expression/ClangExpression.h"
@@ -35,7 +36,6 @@
 #include "clang/Basic/Version.h"
 #include "clang/CodeGen/CodeGenAction.h"
 #include "clang/CodeGen/ModuleBuilder.h"
-#include "clang/Driver/CC1Options.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendActions.h"
@@ -55,11 +55,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
 
-#if defined (USE_STANDARD_JIT)
-#include "llvm/ExecutionEngine/JIT.h"
-#else
 #include "llvm/ExecutionEngine/MCJIT.h"
-#endif
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -92,88 +88,6 @@ std::string GetBuiltinIncludePath(const char *Argv0) {
     return P.str();
 }
 
-
-//===----------------------------------------------------------------------===//
-// Main driver for Clang
-//===----------------------------------------------------------------------===//
-
-static void LLVMErrorHandler(void *UserData, const std::string &Message) {
-    DiagnosticsEngine &Diags = *static_cast<DiagnosticsEngine*>(UserData);
-    
-    Diags.Report(diag::err_fe_error_backend) << Message;
-    
-    // We cannot recover from llvm errors.
-    assert(0);
-}
-
-static FrontendAction *CreateFrontendBaseAction(CompilerInstance &CI) {
-    using namespace clang::frontend;
-    
-    switch (CI.getFrontendOpts().ProgramAction) {
-        default:
-            llvm_unreachable("Invalid program action!");
-            
-        case ASTDump:                return new ASTDumpAction();
-        case ASTPrint:               return new ASTPrintAction();
-        case ASTDumpXML:             return new ASTDumpXMLAction();
-        case ASTView:                return new ASTViewAction();
-        case DumpRawTokens:          return new DumpRawTokensAction();
-        case DumpTokens:             return new DumpTokensAction();
-        case EmitAssembly:           return new EmitAssemblyAction();
-        case EmitBC:                 return new EmitBCAction();
-        case EmitHTML:               return new HTMLPrintAction();
-        case EmitLLVM:               return new EmitLLVMAction();
-        case EmitLLVMOnly:           return new EmitLLVMOnlyAction();
-        case EmitCodeGenOnly:        return new EmitCodeGenOnlyAction();
-        case EmitObj:                return new EmitObjAction();
-        case FixIt:                  return new FixItAction();
-        case GeneratePCH:            return new GeneratePCHAction();
-        case GeneratePTH:            return new GeneratePTHAction();
-        case InitOnly:               return new InitOnlyAction();
-        case ParseSyntaxOnly:        return new SyntaxOnlyAction();
-            
-        case PluginAction: {
-            for (FrontendPluginRegistry::iterator it =
-                 FrontendPluginRegistry::begin(), ie = FrontendPluginRegistry::end();
-                 it != ie; ++it) {
-                if (it->getName() == CI.getFrontendOpts().ActionName) {
-                    llvm::OwningPtr<PluginASTAction> P(it->instantiate());
-                    if (!P->ParseArgs(CI, CI.getFrontendOpts().PluginArgs))
-                        return 0;
-                    return P.take();
-                }
-            }
-            
-            CI.getDiagnostics().Report(diag::err_fe_invalid_plugin_name)
-            << CI.getFrontendOpts().ActionName;
-            return 0;
-        }
-            
-        case PrintDeclContext:       return new DeclContextPrintAction();
-        case PrintPreamble:          return new PrintPreambleAction();
-        case PrintPreprocessedInput: return new PrintPreprocessedAction();
-        case RewriteMacros:          return new RewriteMacrosAction();
-        case RewriteObjC:            return new RewriteObjCAction();
-        case RewriteTest:            return new RewriteTestAction();
-        //case RunAnalysis:            return new AnalysisAction();
-        case RunPreprocessorOnly:    return new PreprocessOnlyAction();
-    }
-}
-
-static FrontendAction *CreateFrontendAction(CompilerInstance &CI) {
-    // Create the underlying action.
-    FrontendAction *Act = CreateFrontendBaseAction(CI);
-    if (!Act)
-        return 0;
-    
-    // If there are any AST files to merge, create a frontend action
-    // adaptor to perform the merge.
-    if (!CI.getFrontendOpts().ASTMergeFiles.empty())
-        Act = new ASTMergeAction(Act, CI.getFrontendOpts().ASTMergeFiles);
-    
-    return Act;
-}
-
 //===----------------------------------------------------------------------===//
 // Implementation of ClangExpressionParser
 //===----------------------------------------------------------------------===//
@@ -191,8 +105,6 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
             llvm::InitializeAllAsmPrinters();
             llvm::InitializeAllTargetMCs();
             llvm::InitializeAllDisassemblers();
-            
-            llvm::DisablePrettyStackTrace = true;
         }
     } InitializeLLVM;
     
@@ -314,6 +226,8 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
     // Set CodeGen options
     m_compiler->getCodeGenOpts().EmitDeclMetadata = true;
     m_compiler->getCodeGenOpts().InstrumentFunctions = false;
+    m_compiler->getCodeGenOpts().DisableFPElim = true;
+    m_compiler->getCodeGenOpts().OmitLeafFramePointer = false;
     
     // Disable some warnings.
     m_compiler->getDiagnostics().setDiagnosticGroupMapping("unused-value", clang::diag::MAP_IGNORE, SourceLocation());
@@ -338,7 +252,7 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
         m_compiler->createSourceManager(*m_file_manager.get());
     
     m_compiler->createFileManager();
-    m_compiler->createPreprocessor();
+    m_compiler->createPreprocessor(TU_Complete);
     
     // 6. Most of this we get from the CompilerInstance, but we 
     // also want to give the context an ExternalASTSource.
@@ -357,7 +271,7 @@ ClangExpressionParser::ClangExpressionParser (ExecutionContextScope *exe_scope,
     
     if (decl_map)
     {
-        llvm::OwningPtr<clang::ExternalASTSource> ast_source(decl_map->CreateProxy());
+        llvm::IntrusiveRefCntPtr<clang::ExternalASTSource> ast_source(decl_map->CreateProxy());
         decl_map->InstallASTContext(ast_context.get());
         ast_context->setExternalSource(ast_source);
     }
@@ -507,7 +421,7 @@ ClangExpressionParser::PrepareForExecution (lldb::addr_t &func_addr,
         Stream *error_stream = NULL;
         Target *target = exe_ctx.GetTargetPtr();
         if (target)
-            error_stream = &target->GetDebugger().GetErrorStream();
+            error_stream = target->GetDebugger().GetErrorFile().get();
     
         IRForTarget ir_for_target(decl_map,
                                   m_expr.NeedsVariableResolution(),

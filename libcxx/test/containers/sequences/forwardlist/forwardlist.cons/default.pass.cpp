@@ -14,7 +14,7 @@
 #include <forward_list>
 #include <cassert>
 
-#include "../../../min_allocator.h"
+#include "min_allocator.h"
 
 int main()
 {
@@ -29,6 +29,12 @@ int main()
         typedef int T;
         typedef std::forward_list<T, min_allocator<T>> C;
         C c;
+        assert(c.empty());
+    }
+    {
+        typedef int T;
+        typedef std::forward_list<T> C;
+        C c = {};
         assert(c.empty());
     }
 #endif

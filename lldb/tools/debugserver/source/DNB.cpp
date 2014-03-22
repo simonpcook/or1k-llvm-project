@@ -165,9 +165,10 @@ waitpid_thread (void *arg)
 static bool
 spawn_waitpid_thread (pid_t pid)
 {
-    pthread_t thread = THREAD_NULL;
-    ::pthread_create (&thread, NULL, waitpid_thread, (void *)(intptr_t)pid);
-    if (thread != THREAD_NULL)
+    pthread_t thread;
+    int ret = ::pthread_create (&thread, NULL, waitpid_thread, (void *)(intptr_t)pid);
+    // pthread_create returns 0 if successful
+    if (ret == 0)
     {
         ::pthread_detach (thread);
         return true;
@@ -649,6 +650,10 @@ DNBProcessDetach (nub_process_t pid)
     MachProcessSP procSP;
     if (GetProcessSP (pid, procSP))
     {
+        const bool remove = true;
+        DNBLogThreaded("Disabling breakpoints and watchpoints, and detaching from %d.", pid);
+        procSP->DisableAllBreakpoints(remove);
+        procSP->DisableAllWatchpoints (remove);
         return procSP->Detach();
     }
     return false;
@@ -1764,6 +1769,31 @@ DNBThreadSetRegisterContext (nub_process_t pid, nub_thread_t tid, const void *bu
     return 0;
 }
 
+uint32_t
+DNBThreadSaveRegisterState (nub_process_t pid, nub_thread_t tid)
+{
+    if (tid != INVALID_NUB_THREAD)
+    {
+        MachProcessSP procSP;
+        if (GetProcessSP (pid, procSP))
+            return procSP->GetThreadList().SaveRegisterState (tid);
+    }
+    return 0;    
+}
+nub_bool_t
+DNBThreadRestoreRegisterState (nub_process_t pid, nub_thread_t tid, uint32_t save_id)
+{
+    if (tid != INVALID_NUB_THREAD)
+    {
+        MachProcessSP procSP;
+        if (GetProcessSP (pid, procSP))
+            return procSP->GetThreadList().RestoreRegisterState (tid, save_id);
+    }
+    return false;
+}
+
+
+
 //----------------------------------------------------------------------
 // Read a register value by name.
 //----------------------------------------------------------------------
@@ -2041,7 +2071,7 @@ DNBSetArchitecture (const char *arch)
     {
         if (strcasecmp (arch, "i386") == 0)
             return DNBArchProtocol::SetArchitecture (CPU_TYPE_I386);
-        else if (strcasecmp (arch, "x86_64") == 0)
+        else if ((strcasecmp (arch, "x86_64") == 0) || (strcasecmp (arch, "x86_64h") == 0))
             return DNBArchProtocol::SetArchitecture (CPU_TYPE_X86_64);
         else if (strstr (arch, "arm") == arch)
             return DNBArchProtocol::SetArchitecture (CPU_TYPE_ARM);

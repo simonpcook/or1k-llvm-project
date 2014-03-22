@@ -374,6 +374,10 @@ public:
     
     ClangASTType
     GetClangType ();
+    
+    // this vends a TypeImpl that is useful at the SB API layer
+    virtual TypeImpl
+    GetTypeImpl ();
 
     //------------------------------------------------------------------
     // Sublasses must implement the functions below.
@@ -495,12 +499,19 @@ public:
     GetValueAsCString ();
     
     virtual bool
+    GetValueAsCString (const lldb_private::TypeFormatImpl& format,
+                       std::string& destination);
+
+    bool
     GetValueAsCString (lldb::Format format,
                        std::string& destination);
     
     virtual uint64_t
     GetValueAsUnsigned (uint64_t fail_value, bool *success = NULL);
 
+    virtual int64_t
+    GetValueAsSigned (int64_t fail_value, bool *success = NULL);
+    
     virtual bool
     SetValueFromCString (const char *value_str, Error& error);
     
@@ -608,7 +619,8 @@ public:
     DumpPrintableRepresentation (Stream& s,
                                  ValueObjectRepresentationStyle val_obj_display = eValueObjectRepresentationStyleSummary,
                                  lldb::Format custom_format = lldb::eFormatInvalid,
-                                 PrintableRepresentationSpecialCases special = ePrintableRepresentationSpecialCasesAllow);
+                                 PrintableRepresentationSpecialCases special = ePrintableRepresentationSpecialCasesAllow,
+                                 bool do_dump_error = true);
     bool
     GetValueIsValid () const;
 
@@ -781,7 +793,7 @@ public:
 					uint32_t item_count = 1);
     
     virtual uint64_t
-    GetData (DataExtractor& data);
+    GetData (DataExtractor& data, Error &error);
     
     virtual bool
     SetData (DataExtractor &data, Error &error);

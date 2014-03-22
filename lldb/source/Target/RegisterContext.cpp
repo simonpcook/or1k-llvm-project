@@ -81,6 +81,15 @@ RegisterContext::GetRegisterInfoByName (const char *reg_name, uint32_t start_idx
     return NULL;
 }
 
+const RegisterInfo *
+RegisterContext::GetRegisterInfo (uint32_t kind, uint32_t num)
+{
+    const uint32_t reg_num = ConvertRegisterKindToRegisterNumber(kind, num);
+    if (reg_num == LLDB_INVALID_REGNUM)
+        return NULL;
+    return GetRegisterInfoAtIndex (reg_num);
+}
+
 const char *
 RegisterContext::GetRegisterName (uint32_t reg)
 {
@@ -431,6 +440,18 @@ RegisterContext::WriteRegisterValueToMemory (const RegisterInfo *reg_info,
 
 }
 
+bool
+RegisterContext::ReadAllRegisterValues (lldb_private::RegisterCheckpoint &reg_checkpoint)
+{
+    return ReadAllRegisterValues(reg_checkpoint.GetData());
+}
+
+bool
+RegisterContext::WriteAllRegisterValues (const lldb_private::RegisterCheckpoint &reg_checkpoint)
+{
+    return WriteAllRegisterValues(reg_checkpoint.GetData());
+}
+
 TargetSP
 RegisterContext::CalculateTarget ()
 {
@@ -469,15 +490,6 @@ RegisterContext::CalculateExecutionContext (ExecutionContext &exe_ctx)
 bool
 RegisterContext::ConvertBetweenRegisterKinds (int source_rk, uint32_t source_regnum, int target_rk, uint32_t& target_regnum)
 {
-    // FIXME: This works around a problem with 32-bit register mapping on Linux.
-    // A more general fix is needed.
-    if (target_rk == eRegisterKindLLDB)
-    {
-        target_regnum = ConvertRegisterKindToRegisterNumber(source_rk, source_regnum);
-        if (target_regnum != LLDB_INVALID_REGNUM)
-            return true;
-    }
-
     const uint32_t num_registers = GetRegisterCount();
     for (uint32_t reg = 0; reg < num_registers; ++reg)
     {

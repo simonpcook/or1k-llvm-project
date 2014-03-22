@@ -23,13 +23,9 @@
 namespace lld {
 class SimpleFile : public MutableFile {
 public:
-  SimpleFile(const LinkingContext &context, StringRef path)
-      : MutableFile(context, path) {
-    static uint32_t lastOrdinal = 0;
-    _ordinal = lastOrdinal++;
-  }
+  SimpleFile(StringRef path) : MutableFile(path) {}
 
-  virtual void addAtom(const Atom &atom) {
+  void addAtom(const Atom &atom) override {
     if (const DefinedAtom *defAtom = dyn_cast<DefinedAtom>(&atom)) {
       _definedAtoms._atoms.push_back(defAtom);
     } else if (
@@ -45,50 +41,65 @@ public:
     }
   }
 
-  virtual const atom_collection<DefinedAtom> &defined() const {
+  const atom_collection<DefinedAtom> &defined() const override {
     return _definedAtoms;
   }
 
-  virtual const atom_collection<UndefinedAtom> &undefined() const {
+  const atom_collection<UndefinedAtom> &undefined() const override {
     return _undefinedAtoms;
   }
 
-  virtual const atom_collection<SharedLibraryAtom> &sharedLibrary() const {
+  const atom_collection<SharedLibraryAtom> &sharedLibrary() const override {
     return _sharedLibraryAtoms;
   }
 
-  virtual const atom_collection<AbsoluteAtom> &absolute() const {
+  const atom_collection<AbsoluteAtom> &absolute() const override {
     return _absoluteAtoms;
   }
 
-  virtual DefinedAtomRange definedAtoms() {
+  DefinedAtomRange definedAtoms() override {
     return make_range(_definedAtoms._atoms);
   }
 
-private:
-  atom_collection_vector<DefinedAtom> _definedAtoms;
-  atom_collection_vector<UndefinedAtom> _undefinedAtoms;
-  atom_collection_vector<SharedLibraryAtom> _sharedLibraryAtoms;
-  atom_collection_vector<AbsoluteAtom> _absoluteAtoms;
+protected:
+  atom_collection_vector<DefinedAtom>        _definedAtoms;
+  atom_collection_vector<UndefinedAtom>      _undefinedAtoms;
+  atom_collection_vector<SharedLibraryAtom>  _sharedLibraryAtoms;
+  atom_collection_vector<AbsoluteAtom>       _absoluteAtoms;
+};
+
+class FileToMutable : public SimpleFile {
+public:
+  FileToMutable(const LinkingContext &context, const File &file)
+      : SimpleFile(file.path()) {
+    for (auto definedAtom : file.defined())
+      _definedAtoms._atoms.push_back(std::move(definedAtom));
+    for (auto undefAtom : file.undefined())
+      _undefinedAtoms._atoms.push_back(std::move(undefAtom));
+    for (auto shlibAtom : file.sharedLibrary())
+      _sharedLibraryAtoms._atoms.push_back(std::move(shlibAtom));
+    for (auto absAtom : file.absolute())
+      _absoluteAtoms._atoms.push_back(std::move(absAtom));
+  }
 };
 
 class SimpleReference : public Reference {
 public:
-  SimpleReference(Reference::Kind k, uint64_t off, const Atom *t,
+  SimpleReference(Reference::KindNamespace ns, Reference::KindArch arch,
+                  Reference::KindValue value, uint64_t off, const Atom *t,
                   Reference::Addend a)
-      : _target(t), _offsetInAtom(off), _addend(a) {
-    _kind = k;
+      : Reference(ns, arch, value), _target(t), _offsetInAtom(off), _addend(a) {
   }
 
-  virtual uint64_t offsetInAtom() const { return _offsetInAtom; }
+  uint64_t offsetInAtom() const override { return _offsetInAtom; }
 
-  virtual const Atom *target() const { return _target; }
+  const Atom *target() const override { return _target; }
 
-  virtual Addend addend() const { return _addend; }
+  Addend addend() const override { return _addend; }
 
-  virtual void setAddend(Addend a) { _addend = a; }
+  void setAddend(Addend a) override { _addend = a; }
 
-  virtual void setTarget(const Atom *newAtom) { _target = newAtom; }
+  void setTarget(const Atom *newAtom) override { _target = newAtom; }
 private:
   const Atom *_target;
   uint64_t _offsetInAtom;
@@ -102,70 +113,71 @@ public:
     _ordinal = lastOrdinal++;
   }
 
-  virtual const File &file() const { return _file; }
+  const File &file() const override { return _file; }
 
-  virtual StringRef name() const { return StringRef(); }
+  StringRef name() const override { return StringRef(); }
 
-  virtual uint64_t ordinal() const { return _ordinal; }
+  uint64_t ordinal() const override { return _ordinal; }
 
-  virtual Scope scope() const { return DefinedAtom::scopeLinkageUnit; }
+  Scope scope() const override { return DefinedAtom::scopeLinkageUnit; }
 
-  virtual Interposable interposable() const { return DefinedAtom::interposeNo; }
+  Interposable interposable() const override { return DefinedAtom::interposeNo; }
 
-  virtual Merge merge() const { return DefinedAtom::mergeNo; }
+  Merge merge() const override { return DefinedAtom::mergeNo; }
 
-  virtual Alignment alignment() const { return Alignment(0, 0); }
+  Alignment alignment() const override { return Alignment(0, 0); }
 
-  virtual SectionChoice sectionChoice() const {
+  SectionChoice sectionChoice() const override {
     return DefinedAtom::sectionBasedOnContent;
   }
 
-  virtual SectionPosition sectionPosition() const {
+  SectionPosition sectionPosition() const override {
     return DefinedAtom::sectionPositionAny;
   }
 
-  virtual StringRef customSectionName() const { return StringRef(); }
-  virtual DeadStripKind deadStrip() const {
+  StringRef customSectionName() const override { return StringRef(); }
+  DeadStripKind deadStrip() const override {
     return DefinedAtom::deadStripNormal;
   }
 
-  virtual bool isAlias() const { return false; }
+  bool isAlias() const override { return false; }
 
-  virtual DefinedAtom::reference_iterator begin() const {
+  DefinedAtom::reference_iterator begin() const override {
     uintptr_t index = 0;
     const void *it = reinterpret_cast<const void *>(index);
     return reference_iterator(*this, it);
   }
 
-  virtual DefinedAtom::reference_iterator end() const {
+  DefinedAtom::reference_iterator end() const override {
     uintptr_t index = _references.size();
     const void *it = reinterpret_cast<const void *>(index);
     return reference_iterator(*this, it);
   }
 
-  virtual const Reference *derefIterator(const void *it) const {
+  const Reference *derefIterator(const void *it) const override {
     uintptr_t index = reinterpret_cast<uintptr_t>(it);
     assert(index < _references.size());
     return &_references[index];
   }
 
-  virtual void incrementIterator(const void *&it) const {
+  void incrementIterator(const void *&it) const override {
     uintptr_t index = reinterpret_cast<uintptr_t>(it);
     ++index;
     it = reinterpret_cast<const void *>(index);
   }
 
-  void addReference(Reference::Kind kind, uint64_t offset, const Atom *target,
-                    Reference::Addend addend) {
-    _references.push_back(SimpleReference(kind, offset, target, addend));
+  void addReference(Reference::KindNamespace ns, Reference::KindArch arch,
+                    Reference::KindValue kindValue, uint64_t off,
+                    const Atom *target, Reference::Addend a) {
+    _references.push_back(SimpleReference(ns, arch, kindValue, off, target, a));
   }
 
   void setOrdinal(uint64_t ord) { _ordinal = ord; }
 
 private:
-  const File &_file;
-  uint64_t _ordinal;
-  std::vector<SimpleReference> _references;
+  const File                   &_file;
+  uint64_t                      _ordinal;
+  std::vector<SimpleReference>  _references;
 };
 
 class SimpleUndefinedAtom : public UndefinedAtom {
@@ -175,13 +187,13 @@ public:
   }
 
   /// file - returns the File that produced/owns this Atom
-  virtual const File &file() const { return _file; }
+  const File &file() const override { return _file; }
 
   /// name - The name of the atom. For a function atom, it is the (mangled)
   /// name of the function.
-  virtual StringRef name() const { return _name; }
+  StringRef name() const override { return _name; }
 
-  virtual CanBeNull canBeNull() const { return UndefinedAtom::canBeNullNever; }
+  CanBeNull canBeNull() const override { return UndefinedAtom::canBeNullNever; }
 
 private:
   const File &_file;

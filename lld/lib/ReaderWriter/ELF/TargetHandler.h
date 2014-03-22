@@ -18,9 +18,9 @@
 
 #include "Layout.h"
 
-#include "lld/Core/InputFiles.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/LinkingContext.h"
+#include "lld/Core/STDExtras.h"
 #include "lld/ReaderWriter/ELFLinkingContext.h"
 
 #include "llvm/ADT/Hashing.h"
@@ -31,6 +31,8 @@
 
 namespace lld {
 namespace elf {
+template <class ELFT> class DynamicTable;
+template <class ELFT> class DynamicSymbolTable;
 template <class ELFT> class ELFDefinedAtom;
 template <class ELFT> class ELFReference;
 class ELFWriter;
@@ -38,88 +40,41 @@ template <class ELFT> class ELFHeader;
 template <class ELFT> class Section;
 template <class ELFT> class TargetLayout;
 
-/// \brief The target registers a set of handlers for overriding target specific
-/// attributes for a DefinedAtom. The Reader uses this class to query for the
-/// type of atom and its permissions
-template <class ELFT> class TargetAtomHandler {
-public:
-  typedef llvm::object::Elf_Shdr_Impl<ELFT> Elf_Shdr;
-  typedef llvm::object::Elf_Sym_Impl<ELFT> Elf_Sym;
-
-  virtual DefinedAtom::ContentType
-  contentType(const ELFDefinedAtom<ELFT> *atom) const {
-    return atom->contentType();
-  }
-
-  virtual DefinedAtom::ContentType
-  contentType(const Elf_Shdr *shdr, const Elf_Sym *sym) const {
-    return DefinedAtom::typeZeroFill;
-  }
-
-  virtual DefinedAtom::ContentPermissions
-  contentPermissions(const ELFDefinedAtom<ELFT> *atom) const {
-    return atom->permissions();
-  }
-
-  virtual int64_t getType(const Elf_Sym *sym) const {
-    return llvm::ELF::STT_NOTYPE;
-  }
-
-  virtual ~TargetAtomHandler() {}
-};
-
 template <class ELFT> class TargetRelocationHandler {
 public:
-  virtual ErrorOr<void>
-  applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
-                  const lld::AtomLayout &, const Reference &) const = 0;
-
-  virtual int64_t relocAddend(const Reference &)const { return 0; }
+  virtual error_code applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
+                                     const lld::AtomLayout &,
+                                     const Reference &) const = 0;
 
   virtual ~TargetRelocationHandler() {}
 };
 
-/// \brief An interface to override functions that are provided by the
-/// the default ELF Layout
+/// \brief TargetHandler contains all the information responsible to handle a
+/// a particular target on ELF. A target might wish to override implementation
+/// of creating atoms and how the atoms are written to the output file.
 template <class ELFT> class TargetHandler : public TargetHandlerBase {
 
 public:
+  /// Constructor
   TargetHandler(ELFLinkingContext &targetInfo) : _context(targetInfo) {}
 
-  /// If the target overrides ELF header information, this API would
-  /// return true, so that the target can set all fields specific to
-  /// that target
-  virtual bool doesOverrideELFHeader() = 0;
+  /// The layout determined completely by the Target.
+  virtual TargetLayout<ELFT> &getTargetLayout() = 0;
 
-  /// Set the ELF Header information
-  virtual void setELFHeader(ELFHeader<ELFT> *elfHeader) = 0;
-
-  /// TargetLayout
-  virtual TargetLayout<ELFT> &targetLayout() = 0;
-
-  /// TargetAtomHandler
-  virtual TargetAtomHandler<ELFT> &targetAtomHandler() = 0;
-
+  /// Determine how relocations need to be applied.
   virtual const TargetRelocationHandler<ELFT> &getRelocationHandler() const = 0;
 
-  /// Create a set of Default target sections that a target might needj
-  virtual void createDefaultSections() = 0;
+  /// How does the target deal with reading input files.
+  virtual std::unique_ptr<Reader> getObjReader(bool) = 0;
 
-  /// \brief Add a section to the current Layout
-  virtual void addSection(Section<ELFT> *section) = 0;
+  /// How does the target deal with reading dynamic libraries.
+  virtual std::unique_ptr<Reader> getDSOReader(bool) = 0;
 
-  /// \brief add new symbol file
-  virtual void addFiles(InputFiles &) = 0;
+  /// How does the target deal with writing ELF output.
+  virtual std::unique_ptr<Writer> getWriter() = 0;
 
-  /// \brief Finalize the symbol values
-  virtual void finalizeSymbolValues() = 0;
-
-  /// \brief allocate Commons, some architectures may move small common
-  /// symbols over to small data, this would also be used
-  virtual void allocateCommons() = 0;
-
-protected:
-  const ELFLinkingContext &_context;
+private:
+  ELFLinkingContext &_context;
 };
 } // end namespace elf
 } // end namespace lld

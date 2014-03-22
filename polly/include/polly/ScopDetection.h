@@ -115,7 +115,9 @@ class ScopDetection : public FunctionPass {
   // region, NULL otherwise.
   Region *expandRegion(Region &R);
 
-  // Find the Scops in this region tree.
+  /// Find the Scops in this region tree.
+  ///
+  /// @param The region tree to scan for scops.
   void findScops(Region &R);
 
   /// @brief Check if all basic block in the region are valid.
@@ -139,6 +141,13 @@ class ScopDetection : public FunctionPass {
   /// @return True if R is a Scop, false otherwise.
   bool isValidRegion(DetectionContext &Context) const;
 
+  /// @brief Check if a region is a Scop.
+  ///
+  /// @param Context The context of scop detection.
+  ///
+  /// @return True if R is a Scop, false otherwise.
+  bool isValidRegion(Region &R) const;
+
   /// @brief Check if a call instruction can be part of a Scop.
   ///
   /// @param CI The call instruction to check.
@@ -151,6 +160,15 @@ class ScopDetection : public FunctionPass {
   ///
   /// @return The failure message why the alias is invalid.
   std::string formatInvalidAlias(AliasSet &AS) const;
+
+  /// @brief Check if a value is invariant in the region Reg.
+  ///
+  /// @param Val Value to check for invariance.
+  /// @param Reg The region to consider for the invariance of Val.
+  ///
+  /// @return True if the value represented by Val is invariant in the region
+  ///         identified by Reg.
+  bool isInvariant(const Value &Val, const Region &Reg) const;
 
   /// @brief Check if a memory access can be part of a Scop.
   ///
@@ -227,9 +245,11 @@ public:
   /// @brief Is the region is the maximum region of a Scop?
   ///
   /// @param R The Region to test if it is maximum.
+  /// @param Verify Rerun the scop detection to verify SCoP was not invalidated
+  ///               meanwhile.
   ///
   /// @return Return true if R is the maximum Region in a Scop, false otherwise.
-  bool isMaxRegionInScop(const Region &R) const;
+  bool isMaxRegionInScop(const Region &R, bool Verify = true) const;
 
   /// @brief Get a message why a region is invalid
   ///

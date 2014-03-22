@@ -272,14 +272,7 @@ static lldb_private::Error
 MakeCacheFolderForFile (const FileSpec& module_cache_spec)
 {
     FileSpec module_cache_folder = module_cache_spec.CopyByRemovingLastPathComponent();
-    StreamString mkdir_folder_cmd;
-    mkdir_folder_cmd.Printf("mkdir -p %s/%s", module_cache_folder.GetDirectory().AsCString(), module_cache_folder.GetFilename().AsCString());
-    return Host::RunShellCommand(mkdir_folder_cmd.GetData(),
-                          NULL,
-                          NULL,
-                          NULL,
-                          NULL,
-                          60);
+    return Host::MakeDirectory(module_cache_folder.GetPath().c_str(), eFilePermissionsDirectoryDefault);
 }
 
 static lldb_private::Error
@@ -302,7 +295,7 @@ PlatformDarwin::GetSharedModuleWithLocalCache (const lldb_private::ModuleSpec &m
 
     Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
     if (log)
-        log->Printf("[%s] Trying to find module %s/%s - platform path %s/%s symbol path %s/%s\n",
+        log->Printf("[%s] Trying to find module %s/%s - platform path %s/%s symbol path %s/%s",
                      (IsHost() ? "host" : "remote"),
                      module_spec.GetFileSpec().GetDirectory().AsCString(),
                      module_spec.GetFileSpec().GetFilename().AsCString(),
@@ -310,102 +303,113 @@ PlatformDarwin::GetSharedModuleWithLocalCache (const lldb_private::ModuleSpec &m
                      module_spec.GetPlatformFileSpec().GetFilename().AsCString(),
                      module_spec.GetSymbolFileSpec().GetDirectory().AsCString(),
                      module_spec.GetSymbolFileSpec().GetFilename().AsCString());
-
-    std::string cache_path(GetLocalCacheDirectory());
-    std::string module_path (module_spec.GetFileSpec().GetPath());
-    cache_path.append(module_path);
-    FileSpec module_cache_spec(cache_path.c_str(),false);
     
-    // if rsync is supported, always bring in the file - rsync will be very efficient
-    // when files are the same on the local and remote end of the connection
-    if (this->GetSupportsRSync())
+    Error err;
+    
+    err = ModuleList::GetSharedModule(module_spec, module_sp, module_search_paths_ptr, old_module_sp_ptr, did_create_ptr);
+    if (module_sp)
+        return err;
+    
+    if (!IsHost())
     {
-        Error err = BringInRemoteFile (this, module_spec, module_cache_spec);
-        if (err.Fail())
-            return err;
-        if (module_cache_spec.Exists())
+        std::string cache_path(GetLocalCacheDirectory());
+        // Only search for a locally cached file if we have a valid cache path
+        if (!cache_path.empty())
         {
-            Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
+            std::string module_path (module_spec.GetFileSpec().GetPath());
+            cache_path.append(module_path);
+            FileSpec module_cache_spec(cache_path.c_str(),false);
+        
+            // if rsync is supported, always bring in the file - rsync will be very efficient
+            // when files are the same on the local and remote end of the connection
+            if (this->GetSupportsRSync())
+            {
+                err = BringInRemoteFile (this, module_spec, module_cache_spec);
+                if (err.Fail())
+                    return err;
+                if (module_cache_spec.Exists())
+                {
+                    Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
+                    if (log)
+                        log->Printf("[%s] module %s/%s was rsynced and is now there",
+                                     (IsHost() ? "host" : "remote"),
+                                     module_spec.GetFileSpec().GetDirectory().AsCString(),
+                                     module_spec.GetFileSpec().GetFilename().AsCString());
+                    ModuleSpec local_spec(module_cache_spec, module_spec.GetArchitecture());
+                    module_sp.reset(new Module(local_spec));
+                    module_sp->SetPlatformFileSpec(module_spec.GetFileSpec());
+                    return Error();
+                }
+            }
+            
+            // try to find the module in the cache
+            if (module_cache_spec.Exists())
+            {
+                // get the local and remote MD5 and compare
+                if (m_remote_platform_sp)
+                {
+                    // when going over the *slow* GDB remote transfer mechanism we first check
+                    // the hashes of the files - and only do the actual transfer if they differ
+                    uint64_t high_local,high_remote,low_local,low_remote;
+                    Host::CalculateMD5 (module_cache_spec, low_local, high_local);
+                    m_remote_platform_sp->CalculateMD5(module_spec.GetFileSpec(), low_remote, high_remote);
+                    if (low_local != low_remote || high_local != high_remote)
+                    {
+                        // bring in the remote file
+                        Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
+                        if (log)
+                            log->Printf("[%s] module %s/%s needs to be replaced from remote copy",
+                                         (IsHost() ? "host" : "remote"),
+                                         module_spec.GetFileSpec().GetDirectory().AsCString(),
+                                         module_spec.GetFileSpec().GetFilename().AsCString());
+                        Error err = BringInRemoteFile (this, module_spec, module_cache_spec);
+                        if (err.Fail())
+                            return err;
+                    }
+                }
+                
+                ModuleSpec local_spec(module_cache_spec, module_spec.GetArchitecture());
+                module_sp.reset(new Module(local_spec));
+                module_sp->SetPlatformFileSpec(module_spec.GetFileSpec());
+                Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
+                    if (log)
+                        log->Printf("[%s] module %s/%s was found in the cache",
+                                     (IsHost() ? "host" : "remote"),
+                                     module_spec.GetFileSpec().GetDirectory().AsCString(),
+                                     module_spec.GetFileSpec().GetFilename().AsCString());
+                return Error();
+            }
+            
+            // bring in the remote module file
             if (log)
-                log->Printf("[%s] module %s/%s was rsynced and is now there\n",
+                log->Printf("[%s] module %s/%s needs to come in remotely",
                              (IsHost() ? "host" : "remote"),
                              module_spec.GetFileSpec().GetDirectory().AsCString(),
                              module_spec.GetFileSpec().GetFilename().AsCString());
-            ModuleSpec local_spec(module_cache_spec, module_spec.GetArchitecture());
-            module_sp.reset(new Module(local_spec));
-            module_sp->SetPlatformFileSpec(module_spec.GetFileSpec());
-            return Error();
-        }
-    }
-
-    if (module_spec.GetFileSpec().Exists() && !module_sp)
-    {
-        module_sp.reset(new Module(module_spec));
-        return Error();
-    }
-    
-    // try to find the module in the cache
-    if (module_cache_spec.Exists())
-    {
-        // get the local and remote MD5 and compare
-        if (m_remote_platform_sp)
-        {
-            // when going over the *slow* GDB remote transfer mechanism we first check
-            // the hashes of the files - and only do the actual transfer if they differ
-            uint64_t high_local,high_remote,low_local,low_remote;
-            Host::CalculateMD5 (module_cache_spec, low_local, high_local);
-            m_remote_platform_sp->CalculateMD5(module_spec.GetFileSpec(), low_remote, high_remote);
-            if (low_local != low_remote || high_local != high_remote)
+            Error err = BringInRemoteFile (this, module_spec, module_cache_spec);
+            if (err.Fail())
+                return err;
+            if (module_cache_spec.Exists())
             {
-                // bring in the remote file
                 Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
                 if (log)
-                    log->Printf("[%s] module %s/%s needs to be replaced from remote copy\n",
+                    log->Printf("[%s] module %s/%s is now cached and fine",
                                  (IsHost() ? "host" : "remote"),
                                  module_spec.GetFileSpec().GetDirectory().AsCString(),
                                  module_spec.GetFileSpec().GetFilename().AsCString());
-                Error err = BringInRemoteFile (this, module_spec, module_cache_spec);
-                if (err.Fail())
-                    return err;
+                ModuleSpec local_spec(module_cache_spec, module_spec.GetArchitecture());
+                module_sp.reset(new Module(local_spec));
+                module_sp->SetPlatformFileSpec(module_spec.GetFileSpec());
+                return Error();
             }
+            else
+                return Error("unable to obtain valid module file");
         }
-        
-        ModuleSpec local_spec(module_cache_spec, module_spec.GetArchitecture());
-        module_sp.reset(new Module(local_spec));
-        module_sp->SetPlatformFileSpec(module_spec.GetFileSpec());
-        Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
-            if (log)
-                log->Printf("[%s] module %s/%s was found in the cache\n",
-                             (IsHost() ? "host" : "remote"),
-                             module_spec.GetFileSpec().GetDirectory().AsCString(),
-                             module_spec.GetFileSpec().GetFilename().AsCString());
-        return Error();
-    }
-    
-    // bring in the remote module file
-    if (log)
-        log->Printf("[%s] module %s/%s needs to come in remotely\n",
-                     (IsHost() ? "host" : "remote"),
-                     module_spec.GetFileSpec().GetDirectory().AsCString(),
-                     module_spec.GetFileSpec().GetFilename().AsCString());
-    Error err = BringInRemoteFile (this, module_spec, module_cache_spec);
-    if (err.Fail())
-        return err;
-    if (module_cache_spec.Exists())
-    {
-        Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
-        if (log)
-            log->Printf("[%s] module %s/%s is now cached and fine\n",
-                         (IsHost() ? "host" : "remote"),
-                         module_spec.GetFileSpec().GetDirectory().AsCString(),
-                         module_spec.GetFileSpec().GetFilename().AsCString());
-        ModuleSpec local_spec(module_cache_spec, module_spec.GetArchitecture());
-        module_sp.reset(new Module(local_spec));
-        module_sp->SetPlatformFileSpec(module_spec.GetFileSpec());
-        return Error();
+        else
+            return Error("no cache path");
     }
     else
-        return Error("unable to obtain valid module file");
+        return Error ("unable to resolve module");
 }
 
 Error
@@ -760,6 +764,35 @@ PlatformDarwin::LaunchProcess (ProcessLaunchInfo &launch_info)
 }
 
 lldb::ProcessSP
+PlatformDarwin::DebugProcess (ProcessLaunchInfo &launch_info,
+                              Debugger &debugger,
+                              Target *target,       // Can be NULL, if NULL create a new target, else use existing one
+                              Listener &listener,
+                              Error &error)
+{
+    ProcessSP process_sp;
+    
+    if (IsHost())
+    {
+        // We are going to hand this process off to debugserver which will monitor the process itself.
+        // So don't also monitor it from lldb or we set up a race between debugserver & us for who will find out
+        // about the debugged process's death.
+        launch_info.GetFlags().Set(eLaunchFlagsDontMonitorProcess);
+        process_sp = Platform::DebugProcess (launch_info, debugger, target, listener, error);
+    }
+    else
+    {
+        if (m_remote_platform_sp)
+            process_sp = m_remote_platform_sp->DebugProcess (launch_info, debugger, target, listener, error);
+        else
+            error.SetErrorString ("the platform is not currently connected");
+    }
+    return process_sp;
+    
+}
+
+
+lldb::ProcessSP
 PlatformDarwin::Attach (ProcessAttachInfo &attach_info,
                         Debugger &debugger,
                         Target *target,
@@ -792,7 +825,12 @@ PlatformDarwin::Attach (ProcessAttachInfo &attach_info,
             process_sp = target->CreateProcess (listener, attach_info.GetProcessPluginName(), NULL);
             
             if (process_sp)
+            {
+                ListenerSP listener_sp (new Listener("lldb.PlatformDarwin.attach.hijack"));
+                attach_info.SetHijackListener(listener_sp);
+                process_sp->HijackProcessEvents(listener_sp.get());
                 error = process_sp->Attach (attach_info);
+            }
         }
     }
     else
@@ -847,26 +885,48 @@ PlatformDarwin::ModuleIsExcludedForNonModuleSpecificSearches (lldb_private::Targ
         return false;
 }
 
-
 bool
 PlatformDarwin::x86GetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &arch)
 {
-    if (idx == 0)
+    ArchSpec host_arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture);
+    if (host_arch.GetCore() == ArchSpec::eCore_x86_64_x86_64h)
     {
-        arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture);
-        return arch.IsValid();
-    }
-    else if (idx == 1)
-    {
-        ArchSpec platform_arch (Host::GetArchitecture (Host::eSystemDefaultArchitecture));
-        ArchSpec platform_arch64 (Host::GetArchitecture (Host::eSystemDefaultArchitecture64));
-        if (platform_arch.IsExactMatch(platform_arch64))
+        switch (idx)
         {
-            // This macosx platform supports both 32 and 64 bit. Since we already
-            // returned the 64 bit arch for idx == 0, return the 32 bit arch 
-            // for idx == 1
-            arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture32);
+            case 0:
+                arch = host_arch;
+                return true;
+
+            case 1:
+                arch.SetTriple("x86_64-apple-macosx");
+                return true;
+
+            case 2:
+                arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture32);
+                return true;
+
+            default: return false;
+        }
+    }
+    else
+    {
+        if (idx == 0)
+        {
+            arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture);
             return arch.IsValid();
+        }
+        else if (idx == 1)
+        {
+            ArchSpec platform_arch (Host::GetArchitecture (Host::eSystemDefaultArchitecture));
+            ArchSpec platform_arch64 (Host::GetArchitecture (Host::eSystemDefaultArchitecture64));
+            if (platform_arch.IsExactMatch(platform_arch64))
+            {
+                // This macosx platform supports both 32 and 64 bit. Since we already
+                // returned the 64 bit arch for idx == 0, return the 32 bit arch 
+                // for idx == 1
+                arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture32);
+                return arch.IsValid();
+            }
         }
     }
     return false;
@@ -1232,6 +1292,7 @@ PlatformDarwin::SetThreadCreationBreakpoint (Target &target)
     }
 
     bool internal = true;
+    bool hardware = false;
     LazyBool skip_prologue = eLazyBoolNo;
     bp_sp = target.CreateBreakpoint (&bp_modules,
                                      NULL,
@@ -1239,7 +1300,8 @@ PlatformDarwin::SetThreadCreationBreakpoint (Target &target)
                                      sizeof(g_bp_names)/sizeof(const char *),
                                      eFunctionNameTypeFull,
                                      skip_prologue,
-                                     internal);
+                                     internal,
+                                     hardware);
     bp_sp->SetBreakpointKind("thread-creation");
 
     return bp_sp;
@@ -1296,3 +1358,9 @@ PlatformDarwin::GetResumeCountForLaunchInfo (ProcessLaunchInfo &launch_info)
     else
         return 1;
 }
+
+void
+PlatformDarwin::CalculateTrapHandlerSymbolNames ()
+{   
+    m_trap_handlers.push_back (ConstString ("_sigtramp"));
+}   

@@ -119,7 +119,9 @@ public:
         watchpoint_support_info,        // 'qWatchpointSupportInfo:'
         allocate_memory,                // '_M'
         deallocate_memory,              // '_m'
-
+        save_register_state,            // '_g'
+        restore_register_state,         // '_G'
+        speed_test,                     // 'qSpeedTest:'
         unknown_type
     } PacketEnum;
 
@@ -216,11 +218,13 @@ public:
     rnb_err_t HandlePacket_ILLFORMED (const char *file, int line, const char *p, const char *description);
     rnb_err_t HandlePacket_AllocateMemory (const char *p);
     rnb_err_t HandlePacket_DeallocateMemory (const char *p);
+    rnb_err_t HandlePacket_SaveRegisterState (const char *p);
+    rnb_err_t HandlePacket_RestoreRegisterState (const char *p);
     rnb_err_t HandlePacket_MemoryRegionInfo (const char *p);
     rnb_err_t HandlePacket_GetProfileData(const char *p);
     rnb_err_t HandlePacket_SetEnableAsyncProfiling(const char *p);
     rnb_err_t HandlePacket_WatchpointSupportInfo (const char *p);
-
+    rnb_err_t HandlePacket_qSpeedTest (const char *p);
     rnb_err_t HandlePacket_stop_process (const char *p);
 
     rnb_err_t SendStopReplyPacketForThread (nub_thread_t tid);
@@ -234,11 +238,6 @@ public:
     RNBContext&     Context() { return m_ctx; }
     RNBSocket&      Comm() { return m_comm; }
 
-    void
-    SetUseNativeRegisters (bool b)
-    {
-        m_use_native_regs = b;
-    }
 private:
     // Outlaw some contructors
     RNBRemote (const RNBRemote &);
@@ -317,7 +316,6 @@ protected:
     uint32_t        m_max_payload_size;  // the maximum sized payload we should send to gdb
     bool            m_extended_mode;   // are we in extended mode?
     bool            m_noack_mode;      // are we in no-ack mode?
-    bool            m_use_native_regs; // Use native registers by querying DNB layer for register definitions?
     bool            m_thread_suffix_supported; // Set to true if the 'p', 'P', 'g', and 'G' packets should be prefixed with the thread ID and colon:
                                                                 // "$pRR;thread:TTTT;" instead of "$pRR"
                                                                 // "$PRR=VVVVVVVV;thread:TTTT;" instead of "$PRR=VVVVVVVV"

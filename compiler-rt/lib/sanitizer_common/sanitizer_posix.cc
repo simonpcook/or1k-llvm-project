@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_platform.h"
-#if SANITIZER_LINUX || SANITIZER_MAC
+#if SANITIZER_POSIX
 
 #include "sanitizer_common.h"
 #include "sanitizer_libc.h"
@@ -38,6 +38,8 @@ uptr GetMaxVirtualAddress() {
   // Note that with 'ulimit -s unlimited' the stack is moved away from the top
   // of the address space, so simply checking the stack address is not enough.
   return (1ULL << 44) - 1;  // 0x00000fffffffffffUL
+# elif defined(__aarch64__)
+  return (1ULL << 39) - 1;
 # else
   return (1ULL << 47) - 1;  // 0x00007fffffffffffUL;
 # endif
@@ -62,7 +64,8 @@ void *MmapOrDie(uptr size, const char *mem_type) {
       Die();
     }
     recursion_count++;
-    Report("ERROR: %s failed to allocate 0x%zx (%zd) bytes of %s: %d\n",
+    Report("ERROR: %s failed to "
+           "allocate 0x%zx (%zd) bytes of %s (errno: %d)\n",
            SanitizerToolName, size, size, mem_type, reserrno);
     DumpProcessMap();
     CHECK("unable to mmap" && 0);
@@ -80,6 +83,23 @@ void UnmapOrDie(void *addr, uptr size) {
   }
 }
 
+void *MmapNoReserveOrDie(uptr size, const char *mem_type) {
+  uptr PageSize = GetPageSizeCached();
+  uptr p = internal_mmap(0,
+      RoundUpTo(size, PageSize),
+      PROT_READ | PROT_WRITE,
+      MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
+      -1, 0);
+  int reserrno;
+  if (internal_iserror(p, &reserrno)) {
+    Report("ERROR: %s failed to "
+           "allocate noreserve 0x%zx (%zd) bytes for '%s' (errno: %d)\n",
+           SanitizerToolName, size, size, mem_type, reserrno);
+    CHECK("unable to mmap" && 0);
+  }
+  return (void *)p;
+}
+
 void *MmapFixedNoReserve(uptr fixed_addr, uptr size) {
   uptr PageSize = GetPageSizeCached();
   uptr p = internal_mmap((void*)(fixed_addr & ~(PageSize - 1)),
@@ -89,8 +109,8 @@ void *MmapFixedNoReserve(uptr fixed_addr, uptr size) {
       -1, 0);
   int reserrno;
   if (internal_iserror(p, &reserrno))
-    Report("ERROR: "
-           "%s failed to allocate 0x%zx (%zd) bytes at address %p (%d)\n",
+    Report("ERROR: %s failed to "
+           "allocate 0x%zx (%zd) bytes at address %zu (errno: %d)\n",
            SanitizerToolName, size, size, fixed_addr, reserrno);
   return (void *)p;
 }
@@ -104,8 +124,8 @@ void *MmapFixedOrDie(uptr fixed_addr, uptr size) {
       -1, 0);
   int reserrno;
   if (internal_iserror(p, &reserrno)) {
-    Report("ERROR:"
-           " %s failed to allocate 0x%zx (%zd) bytes at address %p (%d)\n",
+    Report("ERROR: %s failed to "
+           "allocate 0x%zx (%zd) bytes at address %zu (errno: %d)\n",
            SanitizerToolName, size, size, fixed_addr, reserrno);
     CHECK("unable to mmap" && 0);
   }
@@ -159,7 +179,7 @@ void DumpProcessMap() {
   MemoryMappingLayout proc_maps(/*cache_enabled*/true);
   uptr start, end;
   const sptr kBufSize = 4095;
-  char *filename = (char*)MmapOrDie(kBufSize, __FUNCTION__);
+  char *filename = (char*)MmapOrDie(kBufSize, __func__);
   Report("Process memory map follows:\n");
   while (proc_maps.Next(&start, &end, /* file_offset */0,
                         filename, kBufSize, /* protection */0)) {
@@ -198,10 +218,15 @@ char *FindPathToBinary(const char *name) {
 }
 
 void MaybeOpenReportFile() {
-  if (!log_to_file || (report_fd_pid == internal_getpid())) return;
+  if (!log_to_file) return;
+  uptr pid = internal_getpid();
+  // If in tracer, use the parent's file.
+  if (pid == stoptheworld_tracer_pid)
+    pid = stoptheworld_tracer_ppid;
+  if (report_fd_pid == pid) return;
   InternalScopedBuffer<char> report_path_full(4096);
   internal_snprintf(report_path_full.data(), report_path_full.size(),
-                    "%s.%d", report_path_prefix, internal_getpid());
+                    "%s.%zu", report_path_prefix, pid);
   uptr openrv = OpenFile(report_path_full.data(), true);
   if (internal_iserror(openrv)) {
     report_fd = kStderrFd;
@@ -214,7 +239,7 @@ void MaybeOpenReportFile() {
     internal_close(report_fd);
   }
   report_fd = openrv;
-  report_fd_pid = internal_getpid();
+  report_fd_pid = pid;
 }
 
 void RawWrite(const char *buffer) {
@@ -230,12 +255,11 @@ void RawWrite(const char *buffer) {
 
 bool GetCodeRangeForFile(const char *module, uptr *start, uptr *end) {
   uptr s, e, off, prot;
-  InternalMmapVector<char> fn(4096);
-  fn.push_back(0);
+  InternalScopedString buff(4096);
   MemoryMappingLayout proc_maps(/*cache_enabled*/false);
-  while (proc_maps.Next(&s, &e, &off, &fn[0], fn.capacity(), &prot)) {
+  while (proc_maps.Next(&s, &e, &off, buff.data(), buff.size(), &prot)) {
     if ((prot & MemoryMappingLayout::kProtectionExecute) != 0
-        && internal_strcmp(module, &fn[0]) == 0) {
+        && internal_strcmp(module, buff.data()) == 0) {
       *start = s;
       *end = e;
       return true;
@@ -246,4 +270,4 @@ bool GetCodeRangeForFile(const char *module, uptr *start, uptr *end) {
 
 }  // namespace __sanitizer
 
-#endif  // SANITIZER_LINUX || SANITIZER_MAC
+#endif  // SANITIZER_POSIX

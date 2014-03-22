@@ -90,14 +90,14 @@ Symtab::Dump (Stream *s, Target *target, SortOrder sort_order)
         object_name = m_objfile->GetModule()->GetObjectName().GetCString();
 
     if (file_spec)
-        s->Printf("Symtab, file = %s%s%s%s, num_symbols = %lu",
+        s->Printf("Symtab, file = %s%s%s%s, num_symbols = %" PRIu64,
         file_spec.GetPath().c_str(),
         object_name ? "(" : "",
         object_name ? object_name : "",
         object_name ? ")" : "",
-        m_symbols.size());
+        (uint64_t)m_symbols.size());
     else
-        s->Printf("Symtab, num_symbols = %lu", m_symbols.size());
+        s->Printf("Symtab, num_symbols = %" PRIu64 "", (uint64_t)m_symbols.size());
 
     if (!m_symbols.empty())
     {
@@ -166,7 +166,7 @@ Symtab::Dump(Stream *s, Target *target, std::vector<uint32_t>& indexes) const
     const size_t num_symbols = GetNumSymbols();
     //s->Printf("%.*p: ", (int)sizeof(void*) * 2, this);
     s->Indent();
-    s->Printf("Symtab %lu symbol indexes (%lu symbols total):\n", indexes.size(), m_symbols.size());
+    s->Printf("Symtab %" PRIu64 " symbol indexes (%" PRIu64 " symbols total):\n", (uint64_t)indexes.size(), (uint64_t)m_symbols.size());
     s->IndentMore();
 
     if (!indexes.empty())
@@ -867,32 +867,6 @@ typedef struct
 } SymbolSearchInfo;
 
 static int
-SymbolWithFileAddress (SymbolSearchInfo *info, const uint32_t *index_ptr)
-{
-    const Symbol *curr_symbol = info->symtab->SymbolAtIndex (index_ptr[0]);
-    if (curr_symbol == NULL)
-        return -1;
-
-    const addr_t info_file_addr = info->file_addr;
-
-    // lldb::Symbol::GetAddressRangePtr() will only return a non NULL address
-    // range if the symbol has a section!
-    if (curr_symbol->ValueIsAddress())
-    {
-        const addr_t curr_file_addr = curr_symbol->GetAddress().GetFileAddress();
-        if (info_file_addr < curr_file_addr)
-            return -1;
-        if (info_file_addr > curr_file_addr)
-            return +1;
-        info->match_symbol = const_cast<Symbol *>(curr_symbol);
-        info->match_index_ptr = index_ptr;
-        return 0;
-    }
-
-    return -1;
-}
-
-static int
 SymbolWithClosestFileAddress (SymbolSearchInfo *info, const uint32_t *index_ptr)
 {
     const Symbol *symbol = info->symtab->SymbolAtIndex (index_ptr[0]);
@@ -920,19 +894,6 @@ SymbolWithClosestFileAddress (SymbolSearchInfo *info, const uint32_t *index_ptr)
     }
     return -1;
 }
-
-static SymbolSearchInfo
-FindIndexPtrForSymbolContainingAddress(Symtab* symtab, addr_t file_addr, const uint32_t* indexes, uint32_t num_indexes)
-{
-    SymbolSearchInfo info = { symtab, file_addr, NULL, NULL, 0 };
-    ::bsearch (&info, 
-               indexes, 
-               num_indexes, 
-               sizeof(uint32_t), 
-               (ComparisonFunction)SymbolWithClosestFileAddress);
-    return info;
-}
-
 
 void
 Symtab::InitAddressIndexes()
@@ -1135,6 +1096,7 @@ Symtab::FindFunctionSymbols (const ConstString &name,
                     {
                     case eSymbolTypeCode:
                     case eSymbolTypeResolver:
+                    case eSymbolTypeReExported:
                         symbol_indexes.push_back(temp_symbol_indexes[i]);
                         break;
                     default:

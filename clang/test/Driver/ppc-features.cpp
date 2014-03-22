@@ -86,3 +86,15 @@
 // RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-fprnd -mfprnd -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-FPRND %s
 // CHECK-FPRND: "-target-feature" "+fprnd"
 
+// RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-vsx -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-NOVSX %s
+// CHECK-NOVSX: "-target-feature" "-vsx"
+
+// RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-vsx -mvsx -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-VSX %s
+// CHECK-VSX: "-target-feature" "+vsx"
+
+// RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-crbits -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-NOCRBITS %s
+// CHECK-NOCRBITS: "-target-feature" "-crbits"
+
+// RUN: %clang -target powerpc64-unknown-linux-gnu %s -mno-crbits -mcrbits -### -o %t.o 2>&1 | FileCheck -check-prefix=CHECK-CRBITS %s
+// CHECK-CRBITS: "-target-feature" "+crbits"
+

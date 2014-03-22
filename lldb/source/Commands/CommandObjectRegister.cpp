@@ -29,6 +29,7 @@
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
+#include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Thread.h"
 
 using namespace lldb;
@@ -98,7 +99,7 @@ public:
             {
                 strm.Indent ();
 
-                bool prefix_with_altname = m_command_options.alternate_name;
+                bool prefix_with_altname = (bool)m_command_options.alternate_name;
                 bool prefix_with_name = !prefix_with_altname;
                 reg_value.Dump(&strm, reg_info, prefix_with_name, prefix_with_altname, m_format_options.GetFormat(), 8);
                 if ((reg_info->encoding == eEncodingUint) || (reg_info->encoding == eEncodingSint))
@@ -201,7 +202,7 @@ protected:
                     }
                     else
                     {
-                        result.AppendErrorWithFormat ("invalid register set index: %zu\n", set_idx);
+                        result.AppendErrorWithFormat("invalid register set index: %" PRIu64 "\n", (uint64_t)set_idx);
                         result.SetStatus (eReturnStatusFailed);
                         break;
                     }

@@ -9,7 +9,7 @@ from lldbtest import *
 
 class PoVerbosityTestCase(TestBase):
 
-    mydir = os.path.join("expression_command", "po_verbosity")
+    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -20,6 +20,7 @@ class PoVerbosityTestCase(TestBase):
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
+    @expectedFailureDarwin(16374063)
     def test_with_dsym(self):
         """Test that the po command acts correctly."""
         self.buildDsym()
@@ -27,6 +28,7 @@ class PoVerbosityTestCase(TestBase):
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin due to ObjC test case")
     @dwarf_test
+    @expectedFailureDarwin(16374063)
     def test_with_dwarf(self):
         """Test that the po command acts correctly."""
         self.buildDwarf()

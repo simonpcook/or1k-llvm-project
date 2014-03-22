@@ -168,7 +168,7 @@ AppleObjCTypeVendor::AppleObjCTypeVendor(ObjCLanguageRuntime &runtime) :
     m_ast_ctx(runtime.GetProcess()->GetTarget().GetArchitecture().GetTriple().getTriple().c_str())
 {
     m_external_source = new AppleObjCExternalASTSource (*this);
-    llvm::OwningPtr<clang::ExternalASTSource> external_source_owning_ptr (m_external_source);
+    llvm::IntrusiveRefCntPtr<clang::ExternalASTSource> external_source_owning_ptr (m_external_source);
     m_ast_ctx.getASTContext()->setExternalSource(external_source_owning_ptr);
 }
 
@@ -528,6 +528,9 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
     
     auto instance_method_func = [log, interface_decl, this](const char *name, const char *types) -> bool
     {        
+        if (!name || !types)
+            return false; // skip this one
+
         ObjCRuntimeMethodType method_type(types);
         
         clang::ObjCMethodDecl *method_decl = method_type.BuildMethod (interface_decl, name, true);
@@ -543,6 +546,9 @@ AppleObjCTypeVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl)
     
     auto class_method_func = [log, interface_decl, this](const char *name, const char *types) -> bool
     {
+        if (!name || !types)
+            return false; // skip this one
+        
         ObjCRuntimeMethodType method_type(types);
         
         clang::ObjCMethodDecl *method_decl = method_type.BuildMethod (interface_decl, name, false);

@@ -1562,7 +1562,6 @@ namespace {
 // OR1K abstract base class
 class OR1KTargetInfo : public TargetInfo {
   static const char * const GCCRegNames[];
-  static const TargetInfo::GCCRegAlias GCCRegAliases[];
 
 public:
   OR1KTargetInfo(const llvm::Triple &Triple) : TargetInfo(Triple) {
@@ -1627,7 +1626,7 @@ public:
 /// OR1KTargetInfo::getTargetDefines - Return a set of the OR1K-specific
 /// #defines that are not tied to a specific subtarget.
 void OR1KTargetInfo::getTargetDefines(const LangOptions &Opts,
-                                      MacroBuilder &Builder) const {
+                                        MacroBuilder &Builder) const {
   // Target identification.
   Builder.defineMacro("__or1k__");
   Builder.defineMacro("__OR1K__");

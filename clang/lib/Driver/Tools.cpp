@@ -1202,6 +1202,24 @@ void Clang::AddOR1KTargetArgs(const ArgList &Args,
       CmdArgs.push_back("-cmov");
   }
 
+  if (Arg *A = Args.getLastArg(options::OPT_maddc,
+                               options::OPT_mno_addc)) {
+    CmdArgs.push_back("-target-feature");
+    if (A->getOption().matches(options::OPT_maddc))
+      CmdArgs.push_back("+addc");
+    else
+      CmdArgs.push_back("-addc");
+  }
+
+  if (Arg *A = Args.getLastArg(options::OPT_mffl1,
+                               options::OPT_mno_ffl1)) {
+    CmdArgs.push_back("-target-feature");
+    if (A->getOption().matches(options::OPT_mffl1))
+      CmdArgs.push_back("+ffl1");
+    else
+      CmdArgs.push_back("-ffl1");
+  }
+
   if (Arg *A = Args.getLastArg(options::OPT_mror,
                                options::OPT_mno_ror)) {
     CmdArgs.push_back("-target-feature");

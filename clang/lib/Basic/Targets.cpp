@@ -1623,6 +1623,12 @@ public:
   virtual const char *getClobbers() const {
     return "";
   }
+
+  int getEHDataRegisterNumber(unsigned RegNo) const override {
+    if (RegNo == 0) return 3;
+    if (RegNo == 1) return 4;
+    return -1;
+  }
 };
 
 /// OR1KTargetInfo::getTargetDefines - Return a set of the OR1K-specific

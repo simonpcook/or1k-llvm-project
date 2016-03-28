@@ -30,60 +30,72 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
-
-#define DEBUG_TYPE "polly-opt-isl"
+#include "polly/Support/GICHelper.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
 using namespace polly;
 
+#define DEBUG_TYPE "polly-opt-isl"
+
 namespace polly {
 bool DisablePollyTiling;
 }
 static cl::opt<bool, true>
-DisableTiling("polly-no-tiling", cl::desc("Disable tiling in the scheduler"),
-              cl::location(polly::DisablePollyTiling), cl::init(false),
-              cl::ZeroOrMore, cl::cat(PollyCategory));
+    DisableTiling("polly-no-tiling",
+                  cl::desc("Disable tiling in the scheduler"),
+                  cl::location(polly::DisablePollyTiling), cl::init(false),
+                  cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<std::string>
-OptimizeDeps("polly-opt-optimize-only",
-             cl::desc("Only a certain kind of dependences (all/raw)"),
-             cl::Hidden, cl::init("all"), cl::ZeroOrMore,
-             cl::cat(PollyCategory));
+    OptimizeDeps("polly-opt-optimize-only",
+                 cl::desc("Only a certain kind of dependences (all/raw)"),
+                 cl::Hidden, cl::init("all"), cl::ZeroOrMore,
+                 cl::cat(PollyCategory));
 
 static cl::opt<std::string>
-SimplifyDeps("polly-opt-simplify-deps",
-             cl::desc("Dependences should be simplified (yes/no)"), cl::Hidden,
-             cl::init("yes"), cl::ZeroOrMore, cl::cat(PollyCategory));
+    SimplifyDeps("polly-opt-simplify-deps",
+                 cl::desc("Dependences should be simplified (yes/no)"),
+                 cl::Hidden, cl::init("yes"), cl::ZeroOrMore,
+                 cl::cat(PollyCategory));
 
-static cl::opt<int>
-MaxConstantTerm("polly-opt-max-constant-term",
-                cl::desc("The maximal constant term allowed (-1 is unlimited)"),
-                cl::Hidden, cl::init(20), cl::ZeroOrMore,
-                cl::cat(PollyCategory));
+static cl::opt<int> MaxConstantTerm(
+    "polly-opt-max-constant-term",
+    cl::desc("The maximal constant term allowed (-1 is unlimited)"), cl::Hidden,
+    cl::init(20), cl::ZeroOrMore, cl::cat(PollyCategory));
 
-static cl::opt<int>
-MaxCoefficient("polly-opt-max-coefficient",
-               cl::desc("The maximal coefficient allowed (-1 is unlimited)"),
-               cl::Hidden, cl::init(20), cl::ZeroOrMore,
-               cl::cat(PollyCategory));
+static cl::opt<int> MaxCoefficient(
+    "polly-opt-max-coefficient",
+    cl::desc("The maximal coefficient allowed (-1 is unlimited)"), cl::Hidden,
+    cl::init(20), cl::ZeroOrMore, cl::cat(PollyCategory));
 
-static cl::opt<std::string>
-FusionStrategy("polly-opt-fusion",
-               cl::desc("The fusion strategy to choose (min/max)"), cl::Hidden,
-               cl::init("min"), cl::ZeroOrMore, cl::cat(PollyCategory));
+static cl::opt<std::string> FusionStrategy(
+    "polly-opt-fusion", cl::desc("The fusion strategy to choose (min/max)"),
+    cl::Hidden, cl::init("min"), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<std::string>
-MaximizeBandDepth("polly-opt-maximize-bands",
-                  cl::desc("Maximize the band depth (yes/no)"), cl::Hidden,
-                  cl::init("yes"), cl::ZeroOrMore, cl::cat(PollyCategory));
+    MaximizeBandDepth("polly-opt-maximize-bands",
+                      cl::desc("Maximize the band depth (yes/no)"), cl::Hidden,
+                      cl::init("yes"), cl::ZeroOrMore, cl::cat(PollyCategory));
 
+static cl::opt<int> DefaultTileSize(
+    "polly-default-tile-size",
+    cl::desc("The default tile size (if not enough were provided by"
+             " --polly-tile-sizes)"),
+    cl::Hidden, cl::init(32), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::list<int> TileSizes("polly-tile-sizes",
+                               cl::desc("A tile size"
+                                        " for each loop dimension, filled with"
+                                        " --polly-default-tile-size"),
+                               cl::Hidden, cl::ZeroOrMore, cl::CommaSeparated,
+                               cl::cat(PollyCategory));
 namespace {
 
 class IslScheduleOptimizer : public ScopPass {
 public:
   static char ID;
-  explicit IslScheduleOptimizer() : ScopPass(ID) { LastSchedule = NULL; }
+  explicit IslScheduleOptimizer() : ScopPass(ID) { LastSchedule = nullptr; }
 
   ~IslScheduleOptimizer() { isl_schedule_free(LastSchedule); }
 
@@ -103,11 +115,11 @@ private:
   /// tiling.
   ///
   /// Example:
-  ///   scheduleDimensions = 2, parameterDimensions = 1, tileSize = 32
+  ///   scheduleDimensions = 2, parameterDimensions = 1, TileSizes = <32, 64>
   ///
   ///   tileMap := [p0] -> {[s0, s1] -> [t0, t1, s0, s1]:
   ///                        t0 % 32 = 0 and t0 <= s0 < t0 + 32 and
-  ///                        t1 % 32 = 0 and t1 <= s1 < t1 + 32}
+  ///                        t1 % 64 = 0 and t1 <= s1 < t1 + 64}
   ///
   ///  Before tiling:
   ///
@@ -118,13 +130,13 @@ private:
   ///  After tiling:
   ///
   ///  for (t_i = 0; t_i < N; i+=32)
-  ///    for (t_j = 0; t_j < M; j+=32)
+  ///    for (t_j = 0; t_j < M; j+=64)
   ///	for (i = t_i; i < min(t_i + 32, N); i++)  | Unknown that N % 32 = 0
-  ///	  for (j = t_j; j < t_j + 32; j++)        |   Known that M % 32 = 0
+  ///	  for (j = t_j; j < t_j + 64; j++)        |   Known that M % 64 = 0
   ///	    S(i,j)
   ///
   static isl_basic_map *getTileMap(isl_ctx *ctx, int scheduleDimensions,
-                                   isl_space *SpaceModel, int tileSize = 32);
+                                   isl_space *SpaceModel);
 
   /// @brief Get the schedule for this band.
   ///
@@ -183,9 +195,11 @@ private:
 
   static isl_union_map *getScheduleMap(isl_schedule *Schedule);
 
-  bool doFinalization() {
+  using llvm::Pass::doFinalization;
+
+  virtual bool doFinalization() {
     isl_schedule_free(LastSchedule);
-    LastSchedule = NULL;
+    LastSchedule = nullptr;
     return true;
   }
 };
@@ -194,8 +208,7 @@ private:
 char IslScheduleOptimizer::ID = 0;
 
 void IslScheduleOptimizer::extendScattering(Scop &S, unsigned NewDimensions) {
-  for (Scop::iterator SI = S.begin(), SE = S.end(); SI != SE; ++SI) {
-    ScopStmt *Stmt = *SI;
+  for (ScopStmt *Stmt : S) {
     unsigned OldDimensions = Stmt->getNumScattering();
     isl_space *Space;
     isl_map *Map, *New;
@@ -217,13 +230,12 @@ void IslScheduleOptimizer::extendScattering(Scop &S, unsigned NewDimensions) {
 
 isl_basic_map *IslScheduleOptimizer::getTileMap(isl_ctx *ctx,
                                                 int scheduleDimensions,
-                                                isl_space *SpaceModel,
-                                                int tileSize) {
+                                                isl_space *SpaceModel) {
   // We construct
   //
   // tileMap := [p0] -> {[s0, s1] -> [t0, t1, p0, p1, a0, a1]:
-  //	                  s0 = a0 * 32 and s0 = p0 and t0 <= p0 < t0 + 32 and
-  //	                  s1 = a1 * 32 and s1 = p1 and t1 <= p1 < t1 + 32}
+  //	                  s0 = a0 * 32 and s0 = p0 and t0 <= p0 < t0 + 64 and
+  //	                  s1 = a1 * 64 and s1 = p1 and t1 <= p1 < t1 + 64}
   //
   // and project out the auxilary dimensions a0 and a1.
   isl_space *Space =
@@ -237,6 +249,8 @@ isl_basic_map *IslScheduleOptimizer::getTileMap(isl_ctx *ctx,
     int tX = x;
     int pX = scheduleDimensions + x;
     int aX = 2 * scheduleDimensions + x;
+    int tileSize = (int)TileSizes.size() > x ? TileSizes[x] : DefaultTileSize;
+    assert(tileSize > 0 && "Invalid tile size");
 
     isl_constraint *c;
 
@@ -331,12 +345,12 @@ isl_map *IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
   // DimToVectorize to the point loop at the innermost dimension.
   for (int i = 0; i < ScheduleDimensions; i++) {
     c = isl_equality_alloc(isl_local_space_copy(LocalSpace));
-    isl_constraint_set_coefficient_si(c, isl_dim_in, i, -1);
+    c = isl_constraint_set_coefficient_si(c, isl_dim_in, i, -1);
 
     if (i == DimToVectorize)
-      isl_constraint_set_coefficient_si(c, isl_dim_out, PointDimension, 1);
+      c = isl_constraint_set_coefficient_si(c, isl_dim_out, PointDimension, 1);
     else
-      isl_constraint_set_coefficient_si(c, isl_dim_out, i, 1);
+      c = isl_constraint_set_coefficient_si(c, isl_dim_out, i, 1);
 
     TilingMap = isl_map_add_constraint(TilingMap, c);
   }
@@ -442,7 +456,7 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
     return false;
 
   isl_schedule_free(LastSchedule);
-  LastSchedule = NULL;
+  LastSchedule = nullptr;
 
   // Build input data.
   int ValidityKinds =
@@ -488,11 +502,9 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   }
 
   DEBUG(dbgs() << "\n\nCompute schedule from: ");
-  DEBUG(dbgs() << "Domain := "; isl_union_set_dump(Domain); dbgs() << ";\n");
-  DEBUG(dbgs() << "Proximity := "; isl_union_map_dump(Proximity);
-        dbgs() << ";\n");
-  DEBUG(dbgs() << "Validity := "; isl_union_map_dump(Validity);
-        dbgs() << ";\n");
+  DEBUG(dbgs() << "Domain := " << stringFromIslObj(Domain) << ";\n");
+  DEBUG(dbgs() << "Proximity := " << stringFromIslObj(Proximity) << ";\n");
+  DEBUG(dbgs() << "Validity := " << stringFromIslObj(Validity) << ";\n");
 
   int IslFusionStrategy;
 
@@ -542,12 +554,11 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   if (!Schedule)
     return false;
 
-  DEBUG(dbgs() << "Schedule := "; isl_schedule_dump(Schedule); dbgs() << ";\n");
+  DEBUG(dbgs() << "Schedule := " << stringFromIslObj(Schedule) << ";\n");
 
   isl_union_map *ScheduleMap = getScheduleMap(Schedule);
 
-  for (Scop::iterator SI = S.begin(), SE = S.end(); SI != SE; ++SI) {
-    ScopStmt *Stmt = *SI;
+  for (ScopStmt *Stmt : S) {
     isl_map *StmtSchedule;
     isl_set *Domain = Stmt->getDomain();
     isl_union_map *StmtBand;
@@ -569,8 +580,8 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
 
   unsigned MaxScatDims = 0;
 
-  for (Scop::iterator SI = S.begin(), SE = S.end(); SI != SE; ++SI)
-    MaxScatDims = std::max((*SI)->getNumScattering(), MaxScatDims);
+  for (ScopStmt *Stmt : S)
+    MaxScatDims = std::max(Stmt->getNumScattering(), MaxScatDims);
 
   extendScattering(S, MaxScatDims);
   return false;

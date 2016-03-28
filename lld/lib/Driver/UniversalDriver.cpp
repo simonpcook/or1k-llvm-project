@@ -15,9 +15,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/Driver/Driver.h"
-
+#include "lld/Config/Version.h"
 #include "lld/Core/LLVM.h"
-
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/Arg.h"
@@ -68,29 +68,31 @@ public:
 
 enum class Flavor {
   invalid,
-  gnu_ld,       // -flavor gnu
-  win_link,     // -flavor link
-  darwin_ld,    // -flavor darwin
-  core          // -flavor core OR -core
+  gnu_ld,    // -flavor gnu
+  win_link,  // -flavor link
+  darwin_ld, // -flavor darwin
+  core       // -flavor core OR -core
 };
-
-Flavor strToFlavor(StringRef str) {
-  return llvm::StringSwitch<Flavor>(str)
-           .Case("gnu", Flavor::gnu_ld)
-           .Case("link", Flavor::win_link)
-           .Case("lld-link", Flavor::win_link)
-           .Case("darwin", Flavor::darwin_ld)
-           .Case("core", Flavor::core)
-           .Case("ld", Flavor::gnu_ld) // deprecated
-           .Default(Flavor::invalid);
-}
 
 struct ProgramNameParts {
   StringRef _target;
   StringRef _flavor;
 };
 
-ProgramNameParts parseProgramName(StringRef programName) {
+} // anonymous namespace
+
+static Flavor strToFlavor(StringRef str) {
+  return llvm::StringSwitch<Flavor>(str)
+      .Case("gnu", Flavor::gnu_ld)
+      .Case("link", Flavor::win_link)
+      .Case("lld-link", Flavor::win_link)
+      .Case("darwin", Flavor::darwin_ld)
+      .Case("core", Flavor::core)
+      .Case("ld", Flavor::gnu_ld)
+      .Default(Flavor::invalid);
+}
+
+static ProgramNameParts parseProgramName(StringRef programName) {
   SmallVector<StringRef, 3> components;
   llvm::SplitString(programName, components, "-");
   ProgramNameParts ret;
@@ -104,7 +106,7 @@ ProgramNameParts parseProgramName(StringRef programName) {
 
   // Find the flavor component.
   auto flIter = std::find_if(components.begin(), components.end(),
-                             [](StringRef str)->bool {
+                             [](StringRef str) -> bool {
     return strToFlavor(str) != Flavor::invalid;
   });
 
@@ -120,9 +122,44 @@ ProgramNameParts parseProgramName(StringRef programName) {
   return ret;
 }
 
-} // namespace
+// Removes the argument from argv along with its value, if exists, and updates
+// argc.
+static void removeArg(llvm::opt::Arg *arg, int &argc, const char **&argv) {
+  unsigned int numToRemove = arg->getNumValues() + 1;
+  unsigned int argIndex = arg->getIndex() + 1;
+
+  std::rotate(&argv[argIndex], &argv[argIndex + numToRemove], argv + argc);
+  argc -= numToRemove;
+}
+
+static Flavor getFlavor(int &argc, const char **&argv,
+                        std::unique_ptr<llvm::opt::InputArgList> &parsedArgs) {
+  if (llvm::opt::Arg *argCore = parsedArgs->getLastArg(OPT_core)) {
+    removeArg(argCore, argc, argv);
+    return Flavor::core;
+  }
+  if (llvm::opt::Arg *argFlavor = parsedArgs->getLastArg(OPT_flavor)) {
+    removeArg(argFlavor, argc, argv);
+    return strToFlavor(argFlavor->getValue());
+  }
+
+#if LLVM_ON_UNIX
+  if (llvm::sys::path::filename(argv[0]).equals("ld")) {
+#if __APPLE__
+    // On a Darwin systems, if linker binary is named "ld", use Darwin driver.
+    return Flavor::darwin_ld;
+#endif
+    // On a ELF based systems, if linker binary is named "ld", use gnu driver.
+    return Flavor::gnu_ld;
+  }
+#endif
+
+  StringRef name = llvm::sys::path::stem(argv[0]);
+  return strToFlavor(parseProgramName(name)._flavor);
+}
 
 namespace lld {
+
 bool UniversalDriver::link(int argc, const char *argv[],
                            raw_ostream &diagnostics) {
   // Parse command line options using GnuLdOptions.td
@@ -144,26 +181,22 @@ bool UniversalDriver::link(int argc, const char *argv[],
     return false;
   }
 
-  // Handle --help
+  // Handle -help
   if (parsedArgs->getLastArg(OPT_help)) {
-    table.PrintHelp(llvm::outs(), argv[0], "LLVM Linker", false);
+    table.PrintHelp(llvm::outs(), programName.data(), "LLVM Linker", false);
     return true;
   }
 
-  Flavor flavor;
+  // Handle -version
+  if (parsedArgs->getLastArg(OPT_version)) {
+    diagnostics << "LLVM Linker Version: " << getLLDVersion()
+                << getLLDRepositoryVersion() << "\n";
+    return true;
+  }
 
-  if (parsedArgs->getLastArg(OPT_core)) {
-    flavor = Flavor::core;
-    argv++;
-    argc--;
-  } else if (llvm::opt::Arg *argFlavor = parsedArgs->getLastArg(OPT_flavor)) {
-    flavor = strToFlavor(argFlavor->getValue());
-    argv += 2;
-    argc -= 2;
-  } else
-    flavor = strToFlavor(parseProgramName(programName)._flavor);
-
+  Flavor flavor = getFlavor(argc, argv, parsedArgs);
   std::vector<const char *> args(argv, argv + argc);
+
   // Switch to appropriate driver.
   switch (flavor) {
   case Flavor::gnu_ld:
@@ -181,4 +214,5 @@ bool UniversalDriver::link(int argc, const char *argv[],
   }
   llvm_unreachable("Unrecognised flavor");
 }
+
 } // end namespace lld

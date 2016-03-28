@@ -12,6 +12,7 @@ class AbbreviationsTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
+    @unittest2.skipIf(sys.platform.startswith("win32"), "one-shot script commands deadlock on Windows.")
     def test_nonrunning_command_abbreviations (self):
         self.expect("ap script",
                     startstr = "The following built-in commands may relate to 'script':",
@@ -149,8 +150,8 @@ class AbbreviationsTestCase(TestBase):
         # ARCH, if not specified, defaults to x86_64.
         if self.getArchitecture() in ["", 'x86_64', 'i386']:
             self.expect("dis -f",
-                        startstr = "a.out`sum(int, int)",
-                        substrs = [' mov',
+                        substrs = ['<sum(int, int)>:',
+                                   ' mov',
                                    ' addl ',
                                    'ret'])
 

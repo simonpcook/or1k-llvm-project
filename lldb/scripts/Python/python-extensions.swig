@@ -608,6 +608,20 @@
                     return PyString_FromString("");
         }
 }
+%extend lldb::SBTypeEnumMember {
+        PyObject *lldb::SBTypeEnumMember::__str__ (){
+                lldb::SBStream description;
+                $self->GetDescription (description, lldb::eDescriptionLevelBrief);
+                const char *desc = description.GetData();
+                size_t desc_len = description.GetSize();
+                if (desc_len > 0 && (desc[desc_len-1] == '\n' || desc[desc_len-1] == '\r'))
+                    --desc_len;
+                if (desc_len > 0)
+                    return PyString_FromStringAndSize (desc, desc_len);
+                else
+                    return PyString_FromString("");
+        }
+}
 %extend lldb::SBTypeNameSpecifier {
         PyObject *lldb::SBTypeNameSpecifier::__str__ (){
                 lldb::SBStream description;
@@ -1032,4 +1046,28 @@ class value(object):
 
     def __neq__(self, other):
         return not self.__eq__(other)
+%}
+
+%pythoncode %{
+
+class SBSyntheticValueProvider(object):
+    def __init__(self,valobj):
+        pass
+
+    def num_children(self):
+        return 0
+
+    def get_child_index(self,name):
+        return None
+
+    def get_child_at_index(self,idx):
+        return None
+
+    def update(self):
+        pass
+
+    def has_children(self):
+        return False
+
+
 %}

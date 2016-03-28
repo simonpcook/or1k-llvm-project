@@ -18,8 +18,7 @@
 
 namespace __dsan {
 
-struct Flags : CommonFlags, DDFlags {
-};
+typedef DDFlags Flags;
 
 struct Mutex {
   DDMutex dd;
@@ -44,6 +43,7 @@ typedef AddrHashMap<Mutex, 31051> MutexHashMap;
 struct Context {
   DDetector *dd;
 
+  BlockingMutex report_mutex;
   MutexHashMap mutex_map;
 };
 

@@ -19,11 +19,10 @@
 
 #include "lld/Core/InputGraph.h"
 #include "lld/Core/LLVM.h"
-
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/raw_ostream.h"
-
 #include <memory>
+#include <set>
 #include <vector>
 
 namespace lld {
@@ -32,6 +31,12 @@ class CoreLinkingContext;
 class MachOLinkingContext;
 class PECOFFLinkingContext;
 class ELFLinkingContext;
+
+typedef std::vector<std::unique_ptr<File>> FileVector;
+
+FileVector makeErrorFile(StringRef path, std::error_code ec);
+FileVector parseMemberFiles(FileVector &files);
+FileVector parseFile(LinkingContext &ctx, StringRef path, bool wholeArchive);
 
 /// Base class for all Drivers.
 class Driver {
@@ -112,12 +117,10 @@ public:
   /// Returns true iff there was an error.
   static bool parse(int argc, const char *argv[], PECOFFLinkingContext &info,
                     raw_ostream &diagnostics = llvm::errs(),
-                    bool isDirective = false);
+                    bool isDirective = false,
+                    std::set<StringRef> *undefinedSymbols = nullptr);
 
 private:
-  static bool doParse(int argc, const char *argv[], PECOFFLinkingContext &info,
-                      raw_ostream &diagnostics, bool isDirective);
-
   WinLinkDriver() LLVM_DELETED_FUNCTION;
 };
 

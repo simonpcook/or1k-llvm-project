@@ -1,5 +1,5 @@
 // REQUIRES: aarch64-registered-target
-// RUN: %clang_cc1 -triple aarch64-none-linux-gnu -target-feature +neon \
+// RUN: %clang_cc1 -triple arm64-none-linux-gnu -target-feature +neon \
 // RUN:   -ffp-contract=fast -S -O3 -o - %s | FileCheck %s
 
 // Test new aarch64 intrinsics and types
@@ -7,103 +7,103 @@
 #include <arm_neon.h>
 
 // CHECK-LABEL: test_vceqz_s8
-// CHECK: cmeq  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #{{0x0|0}}
 uint8x8_t test_vceqz_s8(int8x8_t a) {
   return vceqz_s8(a);
 }
 
 // CHECK-LABEL: test_vceqz_s16
-// CHECK: cmeq  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #{{0x0|0}}
 uint16x4_t test_vceqz_s16(int16x4_t a) {
   return vceqz_s16(a);
 }
 
 // CHECK-LABEL: test_vceqz_s32
-// CHECK: cmeq  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #{{0x0|0}}
 uint32x2_t test_vceqz_s32(int32x2_t a) {
   return vceqz_s32(a);
 }
 
 // CHECK-LABEL: test_vceqz_s64
-// CHECK: cmeq {{d[0-9]+}}, {{d[0-9]+}}, #0x0
+// CHECK: cmeq {{d[0-9]+}}, {{d[0-9]+}}, #{{0x0|0}}
 uint64x1_t test_vceqz_s64(int64x1_t a) {
   return vceqz_s64(a);
 }
 
 // CHECK-LABEL: test_vceqz_u64
-// CHECK: cmeq {{d[0-9]+}}, {{d[0-9]+}}, #0x0
+// CHECK: cmeq {{d[0-9]+}}, {{d[0-9]+}}, #{{0x0|0}}
 uint64x1_t test_vceqz_u64(uint64x1_t a) {
   return vceqz_u64(a);
 }
 
 // CHECK-LABEL: test_vceqz_p64
-// CHECK: cmeq {{d[0-9]+}}, {{d[0-9]+}}, #0x0
+// CHECK: cmeq {{d[0-9]+}}, {{d[0-9]+}}, #{{0x0|0}}
 uint64x1_t test_vceqz_p64(poly64x1_t a) {
   return vceqz_p64(a);
 }
 
 // CHECK-LABEL: test_vceqzq_s8
-// CHECK: cmeq  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #{{0x0|0}}
 uint8x16_t test_vceqzq_s8(int8x16_t a) {
   return vceqzq_s8(a);
 }
 
 // CHECK-LABEL: test_vceqzq_s16
-// CHECK: cmeq  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #{{0x0|0}}
 uint16x8_t test_vceqzq_s16(int16x8_t a) {
   return vceqzq_s16(a);
 }
 
 // CHECK-LABEL: test_vceqzq_s32
-// CHECK: cmeq  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #{{0x0|0}}
 uint32x4_t test_vceqzq_s32(int32x4_t a) {
   return vceqzq_s32(a);
 }
 
 // CHECK-LABEL: test_vceqzq_s64
-// CHECK: cmeq  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #{{0x0|0}}
 uint64x2_t test_vceqzq_s64(int64x2_t a) {
   return vceqzq_s64(a);
 }
 
 // CHECK-LABEL: test_vceqz_u8
-// CHECK: cmeq  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #{{0x0|0}}
 uint8x8_t test_vceqz_u8(uint8x8_t a) {
   return vceqz_u8(a);
 }
 
 // CHECK-LABEL: test_vceqz_u16
-// CHECK: cmeq  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #{{0x0|0}}
 uint16x4_t test_vceqz_u16(uint16x4_t a) {
   return vceqz_u16(a);
 }
 
 // CHECK-LABEL: test_vceqz_u32
-// CHECK: cmeq  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #{{0x0|0}}
 uint32x2_t test_vceqz_u32(uint32x2_t a) {
   return vceqz_u32(a);
 }
 
 // CHECK-LABEL: test_vceqzq_u8
-// CHECK: cmeq  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #{{0x0|0}}
 uint8x16_t test_vceqzq_u8(uint8x16_t a) {
   return vceqzq_u8(a);
 }
 
 // CHECK-LABEL: test_vceqzq_u16
-// CHECK: cmeq  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #{{0x0|0}}
 uint16x8_t test_vceqzq_u16(uint16x8_t a) {
   return vceqzq_u16(a);
 }
 
 // CHECK-LABEL: test_vceqzq_u32
-// CHECK: cmeq  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #{{0x0|0}}
 uint32x4_t test_vceqzq_u32(uint32x4_t a) {
   return vceqzq_u32(a);
 }
 
 // CHECK-LABEL: test_vceqzq_u64
-// CHECK: cmeq  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #{{0x0|0}}
 uint64x2_t test_vceqzq_u64(uint64x2_t a) {
   return vceqzq_u64(a);
 }
@@ -127,25 +127,25 @@ uint32x4_t test_vceqzq_f32(float32x4_t a) {
 }
 
 // CHECK-LABEL: test_vceqz_p8
-// CHECK: cmeq  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #{{0x0|0}}
 uint8x8_t test_vceqz_p8(poly8x8_t a) {
   return vceqz_p8(a);
 }
 
 // CHECK-LABEL: test_vceqzq_p8
-// CHECK: cmeq  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #{{0x0|0}}
 uint8x16_t test_vceqzq_p8(poly8x16_t a) {
   return vceqzq_p8(a);
 }
 
 // CHECK-LABEL: test_vceqz_p16
-// CHECK: cmeq  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #{{0x0|0}}
 uint16x4_t test_vceqz_p16(poly16x4_t a) {
   return vceqz_p16(a);
 }
 
 // CHECK-LABEL: test_vceqzq_p16
-// CHECK: cmeq  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #0x0
+// CHECK: cmeq  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #{{0x0|0}}
 uint16x8_t test_vceqzq_p16(poly16x8_t a) {
   return vceqzq_p16(a);
 }
@@ -163,49 +163,49 @@ uint64x2_t test_vceqzq_p64(poly64x2_t a) {
 }
 
 // CHECK-LABEL: test_vcgez_s8
-// CHECK: cmge  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #0x0
+// CHECK: cmge  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #{{0x0|0}}
 uint8x8_t test_vcgez_s8(int8x8_t a) {
   return vcgez_s8(a);
 }
 
 // CHECK-LABEL: test_vcgez_s16
-// CHECK: cmge  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #0x0
+// CHECK: cmge  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #{{0x0|0}}
 uint16x4_t test_vcgez_s16(int16x4_t a) {
   return vcgez_s16(a);
 }
 
 // CHECK-LABEL: test_vcgez_s32
-// CHECK: cmge  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #0x0
+// CHECK: cmge  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #{{0x0|0}}
 uint32x2_t test_vcgez_s32(int32x2_t a) {
   return vcgez_s32(a);
 }
 
 // CHECK-LABEL: test_vcgez_s64
-// CHECK: cmge {{d[0-9]+}}, {{d[0-9]+}}, #0x0
+// CHECK: cmge {{d[0-9]+}}, {{d[0-9]+}}, #{{0x0|0}}
 uint64x1_t test_vcgez_s64(int64x1_t a) {
   return vcgez_s64(a);
 }
 
 // CHECK-LABEL: test_vcgezq_s8
-// CHECK: cmge  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #0x0
+// CHECK: cmge  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #{{0x0|0}}
 uint8x16_t test_vcgezq_s8(int8x16_t a) {
   return vcgezq_s8(a);
 }
 
 // CHECK-LABEL: test_vcgezq_s16
-// CHECK: cmge  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #0x0
+// CHECK: cmge  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #{{0x0|0}}
 uint16x8_t test_vcgezq_s16(int16x8_t a) {
   return vcgezq_s16(a);
 }
 
 // CHECK-LABEL: test_vcgezq_s32
-// CHECK: cmge  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #0x0
+// CHECK: cmge  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #{{0x0|0}}
 uint32x4_t test_vcgezq_s32(int32x4_t a) {
   return vcgezq_s32(a);
 }
 
 // CHECK-LABEL: test_vcgezq_s64
-// CHECK: cmge  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #0x0
+// CHECK: cmge  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #{{0x0|0}}
 uint64x2_t test_vcgezq_s64(int64x2_t a) {
   return vcgezq_s64(a);
 }
@@ -235,49 +235,49 @@ uint64x2_t test_vcgezq_f64(float64x2_t a) {
 }
 
 // CHECK-LABEL: test_vclez_s8
-// CHECK: cmle  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #0x0
+// CHECK: cmle  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #{{0x0|0}}
 uint8x8_t test_vclez_s8(int8x8_t a) {
   return vclez_s8(a);
 }
 
 // CHECK-LABEL: test_vclez_s16
-// CHECK: cmle  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #0x0
+// CHECK: cmle  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #{{0x0|0}}
 uint16x4_t test_vclez_s16(int16x4_t a) {
   return vclez_s16(a);
 }
 
 // CHECK-LABEL: test_vclez_s32
-// CHECK: cmle  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #0x0
+// CHECK: cmle  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #{{0x0|0}}
 uint32x2_t test_vclez_s32(int32x2_t a) {
   return vclez_s32(a);
 }
 
 // CHECK-LABEL: test_vclez_s64
-// CHECK: cmle {{d[0-9]+}}, {{d[0-9]+}}, #0x0
+// CHECK: cmle {{d[0-9]+}}, {{d[0-9]+}}, #{{0x0|0}}
 uint64x1_t test_vclez_s64(int64x1_t a) {
   return vclez_s64(a);
 }
 
 // CHECK-LABEL: test_vclezq_s8
-// CHECK: cmle  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #0x0
+// CHECK: cmle  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #{{0x0|0}}
 uint8x16_t test_vclezq_s8(int8x16_t a) {
   return vclezq_s8(a);
 }
 
 // CHECK-LABEL: test_vclezq_s16
-// CHECK: cmle  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #0x0
+// CHECK: cmle  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #{{0x0|0}}
 uint16x8_t test_vclezq_s16(int16x8_t a) {
   return vclezq_s16(a);
 }
 
 // CHECK-LABEL: test_vclezq_s32
-// CHECK: cmle  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #0x0
+// CHECK: cmle  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #{{0x0|0}}
 uint32x4_t test_vclezq_s32(int32x4_t a) {
   return vclezq_s32(a);
 }
 
 // CHECK-LABEL: test_vclezq_s64
-// CHECK: cmle  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #0x0
+// CHECK: cmle  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #{{0x0|0}}
 uint64x2_t test_vclezq_s64(int64x2_t a) {
   return vclezq_s64(a);
 }
@@ -307,49 +307,49 @@ uint64x2_t test_vclezq_f64(float64x2_t a) {
 }
 
 // CHECK-LABEL: test_vcgtz_s8
-// CHECK: cmgt  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.8b, {{v[0-9]+}}.8b, #{{0x0|0}}
 uint8x8_t test_vcgtz_s8(int8x8_t a) {
   return vcgtz_s8(a);
 }
 
 // CHECK-LABEL: test_vcgtz_s16
-// CHECK: cmgt  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.4h, {{v[0-9]+}}.4h, #{{0x0|0}}
 uint16x4_t test_vcgtz_s16(int16x4_t a) {
   return vcgtz_s16(a);
 }
 
 // CHECK-LABEL: test_vcgtz_s32
-// CHECK: cmgt  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.2s, {{v[0-9]+}}.2s, #{{0x0|0}}
 uint32x2_t test_vcgtz_s32(int32x2_t a) {
   return vcgtz_s32(a);
 }
 
 // CHECK-LABEL: test_vcgtz_s64
-// CHECK: cmgt {{d[0-9]+}}, {{d[0-9]+}}, #0x0
+// CHECK: cmgt {{d[0-9]+}}, {{d[0-9]+}}, #{{0x0|0}}
 uint64x1_t test_vcgtz_s64(int64x1_t a) {
   return vcgtz_s64(a);
 }
 
 // CHECK-LABEL: test_vcgtzq_s8
-// CHECK: cmgt  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.16b, {{v[0-9]+}}.16b, #{{0x0|0}}
 uint8x16_t test_vcgtzq_s8(int8x16_t a) {
   return vcgtzq_s8(a);
 }
 
 // CHECK-LABEL: test_vcgtzq_s16
-// CHECK: cmgt  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.8h, {{v[0-9]+}}.8h, #{{0x0|0}}
 uint16x8_t test_vcgtzq_s16(int16x8_t a) {
   return vcgtzq_s16(a);
 }
 
 // CHECK-LABEL: test_vcgtzq_s32
-// CHECK: cmgt  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.4s, {{v[0-9]+}}.4s, #{{0x0|0}}
 uint32x4_t test_vcgtzq_s32(int32x4_t a) {
   return vcgtzq_s32(a);
 }
 
 // CHECK-LABEL: test_vcgtzq_s64
-// CHECK: cmgt  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #0x0
+// CHECK: cmgt  {{v[0-9]+}}.2d, {{v[0-9]+}}.2d, #{{0x0|0}}
 uint64x2_t test_vcgtzq_s64(int64x2_t a) {
   return vcgtzq_s64(a);
 }
@@ -1203,85 +1203,85 @@ poly8x16_t test_vcntq_p8(poly8x16_t a) {
 int8x8_t test_vmvn_s8(int8x8_t a) {
   // CHECK-LABEL: test_vmvn_s8
   return vmvn_s8(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 int8x16_t test_vmvnq_s8(int8x16_t a) {
   // CHECK-LABEL: test_vmvnq_s8
   return vmvnq_s8(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 int16x4_t test_vmvn_s16(int16x4_t a) {
   // CHECK-LABEL: test_vmvn_s16
   return vmvn_s16(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 int16x8_t test_vmvnq_s16(int16x8_t a) {
   // CHECK-LABEL: test_vmvnq_s16
   return vmvnq_s16(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 int32x2_t test_vmvn_s32(int32x2_t a) {
   // CHECK-LABEL: test_vmvn_s32
   return vmvn_s32(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 int32x4_t test_vmvnq_s32(int32x4_t a) {
   // CHECK-LABEL: test_vmvnq_s32
   return vmvnq_s32(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 uint8x8_t test_vmvn_u8(uint8x8_t a) {
   // CHECK-LABEL: test_vmvn_u8
   return vmvn_u8(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 uint8x16_t test_vmvnq_u8(uint8x16_t a) {
   // CHECK-LABEL: test_vmvnq_u8
   return vmvnq_u8(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 uint16x4_t test_vmvn_u16(uint16x4_t a) {
   // CHECK-LABEL: test_vmvn_u16
   return vmvn_u16(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 uint16x8_t test_vmvnq_u16(uint16x8_t a) {
   // CHECK-LABEL: test_vmvnq_u16
   return vmvnq_u16(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 uint32x2_t test_vmvn_u32(uint32x2_t a) {
   // CHECK-LABEL: test_vmvn_u32
   return vmvn_u32(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 uint32x4_t test_vmvnq_u32(uint32x4_t a) {
   // CHECK-LABEL: test_vmvnq_u32
   return vmvnq_u32(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 poly8x8_t test_vmvn_p8(poly8x8_t a) {
   // CHECK-LABEL: test_vmvn_p8
   return vmvn_p8(a);
-  // CHECK: not v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.8b, v{{[0-9]+}}.8b
 }
 
 poly8x16_t test_vmvnq_p8(poly8x16_t a) {
   // CHECK-LABEL: test_vmvnq_p8
   return vmvnq_p8(a);
-  // CHECK: not v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
+  // CHECK: {{mvn|not}} v{{[0-9]+}}.16b, v{{[0-9]+}}.16b
 }
 
 int8x8_t test_vrbit_s8(int8x8_t a) {

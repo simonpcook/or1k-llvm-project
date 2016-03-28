@@ -39,14 +39,18 @@
 
 #include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/Communication.h"
-#include "lldb/Core/ConnectionFileDescriptor.h"
 #include "lldb/Core/DataExtractor.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
+#include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/StreamFile.h"
 #include "lldb/Core/StreamString.h"
+#include "lldb/Host/ConnectionFileDescriptor.h"
 #include "lldb/Host/Endian.h"
 #include "lldb/Host/FileSpec.h"
+#include "lldb/Host/FileSystem.h"
+#include "lldb/Host/HostInfo.h"
+#include "lldb/Host/ThreadLauncher.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Utility/CleanUp.h"
@@ -57,14 +61,11 @@
 #include "cfcpp/CFCReleaser.h"
 #include "cfcpp/CFCString.h"
 
+
 #include <objc/objc-auto.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Foundation/Foundation.h>
-
-#if !defined(__arm__)
-#include <Carbon/Carbon.h>
-#endif
 
 #ifndef _POSIX_SPAWN_DISABLE_ASLR
 #define _POSIX_SPAWN_DISABLE_ASLR       0x0100
@@ -78,107 +79,6 @@ extern "C"
 
 using namespace lldb;
 using namespace lldb_private;
-
-static pthread_once_t g_thread_create_once = PTHREAD_ONCE_INIT;
-static pthread_key_t g_thread_create_key = 0;
-
-class MacOSXDarwinThread
-{
-public:
-    MacOSXDarwinThread(const char *thread_name) :
-        m_pool (nil)
-    {
-        // Register our thread with the collector if garbage collection is enabled.
-        if (objc_collectingEnabled())
-        {
-#if MAC_OS_X_VERSION_MAX_ALLOWED <= MAC_OS_X_VERSION_10_5
-            // On Leopard and earlier there is no way objc_registerThreadWithCollector
-            // function, so we do it manually.
-            auto_zone_register_thread(auto_zone());
-#else
-            // On SnowLeopard and later we just call the thread registration function.
-            objc_registerThreadWithCollector();
-#endif
-        }
-        else
-        {
-            m_pool = [[NSAutoreleasePool alloc] init];
-        }
-
-
-        Host::SetThreadName (LLDB_INVALID_PROCESS_ID, LLDB_INVALID_THREAD_ID, thread_name);
-    }
-
-    ~MacOSXDarwinThread()
-    {
-        if (m_pool)
-        {
-            [m_pool drain];
-            m_pool = nil;
-        }
-    }
-
-    static void PThreadDestructor (void *v)
-    {
-        if (v)
-            delete static_cast<MacOSXDarwinThread*>(v);
-        ::pthread_setspecific (g_thread_create_key, NULL);
-    }
-
-protected:
-    NSAutoreleasePool * m_pool;
-private:
-    DISALLOW_COPY_AND_ASSIGN (MacOSXDarwinThread);
-};
-
-static void
-InitThreadCreated()
-{
-    ::pthread_key_create (&g_thread_create_key, MacOSXDarwinThread::PThreadDestructor);
-}
-
-void
-Host::ThreadCreated (const char *thread_name)
-{
-    ::pthread_once (&g_thread_create_once, InitThreadCreated);
-    if (g_thread_create_key)
-    {
-        ::pthread_setspecific (g_thread_create_key, new MacOSXDarwinThread(thread_name));
-    }
-}
-
-std::string
-Host::GetThreadName (lldb::pid_t pid, lldb::tid_t tid)
-{
-    std::string thread_name;
-#if MAC_OS_X_VERSION_MAX_ALLOWED > MAC_OS_X_VERSION_10_5
-    // We currently can only get the name of a thread in the current process.
-    if (pid == Host::GetCurrentProcessID())
-    {
-        char pthread_name[1024];
-        if (::pthread_getname_np (::pthread_from_mach_thread_np (tid), pthread_name, sizeof(pthread_name)) == 0)
-        {
-            if (pthread_name[0])
-            {
-                thread_name = pthread_name;
-            }
-        }
-        else
-        {
-            dispatch_queue_t current_queue = ::dispatch_get_current_queue ();
-            if (current_queue != NULL)
-            {
-                const char *queue_name = dispatch_queue_get_label (current_queue);
-                if (queue_name && queue_name[0])
-                {
-                    thread_name = queue_name;
-                }
-            }
-        }
-    }
-#endif
-    return thread_name;
-}
 
 bool
 Host::GetBundleDirectory (const FileSpec &file, FileSpec &bundle_directory)
@@ -231,7 +131,7 @@ Host::ResolveExecutableInBundle (FileSpec &file)
 lldb::pid_t
 Host::LaunchApplication (const FileSpec &app_file_spec)
 {
-#if defined (__arm__)
+#if defined (__arm__) || defined(__arm64__) || defined(__aarch64__)
     return LLDB_INVALID_PROCESS_ID;
 #else
     char app_path[PATH_MAX];
@@ -324,7 +224,7 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
     }
     return false;
 }
-#if !defined(__arm__)
+#if !defined(__arm__) && !defined(__arm64__) && !defined(__aarch64__)
 
 //static lldb::pid_t
 //LaunchInNewTerminalWithCommandFile 
@@ -369,19 +269,19 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //        return LLDB_INVALID_PROCESS_ID;
 //    
 //    FileSpec darwin_debug_file_spec;
-//    if (!Host::GetLLDBPath (ePathTypeSupportExecutableDir, darwin_debug_file_spec))
+//    if (!HostInfo::GetLLDBPath (ePathTypeSupportExecutableDir, darwin_debug_file_spec))
 //        return LLDB_INVALID_PROCESS_ID;
 //    darwin_debug_file_spec.GetFilename().SetCString("darwin-debug");
-//        
+//
 //    if (!darwin_debug_file_spec.Exists())
 //        return LLDB_INVALID_PROCESS_ID;
-//    
+//
 //    char launcher_path[PATH_MAX];
 //    darwin_debug_file_spec.GetPath(launcher_path, sizeof(launcher_path));
 //    command_file.Printf("\"%s\" ", launcher_path);
-//    
+//
 //    command_file.Printf("--unix-socket=%s ", unix_socket_name.c_str());
-//    
+//
 //    if (arch_spec && arch_spec->IsValid())
 //    {
 //        command_file.Printf("--arch=%s ", arch_spec->GetArchitectureName());
@@ -391,7 +291,7 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //    {
 //        command_file.PutCString("--disable-aslr ");
 //    }
-//        
+//
 //    command_file.PutCString("-- ");
 //
 //    if (argv)
@@ -405,15 +305,15 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //    command_file.GetFile().Close();
 //    if (::chmod (temp_file_path, S_IRWXU | S_IRWXG) != 0)
 //        return LLDB_INVALID_PROCESS_ID;
-//            
+//
 //    CFCMutableDictionary cf_env_dict;
-//    
+//
 //    const bool can_create = true;
 //    if (envp)
 //    {
 //        for (size_t i=0; envp[i] != NULL; ++i)
 //        {
-//            const char *env_entry = envp[i];            
+//            const char *env_entry = envp[i];
 //            const char *equal_pos = strchr(env_entry, '=');
 //            if (equal_pos)
 //            {
@@ -425,20 +325,20 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //            }
 //        }
 //    }
-//    
+//
 //    LSApplicationParameters app_params;
 //    ::memset (&app_params, 0, sizeof (app_params));
 //    app_params.flags = kLSLaunchDontAddToRecents | kLSLaunchAsync;
 //    app_params.argv = NULL;
 //    app_params.environment = (CFDictionaryRef)cf_env_dict.get();
 //
-//    CFCReleaser<CFURLRef> command_file_url (::CFURLCreateFromFileSystemRepresentation (NULL, 
-//                                                                                       (const UInt8 *)temp_file_path, 
+//    CFCReleaser<CFURLRef> command_file_url (::CFURLCreateFromFileSystemRepresentation (NULL,
+//                                                                                       (const UInt8 *)temp_file_path,
 //                                                                                       strlen(temp_file_path),
 //                                                                                       false));
-//    
+//
 //    CFCMutableArray urls;
-//    
+//
 //    // Terminal.app will open the ".command" file we have created
 //    // and run our process inside it which will wait at the entry point
 //    // for us to attach.
@@ -458,7 +358,7 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //                                                       AcceptPIDFromInferior,
 //                                                       connect_url,
 //                                                       &lldb_error);
-//    
+//
 //    ProcessSerialNumber psn;
 //    error = LSOpenURLsWithRole(urls.get(), kLSRolesShell, NULL, &app_params, &psn, 1);
 //    if (error == noErr)
@@ -469,7 +369,7 @@ WaitForProcessToSIGSTOP (const lldb::pid_t pid, const int timeout_in_seconds)
 //            if (accept_thread_result)
 //            {
 //                pid = (intptr_t)accept_thread_result;
-//            
+//
 //                // Wait for process to be stopped the the entry point by watching
 //                // for the process status to be set to SSTOP which indicates it it
 //                // SIGSTOP'ed at the entry point
@@ -524,7 +424,7 @@ LaunchInNewTerminalWithAppleScript (const char *exe_path, ProcessLaunchInfo &lau
     
     StreamString command;
     FileSpec darwin_debug_file_spec;
-    if (!Host::GetLLDBPath (ePathTypeSupportExecutableDir, darwin_debug_file_spec))
+    if (!HostInfo::GetLLDBPath(ePathTypeSupportExecutableDir, darwin_debug_file_spec))
     {
         error.SetErrorString ("can't locate the 'darwin-debug' executable");
         return error;
@@ -543,7 +443,8 @@ LaunchInNewTerminalWithAppleScript (const char *exe_path, ProcessLaunchInfo &lau
     darwin_debug_file_spec.GetPath(launcher_path, sizeof(launcher_path));
 
     const ArchSpec &arch_spec = launch_info.GetArchitecture();
-    if (arch_spec.IsValid())
+    // Only set the architecture if it is valid and if it isn't Haswell (x86_64h).
+    if (arch_spec.IsValid() && arch_spec.GetCore() != ArchSpec::eCore_x86_64_x86_64h)
         command.Printf("arch -arch %s ", arch_spec.GetArchitectureName());
 
     command.Printf("'%s' --unix-socket=%s", launcher_path, unix_socket_name);
@@ -564,29 +465,34 @@ LaunchInNewTerminalWithAppleScript (const char *exe_path, ProcessLaunchInfo &lau
     if (launch_info.GetFlags().Test (eLaunchFlagDisableASLR))
         command.PutCString(" --disable-aslr");
     
-    // We are launching on this host in a terminal. So compare the environemnt on the host
-    // to what is supplied in the launch_info. Any items that aren't in the host environemnt
+    // We are launching on this host in a terminal. So compare the environment on the host
+    // to what is supplied in the launch_info. Any items that aren't in the host environment
     // need to be sent to darwin-debug. If we send all environment entries, we might blow the
     // max command line length, so we only send user modified entries.
     const char **envp = launch_info.GetEnvironmentEntries().GetConstArgumentVector ();
+
     StringList host_env;
     const size_t host_env_count = Host::GetEnvironment (host_env);
-    const char *env_entry;
-    for (size_t env_idx = 0; (env_entry = envp[env_idx]) != NULL; ++env_idx)
+
+    if (envp && envp[0])
     {
-        bool add_entry = true;
-        for (size_t i=0; i<host_env_count; ++i)
+        const char *env_entry;
+        for (size_t env_idx = 0; (env_entry = envp[env_idx]) != NULL; ++env_idx)
         {
-            const char *host_env_entry = host_env.GetStringAtIndex(i);
-            if (strcmp(env_entry, host_env_entry) == 0)
+            bool add_entry = true;
+            for (size_t i=0; i<host_env_count; ++i)
             {
-                add_entry = false;
-                break;
+                const char *host_env_entry = host_env.GetStringAtIndex(i);
+                if (strcmp(env_entry, host_env_entry) == 0)
+                {
+                    add_entry = false;
+                    break;
+                }
             }
-        }
-        if (add_entry)
-        {
-            command.Printf(" --env='%s'", env_entry);
+            if (add_entry)
+            {
+                command.Printf(" --env='%s'", env_entry);
+            }
         }
     }
 
@@ -644,35 +550,30 @@ LaunchInNewTerminalWithAppleScript (const char *exe_path, ProcessLaunchInfo &lau
     // in a shell and the shell will fork/exec a couple of times before we get
     // to the process that we wanted to launch. So when our process actually
     // gets launched, we will handshake with it and get the process ID for it.
-    lldb::thread_t accept_thread = Host::ThreadCreate (unix_socket_name,
-                                                       AcceptPIDFromInferior,
-                                                       connect_url,
-                                                       &lldb_error);
-    
+    HostThread accept_thread = ThreadLauncher::LaunchThread(unix_socket_name, AcceptPIDFromInferior, connect_url, &lldb_error);
 
     [applescript executeAndReturnError:nil];
     
     thread_result_t accept_thread_result = NULL;
-    if (Host::ThreadJoin (accept_thread, &accept_thread_result, &lldb_error))
+    lldb_error = accept_thread.Join(&accept_thread_result);
+    if (lldb_error.Success() && accept_thread_result)
     {
-        if (accept_thread_result)
-        {
-            pid = (intptr_t)accept_thread_result;
-        
-            // Wait for process to be stopped the the entry point by watching
-            // for the process status to be set to SSTOP which indicates it it
-            // SIGSTOP'ed at the entry point
-            WaitForProcessToSIGSTOP (pid, 5);
-        }
+        pid = (intptr_t)accept_thread_result;
+
+        // Wait for process to be stopped at the entry point by watching
+        // for the process status to be set to SSTOP which indicates it it
+        // SIGSTOP'ed at the entry point
+        WaitForProcessToSIGSTOP(pid, 5);
     }
-    ::unlink (unix_socket_name);
+
+    FileSystem::Unlink(unix_socket_name);
     [applescript release];
     if (pid != LLDB_INVALID_PROCESS_ID)
         launch_info.SetProcessID (pid);
     return error;
 }
 
-#endif // #if !defined(__arm__)
+#endif // #if !defined(__arm__) && !defined(__arm64__) && !defined(__aarch64__)
 
 
 // On MacOSX CrashReporter will display a string for each shared library if
@@ -731,7 +632,7 @@ Host::SetCrashDescription (const char *cstr)
 bool
 Host::OpenFileInExternalEditor (const FileSpec &file_spec, uint32_t line_no)
 {
-#if defined(__arm__)
+#if defined(__arm__) || defined(__arm64__) || defined(__aarch64__)
     return false;
 #else
     // We attach this to an 'odoc' event to specify a particular selection
@@ -838,98 +739,9 @@ Host::OpenFileInExternalEditor (const FileSpec &file_spec, uint32_t line_no)
 
         return false;
     }
-    
-    ProcessInfoRec which_process;
-    ::memset(&which_process, 0, sizeof(which_process));
-    unsigned char ap_name[PATH_MAX];
-    which_process.processName = ap_name;
-    error = ::GetProcessInformation (&psn, &which_process);
-    
-    bool using_xcode;
-    if (error != noErr)
-    {
-        if (log)
-            log->Printf("GetProcessInformation failed, error: %ld.\n", error);
-        using_xcode = false;
-    }
-    else
-        using_xcode = strncmp((char *) ap_name+1, "Xcode", (int) ap_name[0]) == 0;
-    
-    // Xcode doesn't obey the line number in the Open Apple Event.  So I have to send
-    // it an AppleScript to focus on the right line.
-    
-    if (using_xcode)
-    {
-        static ComponentInstance osa_component = NULL;
-        static const char *as_template = "tell application \"Xcode\"\n"
-                                   "set doc to the first document whose path is \"%s\"\n"
-                                   "set the selection to paragraph %d of doc\n"
-                                   "--- set the selected paragraph range to {%d, %d} of doc\n"
-                                   "end tell\n";
-        const int chars_for_int = 32;
-        static int as_template_len = strlen (as_template);
 
-      
-        char *as_str;
-        AEDesc as_desc;
-      
-        if (osa_component == NULL)
-        {
-            osa_component = ::OpenDefaultComponent (kOSAComponentType,
-                                                    kAppleScriptSubtype);
-        }
-        
-        if (osa_component == NULL)
-        {
-            if (log)
-                log->Printf("Could not get default AppleScript component.\n");
-            return false;
-        }
-
-        uint32_t as_str_size = as_template_len + strlen (file_path) + 3 * chars_for_int + 1;     
-        as_str = (char *) malloc (as_str_size);
-        ::snprintf (as_str, 
-                    as_str_size - 1, 
-                    as_template, 
-                    file_path, 
-                    line_no, 
-                    line_no, 
-                    line_no);
-
-        error = ::AECreateDesc (typeChar, 
-                                as_str, 
-                                strlen (as_str),
-                                &as_desc);
-        
-        ::free (as_str);
-
-        if (error != noErr)
-        {
-            if (log)
-                log->Printf("Failed to create AEDesc for Xcode AppleEvent: %ld.\n", error);
-            return false;
-        }
-            
-        OSAID ret_OSAID;
-        error = ::OSACompileExecute (osa_component, 
-                                     &as_desc, 
-                                     kOSANullScript, 
-                                     kOSAModeNeverInteract, 
-                                     &ret_OSAID);
-        
-        ::OSADispose (osa_component, ret_OSAID);
-
-        ::AEDisposeDesc (&as_desc);
-
-        if (error != noErr)
-        {
-            if (log)
-                log->Printf("Sending AppleEvent to Xcode failed, error: %ld.\n", error);
-            return false;
-        }
-    }
     return true;
-#endif // #if !defined(__arm__)
+#endif // #if !defined(__arm__) && !defined(__arm64__) && !defined(__aarch64__)
 }
 
 
@@ -963,111 +775,6 @@ Host::GetEnvironment (StringList &env)
         
 }
 
-
-bool
-Host::GetOSBuildString (std::string &s)
-{
-    int mib[2] = { CTL_KERN, KERN_OSVERSION };
-    char cstr[PATH_MAX];
-    size_t cstr_len = sizeof(cstr);
-    if (::sysctl (mib, 2, cstr, &cstr_len, NULL, 0) == 0)
-    {
-        s.assign (cstr, cstr_len);
-        return true;
-    }
-    
-    s.clear();
-    return false;
-}
-
-bool
-Host::GetOSKernelDescription (std::string &s)
-{
-    int mib[2] = { CTL_KERN, KERN_VERSION };
-    char cstr[PATH_MAX];
-    size_t cstr_len = sizeof(cstr);
-    if (::sysctl (mib, 2, cstr, &cstr_len, NULL, 0) == 0)
-    {
-        s.assign (cstr, cstr_len);
-        return true;
-    }
-    s.clear();
-    return false;
-}
-
-bool
-Host::GetOSVersion 
-(
-    uint32_t &major, 
-    uint32_t &minor, 
-    uint32_t &update
-)
-{
-    static uint32_t g_major = 0;
-    static uint32_t g_minor = 0;
-    static uint32_t g_update = 0;
-
-    if (g_major == 0)
-    {
-        static const char *version_plist_file = "/System/Library/CoreServices/SystemVersion.plist";
-        char buffer[256];
-        const char *product_version_str = NULL;
-        
-        CFCReleaser<CFURLRef> plist_url(CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
-                                                                                (UInt8 *) version_plist_file,
-                                                                                strlen (version_plist_file), NO));
-        if (plist_url.get())
-        {
-            CFCReleaser<CFPropertyListRef> property_list;
-            CFCReleaser<CFStringRef>       error_string;
-            CFCReleaser<CFDataRef>         resource_data;
-            SInt32                         error_code;
-     
-            // Read the XML file.
-            if (CFURLCreateDataAndPropertiesFromResource (kCFAllocatorDefault,
-                                                          plist_url.get(),
-                                                          resource_data.ptr_address(),
-                                                          NULL,
-                                                          NULL,
-                                                          &error_code))
-            {
-                   // Reconstitute the dictionary using the XML data.
-                property_list = CFPropertyListCreateFromXMLData (kCFAllocatorDefault,
-                                                                  resource_data.get(),
-                                                                  kCFPropertyListImmutable,
-                                                                  error_string.ptr_address());
-                if (CFGetTypeID(property_list.get()) == CFDictionaryGetTypeID())
-                {
-                    CFDictionaryRef property_dict = (CFDictionaryRef) property_list.get();
-                    CFStringRef product_version_key = CFSTR("ProductVersion");
-                    CFPropertyListRef product_version_value;
-                    product_version_value = CFDictionaryGetValue(property_dict, product_version_key);
-                    if (product_version_value && CFGetTypeID(product_version_value) == CFStringGetTypeID())
-                    {
-                        CFStringRef product_version_cfstr = (CFStringRef) product_version_value;
-                        product_version_str = CFStringGetCStringPtr(product_version_cfstr, kCFStringEncodingUTF8);
-                        if (product_version_str != NULL) {
-                            if (CFStringGetCString(product_version_cfstr, buffer, 256, kCFStringEncodingUTF8))
-                                product_version_str = buffer;
-                        }
-                    }
-                }
-            }
-        }
-        if (product_version_str)
-            Args::StringToVersion(product_version_str, g_major, g_minor, g_update);
-    }
-    
-    if (g_major != 0)
-    {
-        major = g_major;
-        minor = g_minor;
-        update = g_update;
-        return true;
-    }
-    return false;
-}
-
 static bool
 GetMacOSXProcessCPUType (ProcessInstanceInfo &process_info)
 {
@@ -1081,7 +788,7 @@ GetMacOSXProcessCPUType (ProcessInstanceInfo &process_info)
     
         mib[mib_len] = process_info.GetProcessID();
         mib_len++;
-    
+
         cpu_type_t cpu, sub = 0;
         size_t len = sizeof(cpu);
         if (::sysctl (mib, mib_len, &cpu, &len, 0, 0) == 0)
@@ -1090,12 +797,35 @@ GetMacOSXProcessCPUType (ProcessInstanceInfo &process_info)
             {
                 case CPU_TYPE_I386:      sub = CPU_SUBTYPE_I386_ALL;     break;
                 case CPU_TYPE_X86_64:    sub = CPU_SUBTYPE_X86_64_ALL;   break;
+
+#if defined (CPU_TYPE_ARM64) && defined (CPU_SUBTYPE_ARM64_ALL)
+                case CPU_TYPE_ARM64:     sub = CPU_SUBTYPE_ARM64_ALL;      break;
+#endif
+
                 case CPU_TYPE_ARM:
                     {
+                        // Note that we fetched the cpu type from the PROCESS but we can't get a cpusubtype of the 
+                        // process -- we can only get the host's cpu subtype.
                         uint32_t cpusubtype = 0;
                         len = sizeof(cpusubtype);
                         if (::sysctlbyname("hw.cpusubtype", &cpusubtype, &len, NULL, 0) == 0)
                             sub = cpusubtype;
+
+                        bool host_cpu_is_64bit;
+                        uint32_t is64bit_capable;
+                        size_t is64bit_capable_len = sizeof (is64bit_capable);
+                        if (sysctlbyname("hw.cpu64bit_capable", &is64bit_capable, &is64bit_capable_len, NULL, 0) == 0)
+                            host_cpu_is_64bit = true;
+                        else
+                            host_cpu_is_64bit = false;
+
+                        // if the host is an armv8 device, its cpusubtype will be in CPU_SUBTYPE_ARM64 numbering
+                        // and we need to rewrite it to a reasonable CPU_SUBTYPE_ARM value instead.
+
+                        if (host_cpu_is_64bit)
+                        {
+                            sub = CPU_SUBTYPE_ARM_V7;
+                        }
                     }
                     break;
 
@@ -1127,6 +857,11 @@ GetMacOSXProcessArgs (const ProcessInstanceInfoMatch *match_info_ptr,
             uint32_t argc = data.GetU32 (&offset);
             const char *cstr;
             
+            
+            llvm::Triple &triple = process_info.GetArchitecture().GetTriple();
+            const llvm::Triple::ArchType triple_arch = triple.getArch();
+            const bool check_for_ios_simulator = (triple_arch == llvm::Triple::x86 || triple_arch == llvm::Triple::x86_64);
+            
             cstr = data.GetCStr (&offset);
             if (cstr)
             {
@@ -1147,11 +882,28 @@ GetMacOSXProcessArgs (const ProcessInstanceInfoMatch *match_info_ptr,
                     }
                     // Now extract all arguments
                     Args &proc_args = process_info.GetArguments();
-                    for (int i=0; i<argc; ++i)
+                    for (int i=0; i<static_cast<int>(argc); ++i)
                     {
                         cstr = data.GetCStr(&offset);
                         if (cstr)
                             proc_args.AppendArgument(cstr);
+                    }
+                    
+                    Args &proc_env = process_info.GetEnvironmentEntries ();
+                    while ((cstr = data.GetCStr(&offset)))
+                    {
+                        if (cstr[0] == '\0')
+                            break;
+                        
+                        if (check_for_ios_simulator)
+                        {
+                            if (strncmp(cstr, "SIMULATOR_UDID=", strlen("SIMULATOR_UDID=")) == 0)
+                                process_info.GetArchitecture().GetTriple().setOS(llvm::Triple::IOS);
+                            else
+                                process_info.GetArchitecture().GetTriple().setOS(llvm::Triple::MacOSX);
+                        }
+
+                        proc_env.AppendArgument(cstr);
                     }
                     return true;
                 }
@@ -1224,7 +976,7 @@ Host::FindProcesses (const ProcessInstanceInfoMatch &match_info, ProcessInstance
     bool all_users = match_info.GetMatchAllUsers();
     const lldb::pid_t our_pid = getpid();
     const uid_t our_uid = getuid();
-    for (int i = 0; i < actual_pid_count; i++)
+    for (size_t i = 0; i < actual_pid_count; i++)
     {
         const struct kinfo_proc &kinfo = kinfos[i];
         
@@ -1239,7 +991,7 @@ Host::FindProcesses (const ProcessInstanceInfoMatch &match_info, ProcessInstance
           kinfo_user_matches = true;
 
         if (kinfo_user_matches == false         || // Make sure the user is acceptable
-            kinfo.kp_proc.p_pid == our_pid      || // Skip this process
+            static_cast<lldb::pid_t>(kinfo.kp_proc.p_pid) == our_pid || // Skip this process
             kinfo.kp_proc.p_pid == 0            || // Skip kernel (kernel pid is zero)
             kinfo.kp_proc.p_stat == SZOMB       || // Zombies are bad, they like brains...
             kinfo.kp_proc.p_flag & P_TRACED     || // Being debugged?
@@ -1261,11 +1013,14 @@ Host::FindProcesses (const ProcessInstanceInfoMatch &match_info, ProcessInstance
         // Make sure our info matches before we go fetch the name and cpu type
         if (match_info.Matches (process_info))
         {
-            if (GetMacOSXProcessArgs (&match_info, process_info))
+            // Get CPU type first so we can know to look for iOS simulator is we have x86 or x86_64
+            if (GetMacOSXProcessCPUType (process_info))
             {
-                GetMacOSXProcessCPUType (process_info);
-                if (match_info.Matches (process_info))
-                    process_infos.Append (process_info);
+                if (GetMacOSXProcessArgs (&match_info, process_info))
+                {
+                    if (match_info.Matches (process_info))
+                        process_infos.Append (process_info);
+                }
             }
         }
     }    
@@ -1277,11 +1032,12 @@ Host::GetProcessInfo (lldb::pid_t pid, ProcessInstanceInfo &process_info)
 {
     process_info.SetProcessID(pid);
     bool success = false;
-    
-    if (GetMacOSXProcessArgs (NULL, process_info))
+
+    // Get CPU type first so we can know to look for iOS simulator is we have x86 or x86_64
+    if (GetMacOSXProcessCPUType (process_info))
         success = true;
     
-    if (GetMacOSXProcessCPUType (process_info))
+    if (GetMacOSXProcessArgs (NULL, process_info))
         success = true;
     
     if (GetMacOSXProcessUserAndGroup (process_info))
@@ -1303,9 +1059,9 @@ PackageXPCArguments (xpc_object_t message, const char *prefix, const Args& args)
     memset(buf, 0, 50);
     sprintf(buf, "%sCount", prefix);
 	xpc_dictionary_set_int64(message, buf, count);
-    for (int i=0; i<count; i++) {
+    for (size_t i=0; i<count; i++) {
         memset(buf, 0, 50);
-        sprintf(buf, "%s%i", prefix, i);
+        sprintf(buf, "%s%zi", prefix, i);
         xpc_dictionary_set_string(message, buf, args.GetArgumentAtIndex(i));
     }
 }
@@ -1389,7 +1145,7 @@ getXPCAuthorization (ProcessLaunchInfo &launch_info)
 #endif
 
 static Error
-LaunchProcessXPC (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t &pid)
+LaunchProcessXPC(const char *exe_path, ProcessLaunchInfo &launch_info, lldb::pid_t &pid)
 {
 #if !NO_XPC_SERVICES
     Error error = getXPCAuthorization(launch_info);
@@ -1402,7 +1158,7 @@ LaunchProcessXPC (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t 
     const char *xpc_service  = nil;
     bool send_auth = false;
     AuthorizationExternalForm extForm;
-    if ((requested_uid == UINT32_MAX) || (requested_uid == Host::GetEffectiveUserID()))
+    if ((requested_uid == UINT32_MAX) || (requested_uid == HostInfo::GetEffectiveUserID()))
     {
         xpc_service = "com.apple.lldb.launcherXPCService";
     }
@@ -1448,7 +1204,7 @@ LaunchProcessXPC (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t 
                 return;
             } else if (event == XPC_ERROR_CONNECTION_INVALID) {
                 // The service is invalid. Either the service name supplied to xpc_connection_create() is incorrect
-                // or we (this process) have canceled the service; we can do any cleanup of appliation state at this point.
+                // or we (this process) have canceled the service; we can do any cleanup of application state at this point.
                 // printf("Service disconnected");
                 return;
             } else {
@@ -1475,7 +1231,7 @@ LaunchProcessXPC (const char *exe_path, ProcessLaunchInfo &launch_info, ::pid_t 
     // Posix spawn stuff.
     xpc_dictionary_set_int64(message, LauncherXPCServiceCPUTypeKey, launch_info.GetArchitecture().GetMachOCPUType());
     xpc_dictionary_set_int64(message, LauncherXPCServicePosixspawnFlagsKey, Host::GetPosixspawnFlags(launch_info));
-    const ProcessLaunchInfo::FileAction *file_action = launch_info.GetFileActionForFD(STDIN_FILENO);
+    const FileAction *file_action = launch_info.GetFileActionForFD(STDIN_FILENO);
     if (file_action && file_action->GetPath())
     {
         xpc_dictionary_set_string(message, LauncherXPCServiceStdInPathKeyKey, file_action->GetPath());
@@ -1539,7 +1295,7 @@ ShouldLaunchUsingXPC(ProcessLaunchInfo &launch_info)
 
 #if !NO_XPC_SERVICES    
     bool launchingAsRoot = launch_info.GetUserID() == 0;
-    bool currentUserIsRoot = Host::GetEffectiveUserID() == 0;
+    bool currentUserIsRoot = HostInfo::GetEffectiveUserID() == 0;
     
     if (launchingAsRoot && !currentUserIsRoot)
     {
@@ -1556,18 +1312,15 @@ Host::LaunchProcess (ProcessLaunchInfo &launch_info)
 {
     Error error;
     char exe_path[PATH_MAX];
-    PlatformSP host_platform_sp (Platform::GetDefaultPlatform ());
-    
-    const ArchSpec &arch_spec = launch_info.GetArchitecture();
-    
-    FileSpec exe_spec(launch_info.GetExecutableFile());
-    
-    FileSpec::FileType file_type = exe_spec.GetFileType();
+    PlatformSP host_platform_sp (Platform::GetHostPlatform ());
+
+    ModuleSpec exe_module_spec(launch_info.GetExecutableFile(), launch_info.GetArchitecture());
+
+    FileSpec::FileType file_type = exe_module_spec.GetFileSpec().GetFileType();
     if (file_type != FileSpec::eFileTypeRegular)
     {
         lldb::ModuleSP exe_module_sp;
-        error = host_platform_sp->ResolveExecutable (exe_spec,
-                                                     arch_spec,
+        error = host_platform_sp->ResolveExecutable (exe_module_spec,
                                                      exe_module_sp,
                                                      NULL);
         
@@ -1575,12 +1328,12 @@ Host::LaunchProcess (ProcessLaunchInfo &launch_info)
             return error;
         
         if (exe_module_sp)
-            exe_spec = exe_module_sp->GetFileSpec();
+            exe_module_spec.GetFileSpec() = exe_module_sp->GetFileSpec();
     }
     
-    if (exe_spec.Exists())
+    if (exe_module_spec.GetFileSpec().Exists())
     {
-        exe_spec.GetPath (exe_path, sizeof(exe_path));
+        exe_module_spec.GetFileSpec().GetPath (exe_path, sizeof(exe_path));
     }
     else
     {
@@ -1591,16 +1344,16 @@ Host::LaunchProcess (ProcessLaunchInfo &launch_info)
     
     if (launch_info.GetFlags().Test (eLaunchFlagLaunchInTTY))
     {
-#if !defined(__arm__)
+#if !defined(__arm__) && !defined(__arm64__) && !defined(__aarch64__)
         return LaunchInNewTerminalWithAppleScript (exe_path, launch_info);
 #else
-        error.SetErrorString ("launching a processs in a new terminal is not supported on iOS devices");
+        error.SetErrorString ("launching a process in a new terminal is not supported on iOS devices");
         return error;
 #endif
     }
-    
-    ::pid_t pid = LLDB_INVALID_PROCESS_ID;
-    
+
+    lldb::pid_t pid = LLDB_INVALID_PROCESS_ID;
+
     if (ShouldLaunchUsingXPC(launch_info))
     {
         error = LaunchProcessXPC(exe_path, launch_info, pid);
@@ -1619,7 +1372,12 @@ Host::LaunchProcess (ProcessLaunchInfo &launch_info)
         if (!launch_info.MonitorProcess())
         {
             const bool monitor_signals = false;
-            StartMonitoringChildProcess (Process::SetProcessExitStatus, 
+            Host::MonitorChildProcessCallback callback = nullptr;
+            
+            if (!launch_info.GetFlags().Test(lldb::eLaunchFlagDontSetExitStatus))
+                callback = Process::SetProcessExitStatus;
+
+            StartMonitoringChildProcess (callback,
                                          NULL, 
                                          pid, 
                                          monitor_signals);
@@ -1634,13 +1392,9 @@ Host::LaunchProcess (ProcessLaunchInfo &launch_info)
     return error;
 }
 
-lldb::thread_t
-Host::StartMonitoringChildProcess (Host::MonitorChildProcessCallback callback,
-                                   void *callback_baton,
-                                   lldb::pid_t pid,
-                                   bool monitor_signals)
+HostThread
+Host::StartMonitoringChildProcess(Host::MonitorChildProcessCallback callback, void *callback_baton, lldb::pid_t pid, bool monitor_signals)
 {
-    lldb::thread_t thread = LLDB_INVALID_HOST_THREAD;
     unsigned long mask = DISPATCH_PROC_EXIT;
     if (monitor_signals)
         mask |= DISPATCH_PROC_SIGNAL;
@@ -1726,7 +1480,7 @@ Host::StartMonitoringChildProcess (Host::MonitorChildProcessCallback callback,
 
         ::dispatch_resume (source);
     }
-    return thread;
+    return HostThread();
 }
 
 //----------------------------------------------------------------------

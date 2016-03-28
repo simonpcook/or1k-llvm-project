@@ -7,31 +7,29 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "lld/ReaderWriter/Reader.h"
-#include "lld/ReaderWriter/Simple.h"
-#include "lld/ReaderWriter/Writer.h"
-#include "lld/ReaderWriter/YamlContext.h"
-
 #include "lld/Core/ArchiveLibraryFile.h"
 #include "lld/Core/DefinedAtom.h"
 #include "lld/Core/Error.h"
 #include "lld/Core/File.h"
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Reference.h"
-
+#include "lld/Core/Simple.h"
+#include "lld/ReaderWriter/Reader.h"
+#include "lld/ReaderWriter/Writer.h"
+#include "lld/ReaderWriter/YamlContext.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
-
 #include <memory>
 #include <string>
+#include <system_error>
 
 using llvm::yaml::MappingTraits;
 using llvm::yaml::ScalarEnumerationTraits;
@@ -63,13 +61,20 @@ class RefNameBuilder {
 public:
   RefNameBuilder(const lld::File &file)
       : _collisionCount(0), _unnamedCounter(0) {
-    if (&file == nullptr)
-      return;
     // visit all atoms
     for (const lld::DefinedAtom *atom : file.defined()) {
       // Build map of atoms names to detect duplicates
       if (!atom->name().empty())
         buildDuplicateNameMap(*atom);
+
+      if (atom->isGroupParent()) {
+        for (const lld::Reference *ref : *atom) {
+          if (ref->kindNamespace() != lld::Reference::KindNamespace::all)
+            continue;
+          if (ref->kindValue() == lld::Reference::kindGroupChild)
+            buildDuplicateNameMap(*ref->target());
+        }
+      }
 
       // Find references to unnamed atoms and create ref-names for them.
       for (const lld::Reference *ref : *atom) {
@@ -84,7 +89,7 @@ public:
           DEBUG_WITH_TYPE("WriterYAML",
                           llvm::dbgs() << "unnamed atom: creating ref-name: '"
                                        << newName << "' ("
-                                       << (void *)newName.data() << ", "
+                                       << (const void *)newName.data() << ", "
                                        << newName.size() << ")\n");
         }
       }
@@ -113,7 +118,8 @@ public:
       _refNames[&atom] = newName;
       DEBUG_WITH_TYPE("WriterYAML",
                       llvm::dbgs() << "name collsion: creating ref-name: '"
-                                   << newName << "' (" << (void *)newName.data()
+                                   << newName << "' ("
+                                   << (const void *)newName.data()
                                    << ", " << newName.size() << ")\n");
       const lld::Atom *prevAtom = pos->second;
       AtomToRefName::iterator pos2 = _refNames.find(prevAtom);
@@ -127,7 +133,7 @@ public:
         DEBUG_WITH_TYPE("WriterYAML",
                         llvm::dbgs() << "name collsion: creating ref-name: '"
                                      << newName2 << "' ("
-                                     << (void *)newName2.data() << ", "
+                                     << (const void *)newName2.data() << ", "
                                      << newName2.size() << ")\n");
       }
     } else {
@@ -136,8 +142,8 @@ public:
       DEBUG_WITH_TYPE("WriterYAML", llvm::dbgs()
                                         << "atom name seen for first time: '"
                                         << atom.name() << "' ("
-                                        << (void *)atom.name().data() << ", "
-                                        << atom.name().size() << ")\n");
+                                        << (const void *)atom.name().data()
+                                        << ", " << atom.name().size() << ")\n");
     }
   }
 
@@ -174,18 +180,37 @@ public:
 
   const lld::Atom *lookup(StringRef name) const {
     NameToAtom::const_iterator pos = _nameMap.find(name);
-    if (pos != _nameMap.end()) {
+    if (pos != _nameMap.end())
       return pos->second;
-    } else {
-      _io.setError(Twine("no such atom name: ") + name);
-      return nullptr;
-    }
+    _io.setError(Twine("no such atom name: ") + name);
+    return nullptr;
+  }
+
+  /// \brief Lookup a group parent when there is a reference of type
+  /// kindGroupChild. If there was no group-parent produce an appropriate
+  /// error.
+  const lld::Atom *lookupGroupParent(StringRef name) const {
+    NameToAtom::const_iterator pos = _groupMap.find(name);
+    if (pos != _groupMap.end())
+      return pos->second;
+    _io.setError(Twine("no such group name: ") + name);
+    return nullptr;
   }
 
 private:
   typedef llvm::StringMap<const lld::Atom *> NameToAtom;
 
   void add(StringRef name, const lld::Atom *atom) {
+    if (const lld::DefinedAtom *da = dyn_cast<DefinedAtom>(atom)) {
+      if (da->isGroupParent()) {
+        if (_groupMap.count(name)) {
+          _io.setError(Twine("duplicate group name: ") + name);
+        } else {
+          _groupMap[name] = atom;
+        }
+        return;
+      }
+    }
     if (_nameMap.count(name)) {
       _io.setError(Twine("duplicate atom name: ") + name);
     } else {
@@ -195,6 +220,7 @@ private:
 
   IO &_io;
   NameToAtom _nameMap;
+  NameToAtom _groupMap;
 };
 
 // Used in NormalizedFile to hold the atoms lists.
@@ -286,6 +312,8 @@ template <> struct ScalarTraits<RefKind> {
       return StringRef();
     return StringRef("unknown reference kind");
   }
+
+  static bool mustQuote(StringRef) { return false; }
 };
 
 template <> struct ScalarEnumerationTraits<lld::File::Kind> {
@@ -359,6 +387,16 @@ template <> struct ScalarEnumerationTraits<lld::DefinedAtom::DynamicExport> {
   }
 };
 
+template <> struct ScalarEnumerationTraits<lld::DefinedAtom::CodeModel> {
+  static void enumeration(IO &io, lld::DefinedAtom::CodeModel &value) {
+    io.enumCase(value, "none", lld::DefinedAtom::codeNA);
+    io.enumCase(value, "mips-pic", lld::DefinedAtom::codeMipsPIC);
+    io.enumCase(value, "mips-micro", lld::DefinedAtom::codeMipsMicro);
+    io.enumCase(value, "mips-micro-pic", lld::DefinedAtom::codeMipsMicroPIC);
+    io.enumCase(value, "mips-16", lld::DefinedAtom::codeMips16);
+  }
+};
+
 template <>
 struct ScalarEnumerationTraits<lld::DefinedAtom::ContentPermissions> {
   static void enumeration(IO &io, lld::DefinedAtom::ContentPermissions &value) {
@@ -410,18 +448,24 @@ template <> struct ScalarEnumerationTraits<lld::DefinedAtom::ContentType> {
                                           DefinedAtom::typeObjC2CategoryList);
     io.enumCase(value, "objc-class1",     DefinedAtom::typeObjC1Class);
     io.enumCase(value, "dtraceDOF",       DefinedAtom::typeDTraceDOF);
+    io.enumCase(value, "interposing-tuples",
+                                          DefinedAtom::typeInterposingTuples);
     io.enumCase(value, "lto-temp",        DefinedAtom::typeTempLTO);
     io.enumCase(value, "compact-unwind",  DefinedAtom::typeCompactUnwindInfo);
+    io.enumCase(value, "unwind-info",     DefinedAtom::typeProcessedUnwindInfo);
     io.enumCase(value, "tlv-thunk",       DefinedAtom::typeThunkTLV);
     io.enumCase(value, "tlv-data",        DefinedAtom::typeTLVInitialData);
     io.enumCase(value, "tlv-zero-fill",   DefinedAtom::typeTLVInitialZeroFill);
     io.enumCase(value, "tlv-initializer-ptr",
                                           DefinedAtom::typeTLVInitializerPtr);
+    io.enumCase(value, "mach_header",     DefinedAtom::typeMachHeader);
     io.enumCase(value, "thread-data",     DefinedAtom::typeThreadData);
     io.enumCase(value, "thread-zero-fill",DefinedAtom::typeThreadZeroFill);
     io.enumCase(value, "ro-note",         DefinedAtom::typeRONote);
     io.enumCase(value, "rw-note",         DefinedAtom::typeRWNote);
     io.enumCase(value, "no-alloc",        DefinedAtom::typeNoAlloc);
+    io.enumCase(value, "group-comdat", DefinedAtom::typeGroupComdat);
+    io.enumCase(value, "gnu-linkonce", DefinedAtom::typeGnuLinkOnce);
   }
 };
 
@@ -492,6 +536,8 @@ template <> struct ScalarTraits<lld::DefinedAtom::Alignment> {
     }
     return StringRef(); // returning empty string means success
   }
+
+  static bool mustQuote(StringRef) { return false; }
 };
 
 template <> struct ScalarEnumerationTraits<FileKinds> {
@@ -538,6 +584,8 @@ template <> struct ScalarTraits<ImplicitHex8> {
     val = n;
     return StringRef(); // returning empty string means success
   }
+
+  static bool mustQuote(StringRef) { return false; }
 };
 
 // YAML conversion for std::vector<const lld::File*>
@@ -599,9 +647,9 @@ template <> struct MappingTraits<const lld::File *> {
       return nullptr;
     }
 
-    virtual error_code
+    virtual std::error_code
     parseAllMembers(std::vector<std::unique_ptr<File>> &result) const override {
-      return error_code::success();
+      return std::error_code();
     }
 
     StringRef               _path;
@@ -648,7 +696,7 @@ template <> struct MappingTraits<const lld::File *> {
     }
 
     IO                                  &_io;
-    RefNameBuilder                      *_rnb;
+    std::unique_ptr<RefNameBuilder> _rnb;
     StringRef                            _path;
     AtomList<lld::DefinedAtom>           _definedAtoms;
     AtomList<lld::UndefinedAtom>         _undefinedAtoms;
@@ -720,8 +768,8 @@ template <> struct MappingTraits<const lld::Reference *> {
       DEBUG_WITH_TYPE("WriterYAML", llvm::dbgs()
                                         << "created Reference to name: '"
                                         << _targetName << "' ("
-                                        << (void *)_targetName.data() << ", "
-                                        << _targetName.size() << ")\n");
+                                        << (const void *)_targetName.data()
+                                        << ", " << _targetName.size() << ")\n");
       setKindNamespace(_mappedKind.ns);
       setKindArch(_mappedKind.arch);
       setKindValue(_mappedKind.value);
@@ -761,7 +809,7 @@ template <> struct MappingTraits<const lld::DefinedAtom *> {
   public:
     NormalizedAtom(IO &io)
         : _file(fileFromContext(io)), _name(), _refName(), _contentType(),
-          _alignment(0), _content(), _references() {
+          _alignment(0), _content(), _references(), _isGroupChild(false) {
       static uint32_t ordinalCounter = 1;
       _ordinal = ordinalCounter++;
     }
@@ -772,6 +820,7 @@ template <> struct MappingTraits<const lld::DefinedAtom *> {
           _alignment(atom->alignment()), _sectionChoice(atom->sectionChoice()),
           _sectionPosition(atom->sectionPosition()),
           _deadStrip(atom->deadStrip()), _dynamicExport(atom->dynamicExport()),
+          _codeModel(atom->codeModel()),
           _permissions(atom->permissions()), _size(atom->size()),
           _sectionName(atom->customSectionName()) {
       for (const lld::Reference *r : *atom)
@@ -796,8 +845,8 @@ template <> struct MappingTraits<const lld::DefinedAtom *> {
         _sectionName = f->copyString(_sectionName);
       DEBUG_WITH_TYPE("WriterYAML",
                       llvm::dbgs() << "created DefinedAtom named: '" << _name
-                                   << "' (" << (void *)_name.data() << ", "
-                                   << _name.size() << ")\n");
+                                   << "' (" << (const void *)_name.data()
+                                   << ", " << _name.size() << ")\n");
       return this;
     }
     void bind(const RefNameResolver &);
@@ -822,8 +871,10 @@ template <> struct MappingTraits<const lld::DefinedAtom *> {
     SectionPosition sectionPosition() const override { return _sectionPosition; }
     DeadStripKind deadStrip() const override { return _deadStrip; }
     DynamicExport dynamicExport() const override { return _dynamicExport; }
+    CodeModel codeModel() const override { return _codeModel; }
     ContentPermissions permissions() const override { return _permissions; }
-    bool isAlias() const override { return false; }
+    void setGroupChild(bool val) { _isGroupChild = val; }
+    bool isGroupChild() const { return _isGroupChild; }
     ArrayRef<uint8_t> rawContent() const override {
       if (!occupiesDiskSpace())
         return ArrayRef<uint8_t>();
@@ -866,12 +917,14 @@ template <> struct MappingTraits<const lld::DefinedAtom *> {
     SectionPosition                     _sectionPosition;
     DeadStripKind                       _deadStrip;
     DynamicExport                       _dynamicExport;
+    CodeModel                           _codeModel;
     ContentPermissions                  _permissions;
     uint32_t                            _ordinal;
     std::vector<ImplicitHex8>           _content;
     uint64_t                            _size;
     StringRef                           _sectionName;
     std::vector<const lld::Reference *> _references;
+    bool _isGroupChild;
   };
 
   static void mapping(IO &io, const lld::DefinedAtom *&atom) {
@@ -912,6 +965,7 @@ template <> struct MappingTraits<const lld::DefinedAtom *> {
                                          DefinedAtom::deadStripNormal);
     io.mapOptional("dynamic-export",   keys->_dynamicExport,
                                          DefinedAtom::dynamicExportNormal);
+    io.mapOptional("code-model",       keys->_codeModel, DefinedAtom::codeNA);
     // default permissions based on content type
     io.mapOptional("permissions",      keys->_permissions,
                                          DefinedAtom::permissions(
@@ -943,7 +997,7 @@ template <> struct MappingTraits<const lld::UndefinedAtom *> {
 
       DEBUG_WITH_TYPE("WriterYAML",
                       llvm::dbgs() << "created UndefinedAtom named: '" << _name
-                      << "' (" << (void *)_name.data() << ", "
+                      << "' (" << (const void *)_name.data() << ", "
                       << _name.size() << ")\n");
       return this;
     }
@@ -1004,7 +1058,8 @@ template <> struct MappingTraits<const lld::SharedLibraryAtom *> {
 
       DEBUG_WITH_TYPE("WriterYAML",
                       llvm::dbgs() << "created SharedLibraryAtom named: '"
-                                   << _name << "' (" << (void *)_name.data()
+                                   << _name << "' ("
+                                   << (const void *)_name.data()
                                    << ", " << _name.size() << ")\n");
       return this;
     }
@@ -1065,8 +1120,8 @@ template <> struct MappingTraits<const lld::AbsoluteAtom *> {
 
       DEBUG_WITH_TYPE("WriterYAML",
                       llvm::dbgs() << "created AbsoluteAtom named: '" << _name
-                                   << "' (" << (void *)_name.data() << ", "
-                                   << _name.size() << ")\n");
+                                   << "' (" << (const void *)_name.data()
+                                   << ", " << _name.size() << ")\n");
       return this;
     }
     // Extract current File object from YAML I/O parsing context
@@ -1119,7 +1174,7 @@ RefNameResolver::RefNameResolver(const lld::File *file, IO &io) : _io(io) {
   typedef MappingTraits<const lld::DefinedAtom *>::NormalizedAtom
   NormalizedAtom;
   for (const lld::DefinedAtom *a : file->defined()) {
-    NormalizedAtom *na = (NormalizedAtom *)a;
+    const auto *na = (const NormalizedAtom *)a;
     if (!na->_refName.empty())
       add(na->_refName, a);
     else if (!na->_name.empty())
@@ -1134,7 +1189,7 @@ RefNameResolver::RefNameResolver(const lld::File *file, IO &io) : _io(io) {
 
   typedef MappingTraits<const lld::AbsoluteAtom *>::NormalizedAtom NormAbsAtom;
   for (const lld::AbsoluteAtom *a : file->absolute()) {
-    NormAbsAtom *na = (NormAbsAtom *)a;
+    const auto *na = (const NormAbsAtom *)a;
     if (na->_refName.empty())
       add(na->_name, a);
     else
@@ -1150,9 +1205,17 @@ MappingTraits<const lld::File *>::NormalizedFile::denormalize(IO &io) {
   RefNameResolver nameResolver(this, io);
   // Now that all atoms are parsed, references can be bound.
   for (const lld::DefinedAtom *a : this->defined()) {
-    NormalizedAtom *normAtom = (NormalizedAtom *)a;
+    auto *normAtom = (NormalizedAtom *)const_cast<DefinedAtom *>(a);
     normAtom->bind(nameResolver);
   }
+
+  _definedAtoms._atoms.erase(
+      std::remove_if(_definedAtoms._atoms.begin(), _definedAtoms._atoms.end(),
+                     [](const DefinedAtom *a) {
+        return ((const NormalizedAtom *)a)->isGroupChild();
+      }),
+      _definedAtoms._atoms.end());
+
   return this;
 }
 
@@ -1161,14 +1224,21 @@ inline void MappingTraits<const lld::DefinedAtom *>::NormalizedAtom::bind(
   typedef MappingTraits<const lld::Reference *>::NormalizedReference
   NormalizedReference;
   for (const lld::Reference *ref : _references) {
-    NormalizedReference *normRef = (NormalizedReference *)ref;
+    auto *normRef = (NormalizedReference *)const_cast<Reference *>(ref);
     normRef->bind(resolver);
   }
 }
 
 inline void MappingTraits<const lld::Reference *>::NormalizedReference::bind(
     const RefNameResolver &resolver) {
+  typedef MappingTraits<const lld::DefinedAtom *>::NormalizedAtom NormalizedAtom;
+
   _target = resolver.lookup(_targetName);
+
+  if (_mappedKind.ns == lld::Reference::KindNamespace::all &&
+      _mappedKind.value == lld::Reference::kindGroupChild) {
+    ((NormalizedAtom *)const_cast<Atom *>(_target))->setGroupChild(true);
+  }
 }
 
 inline StringRef
@@ -1180,9 +1250,9 @@ MappingTraits<const lld::Reference *>::NormalizedReference::targetName(
   assert(info != nullptr);
   typedef MappingTraits<const lld::File *>::NormalizedFile NormalizedFile;
   NormalizedFile *f = reinterpret_cast<NormalizedFile *>(info->_file);
-  RefNameBuilder *rnb = f->_rnb;
-  if (rnb->hasRefName(ref->target()))
-    return rnb->refName(ref->target());
+  RefNameBuilder &rnb = *f->_rnb;
+  if (rnb.hasRefName(ref->target()))
+    return rnb.refName(ref->target());
   return ref->target()->name();
 }
 
@@ -1193,12 +1263,12 @@ class Writer : public lld::Writer {
 public:
   Writer(const LinkingContext &context) : _context(context) {}
 
-  error_code writeFile(const lld::File &file, StringRef outPath) override {
+  std::error_code writeFile(const lld::File &file, StringRef outPath) override {
     // Create stream to path.
-    std::string errorInfo;
-    llvm::raw_fd_ostream out(outPath.data(), errorInfo, llvm::sys::fs::F_Text);
-    if (!errorInfo.empty())
-      return llvm::make_error_code(llvm::errc::no_such_file_or_directory);
+    std::error_code ec;
+    llvm::raw_fd_ostream out(outPath.data(), ec, llvm::sys::fs::F_Text);
+    if (ec)
+      return ec;
 
     // Create yaml Output writer, using yaml options for context.
     YamlContext yamlContext;
@@ -1210,7 +1280,7 @@ public:
     const lld::File *fileRef = &file;
     yout << fileRef;
 
-    return error_code::success();
+    return std::error_code();
   }
 
 private:
@@ -1254,16 +1324,9 @@ public:
     return (ext.equals(".objtxt") || ext.equals(".yaml"));
   }
 
-  error_code
-  parseFile(std::unique_ptr<MemoryBuffer> &mb, const class Registry &,
+  std::error_code
+  parseFile(std::unique_ptr<MemoryBuffer> mb, const class Registry &,
             std::vector<std::unique_ptr<File>> &result) const override {
-    // Note: we do not take ownership of the MemoryBuffer.  That is
-    // because yaml may produce multiple File objects, so there is no
-    // *one* File to take ownership.  Therefore, the yaml File objects
-    // produced must make copies of all strings that come from YAML I/O.
-    // Otherwise the strings will become invalid when this MemoryBuffer
-    // is deallocated.
-
     // Create YAML Input Reader.
     YamlContext yamlContext;
     yamlContext._registry = &_registry;
@@ -1278,9 +1341,12 @@ public:
     if (yin.error())
       return make_error_code(lld::YamlReaderError::illegal_value);
 
+    std::shared_ptr<MemoryBuffer> smb(mb.release());
     for (const File *file : createdFiles) {
       // Note: parseFile() should return vector of *const* File
       File *f = const_cast<File *>(file);
+      f->setLastError(std::error_code());
+      f->setSharedMemoryBuffer(smb);
       result.emplace_back(f);
     }
     return make_error_code(lld::YamlReaderError::success);

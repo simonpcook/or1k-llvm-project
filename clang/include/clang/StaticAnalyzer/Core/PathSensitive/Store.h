@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_GR_STORE_H
-#define LLVM_CLANG_GR_STORE_H
+#ifndef LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_STORE_H
+#define LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_STORE_H
 
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
@@ -220,7 +220,8 @@ public:
     bool First;
 
   public:
-    FindUniqueBinding(SymbolRef sym) : Sym(sym), Binding(0), First(true) {}
+    FindUniqueBinding(SymbolRef sym)
+      : Sym(sym), Binding(nullptr), First(true) {}
 
     bool HandleBinding(StoreManager& SMgr, Store store, const MemRegion* R,
                        SVal val) override;
@@ -275,8 +276,10 @@ inline StoreRef &StoreRef::operator=(StoreRef const &newStore) {
 }
 
 // FIXME: Do we need to pass ProgramStateManager anymore?
-StoreManager *CreateRegionStoreManager(ProgramStateManager& StMgr);
-StoreManager *CreateFieldsOnlyRegionStoreManager(ProgramStateManager& StMgr);
+std::unique_ptr<StoreManager>
+CreateRegionStoreManager(ProgramStateManager &StMgr);
+std::unique_ptr<StoreManager>
+CreateFieldsOnlyRegionStoreManager(ProgramStateManager &StMgr);
 
 } // end GR namespace
 

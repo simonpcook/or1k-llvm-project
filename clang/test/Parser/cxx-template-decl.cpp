@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -fsyntax-only -verify %s
 // RUN: %clang_cc1 -fsyntax-only -verify %s -fdelayed-template-parsing -DDELAYED_TEMPLATE_PARSING
+// RUN: %clang_cc1 -fsyntax-only -verify -std=gnu++1z %s
 
 
 
@@ -23,6 +24,11 @@ template <template X> struct Err1; // expected-error {{expected '<' after 'templ
 // expected-error{{extraneous}}
 template <template <typename> > struct Err2;       // expected-error {{template template parameter requires 'class' after the parameter list}}
 template <template <typename> Foo> struct Err3;    // expected-error {{template template parameter requires 'class' after the parameter list}}
+
+template <template <typename> typename Foo> struct Cxx1z;
+#if __cplusplus <= 201402L
+// expected-warning@-2 {{extension}}
+#endif
 
 // Template function declarations
 template <typename T> void foo();
@@ -202,5 +208,33 @@ void Instantiate() {
   sassert(sizeof(L<0>::O<int>::Fun(0)) == sizeof(one)); 
   sassert(sizeof(L<0>::O<char>::Fun(0)) == sizeof(one));
 }
+
+}
+
+namespace func_tmpl_spec_def_in_func {
+// We failed to diagnose function template specialization definitions inside
+// functions during recovery previously.
+template <class> void FuncTemplate() {}
+void TopLevelFunc() {
+  // expected-error@+2 {{expected a qualified name after 'typename'}}
+  // expected-error@+1 {{function definition is not allowed here}}
+  typename template <> void FuncTemplate<void>() { }
+  // expected-error@+1 {{function definition is not allowed here}}
+  void NonTemplateInner() { }
+}
+}
+
+namespace broken_baseclause {
+template<typename T>
+struct base { };
+
+struct t1 : base<int,
+  public:  // expected-error {{expected expression}}
+};  // expected-error {{expected class name}}
+// expected-error@-1 {{expected '{' after base class list}}
+struct t2 : base<int,
+  public  // expected-error {{expected expression}}
+};  // expected-error {{expected class name}}
+// expected-error@-1 {{expected '{' after base class list}}
 
 }

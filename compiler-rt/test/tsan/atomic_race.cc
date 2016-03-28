@@ -1,4 +1,4 @@
-// RUN: %clangxx_tsan -O1 %s -o %t && not %t 2>&1 | FileCheck %s
+// RUN: %clangxx_tsan -O1 %s -o %t && %deflake %run %t | FileCheck %s
 #include <pthread.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -36,7 +36,7 @@ void *Thread(void *p) {
   for (int i = 0; i < kTestCount; i++) {
     Test(i, &atomics[i], false);
   }
-  sleep(2);
+  sleep(4);
   for (int i = 0; i < kTestCount; i++) {
     fprintf(stderr, "Test %d reverse\n", i);
     Test(i, &atomics[kTestCount + i], false);

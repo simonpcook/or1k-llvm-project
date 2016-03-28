@@ -36,45 +36,38 @@ bool DisabledInThisThread() { return disable_counter > 0; }
 
 Flags lsan_flags;
 
-static void InitializeFlags() {
+void Flags::SetDefaults() {
+#define LSAN_FLAG(Type, Name, DefaultValue, Description) Name = DefaultValue;
+#include "lsan_flags.inc"
+#undef LSAN_FLAG
+}
+
+void Flags::ParseFromString(const char *str) {
+#define LSAN_FLAG(Type, Name, DefaultValue, Description)                       \
+  ParseFlag(str, &Name, #Name, Description);
+#include "lsan_flags.inc"
+#undef LSAN_FLAG
+}
+
+static void InitializeFlags(bool standalone) {
   Flags *f = flags();
-  // Default values.
-  f->report_objects = false;
-  f->resolution = 0;
-  f->max_leaks = 0;
-  f->exitcode = 23;
-  f->print_suppressions = true;
-  f->suppressions="";
-  f->use_registers = true;
-  f->use_globals = true;
-  f->use_stacks = true;
-  f->use_tls = true;
-  f->use_root_regions = true;
-  f->use_unaligned = false;
-  f->use_poisoned = false;
-  f->log_pointers = false;
-  f->log_threads = false;
+  f->SetDefaults();
 
   const char *options = GetEnv("LSAN_OPTIONS");
-  if (options) {
-    ParseFlag(options, &f->use_registers, "use_registers", "");
-    ParseFlag(options, &f->use_globals, "use_globals", "");
-    ParseFlag(options, &f->use_stacks, "use_stacks", "");
-    ParseFlag(options, &f->use_tls, "use_tls", "");
-    ParseFlag(options, &f->use_root_regions, "use_root_regions", "");
-    ParseFlag(options, &f->use_unaligned, "use_unaligned", "");
-    ParseFlag(options, &f->use_poisoned, "use_poisoned", "");
-    ParseFlag(options, &f->report_objects, "report_objects", "");
-    ParseFlag(options, &f->resolution, "resolution", "");
-    CHECK_GE(&f->resolution, 0);
-    ParseFlag(options, &f->max_leaks, "max_leaks", "");
-    CHECK_GE(&f->max_leaks, 0);
-    ParseFlag(options, &f->log_pointers, "log_pointers", "");
-    ParseFlag(options, &f->log_threads, "log_threads", "");
-    ParseFlag(options, &f->exitcode, "exitcode", "");
-    ParseFlag(options, &f->print_suppressions, "print_suppressions", "");
-    ParseFlag(options, &f->suppressions, "suppressions", "");
+  f->ParseFromString(options);
+
+  // Set defaults for common flags (only in standalone mode) and parse
+  // them from LSAN_OPTIONS.
+  if (standalone) {
+    SetCommonFlagsDefaults();
+    CommonFlags cf;
+    cf.CopyFrom(*common_flags());
+    cf.external_symbolizer_path = GetEnv("LSAN_SYMBOLIZER_PATH");
+    cf.malloc_context_size = 30;
+    cf.detect_leaks = true;
+    OverrideCommonFlags(cf);
   }
+  ParseCommonFlagsFromString(options);
 }
 
 #define LOG_POINTERS(...)                           \
@@ -87,24 +80,14 @@ static void InitializeFlags() {
     if (flags()->log_threads) Report(__VA_ARGS__); \
   } while (0);
 
-SuppressionContext *suppression_ctx;
+static bool suppressions_inited = false;
 
 void InitializeSuppressions() {
-  CHECK(!suppression_ctx);
-  ALIGNED(64) static char placeholder[sizeof(SuppressionContext)];
-  suppression_ctx = new(placeholder) SuppressionContext;
-  char *suppressions_from_file;
-  uptr buffer_size;
-  if (ReadFileToBuffer(flags()->suppressions, &suppressions_from_file,
-                       &buffer_size, 1 << 26 /* max_len */))
-    suppression_ctx->Parse(suppressions_from_file);
-  if (flags()->suppressions[0] && !buffer_size) {
-    Printf("LeakSanitizer: failed to read suppressions file '%s'\n",
-           flags()->suppressions);
-    Die();
-  }
+  CHECK(!suppressions_inited);
+  SuppressionContext::InitIfNecessary();
   if (&__lsan_default_suppressions)
-    suppression_ctx->Parse(__lsan_default_suppressions());
+    SuppressionContext::Get()->Parse(__lsan_default_suppressions());
+  suppressions_inited = true;
 }
 
 struct RootRegion {
@@ -120,8 +103,8 @@ void InitializeRootRegions() {
   root_regions = new(placeholder) InternalMmapVector<RootRegion>(1);
 }
 
-void InitCommonLsan() {
-  InitializeFlags();
+void InitCommonLsan(bool standalone) {
+  InitializeFlags(standalone);
   InitializeRootRegions();
   if (common_flags()->detect_leaks) {
     // Initialization which can fail or print warnings should only be done if
@@ -131,9 +114,9 @@ void InitCommonLsan() {
   }
 }
 
-class Decorator: private __sanitizer::AnsiColorDecorator {
+class Decorator: public __sanitizer::SanitizerCommonDecorator {
  public:
-  Decorator() : __sanitizer::AnsiColorDecorator(PrintsToTtyCached()) { }
+  Decorator() : SanitizerCommonDecorator() { }
   const char *Error() { return Red(); }
   const char *Leak() { return Blue(); }
   const char *End() { return Default(); }
@@ -358,9 +341,7 @@ static void ClassifyAllChunks(SuspendedThreadsList const &suspended_threads) {
 
 static void PrintStackTraceById(u32 stack_trace_id) {
   CHECK(stack_trace_id);
-  uptr size = 0;
-  const uptr *trace = StackDepotGet(stack_trace_id, &size);
-  StackTrace::PrintStack(trace, size);
+  StackDepotGet(stack_trace_id).Print();
 }
 
 // ForEachChunk callback. Aggregates information about unreachable chunks into
@@ -375,10 +356,9 @@ static void CollectLeaksCb(uptr chunk, void *arg) {
     uptr resolution = flags()->resolution;
     u32 stack_trace_id = 0;
     if (resolution > 0) {
-      uptr size = 0;
-      const uptr *trace = StackDepotGet(m.stack_trace_id(), &size);
-      size = Min(size, resolution);
-      stack_trace_id = StackDepotPut(trace, size);
+      StackTrace stack = StackDepotGet(m.stack_trace_id());
+      stack.size = Min(stack.size, resolution);
+      stack_trace_id = StackDepotPut(stack);
     } else {
       stack_trace_id = m.stack_trace_id();
     }
@@ -389,7 +369,7 @@ static void CollectLeaksCb(uptr chunk, void *arg) {
 
 static void PrintMatchedSuppressions() {
   InternalMmapVector<Suppression *> matched(1);
-  suppression_ctx->GetMatched(&matched);
+  SuppressionContext::Get()->GetMatched(&matched);
   if (!matched.size())
     return;
   const char *line = "-----------------------------------------------------";
@@ -450,46 +430,47 @@ void DoLeakCheck() {
     Printf("%s", d.End());
     param.leak_report.ReportTopLeaks(flags()->max_leaks);
   }
-  if (flags()->print_suppressions)
+  if (common_flags()->print_suppressions)
     PrintMatchedSuppressions();
   if (unsuppressed_count > 0) {
     param.leak_report.PrintSummary();
-    if (flags()->exitcode)
+    if (flags()->exitcode) {
+      if (common_flags()->coverage)
+        __sanitizer_cov_dump();
       internal__exit(flags()->exitcode);
+    }
   }
 }
 
 static Suppression *GetSuppressionForAddr(uptr addr) {
-  Suppression *s;
+  Suppression *s = nullptr;
 
   // Suppress by module name.
   const char *module_name;
   uptr module_offset;
-  if (Symbolizer::Get()->GetModuleNameAndOffsetForPC(addr, &module_name,
-                                                     &module_offset) &&
-      suppression_ctx->Match(module_name, SuppressionLeak, &s))
+  if (Symbolizer::GetOrInit()->GetModuleNameAndOffsetForPC(addr, &module_name,
+                                                           &module_offset) &&
+      SuppressionContext::Get()->Match(module_name, SuppressionLeak, &s))
     return s;
 
   // Suppress by file or function name.
-  static const uptr kMaxAddrFrames = 16;
-  InternalScopedBuffer<AddressInfo> addr_frames(kMaxAddrFrames);
-  for (uptr i = 0; i < kMaxAddrFrames; i++) new (&addr_frames[i]) AddressInfo();
-  uptr addr_frames_num = Symbolizer::Get()->SymbolizePC(
-      addr, addr_frames.data(), kMaxAddrFrames);
-  for (uptr i = 0; i < addr_frames_num; i++) {
-    if (suppression_ctx->Match(addr_frames[i].function, SuppressionLeak, &s) ||
-        suppression_ctx->Match(addr_frames[i].file, SuppressionLeak, &s))
-      return s;
+  SymbolizedStack *frames = Symbolizer::GetOrInit()->SymbolizePC(addr);
+  for (SymbolizedStack *cur = frames; cur; cur = cur->next) {
+    if (SuppressionContext::Get()->Match(cur->info.function, SuppressionLeak,
+                                         &s) ||
+        SuppressionContext::Get()->Match(cur->info.file, SuppressionLeak, &s)) {
+      break;
+    }
   }
-  return 0;
+  frames->ClearAll();
+  return s;
 }
 
 static Suppression *GetSuppressionForStack(u32 stack_trace_id) {
-  uptr size = 0;
-  const uptr *trace = StackDepotGet(stack_trace_id, &size);
-  for (uptr i = 0; i < size; i++) {
-    Suppression *s =
-        GetSuppressionForAddr(StackTrace::GetPreviousInstructionPc(trace[i]));
+  StackTrace stack = StackDepotGet(stack_trace_id);
+  for (uptr i = 0; i < stack.size; i++) {
+    Suppression *s = GetSuppressionForAddr(
+        StackTrace::GetPreviousInstructionPc(stack.trace[i]));
     if (s) return s;
   }
   return 0;
@@ -595,10 +576,9 @@ void LeakReport::PrintSummary() {
       bytes += leaks_[i].total_size;
       allocations += leaks_[i].hit_count;
   }
-  InternalScopedBuffer<char> summary(kMaxSummaryLength);
-  internal_snprintf(summary.data(), summary.size(),
-                    "%zu byte(s) leaked in %zu allocation(s).", bytes,
-                    allocations);
+  InternalScopedString summary(kMaxSummaryLength);
+  summary.append("%zu byte(s) leaked in %zu allocation(s).", bytes,
+                 allocations);
   ReportErrorSummary(summary.data());
 }
 

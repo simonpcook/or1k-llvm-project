@@ -13,14 +13,11 @@
 #include "lld/Core/Error.h"
 #include "lld/Core/InputGraph.h"
 #include "lld/Core/LLVM.h"
-#include "lld/Core/range.h"
 #include "lld/Core/Reference.h"
-
+#include "lld/Core/range.h"
 #include "lld/ReaderWriter/Reader.h"
-
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/raw_ostream.h"
-
 #include <string>
 #include <vector>
 
@@ -158,11 +155,6 @@ public:
   /// to be an error.
   bool allowShlibUndefines() const { return _allowShlibUndefines; }
 
-  /// Add undefined symbols from shared libraries ?
-  virtual bool addUndefinedAtomsFromSharedLibrary(const SharedLibraryFile *) {
-    return true;
-  }
-
   /// If true, core linking will write the path to each input file to stdout
   /// (i.e. llvm::outs()) as it is used.  This is used to implement the -t
   /// linker option.
@@ -190,6 +182,7 @@ public:
   }
 
   void setDeadStripping(bool enable) { _deadStrip = enable; }
+  void setAllowDuplicates(bool enable) { _allowDuplicates = enable; }
   void setGlobalsAreDeadStripRoots(bool v) { _globalsAreDeadStripRoots = v; }
   void setSearchArchivesToOverrideTentativeDefinitions(bool search) {
     _searchArchivesToOverrideTentativeDefinitions = search;
@@ -212,11 +205,33 @@ public:
   void setAllowShlibUndefines(bool allow) { _allowShlibUndefines = allow; }
   void setLogInputFiles(bool log) { _logInputFiles = log; }
 
+  // Returns true if multiple definitions should not be treated as a
+  // fatal error.
+  bool getAllowDuplicates() const { return _allowDuplicates; }
+
   void appendLLVMOption(const char *opt) { _llvmOptions.push_back(opt); }
-  virtual void setInputGraph(std::unique_ptr<InputGraph> inputGraph) {
+
+  void addAlias(StringRef from, StringRef to) { _aliasSymbols[from] = to; }
+  const std::map<std::string, std::string> &getAliases() const {
+    return _aliasSymbols;
+  }
+
+  void setInputGraph(std::unique_ptr<InputGraph> inputGraph) {
     _inputGraph = std::move(inputGraph);
   }
-  virtual InputGraph &inputGraph() const { return *_inputGraph; }
+  InputGraph &getInputGraph() const { return *_inputGraph; }
+
+  /// Notify the LinkingContext when an atom is added to the symbol table.
+  /// This is an opportunity for flavor specific work to be done.
+  virtual void notifySymbolTableAdd(const Atom *atom) const {
+  }
+
+  /// Notify the LinkingContext when the symbol table found a name collision.
+  /// The useNew parameter specifies which the symbol table plans to keep,
+  /// but that can be changed by the LinkingContext.  This is also an
+  /// opportunity for flavor specific processing.
+  virtual void notifySymbolTableCoalesce(const Atom *existingAtom,
+                                         const Atom *newAtom, bool &useNew) {}
 
   /// This method adds undefined symbols specified by the -u option to the to
   /// the list of undefined symbols known to the linker. This option essentially
@@ -252,6 +267,11 @@ public:
   /// \returns true if there is an error with the current settings.
   bool validate(raw_ostream &diagnostics);
 
+  /// Formats symbol name for use in error messages.
+  virtual std::string demangle(StringRef symbolName) const {
+    return symbolName;
+  }
+
   /// @}
   /// \name Methods used by Driver::link()
   /// @{
@@ -284,7 +304,7 @@ public:
   /// This method is called by core linking to give the Writer a chance
   /// to add file format specific "files" to set of files to be linked. This is
   /// how file format specific atoms can be added to the link.
-  virtual bool createImplicitFiles(std::vector<std::unique_ptr<File> > &) const;
+  virtual bool createImplicitFiles(std::vector<std::unique_ptr<File> > &);
 
   /// This method is called by core linking to build the list of Passes to be
   /// run on the merged/linked graph of all input files.
@@ -293,45 +313,41 @@ public:
   /// Calls through to the writeFile() method on the specified Writer.
   ///
   /// \param linkedFile This is the merged/linked graph of all input file Atoms.
-  virtual error_code writeFile(const File &linkedFile) const;
-
-  /// nextFile returns the next file that needs to be processed by the resolver.
-  /// The LinkingContext's can override the default behavior to change the way
-  /// the resolver operates. This uses the currentInputElement. When there are
-  /// no more files to be processed an appropriate InputGraphError is
-  /// returned. Ordinals are assigned to files returned by nextFile, which means
-  /// ordinals would be assigned in the way files are resolved.
-  virtual ErrorOr<File &> nextFile();
-
-  /// Set the resolver state for the current Input element This is used by the
-  /// InputGraph to decide the next file that needs to be processed for various
-  /// types of nodes in the InputGraph. The resolver state is nothing but a
-  /// bitmask of various types of states that the resolver handles when adding
-  /// atoms.
-  virtual void setResolverState(uint32_t resolverState);
+  virtual std::error_code writeFile(const File &linkedFile) const;
 
   /// Return the next ordinal and Increment it.
   virtual uint64_t getNextOrdinalAndIncrement() const { return _nextOrdinal++; }
 
-  /// @}
+#ifndef NDEBUG
+  bool runRoundTripPass() const { return _runRoundTripPasses; }
+#endif
 
+  // This function is called just before the Resolver kicks in.
+  // Derived classes may use that chance to rearrange the input files.
+  virtual void maybeSortInputFiles() {}
+
+  /// @}
 protected:
   LinkingContext(); // Must be subclassed
 
   /// Abstract method to lazily instantiate the Writer.
   virtual Writer &writer() const = 0;
 
-  /// Method to create a internal file for the entry symbol
+  /// Method to create an internal file for the entry symbol
   virtual std::unique_ptr<File> createEntrySymbolFile() const;
   std::unique_ptr<File> createEntrySymbolFile(StringRef filename) const;
 
-  /// Method to create a internal file for an undefined symbol
+  /// Method to create an internal file for an undefined symbol
   virtual std::unique_ptr<File> createUndefinedSymbolFile() const;
   std::unique_ptr<File> createUndefinedSymbolFile(StringRef filename) const;
+
+  /// Method to create an internal file for alias symbols
+  std::unique_ptr<File> createAliasSymbolFile() const;
 
   StringRef _outputPath;
   StringRef _entrySymbolName;
   bool _deadStrip;
+  bool _allowDuplicates;
   bool _globalsAreDeadStripRoots;
   bool _searchArchivesToOverrideTentativeDefinitions;
   bool _searchSharedLibrariesToOverrideTentativeDefinitions;
@@ -341,13 +357,16 @@ protected:
   bool _allowRemainingUndefines;
   bool _logInputFiles;
   bool _allowShlibUndefines;
+#ifndef NDEBUG
+  bool _runRoundTripPasses;
+#endif
   OutputFileType _outputFileType;
   std::vector<StringRef> _deadStripRoots;
+  std::map<std::string, std::string> _aliasSymbols;
   std::vector<const char *> _llvmOptions;
   StringRefVector _initialUndefinedSymbols;
   std::unique_ptr<InputGraph> _inputGraph;
   mutable llvm::BumpPtrAllocator _allocator;
-  InputElement *_currentInputElement;
   mutable uint64_t _nextOrdinal;
   Registry _registry;
 

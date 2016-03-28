@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_GR_SYMMGR_H
-#define LLVM_CLANG_GR_SYMMGR_H
+#ifndef LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_SYMBOLMANAGER_H
+#define LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_SYMBOLMANAGER_H
 
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
@@ -23,11 +23,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/FoldingSet.h"
+#include "llvm/Support/Allocator.h"
 #include "llvm/Support/DataTypes.h"
-
-namespace llvm {
-class BumpPtrAllocator;
-}
 
 namespace clang {
   class ASTContext;
@@ -501,12 +498,12 @@ public:
                                       const LocationContext *LCtx,
                                       QualType T,
                                       unsigned VisitCount,
-                                      const void *SymbolTag = 0);
+                                      const void *SymbolTag = nullptr);
 
   const SymbolConjured* conjureSymbol(const Expr *E,
                                       const LocationContext *LCtx,
                                       unsigned VisitCount,
-                                      const void *SymbolTag = 0) {
+                                      const void *SymbolTag = nullptr) {
     return conjureSymbol(E, LCtx, E->getType(), VisitCount, SymbolTag);
   }
 
@@ -519,9 +516,9 @@ public:
   ///
   /// VisitCount can be used to differentiate regions corresponding to
   /// different loop iterations, thus, making the symbol path-dependent.
-  const SymbolMetadata* getMetadataSymbol(const MemRegion* R, const Stmt *S,
+  const SymbolMetadata *getMetadataSymbol(const MemRegion *R, const Stmt *S,
                                           QualType T, unsigned VisitCount,
-                                          const void *SymbolTag = 0);
+                                          const void *SymbolTag = nullptr);
 
   const SymbolCast* getCastSymbol(const SymExpr *Operand,
                                   QualType From, QualType To);
@@ -590,7 +587,7 @@ public:
   SymbolReaper(const StackFrameContext *Ctx, const Stmt *s, SymbolManager& symmgr,
                StoreManager &storeMgr)
    : LCtx(Ctx), Loc(s), SymMgr(symmgr),
-     reapedStore(0, storeMgr) {}
+     reapedStore(nullptr, storeMgr) {}
 
   ~SymbolReaper() {}
 

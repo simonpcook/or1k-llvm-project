@@ -24,6 +24,8 @@
 
 #include <vector>
 
+struct isl_ast_build;
+
 namespace llvm {
 class Pass;
 class Region;
@@ -31,10 +33,10 @@ class ScalarEvolution;
 }
 
 namespace polly {
-extern bool SCEVCodegen;
-
 using namespace llvm;
 class ScopStmt;
+class MemoryAccess;
+class IslExprBuilder;
 
 typedef DenseMap<const Value *, Value *> ValueMapT;
 typedef std::vector<ValueMapT> VectorValueMapT;
@@ -70,9 +72,16 @@ public:
   ///                  original code new Values they should be replaced with.
   /// @param P         A reference to the pass this function is called from.
   ///                  The pass is needed to update other analysis.
+  /// @param LI        The loop info for the current function
+  /// @param SE        The scalar evolution info for the current function
+  /// @param Build       The AST build with the new schedule.
+  /// @param ExprBuilder An expression builder to generate new access functions.
   static void generate(PollyIRBuilder &Builder, ScopStmt &Stmt,
-                       ValueMapT &GlobalMap, LoopToScevMapT &LTS, Pass *P) {
-    BlockGenerator Generator(Builder, Stmt, P);
+                       ValueMapT &GlobalMap, LoopToScevMapT &LTS, Pass *P,
+                       LoopInfo &LI, ScalarEvolution &SE,
+                       __isl_keep isl_ast_build *Build = nullptr,
+                       IslExprBuilder *ExprBuilder = nullptr) {
+    BlockGenerator Generator(Builder, Stmt, P, LI, SE, Build, ExprBuilder);
     Generator.copyBB(GlobalMap, LTS);
   }
 
@@ -80,11 +89,23 @@ protected:
   PollyIRBuilder &Builder;
   ScopStmt &Statement;
   Pass *P;
+  LoopInfo &LI;
   ScalarEvolution &SE;
+  isl_ast_build *Build;
+  IslExprBuilder *ExprBuilder;
 
-  BlockGenerator(PollyIRBuilder &B, ScopStmt &Stmt, Pass *P);
+  BlockGenerator(PollyIRBuilder &B, ScopStmt &Stmt, Pass *P, LoopInfo &LI,
+                 ScalarEvolution &SE, __isl_keep isl_ast_build *Build,
+                 IslExprBuilder *ExprBuilder);
 
-  /// @brief Get the new version of a Value.
+  /// @brief Get the new version of a value.
+  ///
+  /// Given an old value, we first check if a new version of this value is
+  /// available in the BBMap or GlobalMap. In case it is not and the value can
+  /// be recomputed using SCEV, we do so. If we can not recompute a value
+  /// using SCEV, but we understand that the value is constant within the scop,
+  /// we return the old value.  If the value can still not be derived, this
+  /// function will assert.
   ///
   /// @param Old       The old Value.
   /// @param BBMap     A mapping from old values to their new values
@@ -104,20 +125,7 @@ protected:
   ///           o The new value, if available.
   ///           o NULL, if no value is found.
   Value *getNewValue(const Value *Old, ValueMapT &BBMap, ValueMapT &GlobalMap,
-                     LoopToScevMapT &LTS, Loop *L);
-
-  /// @brief Get the new version of a Value if it is available.
-  ///
-  /// @param Old       The old Value.
-  /// @param BBMap     A mapping from old values to their new values
-  ///                  (for values recalculated within this basic block).
-  /// @param GlobalMap A mapping from old values to their new values
-  ///                  (for values recalculated in the new ScoP, but not
-  ///                   within this basic block).
-  ///
-  /// @returns  The new value, if available.
-  Value *lookupAvailableValue(const Value *Old, ValueMapT &BBMap,
-                              ValueMapT &GlobalMap) const;
+                     LoopToScevMapT &LTS, Loop *L) const;
 
   void copyInstScalar(const Instruction *Inst, ValueMapT &BBMap,
                       ValueMapT &GlobalMap, LoopToScevMapT &LTS);
@@ -128,25 +136,8 @@ protected:
   /// @return The innermost loop that surrounds the instruction.
   Loop *getLoopForInst(const Instruction *Inst);
 
-  /// @brief Get the memory access offset to be added to the base address
-  ///
-  /// @param L The loop that surrounded the instruction that referenced this
-  ///          memory subscript in the original code.
-  std::vector<Value *> getMemoryAccessIndex(__isl_keep isl_map *AccessRelation,
-                                            Value *BaseAddress,
-                                            ValueMapT &BBMap,
-                                            ValueMapT &GlobalMap,
-                                            LoopToScevMapT &LTS, Loop *L);
-
-  /// @brief Get the new operand address according to the changed access in
-  ///        JSCOP file.
-  ///
-  /// @param L The loop that surrounded the instruction that used this operand
-  ///          in the original code.
-  Value *getNewAccessOperand(__isl_keep isl_map *NewAccessRelation,
-                             Value *BaseAddress, ValueMapT &BBMap,
-                             ValueMapT &GlobalMap, LoopToScevMapT &LTS,
-                             Loop *L);
+  /// @brief Get the new operand address according to access relation of @p MA.
+  Value *getNewAccessOperand(const MemoryAccess &MA);
 
   /// @brief Generate the operand address
   Value *generateLocationAccessed(const Instruction *Inst, const Value *Pointer,
@@ -208,11 +199,19 @@ public:
   ///                   loop containing the statemenet.
   /// @param P          A reference to the pass this function is called from.
   ///                   The pass is needed to update other analysis.
+  /// @param LI        The loop info for the current function
+  /// @param SE        The scalar evolution info for the current function
+  /// @param Build       The AST build with the new schedule.
+  /// @param ExprBuilder An expression builder to generate new access functions.
   static void generate(PollyIRBuilder &B, ScopStmt &Stmt,
                        VectorValueMapT &GlobalMaps,
                        std::vector<LoopToScevMapT> &VLTS,
-                       __isl_keep isl_map *Schedule, Pass *P) {
-    VectorBlockGenerator Generator(B, GlobalMaps, VLTS, Stmt, Schedule, P);
+                       __isl_keep isl_map *Schedule, Pass *P, LoopInfo &LI,
+                       ScalarEvolution &SE,
+                       __isl_keep isl_ast_build *Build = nullptr,
+                       IslExprBuilder *ExprBuilder = nullptr) {
+    VectorBlockGenerator Generator(B, GlobalMaps, VLTS, Stmt, Schedule, P, LI,
+                                   SE, Build, ExprBuilder);
     Generator.copyBB();
   }
 
@@ -248,7 +247,10 @@ private:
 
   VectorBlockGenerator(PollyIRBuilder &B, VectorValueMapT &GlobalMaps,
                        std::vector<LoopToScevMapT> &VLTS, ScopStmt &Stmt,
-                       __isl_keep isl_map *Schedule, Pass *P);
+                       __isl_keep isl_map *Schedule, Pass *P, LoopInfo &LI,
+                       ScalarEvolution &SE,
+                       __isl_keep isl_ast_build *Build = nullptr,
+                       IslExprBuilder *ExprBuilder = nullptr);
 
   int getVectorWidth();
 

@@ -108,7 +108,7 @@ void IndexingContext::indexTypeLoc(TypeLoc TL,
   if (TL.isNull())
     return;
 
-  if (DC == 0)
+  if (!DC)
     DC = Parent->getLexicalDeclContext();
   TypeIndexer(*this, Parent, DC).TraverseTypeLoc(TL);
 }
@@ -122,13 +122,14 @@ void IndexingContext::indexNestedNameSpecifierLoc(NestedNameSpecifierLoc NNS,
   if (NestedNameSpecifierLoc Prefix = NNS.getPrefix())
     indexNestedNameSpecifierLoc(Prefix, Parent, DC);
 
-  if (DC == 0)
+  if (!DC)
     DC = Parent->getLexicalDeclContext();
   SourceLocation Loc = NNS.getSourceRange().getBegin();
 
   switch (NNS.getNestedNameSpecifier()->getKind()) {
   case NestedNameSpecifier::Identifier:
   case NestedNameSpecifier::Global:
+  case NestedNameSpecifier::Super:
     break;
 
   case NestedNameSpecifier::Namespace:

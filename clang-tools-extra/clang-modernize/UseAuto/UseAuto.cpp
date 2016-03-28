@@ -36,7 +36,7 @@ int UseAutoTransform::apply(const clang::tooling::CompilationDatabase &Database,
   Finder.addMatcher(makeIteratorDeclMatcher(), &ReplaceIterators);
   Finder.addMatcher(makeDeclWithNewMatcher(), &ReplaceNew);
 
-  if (int Result = UseAutoTool.run(createActionFactory(Finder))) {
+  if (int Result = UseAutoTool.run(createActionFactory(Finder).get())) {
     llvm::errs() << "Error encountered during translation.\n";
     return Result;
   }

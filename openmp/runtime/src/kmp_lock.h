@@ -1,7 +1,7 @@
 /*
  * kmp_lock.h -- lock header file
- * $Revision: 42810 $
- * $Date: 2013-11-07 12:06:33 -0600 (Thu, 07 Nov 2013) $
+ * $Revision: 43473 $
+ * $Date: 2014-09-26 15:02:57 -0500 (Fri, 26 Sep 2014) $
  */
 
 
@@ -174,7 +174,7 @@ extern void __kmp_init_nested_tas_lock( kmp_tas_lock_t *lck );
 extern void __kmp_destroy_nested_tas_lock( kmp_tas_lock_t *lck );
 
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
 
 // ----------------------------------------------------------------------------
 // futex locks.  futex locks are only available on Linux* OS.
@@ -224,7 +224,7 @@ extern void __kmp_release_nested_futex_lock( kmp_futex_lock_t *lck, kmp_int32 gt
 extern void __kmp_init_nested_futex_lock( kmp_futex_lock_t *lck );
 extern void __kmp_destroy_nested_futex_lock( kmp_futex_lock_t *lck );
 
-#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
 
 
 // ----------------------------------------------------------------------------
@@ -280,16 +280,16 @@ extern void __kmp_destroy_nested_ticket_lock( kmp_ticket_lock_t *lck );
 
 #if KMP_USE_ADAPTIVE_LOCKS
 
-struct kmp_adaptive_lock;
+struct kmp_adaptive_lock_info;
 
-typedef struct kmp_adaptive_lock kmp_adaptive_lock_t;
+typedef struct kmp_adaptive_lock_info kmp_adaptive_lock_info_t;
 
 #if KMP_DEBUG_ADAPTIVE_LOCKS
 
 struct kmp_adaptive_lock_statistics {
     /* So we can get stats from locks that haven't been destroyed. */
-    kmp_adaptive_lock_t * next;
-    kmp_adaptive_lock_t * prev;
+    kmp_adaptive_lock_info_t * next;
+    kmp_adaptive_lock_info_t * prev;
 
     /* Other statistics */
     kmp_uint32 successfulSpeculations;
@@ -307,7 +307,7 @@ extern void __kmp_init_speculative_stats();
 
 #endif // KMP_DEBUG_ADAPTIVE_LOCKS
 
-struct kmp_adaptive_lock
+struct kmp_adaptive_lock_info
 {
     /* Values used for adaptivity.
      * Although these are accessed from multiple threads we don't access them atomically,
@@ -348,10 +348,6 @@ struct kmp_base_queuing_lock {
     kmp_int32           depth_locked; // depth locked, for nested locks only
 
     kmp_lock_flags_t    flags;        // lock specifics, e.g. critical section lock
-#if KMP_USE_ADAPTIVE_LOCKS
-    KMP_ALIGN(CACHE_LINE)
-    kmp_adaptive_lock_t adaptive;     // Information for the speculative adaptive lock
-#endif
 };
 
 typedef struct kmp_base_queuing_lock kmp_base_queuing_lock_t;
@@ -379,6 +375,30 @@ extern void __kmp_release_nested_queuing_lock( kmp_queuing_lock_t *lck, kmp_int3
 extern void __kmp_init_nested_queuing_lock( kmp_queuing_lock_t *lck );
 extern void __kmp_destroy_nested_queuing_lock( kmp_queuing_lock_t *lck );
 
+#if KMP_USE_ADAPTIVE_LOCKS
+
+// ----------------------------------------------------------------------------
+// Adaptive locks.
+// ----------------------------------------------------------------------------
+struct kmp_base_adaptive_lock {
+    kmp_base_queuing_lock qlk;
+    KMP_ALIGN(CACHE_LINE)
+    kmp_adaptive_lock_info_t adaptive;     // Information for the speculative adaptive lock
+};
+
+typedef struct kmp_base_adaptive_lock kmp_base_adaptive_lock_t;
+
+union KMP_ALIGN_CACHE kmp_adaptive_lock {
+    kmp_base_adaptive_lock_t lk;
+    kmp_lock_pool_t pool;
+    double lk_align;
+    char lk_pad[ KMP_PAD(kmp_base_adaptive_lock_t, CACHE_LINE) ];
+};
+typedef union kmp_adaptive_lock kmp_adaptive_lock_t;
+
+# define GET_QLK_PTR(l) ((kmp_queuing_lock_t *) & (l)->lk.qlk)
+
+#endif // KMP_USE_ADAPTIVE_LOCKS
 
 // ----------------------------------------------------------------------------
 // DRDPA ticket locks.
@@ -518,7 +538,7 @@ __kmp_destroy_bootstrap_lock( kmp_bootstrap_lock_t *lck )
 // Internal RTL locks are also implemented as ticket locks, for now.
 //
 // FIXME - We should go through and figure out which lock kind works best for
-// each internal lock, and use the type deeclaration and function calls for
+// each internal lock, and use the type declaration and function calls for
 // that explicit lock kind (and get rid of this section).
 //
 
@@ -570,7 +590,7 @@ __kmp_destroy_lock( kmp_lock_t *lck )
 enum kmp_lock_kind {
     lk_default = 0,
     lk_tas,
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
     lk_futex,
 #endif
     lk_ticket,
@@ -587,7 +607,7 @@ extern kmp_lock_kind_t __kmp_user_lock_kind;
 
 union kmp_user_lock {
     kmp_tas_lock_t     tas;
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
     kmp_futex_lock_t   futex;
 #endif
     kmp_ticket_lock_t  ticket;
@@ -615,7 +635,7 @@ __kmp_get_user_lock_owner( kmp_user_lock_p lck )
 
 extern void ( *__kmp_acquire_user_lock_with_checks_ )( kmp_user_lock_p lck, kmp_int32 gtid );
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
 
 #define __kmp_acquire_user_lock_with_checks(lck,gtid)                                           \
     if (__kmp_user_lock_kind == lk_tas) {                                                       \
@@ -665,7 +685,7 @@ __kmp_acquire_user_lock_with_checks( kmp_user_lock_p lck, kmp_int32 gtid )
 
 extern int ( *__kmp_test_user_lock_with_checks_ )( kmp_user_lock_p lck, kmp_int32 gtid );
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
 
 #include "kmp_i18n.h"                       /* AC: KMP_FATAL definition */
 extern int __kmp_env_consistency_check;     /* AC: copy from kmp.h here */
@@ -913,7 +933,26 @@ __kmp_set_user_lock_flags( kmp_user_lock_p lck, kmp_lock_flags_t flags )
 //
 extern void __kmp_set_user_lock_vptrs( kmp_lock_kind_t user_lock_kind );
 
+//
+// Macros for binding user lock functions.
+//
+#define KMP_BIND_USER_LOCK_TEMPLATE(nest, kind, suffix) {                                       \
+    __kmp_acquire##nest##user_lock_with_checks_ = ( void (*)( kmp_user_lock_p, kmp_int32 ) )    \
+                                                  __kmp_acquire##nest##kind##_##suffix;         \
+    __kmp_release##nest##user_lock_with_checks_ = ( void (*)( kmp_user_lock_p, kmp_int32 ) )    \
+                                                  __kmp_release##nest##kind##_##suffix;         \
+    __kmp_test##nest##user_lock_with_checks_    = ( int (*)( kmp_user_lock_p, kmp_int32 ) )     \
+                                                  __kmp_test##nest##kind##_##suffix;            \
+    __kmp_init##nest##user_lock_with_checks_    = ( void (*)( kmp_user_lock_p ) )               \
+                                                  __kmp_init##nest##kind##_##suffix;            \
+    __kmp_destroy##nest##user_lock_with_checks_ = ( void (*)( kmp_user_lock_p ) )               \
+                                                  __kmp_destroy##nest##kind##_##suffix;         \
+}
 
+#define KMP_BIND_USER_LOCK(kind)                    KMP_BIND_USER_LOCK_TEMPLATE(_, kind, lock)
+#define KMP_BIND_USER_LOCK_WITH_CHECKS(kind)        KMP_BIND_USER_LOCK_TEMPLATE(_, kind, lock_with_checks)
+#define KMP_BIND_NESTED_USER_LOCK(kind)             KMP_BIND_USER_LOCK_TEMPLATE(_nested_, kind, lock)
+#define KMP_BIND_NESTED_USER_LOCK_WITH_CHECKS(kind) KMP_BIND_USER_LOCK_TEMPLATE(_nested_, kind, lock_with_checks)
 
 // ----------------------------------------------------------------------------
 // User lock table & lock allocation

@@ -1,5 +1,4 @@
 set(LLVM_LINK_COMPONENTS
-  MC
   Support
   )
 
@@ -12,6 +11,7 @@ add_clang_library(clangAnalysis
   CallGraph.cpp
   CocoaConventions.cpp
   Consumed.cpp
+  CodeInjector.cpp
   Dominators.cpp
   FormatString.cpp
   LiveVariables.cpp
@@ -23,9 +23,13 @@ add_clang_library(clangAnalysis
   ReachableCode.cpp
   ScanfFormatString.cpp
   ThreadSafety.cpp
+  ThreadSafetyCommon.cpp
+  ThreadSafetyLogical.cpp
+  ThreadSafetyTIL.cpp
   UninitializedValues.cpp
 
   LINK_LIBS
-  clangBasic
   clangAST
+  clangBasic
+  clangLex
   )

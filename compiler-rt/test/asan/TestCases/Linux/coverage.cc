@@ -1,15 +1,20 @@
-// RUN: %clangxx_asan -mllvm -asan-coverage=1 -DSHARED %s -shared -o %T/libcoverage_test.so -fPIC
-// RUN: %clangxx_asan -mllvm -asan-coverage=1 %s   -o %t -Wl,-R,\$ORIGIN -L%T -lcoverage_test
+// RUN: %clangxx_asan -fsanitize-coverage=1 -DSHARED %s -shared -o %T/libcoverage_test.so -fPIC
+// RUN: %clangxx_asan -fsanitize-coverage=1 %s   -o %t -Wl,-R,\$ORIGIN -L%T -lcoverage_test
 // RUN: export ASAN_OPTIONS=coverage=1:verbosity=1
-// RUN: %t 2>&1         | FileCheck %s --check-prefix=CHECK-main
-// RUN: %t foo 2>&1     | FileCheck %s --check-prefix=CHECK-foo
-// RUN: %t bar 2>&1     | FileCheck %s --check-prefix=CHECK-bar
-// RUN: %t foo bar 2>&1 | FileCheck %s --check-prefix=CHECK-foo-bar
-// RUN: not %t foo bar 1 2  2>&1 | FileCheck %s --check-prefix=CHECK-report
+// RUN: mkdir -p %T/coverage && cd %T/coverage
+// RUN: %run %t 2>&1         | FileCheck %s --check-prefix=CHECK-main
+// RUN: %run %t foo 2>&1     | FileCheck %s --check-prefix=CHECK-foo
+// RUN: %run %t bar 2>&1     | FileCheck %s --check-prefix=CHECK-bar
+// RUN: %run %t foo bar 2>&1 | FileCheck %s --check-prefix=CHECK-foo-bar
+// RUN: not %run %t foo bar 4    2>&1 | FileCheck %s --check-prefix=CHECK-report
+// RUN: not %run %t foo bar 4 5  2>&1 | FileCheck %s --check-prefix=CHECK-segv
+// RUN: cd .. && rm coverage -r
 //
 // https://code.google.com/p/address-sanitizer/issues/detail?id=263
 // XFAIL: android
 
+#include "sanitizer/common_interface_defs.h"
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -26,10 +31,18 @@ int G[4];
 int main(int argc, char **argv) {
   fprintf(stderr, "PID: %d\n", getpid());
   for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "foo"))
+    if (!strcmp(argv[i], "foo")) {
+      uintptr_t old_coverage = __sanitizer_get_total_unique_coverage();
       foo();
+      uintptr_t new_coverage = __sanitizer_get_total_unique_coverage();
+      assert(new_coverage > old_coverage);
+    }
     if (!strcmp(argv[i], "bar"))
       bar();
+  }
+  if (argc == 5) {
+    static volatile char *zero = 0;
+    *zero = 0;  // SEGV if argc == 5.
   }
   return G[argc];  // Buffer overflow if argc >= 4.
 }
@@ -53,3 +66,6 @@ int main(int argc, char **argv) {
 //
 // CHECK-report: AddressSanitizer: global-buffer-overflow
 // CHECK-report: PCs written
+//
+// CHECK-segv: AddressSanitizer: SEGV
+// CHECK-segv: PCs written

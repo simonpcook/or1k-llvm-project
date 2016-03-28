@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_GR_BUGREPORTERVISITOR
-#define LLVM_CLANG_GR_BUGREPORTERVISITOR
+#ifndef LLVM_CLANG_STATICANALYZER_CORE_BUGREPORTER_BUGREPORTERVISITOR_H
+#define LLVM_CLANG_STATICANALYZER_CORE_BUGREPORTER_BUGREPORTERVISITOR_H
 
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "llvm/ADT/FoldingSet.h"
@@ -48,7 +48,7 @@ public:
   /// (Warning: if you have a deep subclass of BugReporterVisitorImpl, the
   /// default implementation of clone() will NOT do the right thing, and you
   /// will have to provide your own implementation.)
-  virtual BugReporterVisitor *clone() const = 0;
+  virtual std::unique_ptr<BugReporterVisitor> clone() const = 0;
 
   /// \brief Return a diagnostic piece which should be associated with the
   /// given node.
@@ -66,17 +66,15 @@ public:
   /// If returns NULL the default implementation will be used.
   /// Also note that at most one visitor of a BugReport should generate a
   /// non-NULL end of path diagnostic piece.
-  virtual PathDiagnosticPiece *getEndPath(BugReporterContext &BRC,
-                                          const ExplodedNode *N,
-                                          BugReport &BR);
+  virtual std::unique_ptr<PathDiagnosticPiece>
+  getEndPath(BugReporterContext &BRC, const ExplodedNode *N, BugReport &BR);
 
   virtual void Profile(llvm::FoldingSetNodeID &ID) const = 0;
 
   /// \brief Generates the default final diagnostic piece.
-  static PathDiagnosticPiece *getDefaultEndPath(BugReporterContext &BRC,
-                                                const ExplodedNode *N,
-                                                BugReport &BR);
-
+  static std::unique_ptr<PathDiagnosticPiece>
+  getDefaultEndPath(BugReporterContext &BRC, const ExplodedNode *N,
+                    BugReport &BR);
 };
 
 /// This class provides a convenience implementation for clone() using the
@@ -89,8 +87,8 @@ public:
 /// will have to provide your own implementation.)
 template <class DERIVED>
 class BugReporterVisitorImpl : public BugReporterVisitor {
-  BugReporterVisitor *clone() const override {
-    return new DERIVED(*static_cast<const DERIVED *>(this));
+  std::unique_ptr<BugReporterVisitor> clone() const override {
+    return llvm::make_unique<DERIVED>(*static_cast<const DERIVED *>(this));
   }
 };
 
@@ -185,7 +183,7 @@ public:
 /// Visitor that tries to report interesting diagnostics from conditions.
 class ConditionBRVisitor : public BugReporterVisitorImpl<ConditionBRVisitor> {
 public:
-  void Profile(llvm::FoldingSetNodeID &ID) const  override{
+  void Profile(llvm::FoldingSetNodeID &ID) const override {
     static int x = 0;
     ID.AddPointer(&x);
   }
@@ -265,12 +263,12 @@ public:
                                  const ExplodedNode *Prev,
                                  BugReporterContext &BRC,
                                  BugReport &BR) override {
-    return 0;
+    return nullptr;
   }
 
-  PathDiagnosticPiece *getEndPath(BugReporterContext &BRC,
-                                  const ExplodedNode *N,
-                                  BugReport &BR) override;
+  std::unique_ptr<PathDiagnosticPiece> getEndPath(BugReporterContext &BRC,
+                                                  const ExplodedNode *N,
+                                                  BugReport &BR) override;
 };
 
 /// \brief When a region containing undefined value or '0' value is passed 
@@ -364,4 +362,4 @@ bool isDeclRefExprToReference(const Expr *E);
 } // end namespace bugreporter
 
 
-#endif //LLVM_CLANG_GR__BUGREPORTERVISITOR
+#endif

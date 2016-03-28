@@ -49,7 +49,7 @@ TEST(SanitizerCommon, BooleanFlags) {
 
 TEST(SanitizerCommon, IntFlags) {
   TestFlag(-11, 0, -11);
-  TestFlag(-11, "flag_name", 0);
+  TestFlag(-11, "flag_name", -11);
   TestFlag(-11, "--flag_name=", 0);
   TestFlag(-11, "--flag_name=42", 42);
   TestFlag(-11, "--flag_name=-42", -42);
@@ -57,7 +57,7 @@ TEST(SanitizerCommon, IntFlags) {
 
 TEST(SanitizerCommon, StrFlags) {
   TestStrFlag("zzz", 0, "zzz");
-  TestStrFlag("zzz", "flag_name", "");
+  TestStrFlag("zzz", "flag_name", "zzz");
   TestStrFlag("zzz", "--flag_name=", "");
   TestStrFlag("", "--flag_name=abc", "abc");
   TestStrFlag("", "--flag_name='abc zxc'", "abc zxc");
@@ -81,6 +81,27 @@ TEST(SanitizerCommon, MultipleFlags) {
   TestTwoFlags("flag2='qxx' flag1=0", false, "qxx");
   TestTwoFlags("flag1=false:flag2='zzz'", false, "zzz");
   TestTwoFlags("flag2=qxx:flag1=yes", true, "qxx");
+  TestTwoFlags("flag2=qxx\nflag1=yes", true, "qxx");
+  TestTwoFlags("flag2=qxx\r\nflag1=yes", true, "qxx");
+  TestTwoFlags("flag2=qxx\tflag1=yes", true, "qxx");
+}
+
+TEST(SanitizerCommon, CommonFlags) {
+  CommonFlags cf;
+  cf.SetDefaults();
+  EXPECT_TRUE(cf.symbolize);
+  EXPECT_STREQ(".", cf.coverage_dir);
+
+  cf.symbolize = false;
+  cf.coverage = true;
+  cf.coverage_direct = true;
+  cf.log_path = "path/one";
+
+  cf.ParseFromString("symbolize=1:coverage_direct=false log_path='path/two'");
+  EXPECT_TRUE(cf.symbolize);
+  EXPECT_TRUE(cf.coverage);
+  EXPECT_FALSE(cf.coverage_direct);
+  EXPECT_STREQ("path/two", cf.log_path);
 }
 
 }  // namespace __sanitizer

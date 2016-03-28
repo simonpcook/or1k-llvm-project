@@ -18,21 +18,22 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 
 using namespace llvm;
 using namespace llvm::sys;
 using namespace clang::tooling;
 
 bool ReplacementHandling::findClangApplyReplacements(const char *Argv0) {
-  CARPath = FindProgramByName("clang-apply-replacements");
-
-  if (!CARPath.empty())
+  ErrorOr<std::string> CARPathOrErr =
+      findProgramByName("clang-apply-replacements");
+  if (!CARPathOrErr)
     return true;
 
+  CARPath = *CARPathOrErr;
   static int StaticSymbol;
-  CARPath = fs::getMainExecutable(Argv0, &StaticSymbol);
-  SmallString<128> TestPath = path::parent_path(CARPath);
+  std::string ClangModernizePath = fs::getMainExecutable(Argv0, &StaticSymbol);
+  SmallString<128> TestPath = path::parent_path(ClangModernizePath);
   path::append(TestPath, "clang-apply-replacements");
   if (fs::can_execute(Twine(TestPath)))
     CARPath = TestPath.str();
@@ -72,11 +73,10 @@ bool ReplacementHandling::serializeReplacements(
       continue;
     }
 
-    std::string ErrorInfo;
-    raw_fd_ostream ReplacementsFile(ReplacementsFileName.c_str(), ErrorInfo,
-                                    fs::F_None);
-    if (!ErrorInfo.empty()) {
-      errs() << "Error opening file: " << ErrorInfo << "\n";
+    std::error_code EC;
+    raw_fd_ostream ReplacementsFile(ReplacementsFileName, EC, fs::F_None);
+    if (EC) {
+      errs() << "Error opening file: " << EC.message() << "\n";
       Errors = true;
       continue;
     }
@@ -101,12 +101,12 @@ bool ReplacementHandling::applyReplacements() {
   Argv.push_back(DestinationDir.c_str());
 
   // Argv array needs to be null terminated.
-  Argv.push_back(0);
+  Argv.push_back(nullptr);
 
   std::string ErrorMsg;
   bool ExecutionFailed = false;
-  int ReturnCode = ExecuteAndWait(CARPath.c_str(), Argv.data(), /* env */ 0,
-                                  /* redirects */ 0,
+  int ReturnCode = ExecuteAndWait(CARPath.c_str(), Argv.data(),
+                                  /* env */ nullptr, /* redirects */ nullptr,
                                   /* secondsToWait */ 0, /* memoryLimit */ 0,
                                   &ErrorMsg, &ExecutionFailed);
   if (ExecutionFailed || !ErrorMsg.empty()) {
@@ -144,7 +144,7 @@ bool ReplacementHandling::generateReplacementsFileName(
   Error.clear();
   SmallString<128> Prefix = DestinationDir;
   path::append(Prefix, path::filename(MainSourceFile));
-  if (error_code EC =
+  if (std::error_code EC =
           fs::createUniqueFile(Prefix + "_%%_%%_%%_%%_%%_%%.yaml", Result)) {
     const std::string &Msg = EC.message();
     Error.append(Msg.begin(), Msg.end());

@@ -16,12 +16,16 @@ fun:dfsan_get_label=uninstrumented
 fun:dfsan_get_label=custom
 fun:dfsan_read_label=uninstrumented
 fun:dfsan_read_label=discard
+fun:dfsan_get_label_count=uninstrumented
+fun:dfsan_get_label_count=discard
 fun:dfsan_get_label_info=uninstrumented
 fun:dfsan_get_label_info=discard
 fun:dfsan_has_label=uninstrumented
 fun:dfsan_has_label=discard
 fun:dfsan_has_label_with_desc=uninstrumented
 fun:dfsan_has_label_with_desc=discard
+fun:dfsan_set_write_callback=uninstrumented
+fun:dfsan_set_write_callback=custom
 
 ###############################################################################
 # glibc
@@ -140,7 +144,6 @@ fun:symlink=discard
 fun:syscall=discard
 fun:unlink=discard
 fun:uselocale=discard
-fun:write=discard
 
 # Functions that produce output does not depend on the input (need to zero the
 # shadow manually).
@@ -190,6 +193,10 @@ fun:strncmp=custom
 fun:strrchr=custom
 fun:strstr=custom
 
+# Functions which take action based on global state, such as running a callback
+# set by a sepperate function.
+fun:write=custom
+
 # Functions that take a callback (wrap the callback manually).
 fun:dl_iterate_phdr=custom
 
@@ -201,9 +208,11 @@ fun:sigemptyset=custom
 fun:sigaction=custom
 fun:gettimeofday=custom
 
+# sprintf-like
+fun:sprintf=custom
+fun:snprintf=custom
+
 # TODO: custom
-fun:snprintf=discard
-fun:vsnprintf=discard
 fun:asprintf=discard
 fun:qsort=discard
 
@@ -228,3 +237,24 @@ fun:pthread_setspecific=discard
 
 # Functions that take a callback (wrap the callback manually).
 fun:pthread_create=custom
+
+###############################################################################
+# libffi/libgo
+###############################################################################
+# Functions that are written in asm or are called from asm.
+fun:ffi_call_unix64=uninstrumented
+fun:ffi_call_unix64=discard
+fun:ffi_closure_unix64_inner=uninstrumented
+fun:ffi_closure_unix64_inner=discard
+fun:ffi_closure_unix64=uninstrumented
+fun:ffi_closure_unix64=discard
+fun:__go_get_closure=uninstrumented
+fun:__go_get_closure=discard
+fun:__go_makefunc_can_recover=uninstrumented
+fun:__go_makefunc_can_recover=discard
+fun:__go_makefunc_returning=uninstrumented
+fun:__go_makefunc_returning=discard
+fun:reflect.MakeFuncStubGo=uninstrumented
+fun:reflect.MakeFuncStubGo=discard
+fun:reflect.makeFuncStub=uninstrumented
+fun:reflect.makeFuncStub=discard

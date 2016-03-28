@@ -105,7 +105,6 @@ ThreadPlanStepInRange::SetupAvoidNoDebug(LazyBool step_in_avoids_code_without_de
     else
         GetFlags().Clear (ThreadPlanShouldStopHere::eStepInAvoidNoDebug);
     
-    avoid_nodebug = true;
     switch (step_out_avoids_code_without_debug_info)
     {
         case eLazyBoolYes:
@@ -128,17 +127,31 @@ void
 ThreadPlanStepInRange::GetDescription (Stream *s, lldb::DescriptionLevel level)
 {
     if (level == lldb::eDescriptionLevelBrief)
-        s->Printf("step in");
-    else
     {
-        s->Printf ("Stepping through range (stepping into functions): ");
-        DumpRanges(s);
-        const char *step_into_target = m_step_into_target.AsCString();
-        if (step_into_target && step_into_target[0] != '\0')
-            s->Printf (" targeting %s.", m_step_into_target.AsCString());
-        else
-            s->PutChar('.');
+        s->Printf("step in");
+        return;
     }
+
+    s->Printf ("Stepping in");
+    bool printed_line_info = false;
+    if (m_addr_context.line_entry.IsValid())
+    {
+        s->Printf (" through line ");
+        m_addr_context.line_entry.DumpStopContext (s, false);
+        printed_line_info = true;
+    }
+
+    const char *step_into_target = m_step_into_target.AsCString();
+    if (step_into_target && step_into_target[0] != '\0')
+        s->Printf (" targeting %s", m_step_into_target.AsCString());
+
+    if (!printed_line_info || level == eDescriptionLevelVerbose)
+    {
+        s->Printf (" using ranges:");
+        DumpRanges(s);
+    }
+
+    s->PutChar('.');
 }
 
 bool
@@ -190,7 +203,7 @@ ThreadPlanStepInRange::ShouldStop (Event *event_ptr)
             
         FrameComparison frame_order = CompareCurrentFrameToStartFrame();
         
-        if (frame_order == eFrameCompareOlder)
+        if (frame_order == eFrameCompareOlder || frame_order == eFrameCompareSameParent)
         {
             // If we're in an older frame then we should stop.
             //
@@ -201,7 +214,7 @@ ThreadPlanStepInRange::ShouldStop (Event *event_ptr)
             if (!m_sub_plan_sp)
             {
                 // Otherwise check the ShouldStopHere for step out:
-                m_sub_plan_sp = CheckShouldStopHereAndQueueStepOut(eFrameCompareOlder);
+                m_sub_plan_sp = CheckShouldStopHereAndQueueStepOut(frame_order);
                 if (log)
                     log->Printf ("ShouldStopHere says we should step out of this frame.");
             }
@@ -303,6 +316,7 @@ ThreadPlanStepInRange::ShouldStop (Event *event_ptr)
     else
     {
         m_no_more_plans = false;
+        m_sub_plan_sp->SetPrivate(true);
         return false;
     }
 }
@@ -401,17 +415,10 @@ ThreadPlanStepInRange::DefaultShouldStopHereCallback (ThreadPlan *current_plan, 
     StackFrame *frame = current_plan->GetThread().GetStackFrameAtIndex(0).get();
     Log *log(lldb_private::GetLogIfAllCategoriesSet (LIBLLDB_LOG_STEP));
 
-    if ((operation == eFrameCompareYounger && flags.Test(eStepInAvoidNoDebug))
-        || (operation == eFrameCompareOlder && flags.Test(eStepOutAvoidNoDebug)))
-    {
-        if (!frame->HasDebugInformation())
-        {
-            if (log)
-                log->Printf ("Stepping out of frame with no debug info");
-
-            should_stop_here = false;
-        }
-    }
+    // First see if the ThreadPlanShouldStopHere default implementation thinks we should get out of here:
+    should_stop_here = ThreadPlanShouldStopHere::DefaultShouldStopHereCallback (current_plan, flags, operation, baton);
+    if (!should_stop_here)
+        return should_stop_here;
     
     if (should_stop_here && current_plan->GetKind() == eKindStepInRange && operation == eFrameCompareYounger)
     {

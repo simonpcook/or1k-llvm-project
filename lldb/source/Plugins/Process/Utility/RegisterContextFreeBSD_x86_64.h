@@ -13,17 +13,23 @@
 #include "RegisterContextPOSIX.h"
 
 class RegisterContextFreeBSD_x86_64:
-    public RegisterInfoInterface
+    public lldb_private::RegisterInfoInterface
 {
 public:
     RegisterContextFreeBSD_x86_64(const lldb_private::ArchSpec &target_arch);
-    virtual ~RegisterContextFreeBSD_x86_64();
 
     size_t
-    GetGPRSize();
+    GetGPRSize() const override;
 
     const lldb_private::RegisterInfo *
-    GetRegisterInfo();
+    GetRegisterInfo() const override;
+
+    uint32_t
+    GetRegisterCount () const override;
+
+private:
+    const lldb_private::RegisterInfo *m_register_info_p;
+    const uint32_t m_register_count;
 };
 
 #endif

@@ -62,12 +62,26 @@ void
 ThreadPlanStepOverRange::GetDescription (Stream *s, lldb::DescriptionLevel level)
 {
     if (level == lldb::eDescriptionLevelBrief)
-        s->Printf("step over");
-    else
     {
-        s->Printf ("stepping through range (stepping over functions): ");
-        DumpRanges(s);    
+        s->Printf("step over");
+        return;
     }
+    s->Printf ("Stepping over");
+    bool printed_line_info = false;
+    if (m_addr_context.line_entry.IsValid())
+    {
+        s->Printf (" line ");
+        m_addr_context.line_entry.DumpStopContext (s, false);
+        printed_line_info = true;
+    }
+
+    if (!printed_line_info || level == eDescriptionLevelVerbose)
+    {
+        s->Printf (" using ranges: ");
+        DumpRanges(s);
+    }
+
+    s->PutChar('.');
 }
 
 void
@@ -90,6 +104,10 @@ ThreadPlanStepOverRange::SetupAvoidNoDebug(LazyBool step_out_avoids_code_without
         GetFlags().Set (ThreadPlanShouldStopHere::eStepOutAvoidNoDebug);
     else
         GetFlags().Clear (ThreadPlanShouldStopHere::eStepOutAvoidNoDebug);
+    // Step Over plans should always avoid no-debug on step in.  Seems like you shouldn't
+    // have to say this, but a tail call looks more like a step in that a step out, so
+    // we want to catch this case.
+    GetFlags().Set (ThreadPlanShouldStopHere::eStepInAvoidNoDebug);
 }
 
 bool
@@ -185,6 +203,9 @@ ThreadPlanStepOverRange::ShouldStop (Event *event_ptr)
             else
             {
                 new_plan_sp = m_thread.QueueThreadPlanForStepThrough (m_stack_id, false, stop_others);
+                // If we found a way through, then we should stop recursing.
+                if (new_plan_sp)
+                    break;
             }
         }
     }
@@ -310,11 +331,15 @@ ThreadPlanStepOverRange::ShouldStop (Event *event_ptr)
     {
         new_plan_sp = CheckShouldStopHereAndQueueStepOut (frame_order);
     }
-    
+
     if (!new_plan_sp)
         m_no_more_plans = true;
     else
+    {
+        // Any new plan will be an implementation plan, so mark it private:
+        new_plan_sp->SetPrivate(true);
         m_no_more_plans = false;
+    }
 
     if (!new_plan_sp)
     {

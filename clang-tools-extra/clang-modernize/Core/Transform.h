@@ -208,8 +208,8 @@ protected:
   ///
   /// The factory returned by this function is responsible for calling back to
   /// Transform to call handleBeginSource() and handleEndSource().
-  clang::tooling::FrontendActionFactory *
-      createActionFactory(clang::ast_matchers::MatchFinder &Finder);
+  std::unique_ptr<clang::tooling::FrontendActionFactory>
+  createActionFactory(clang::ast_matchers::MatchFinder &Finder);
 
 private:
   const std::string Name;
@@ -321,5 +321,7 @@ protected:
 };
 
 typedef llvm::Registry<TransformFactory> TransformFactoryRegistry;
+
+extern template class llvm::Registry<TransformFactory>;
 
 #endif // CLANG_MODERNIZE_TRANSFORM_H

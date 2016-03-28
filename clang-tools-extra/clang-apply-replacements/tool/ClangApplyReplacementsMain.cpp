@@ -199,11 +199,10 @@ int main(int argc, char **argv) {
   // Only include our options in -help output.
   StringMap<cl::Option*> OptMap;
   cl::getRegisteredOptions(OptMap);
-  const char **EndOpts = OptionsToShow + array_lengthof(OptionsToShow);
-  for (StringMap<cl::Option *>::iterator I = OptMap.begin(), E = OptMap.end();
-       I != E; ++I) {
-    if (std::find(OptionsToShow, EndOpts, I->getKey()) == EndOpts)
-      I->getValue()->setHiddenFlag(cl::ReallyHidden);
+  const char **EndOpts = std::end(OptionsToShow);
+  for (const auto &Opt : OptMap) {
+    if (std::find(OptionsToShow, EndOpts, Opt.getKey()) == EndOpts)
+      Opt.getValue()->setHiddenFlag(cl::ReallyHidden);
   }
 
   cl::SetVersionPrinter(&printVersion);
@@ -212,7 +211,7 @@ int main(int argc, char **argv) {
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts(new DiagnosticOptions());
   DiagnosticsEngine Diagnostics(
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs()),
-      DiagOpts.getPtr());
+      DiagOpts.get());
 
   // Determine a formatting style from options.
   format::FormatStyle FormatStyle;
@@ -222,7 +221,7 @@ int main(int argc, char **argv) {
   TUReplacements TUs;
   TUReplacementFiles TURFiles;
 
-  error_code ErrorCode =
+  std::error_code ErrorCode =
       collectReplacementsFromDirectory(Directory, TUs, TURFiles, Diagnostics);
 
   if (ErrorCode) {
@@ -246,36 +245,34 @@ int main(int argc, char **argv) {
 
   Rewriter ReplacementsRewriter(SM, LangOptions());
 
-  for (FileToReplacementsMap::const_iterator I = GroupedReplacements.begin(),
-                                             E = GroupedReplacements.end();
-       I != E; ++I) {
-
-    std::string NewFileData;
-
+  for (const auto &FileAndReplacements : GroupedReplacements) {
     // This shouldn't happen but if a file somehow has no replacements skip to
     // next file.
-    if (I->getValue().empty())
+    if (FileAndReplacements.second.empty())
       continue;
 
-    if (!applyReplacements(I->getValue(), NewFileData, Diagnostics)) {
-      errs() << "Failed to apply replacements to " << I->getKey() << "\n";
+    std::string NewFileData;
+    const char *FileName = FileAndReplacements.first->getName();
+    if (!applyReplacements(FileAndReplacements.second, NewFileData,
+                           Diagnostics)) {
+      errs() << "Failed to apply replacements to " << FileName << "\n";
       continue;
     }
 
     // Apply formatting if requested.
-    if (DoFormat && !applyFormatting(I->getValue(), NewFileData, NewFileData,
-                                     FormatStyle, Diagnostics)) {
-      errs() << "Failed to apply reformatting replacements for " << I->getKey()
+    if (DoFormat &&
+        !applyFormatting(FileAndReplacements.second, NewFileData, NewFileData,
+                         FormatStyle, Diagnostics)) {
+      errs() << "Failed to apply reformatting replacements for " << FileName
              << "\n";
       continue;
     }
 
     // Write new file to disk
-    std::string ErrorInfo;
-    llvm::raw_fd_ostream FileStream(I->getKey().str().c_str(), ErrorInfo,
-                                    llvm::sys::fs::F_Text);
-    if (!ErrorInfo.empty()) {
-      llvm::errs() << "Could not open " << I->getKey() << " for writing\n";
+    std::error_code EC;
+    llvm::raw_fd_ostream FileStream(FileName, EC, llvm::sys::fs::F_None);
+    if (EC) {
+      llvm::errs() << "Could not open " << FileName << " for writing\n";
       continue;
     }
 

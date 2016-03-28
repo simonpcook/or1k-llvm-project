@@ -26,11 +26,6 @@ class RegionPass;
 }
 
 namespace polly {
-#ifdef CLOOG_FOUND
-llvm::Pass *createCloogExporterPass();
-llvm::Pass *createCloogInfoPass();
-llvm::Pass *createCodeGenerationPass();
-#endif
 llvm::Pass *createCodePreparationPass();
 llvm::Pass *createDeadCodeElimPass();
 llvm::Pass *createDependencesPass();
@@ -39,7 +34,6 @@ llvm::Pass *createDOTOnlyViewerPass();
 llvm::Pass *createDOTPrinterPass();
 llvm::Pass *createDOTViewerPass();
 llvm::Pass *createIndependentBlocksPass();
-llvm::Pass *createIndVarSimplifyPass();
 llvm::Pass *createJSONExporterPass();
 llvm::Pass *createJSONImporterPass();
 #ifdef PLUTO_FOUND
@@ -53,22 +47,9 @@ llvm::Pass *createIslCodeGenerationPass();
 llvm::Pass *createIslScheduleOptimizerPass();
 llvm::Pass *createTempScopInfoPass();
 
-#ifdef OPENSCOP_FOUND
-llvm::Pass *createScopExporterPass();
-llvm::Pass *createScopImporterPass();
-#endif
-
-#ifdef SCOPLIB_FOUND
-llvm::Pass *createPoccPass();
-llvm::Pass *createScopLibExporterPass();
-llvm::Pass *createScopLibImporterPass();
-#endif
-
 extern char &IndependentBlocksID;
 extern char &CodePreparationID;
 }
-
-using namespace polly;
 
 namespace {
 struct PollyForcePassLinking {
@@ -80,51 +61,32 @@ struct PollyForcePassLinking {
     if (std::getenv("bar") != (char *)-1)
       return;
 
-#ifdef CLOOG_FOUND
-    createCloogExporterPass();
-    createCloogInfoPass();
-    createCodeGenerationPass();
-#endif
-    createCodePreparationPass();
-    createDeadCodeElimPass();
-    createDependencesPass();
-    createDOTOnlyPrinterPass();
-    createDOTOnlyViewerPass();
-    createDOTPrinterPass();
-    createDOTViewerPass();
-    createIndependentBlocksPass();
-    createIndVarSimplifyPass();
-    createJSONExporterPass();
-    createJSONImporterPass();
-    createScopDetectionPass();
-    createScopInfoPass();
+    polly::createCodePreparationPass();
+    polly::createDeadCodeElimPass();
+    polly::createDependencesPass();
+    polly::createDOTOnlyPrinterPass();
+    polly::createDOTOnlyViewerPass();
+    polly::createDOTPrinterPass();
+    polly::createDOTViewerPass();
+    polly::createIndependentBlocksPass();
+    polly::createJSONExporterPass();
+    polly::createJSONImporterPass();
+    polly::createScopDetectionPass();
+    polly::createScopInfoPass();
 #ifdef PLUTO_FOUND
-    createPlutoOptimizerPass();
+    polly::createPlutoOptimizerPass();
 #endif
-    createPollyCanonicalizePass();
-    createIslAstInfoPass();
-    createIslCodeGenerationPass();
-    createIslScheduleOptimizerPass();
-    createTempScopInfoPass();
-
-#ifdef OPENSCOP_FOUND
-    createScopExporterPass();
-    createScopImporterPass();
-#endif
-#ifdef SCOPLIB_FOUND
-    createPoccPass();
-    createScopLibExporterPass();
-    createScopLibImporterPass();
-#endif
+    polly::createPollyCanonicalizePass();
+    polly::createIslAstInfoPass();
+    polly::createIslCodeGenerationPass();
+    polly::createIslScheduleOptimizerPass();
+    polly::createTempScopInfoPass();
   }
 } PollyForcePassLinking; // Force link by creating a global definition.
 }
 
 namespace llvm {
 class PassRegistry;
-#ifdef CLOOG_FOUND
-void initializeCodeGenerationPass(llvm::PassRegistry &);
-#endif
 void initializeCodePreparationPass(llvm::PassRegistry &);
 void initializeDeadCodeElimPass(llvm::PassRegistry &);
 void initializeIndependentBlocksPass(llvm::PassRegistry &);
@@ -137,10 +99,6 @@ void initializeIslScheduleOptimizerPass(llvm::PassRegistry &);
 void initializePlutoOptimizerPass(llvm::PassRegistry &);
 #endif
 void initializePollyCanonicalizePass(llvm::PassRegistry &);
-#ifdef SCOPLIB_FOUND
-void initializePoccPass(llvm::PassRegistry &);
-#endif
-void initializePollyIndVarSimplifyPass(llvm::PassRegistry &);
 }
 
 #endif

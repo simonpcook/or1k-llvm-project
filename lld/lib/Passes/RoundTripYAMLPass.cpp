@@ -6,24 +6,18 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-#define DEBUG_TYPE "RoundTripYAMLPass"
 
 #include "lld/Core/Instrumentation.h"
+#include "lld/Core/Simple.h"
 #include "lld/Passes/RoundTripYAMLPass.h"
-#include "lld/ReaderWriter/Simple.h"
 #include "lld/ReaderWriter/Writer.h"
-
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Path.h"
-
 #include <memory>
 
-// Skip YAML files larger than this to avoid OOM error. The YAML reader consumes
-// excessively large amount of memory when parsing a large file.
-// TODO: Fix the YAML reader to reduce memory footprint.
-static const size_t MAX_YAML_FILE_SIZE = 50 * 1024 * 1024;
-
 using namespace lld;
+
+#define DEBUG_TYPE "RoundTripYAMLPass"
 
 /// Perform the actual pass
 void RoundTripYAMLPass::perform(std::unique_ptr<MutableFile> &mergedFile) {
@@ -41,19 +35,18 @@ void RoundTripYAMLPass::perform(std::unique_ptr<MutableFile> &mergedFile) {
   // The file that is written would be kept around if there is a problem
   // writing to the file or when reading atoms back from the file.
   yamlWriter->writeFile(*mergedFile, tmpYAMLFile.str());
-  std::unique_ptr<MemoryBuffer> mb;
-  if (MemoryBuffer::getFile(tmpYAMLFile.str(), mb))
+  ErrorOr<std::unique_ptr<MemoryBuffer>> mb =
+      MemoryBuffer::getFile(tmpYAMLFile.str());
+  if (!mb)
     return;
 
-  if (mb->getBufferSize() < MAX_YAML_FILE_SIZE) {
-    error_code ec = _context.registry().parseFile(mb, _yamlFile);
-    if (ec) {
-      // Note: we need a way for Passes to report errors.
-      llvm_unreachable("yaml reader not registered or read error");
-    }
-    File *objFile = _yamlFile[0].get();
-    mergedFile.reset(new FileToMutable(_context, *objFile));
+  std::error_code ec = _context.registry().parseFile(
+      std::move(mb.get()), _yamlFile);
+  if (ec) {
+    // Note: we need a way for Passes to report errors.
+    llvm_unreachable("yaml reader not registered or read error");
   }
-
+  File *objFile = _yamlFile[0].get();
+  mergedFile.reset(new SimpleFileWrapper(_context, *objFile));
   llvm::sys::fs::remove(tmpYAMLFile.str());
 }

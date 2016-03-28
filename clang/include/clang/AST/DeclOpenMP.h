@@ -12,13 +12,14 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_AST_OPENMP_H
-#define LLVM_CLANG_AST_OPENMP_H
+#ifndef LLVM_CLANG_AST_DECLOPENMP_H
+#define LLVM_CLANG_AST_DECLOPENMP_H
 
 #include "clang/AST/DeclBase.h"
 #include "llvm/ADT/ArrayRef.h"
 
 namespace clang {
+class Expr;
 
 /// \brief This represents '#pragma omp threadprivate ...' directive.
 /// For example, in the following, both 'a' and 'A::b' are threadprivate:
@@ -42,15 +43,14 @@ class OMPThreadPrivateDecl : public Decl {
     Decl(DK, DC, L), NumVars(0) { }
 
   ArrayRef<const Expr *> getVars() const {
-    return ArrayRef<const Expr *>(
-                   reinterpret_cast<const Expr * const *>(this + 1),
-                   NumVars);
+    return llvm::makeArrayRef(reinterpret_cast<const Expr * const *>(this + 1),
+                              NumVars);
   }
 
-  llvm::MutableArrayRef<Expr *> getVars() {
-    return llvm::MutableArrayRef<Expr *>(
-                                 reinterpret_cast<Expr **>(this + 1),
-                                 NumVars);
+  MutableArrayRef<Expr *> getVars() {
+    return MutableArrayRef<Expr *>(
+                           reinterpret_cast<Expr **>(this + 1),
+                           NumVars);
   }
 
   void setVars(ArrayRef<Expr *> VL);
@@ -62,7 +62,7 @@ public:
   static OMPThreadPrivateDecl *CreateDeserialized(ASTContext &C,
                                                   unsigned ID, unsigned N);
 
-  typedef llvm::MutableArrayRef<Expr *>::iterator varlist_iterator;
+  typedef MutableArrayRef<Expr *>::iterator varlist_iterator;
   typedef ArrayRef<const Expr *>::iterator varlist_const_iterator;
   typedef llvm::iterator_range<varlist_iterator> varlist_range;
   typedef llvm::iterator_range<varlist_const_iterator> varlist_const_range;

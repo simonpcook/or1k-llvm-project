@@ -21,16 +21,14 @@ template <class ELFT> class X86_64TargetLayout;
 class X86_64TargetRelocationHandler final
     : public TargetRelocationHandler<X86_64ELFType> {
 public:
-  X86_64TargetRelocationHandler(X86_64TargetLayout<X86_64ELFType> &layout)
-      : _tlsSize(0), _x86_64Layout(layout) {}
+  X86_64TargetRelocationHandler(X86_64TargetLayout<X86_64ELFType> &layout,
+                                ELFLinkingContext &targetInfo)
+      : TargetRelocationHandler<X86_64ELFType>(targetInfo),
+        _tlsSize(0), _x86_64Layout(layout) {}
 
-  virtual error_code applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
-                                     const lld::AtomLayout &,
-                                     const Reference &) const;
-
-  virtual int64_t relocAddend(const Reference &) const;
-
-  static const Registry::KindStrings kindStrings[];
+  std::error_code applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
+                                  const lld::AtomLayout &,
+                                  const Reference &) const override;
 
 private:
   // Cached size of the TLS segment.

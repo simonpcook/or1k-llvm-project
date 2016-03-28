@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_CODEGEN_CGCALL_H
-#define CLANG_CODEGEN_CGCALL_H
+#ifndef LLVM_CLANG_LIB_CODEGEN_CGCALL_H
+#define LLVM_CLANG_LIB_CODEGEN_CGCALL_H
 
 #include "CGValue.h"
 #include "EHScopeStack.h"
@@ -56,7 +56,7 @@ namespace CodeGen {
   class CallArgList :
     public SmallVector<CallArg, 16> {
   public:
-    CallArgList() : StackBase(0), StackBaseMem(0) {}
+    CallArgList() : StackBase(nullptr), StackBaseMem(nullptr) {}
 
     struct Writeback {
       /// The original argument.  Note that the argument l-value

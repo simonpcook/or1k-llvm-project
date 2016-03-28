@@ -5,7 +5,7 @@ add_lld_library(lldELF
   Writer.cpp
   )
 
-target_link_libraries(lldELF
+target_link_libraries(lldELF ${cmake_2_8_12_INTERFACE}
   lldHexagonELFTarget
   lldMipsELFTarget
   lldPPCELFTarget
@@ -13,15 +13,14 @@ target_link_libraries(lldELF
   lldReaderWriter
   lldX86ELFTarget
   lldX86_64ELFTarget
+  lldAArch64ELFTarget
   )
 
 include_directories(.)
 
-file(GLOB all_valid_subdirs RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "*/CMakeLists.txt")
-
-foreach(dir ${all_valid_subdirs})
-    if(${dir} MATCHES "^([^/]*)//CMakeLists.txt")
-        string(REGEX REPLACE "^([^/]*)//CMakeLists.txt" "\\1" dir_trimmed ${dir})
-        add_subdirectory(${dir_trimmed})
-    endif()
-endforeach(dir)
+add_subdirectory(X86)
+add_subdirectory(X86_64)
+add_subdirectory(PPC)
+add_subdirectory(Mips)
+add_subdirectory(Hexagon)
+add_subdirectory(AArch64)

@@ -5,7 +5,6 @@ Test lldb 'commands regex' command which allows the user to create a regular exp
 import os
 import unittest2
 import lldb
-import pexpect
 from lldbtest import *
 
 class CommandRegexTestCase(TestBase):
@@ -14,6 +13,7 @@ class CommandRegexTestCase(TestBase):
 
     def test_command_regex(self):
         """Test a simple scenario of 'command regex' invocation and subsequent use."""
+        import pexpect
         prompt = "(lldb) "
         regex_prompt = "Enter one of more sed substitution commands in the form: 's/<regex>/<subst>/'.\r\nTerminate the substitution list with an empty line.\r\n"
         regex_prompt1 = "\r\n"
@@ -32,10 +32,24 @@ class CommandRegexTestCase(TestBase):
         child.sendline('s/^$/help/')
         child.expect_exact(regex_prompt1)
         child.sendline('')
+        child.expect_exact(prompt)
         # Help!
         child.sendline('Help__')
         # If we see the familiar 'help' output, the test is done.
         child.expect('The following is a list of built-in, permanent debugger commands:')
+        
+        # Try and incorrectly remove "Help__" using "command unalias" and verify we fail
+        child.sendline('command unalias Help__')
+        child.expect_exact("error: 'Help__' is not an alias, it is a debugger command which can be removed using the 'command delete' command")
+        child.expect_exact(prompt)
+        
+        # Delete the regex command using "command delete"
+        child.sendline('command delete Help__')
+        child.expect_exact(prompt)
+        # Verify the command was removed
+        child.sendline('Help__')
+        child.expect_exact("error: 'Help__' is not a valid command")
+        child.expect_exact(prompt)
 
 if __name__ == '__main__':
     import atexit

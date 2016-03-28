@@ -151,7 +151,7 @@ public:
                       unsigned &AcceptedChanges, Transform &Owner)
       : SM(Context.getSourceManager()), Context(Context),
         UserNullMacros(UserNullMacros), AcceptedChanges(AcceptedChanges),
-        Owner(Owner), FirstSubExpr(0), PruneSubtree(false) {}
+        Owner(Owner), FirstSubExpr(nullptr), PruneSubtree(false) {}
 
   bool TraverseStmt(Stmt *S) {
     // Stop traversing down the tree if requested.
@@ -167,7 +167,7 @@ public:
   bool VisitStmt(Stmt *S) {
     CastExpr *C = dyn_cast<CastExpr>(S);
     if (!C) {
-      FirstSubExpr = 0;
+      FirstSubExpr = nullptr;
       return true;
     } else if (!FirstSubExpr) {
       FirstSubExpr = C->getSubExpr()->IgnoreParens();
@@ -383,27 +383,27 @@ private:
     assert(MacroLoc.isFileID());
 
     do {
-      ASTContext::ParentVector Parents = Context.getParents(Start);
+      const auto &Parents = Context.getParents(Start);
       if (Parents.empty())
         return false;
       assert(Parents.size() == 1 &&
              "Found an ancestor with more than one parent!");
 
-      ASTContext::ParentVector::const_iterator I = Parents.begin();
+      const ast_type_traits::DynTypedNode &Parent = Parents[0];
 
       SourceLocation Loc;
-      if (const Decl *D = I->get<Decl>())
+      if (const Decl *D = Parent.get<Decl>())
         Loc = D->getLocStart();
-      else if (const Stmt *S = I->get<Stmt>())
+      else if (const Stmt *S = Parent.get<Stmt>())
         Loc = S->getLocStart();
       else
         llvm_unreachable("Expected to find Decl or Stmt containing ancestor");
 
       if (!expandsFrom(Loc, MacroLoc)) {
-        Result = *I;
+        Result = Parent;
         return true;
       }
-      Start = *I;
+      Start = Parent;
     } while (1);
 
     llvm_unreachable("findContainingAncestor");

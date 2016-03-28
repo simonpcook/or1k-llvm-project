@@ -7,24 +7,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "lld/Core/File.h"
 #include "lld/ReaderWriter/Reader.h"
-
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/system_error.h"
-
 #include <memory>
+#include <system_error>
 
 namespace lld {
 
-Reader::~Reader() {
-}
-
-
-YamlIOTaggedDocumentHandler::~YamlIOTaggedDocumentHandler() { }
-
+YamlIOTaggedDocumentHandler::~YamlIOTaggedDocumentHandler() {}
 
 void Registry::add(std::unique_ptr<Reader> reader) {
   _readers.push_back(std::move(reader));
@@ -34,8 +29,8 @@ void Registry::add(std::unique_ptr<YamlIOTaggedDocumentHandler> handler) {
   _yamlHandlers.push_back(std::move(handler));
 }
 
-error_code
-Registry::parseFile(std::unique_ptr<MemoryBuffer> &mb,
+std::error_code
+Registry::parseFile(std::unique_ptr<MemoryBuffer> mb,
                     std::vector<std::unique_ptr<File>> &result) const {
   // Get file type.
   StringRef content(mb->getBufferStart(), mb->getBufferSize());
@@ -45,20 +40,27 @@ Registry::parseFile(std::unique_ptr<MemoryBuffer> &mb,
 
   // Ask each registered reader if it can handle this file type or extension.
   for (const std::unique_ptr<Reader> &reader : _readers) {
-    if (reader->canParse(fileType, extension, *mb))
-      return reader->parseFile(mb, *this, result);
+    if (!reader->canParse(fileType, extension, *mb))
+      continue;
+    if (std::error_code ec = reader->parseFile(std::move(mb), *this, result))
+      return ec;
+    for (std::unique_ptr<File> &file : result)
+      if (std::error_code ec = file->parse())
+        return ec;
+    return std::error_code();
   }
 
   // No Reader could parse this file.
-  return llvm::make_error_code(llvm::errc::executable_format_error);
+  return make_error_code(llvm::errc::executable_format_error);
 }
 
 static const Registry::KindStrings kindStrings[] = {
-  { Reference::kindInGroup,      "in-group" },
-  { Reference::kindLayoutAfter,  "layout-after" },
-  { Reference::kindLayoutBefore, "layout-before" },
-  LLD_KIND_STRING_END
-};
+    {Reference::kindInGroup, "in-group"},
+    {Reference::kindLayoutAfter, "layout-after"},
+    {Reference::kindLayoutBefore, "layout-before"},
+    {Reference::kindGroupChild, "group-child"},
+    {Reference::kindAssociate, "associate"},
+    LLD_KIND_STRING_END};
 
 Registry::Registry() {
   addKindTable(Reference::KindNamespace::all, Reference::KindArch::all,
@@ -67,10 +69,9 @@ Registry::Registry() {
 
 bool Registry::handleTaggedDoc(llvm::yaml::IO &io,
                                const lld::File *&file) const {
-  for (const std::unique_ptr<YamlIOTaggedDocumentHandler> &h : _yamlHandlers) {
+  for (const std::unique_ptr<YamlIOTaggedDocumentHandler> &h : _yamlHandlers)
     if (h->handledDocTag(io, file))
       return true;
-  }
   return false;
 }
 

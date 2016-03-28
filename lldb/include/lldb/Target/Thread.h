@@ -14,6 +14,7 @@
 #include "lldb/Host/Mutex.h"
 #include "lldb/Core/Broadcaster.h"
 #include "lldb/Core/Event.h"
+#include "lldb/Core/StructuredData.h"
 #include "lldb/Core/UserID.h"
 #include "lldb/Core/UserSettingsController.h"
 #include "lldb/Target/ExecutionContextScope.h"
@@ -209,10 +210,22 @@ public:
     {
         return m_resume_state;
     }
-
+    
+    // This sets the "external resume state" of the thread.  If the thread is suspended here, it should never
+    // get scheduled.  Note that just because a thread is marked as "running" does not mean we will let it run in
+    // a given bit of process control.  For instance "step" tries to stay on the selected thread it was issued on,
+    // which may involve suspending other threads temporarily.  This temporary suspension is NOT reflected in the
+    // state set here and reported in GetResumeState.
+    //
+    // If you are just preparing all threads to run, you should not override the threads that are
+    // marked as suspended by the debugger.  In that case, pass override_suspend = false.  If you want
+    // to force the thread to run (e.g. the "thread continue" command, or are resetting the state
+    // (e.g. in SBThread::Resume()), then pass true to override_suspend.
     void
-    SetResumeState (lldb::StateType state)
+    SetResumeState (lldb::StateType state, bool override_suspend = false)
     {
+        if (m_resume_state == lldb::eStateSuspended && !override_suspend)
+            return;
         m_resume_state = state;
     }
 
@@ -294,6 +307,28 @@ public:
         return NULL;
     }
 
+    //------------------------------------------------------------------
+    /// Retrieve a dictionary of information about this thread 
+    ///
+    /// On Mac OS X systems there may be voucher information.
+    /// The top level dictionary returned will have an "activity" key and the
+    /// value of the activity is a dictionary.  Keys in that dictionary will 
+    /// be "name" and "id", among others.
+    /// There may also be "trace_messages" (an array) with each entry in that array
+    /// being a dictionary (keys include "message" with the text of the trace
+    /// message).
+    //------------------------------------------------------------------
+    StructuredData::ObjectSP
+    GetExtendedInfo ()
+    {
+        if (m_extended_info_fetched == false)
+        {
+            m_extended_info = FetchThreadExtendedInfo ();
+            m_extended_info_fetched = true;
+        }
+        return m_extended_info;
+    }
+
     virtual const char *
     GetName ()
     {
@@ -350,6 +385,22 @@ public:
     virtual void
     SetQueueName (const char *name)
     {
+    }
+
+    //------------------------------------------------------------------
+    /// Retrieve the Queue for this thread, if any.
+    ///
+    /// @return
+    ///     A QueueSP for the queue that is currently associated with this 
+    ///     thread.
+    ///     An empty shared pointer indicates that this thread is not
+    ///     associated with a queue, or libdispatch queues are not 
+    ///     supported on this target.
+    //------------------------------------------------------------------
+    virtual lldb::QueueSP
+    GetQueue ()
+    {
+        return lldb::QueueSP();
     }
 
     //------------------------------------------------------------------
@@ -483,6 +534,9 @@ public:
     void
     DumpUsingSettingsFormat (Stream &strm, uint32_t frame_idx);
 
+    bool
+    GetDescription (Stream &s, lldb::DescriptionLevel level, bool print_json_thread, bool print_json_stopinfo);
+
     //------------------------------------------------------------------
     /// Default implementation for stepping into.
     ///
@@ -495,7 +549,7 @@ public:
     ///
     /// @param[in] step_in_avoids_code_without_debug_info
     ///     If \a true, then avoid stepping into code that doesn't have
-    ///     debug info, else step into any code regardless of wether it
+    ///     debug info, else step into any code regardless of whether it
     ///     has debug info.
     ///
     /// @param[in] step_out_avoids_code_without_debug_info
@@ -564,6 +618,19 @@ public:
     virtual lldb::addr_t
     GetThreadLocalData (const lldb::ModuleSP module);
 
+    //------------------------------------------------------------------
+    /// Check whether this thread is safe to run functions
+    ///
+    /// The SystemRuntime may know of certain thread states (functions in 
+    /// process of execution, for instance) which can make it unsafe for 
+    /// functions to be called.
+    ///
+    /// @return
+    ///     True if it is safe to call functions on this thread.
+    ///     False if function calls should be avoided on this thread.
+    //------------------------------------------------------------------
+    virtual bool
+    SafeToCallFunctions ();
 
     //------------------------------------------------------------------
     // Thread Plan Providers:
@@ -845,6 +912,11 @@ public:
                                  bool stop_others,
                                  uint32_t frame_idx);
 
+    virtual lldb::ThreadPlanSP
+    QueueThreadPlanForStepScripted (bool abort_other_plans,
+                                    const char *class_name,
+                                    bool stop_other_threads);
+
     //------------------------------------------------------------------
     // Thread Plan accessors:
     //------------------------------------------------------------------
@@ -897,6 +969,17 @@ public:
     //------------------------------------------------------------------
     lldb::ValueObjectSP
     GetReturnValueObject ();
+
+    //------------------------------------------------------------------
+    /// Gets the outer-most expression variable from the completed plans
+    ///
+    /// @return
+    ///     A ClangExpressionVariableSP, either empty if there is no
+    ///     plan completed an expression during the current stop
+    ///     or the expression variable that was made for the completed expression.
+    //------------------------------------------------------------------
+    lldb::ClangExpressionVariableSP
+    GetExpressionVariable ();
 
     //------------------------------------------------------------------
     ///  Checks whether the given plan is in the completed plans for this
@@ -963,6 +1046,20 @@ public:
 
     void
     DiscardThreadPlansUpToPlan (ThreadPlan *up_to_plan_ptr);
+
+    //------------------------------------------------------------------
+    /// Discards the plans queued on the plan stack of the current thread up to and
+    /// including the plan in that matches \a thread_index counting only
+    /// the non-Private plans.
+    ///
+    /// @param[in] up_to_plan_sp
+    ///   Discard all plans up to and including this user plan given by this index.
+    ///
+    /// @return
+    ///    \b true if there was a thread plan with that user index, \b false otherwise.
+    //------------------------------------------------------------------
+    bool
+    DiscardUserThreadPlansUpToIndex (uint32_t thread_index);
     
     //------------------------------------------------------------------
     /// Prints the current plan stack.
@@ -972,7 +1069,10 @@ public:
     ///
     //------------------------------------------------------------------
     void
-    DumpThreadPlans (Stream *s) const;
+    DumpThreadPlans (Stream *s,
+                     lldb::DescriptionLevel desc_level = lldb::eDescriptionLevelVerbose,
+                     bool include_internal = true,
+                     bool ignore_boring = false) const;
     
     virtual bool
     CheckpointThreadState (ThreadStateCheckpoint &saved_state);
@@ -1197,6 +1297,13 @@ protected:
         return false;
     }
     
+    // Subclasses that have a way to get an extended info dictionary for this thread should
+    // fill 
+    virtual lldb_private::StructuredData::ObjectSP
+    FetchThreadExtendedInfo ()
+    {
+        return StructuredData::ObjectSP();
+    }
 
     lldb::StackFrameListSP
     GetStackFrameList ();
@@ -1208,6 +1315,7 @@ protected:
     lldb::ProcessWP     m_process_wp;           ///< The process that owns this thread.
     lldb::StopInfoSP    m_stop_info_sp;         ///< The private stop reason for this thread
     uint32_t            m_stop_info_stop_id;    // This is the stop id for which the StopInfo is valid.  Can use this so you know that
+    uint32_t            m_stop_info_override_stop_id;    // The stop ID containing the last time the stop info was checked against the stop info override
     // the thread's m_stop_info_sp is current and you don't have to fetch it again
     const uint32_t      m_index_id;             ///< A unique 1 based index assigned to each thread for easy UI/command line access.
     lldb::RegisterContextSP m_reg_context_sp;   ///< The register context for this thread's current register state.
@@ -1222,11 +1330,13 @@ protected:
     int                 m_resume_signal;        ///< The signal that should be used when continuing this thread.
     lldb::StateType     m_resume_state;         ///< This state is used to force a thread to be suspended from outside the ThreadPlan logic.
     lldb::StateType     m_temporary_resume_state; ///< This state records what the thread was told to do by the thread plan logic for the current resume.
-                                                  /// It gets set in Thread::ShoudResume.
+                                                  /// It gets set in Thread::ShouldResume.
     std::unique_ptr<lldb_private::Unwind> m_unwinder_ap;
     bool                m_destroy_called;       // This is used internally to make sure derived Thread classes call DestroyThread.
     LazyBool            m_override_should_notify;
 private:
+    bool                m_extended_info_fetched;  // Have we tried to retrieve the m_extended_info for this thread?
+    StructuredData::ObjectSP m_extended_info;     // The extended info for this thread
     //------------------------------------------------------------------
     // For Thread only
     //------------------------------------------------------------------

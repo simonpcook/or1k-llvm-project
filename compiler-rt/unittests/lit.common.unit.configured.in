@@ -7,6 +7,7 @@ config.llvm_src_root = "@LLVM_SOURCE_DIR@"
 config.llvm_obj_root = "@LLVM_BINARY_DIR@"
 config.llvm_tools_dir = "@LLVM_TOOLS_DIR@"
 config.compiler_rt_src_root = "@COMPILER_RT_SOURCE_DIR@"
+config.compiler_rt_libdir = "@COMPILER_RT_LIBRARY_OUTPUT_DIR@"
 config.llvm_build_mode = "@LLVM_BUILD_MODE@"
 config.host_arch = "@HOST_ARCH@"
 config.host_os = "@HOST_OS@"
@@ -16,7 +17,7 @@ config.host_os = "@HOST_OS@"
 try:
   config.llvm_tools_dir = config.llvm_tools_dir % lit_config.params
   config.llvm_build_mode = config.llvm_build_mode % lit_config.params
-except KeyError,e:
+except KeyError as e:
   key, = e.args
   lit_config.fatal("unable to find %r parameter, use '--param=%s=VALUE'" % (key, key))
 

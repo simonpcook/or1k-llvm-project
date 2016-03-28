@@ -12,7 +12,6 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclGroup.h"
 #include "clang/Frontend/ASTUnit.h"
-#include "clang/Frontend/ChainedIncludesSource.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
@@ -30,18 +29,25 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 using namespace clang;
+
+template class llvm::Registry<clang::PluginASTAction>;
 
 namespace {
 
 class DelegatingDeserializationListener : public ASTDeserializationListener {
   ASTDeserializationListener *Previous;
+  bool DeletePrevious;
 
 public:
   explicit DelegatingDeserializationListener(
-                                           ASTDeserializationListener *Previous)
-    : Previous(Previous) { }
+      ASTDeserializationListener *Previous, bool DeletePrevious)
+      : Previous(Previous), DeletePrevious(DeletePrevious) {}
+  virtual ~DelegatingDeserializationListener() {
+    if (DeletePrevious)
+      delete Previous;
+  }
 
   void ReaderInitialized(ASTReader *Reader) override {
     if (Previous)
@@ -74,8 +80,9 @@ public:
 /// \brief Dumps deserialized declarations.
 class DeserializedDeclsDumper : public DelegatingDeserializationListener {
 public:
-  explicit DeserializedDeclsDumper(ASTDeserializationListener *Previous)
-    : DelegatingDeserializationListener(Previous) { }
+  explicit DeserializedDeclsDumper(ASTDeserializationListener *Previous,
+                                   bool DeletePrevious)
+      : DelegatingDeserializationListener(Previous, DeletePrevious) {}
 
   void DeclRead(serialization::DeclID ID, const Decl *D) override {
     llvm::outs() << "PCH DECL: " << D->getDeclKindName();
@@ -96,9 +103,10 @@ class DeserializedDeclsChecker : public DelegatingDeserializationListener {
 public:
   DeserializedDeclsChecker(ASTContext &Ctx,
                            const std::set<std::string> &NamesToCheck,
-                           ASTDeserializationListener *Previous)
-    : DelegatingDeserializationListener(Previous),
-      Ctx(Ctx), NamesToCheck(NamesToCheck) { }
+                           ASTDeserializationListener *Previous,
+                           bool DeletePrevious)
+      : DelegatingDeserializationListener(Previous, DeletePrevious), Ctx(Ctx),
+        NamesToCheck(NamesToCheck) {}
 
   void DeclRead(serialization::DeclID ID, const Decl *D) override {
     if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
@@ -116,28 +124,30 @@ public:
 
 } // end anonymous namespace
 
-FrontendAction::FrontendAction() : Instance(0) {}
+FrontendAction::FrontendAction() : Instance(nullptr) {}
 
 FrontendAction::~FrontendAction() {}
 
 void FrontendAction::setCurrentInput(const FrontendInputFile &CurrentInput,
-                                     ASTUnit *AST) {
+                                     std::unique_ptr<ASTUnit> AST) {
   this->CurrentInput = CurrentInput;
-  CurrentASTUnit.reset(AST);
+  CurrentASTUnit = std::move(AST);
 }
 
-ASTConsumer* FrontendAction::CreateWrappedASTConsumer(CompilerInstance &CI,
-                                                      StringRef InFile) {
-  ASTConsumer* Consumer = CreateASTConsumer(CI, InFile);
+std::unique_ptr<ASTConsumer>
+FrontendAction::CreateWrappedASTConsumer(CompilerInstance &CI,
+                                         StringRef InFile) {
+  std::unique_ptr<ASTConsumer> Consumer = CreateASTConsumer(CI, InFile);
   if (!Consumer)
-    return 0;
+    return nullptr;
 
   if (CI.getFrontendOpts().AddPluginActions.size() == 0)
     return Consumer;
 
   // Make sure the non-plugin consumer is first, so that plugins can't
   // modifiy the AST.
-  std::vector<ASTConsumer*> Consumers(1, Consumer);
+  std::vector<std::unique_ptr<ASTConsumer>> Consumers;
+  Consumers.push_back(std::move(Consumer));
 
   for (size_t i = 0, e = CI.getFrontendOpts().AddPluginActions.size();
        i != e; ++i) { 
@@ -147,16 +157,15 @@ ASTConsumer* FrontendAction::CreateWrappedASTConsumer(CompilerInstance &CI,
         it = FrontendPluginRegistry::begin(),
         ie = FrontendPluginRegistry::end();
         it != ie; ++it) {
-      if (it->getName() == CI.getFrontendOpts().AddPluginActions[i]) {
-        std::unique_ptr<PluginASTAction> P(it->instantiate());
-        FrontendAction* c = P.get();
-        if (P->ParseArgs(CI, CI.getFrontendOpts().AddPluginArgs[i]))
-          Consumers.push_back(c->CreateASTConsumer(CI, InFile));
-      }
+      if (it->getName() != CI.getFrontendOpts().AddPluginActions[i])
+        continue;
+      std::unique_ptr<PluginASTAction> P = it->instantiate();
+      if (P->ParseArgs(CI, CI.getFrontendOpts().AddPluginArgs[i]))
+        Consumers.push_back(P->CreateASTConsumer(CI, InFile));
     }
   }
 
-  return new MultiplexConsumer(Consumers);
+  return llvm::make_unique<MultiplexConsumer>(std::move(Consumers));
 }
 
 bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
@@ -181,15 +190,14 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
 
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags(&CI.getDiagnostics());
 
-    ASTUnit *AST = ASTUnit::LoadFromASTFile(InputFile, Diags,
-                                            CI.getFileSystemOpts());
+    std::unique_ptr<ASTUnit> AST =
+        ASTUnit::LoadFromASTFile(InputFile, Diags, CI.getFileSystemOpts());
+
     if (!AST)
       goto failure;
 
-    setCurrentInput(Input, AST);
-
     // Inform the diagnostic client we are processing a source file.
-    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), 0);
+    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), nullptr);
     HasBegunSourceFile = true;
 
     // Set the shared objects, these are reset when we finish processing the
@@ -198,6 +206,8 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     CI.setSourceManager(&AST->getSourceManager());
     CI.setPreprocessor(&AST->getPreprocessor());
     CI.setASTContext(&AST->getASTContext());
+
+    setCurrentInput(Input, std::move(AST));
 
     // Initialize the action.
     if (!BeginSourceFileAction(CI, InputFile))
@@ -211,30 +221,13 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     return true;
   }
 
-  if (!CI.getHeaderSearchOpts().VFSOverlayFiles.empty()) {
-    IntrusiveRefCntPtr<vfs::OverlayFileSystem>
-        Overlay(new vfs::OverlayFileSystem(vfs::getRealFileSystem()));
-    // earlier vfs files are on the bottom
-    const std::vector<std::string> &Files =
-        CI.getHeaderSearchOpts().VFSOverlayFiles;
-    for (std::vector<std::string>::const_iterator I = Files.begin(),
-                                                  E = Files.end();
-         I != E; ++I) {
-      std::unique_ptr<llvm::MemoryBuffer> Buffer;
-      if (llvm::errc::success != llvm::MemoryBuffer::getFile(*I, Buffer)) {
-        CI.getDiagnostics().Report(diag::err_missing_vfs_overlay_file) << *I;
-        goto failure;
-      }
-
-      IntrusiveRefCntPtr<vfs::FileSystem> FS =
-          vfs::getVFSFromYAML(Buffer.release(), /*DiagHandler*/ 0);
-      if (!FS.getPtr()) {
-        CI.getDiagnostics().Report(diag::err_invalid_vfs_overlay) << *I;
-        goto failure;
-      }
-      Overlay->pushOverlay(FS);
-    }
-    CI.setVirtualFileSystem(Overlay);
+  if (!CI.hasVirtualFileSystem()) {
+    if (IntrusiveRefCntPtr<vfs::FileSystem> VFS =
+          createVFSFromCompilerInvocation(CI.getInvocation(),
+                                          CI.getDiagnostics()))
+      CI.setVirtualFileSystem(VFS);
+    else
+      goto failure;
   }
 
   // Set up the file and source managers, if needed.
@@ -249,11 +242,15 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
            "This action does not have IR file support!");
 
     // Inform the diagnostic client we are processing a source file.
-    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), 0);
+    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), nullptr);
     HasBegunSourceFile = true;
 
     // Initialize the action.
     if (!BeginSourceFileAction(CI, InputFile))
+      goto failure;
+
+    // Initialize the main file entry.
+    if (!CI.InitializeSourceManager(CurrentInput))
       goto failure;
 
     return true;
@@ -266,7 +263,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     PreprocessorOptions &PPOpts = CI.getPreprocessorOpts();
     StringRef PCHInclude = PPOpts.ImplicitPCHInclude;
     if (const DirectoryEntry *PCHDir = FileMgr.getDirectory(PCHInclude)) {
-      llvm::error_code EC;
+      std::error_code EC;
       SmallString<128> DirNative;
       llvm::sys::path::native(PCHDir->getName(), DirNative);
       bool Found = false;
@@ -290,8 +287,10 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     }
   }
 
-  // Set up the preprocessor.
-  CI.createPreprocessor(getTranslationUnitKind());
+  // Set up the preprocessor if needed. When parsing model files the
+  // preprocessor of the original source is reused.
+  if (!isModelParsingAction())
+    CI.createPreprocessor(getTranslationUnitKind());
 
   // Inform the diagnostic client we are processing a source file.
   CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(),
@@ -302,48 +301,63 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   if (!BeginSourceFileAction(CI, InputFile))
     goto failure;
 
+  // Initialize the main file entry. It is important that this occurs after
+  // BeginSourceFileAction, which may change CurrentInput during module builds.
+  if (!CI.InitializeSourceManager(CurrentInput))
+    goto failure;
+
   // Create the AST context and consumer unless this is a preprocessor only
   // action.
   if (!usesPreprocessorOnly()) {
-    CI.createASTContext();
+    // Parsing a model file should reuse the existing ASTContext.
+    if (!isModelParsingAction())
+      CI.createASTContext();
 
-    std::unique_ptr<ASTConsumer> Consumer(
-        CreateWrappedASTConsumer(CI, InputFile));
+    std::unique_ptr<ASTConsumer> Consumer =
+        CreateWrappedASTConsumer(CI, InputFile);
     if (!Consumer)
       goto failure;
 
-    CI.getASTContext().setASTMutationListener(Consumer->GetASTMutationListener());
-    
+    // FIXME: should not overwrite ASTMutationListener when parsing model files?
+    if (!isModelParsingAction())
+      CI.getASTContext().setASTMutationListener(Consumer->GetASTMutationListener());
+
     if (!CI.getPreprocessorOpts().ChainedIncludes.empty()) {
       // Convert headers to PCH and chain them.
-      IntrusiveRefCntPtr<ChainedIncludesSource> source;
-      source = ChainedIncludesSource::create(CI);
+      IntrusiveRefCntPtr<ExternalSemaSource> source, FinalReader;
+      source = createChainedIncludesSource(CI, FinalReader);
       if (!source)
         goto failure;
-      CI.setModuleManager(static_cast<ASTReader*>(&source->getFinalReader()));
+      CI.setModuleManager(static_cast<ASTReader *>(FinalReader.get()));
       CI.getASTContext().setExternalSource(source);
-
     } else if (!CI.getPreprocessorOpts().ImplicitPCHInclude.empty()) {
       // Use PCH.
       assert(hasPCHSupport() && "This action does not have PCH support!");
       ASTDeserializationListener *DeserialListener =
           Consumer->GetASTDeserializationListener();
-      if (CI.getPreprocessorOpts().DumpDeserializedPCHDecls)
-        DeserialListener = new DeserializedDeclsDumper(DeserialListener);
-      if (!CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn.empty())
-        DeserialListener = new DeserializedDeclsChecker(CI.getASTContext(),
-                         CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn,
-                                                        DeserialListener);
+      bool DeleteDeserialListener = false;
+      if (CI.getPreprocessorOpts().DumpDeserializedPCHDecls) {
+        DeserialListener = new DeserializedDeclsDumper(DeserialListener,
+                                                       DeleteDeserialListener);
+        DeleteDeserialListener = true;
+      }
+      if (!CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn.empty()) {
+        DeserialListener = new DeserializedDeclsChecker(
+            CI.getASTContext(),
+            CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn,
+            DeserialListener, DeleteDeserialListener);
+        DeleteDeserialListener = true;
+      }
       CI.createPCHExternalASTSource(
-                                CI.getPreprocessorOpts().ImplicitPCHInclude,
-                                CI.getPreprocessorOpts().DisablePCHValidation,
-                            CI.getPreprocessorOpts().AllowPCHWithCompilerErrors,
-                                DeserialListener);
+          CI.getPreprocessorOpts().ImplicitPCHInclude,
+          CI.getPreprocessorOpts().DisablePCHValidation,
+          CI.getPreprocessorOpts().AllowPCHWithCompilerErrors, DeserialListener,
+          DeleteDeserialListener);
       if (!CI.getASTContext().getExternalSource())
         goto failure;
     }
 
-    CI.setASTConsumer(Consumer.release());
+    CI.setASTConsumer(std::move(Consumer));
     if (!CI.hasASTConsumer())
       goto failure;
   }
@@ -352,9 +366,27 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   // source.
   if (!CI.hasASTContext() || !CI.getASTContext().getExternalSource()) {
     Preprocessor &PP = CI.getPreprocessor();
+
+    // If modules are enabled, create the module manager before creating
+    // any builtins, so that all declarations know that they might be
+    // extended by an external source.
+    if (CI.getLangOpts().Modules)
+      CI.createModuleManager();
+
     PP.getBuiltinInfo().InitializeBuiltins(PP.getIdentifierTable(),
                                            PP.getLangOpts());
+  } else {
+    // FIXME: If this is a problem, recover from it by creating a multiplex
+    // source.
+    assert((!CI.getLangOpts().Modules || CI.getModuleManager()) &&
+           "modules enabled but created an external source that "
+           "doesn't support modules");
   }
+
+  // If we were asked to load any module files, do so now.
+  for (const auto &ModuleFile : CI.getFrontendOpts().ModuleFiles)
+    if (!CI.loadModuleFile(ModuleFile))
+      goto failure;
 
   // If there is a layout overrides file, attach an external AST source that
   // provides the layouts from that file.
@@ -365,36 +397,29 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
                      CI.getFrontendOpts().OverrideRecordLayoutsFile));
     CI.getASTContext().setExternalSource(Override);
   }
-  
+
   return true;
 
   // If we failed, reset state since the client will not end up calling the
   // matching EndSourceFile().
   failure:
   if (isCurrentFileAST()) {
-    CI.setASTContext(0);
-    CI.setPreprocessor(0);
-    CI.setSourceManager(0);
-    CI.setFileManager(0);
+    CI.setASTContext(nullptr);
+    CI.setPreprocessor(nullptr);
+    CI.setSourceManager(nullptr);
+    CI.setFileManager(nullptr);
   }
 
   if (HasBegunSourceFile)
     CI.getDiagnosticClient().EndSourceFile();
   CI.clearOutputFiles(/*EraseFiles=*/true);
   setCurrentInput(FrontendInputFile());
-  setCompilerInstance(0);
+  setCompilerInstance(nullptr);
   return false;
 }
 
 bool FrontendAction::Execute() {
   CompilerInstance &CI = getCompilerInstance();
-
-  // Initialize the main file entry. This needs to be delayed until after PCH
-  // has loaded.
-  if (!isCurrentFileAST()) {
-    if (!CI.InitializeSourceManager(getCurrentInput()))
-      return false;
-  }
 
   if (CI.hasFrontendTimer()) {
     llvm::TimeRegion Timer(CI.getFrontendTimer());
@@ -420,30 +445,30 @@ void FrontendAction::EndSourceFile() {
   // Inform the diagnostic client we are done with this source file.
   CI.getDiagnosticClient().EndSourceFile();
 
-  // Finalize the action.
-  EndSourceFileAction();
-
-  // Release the consumer and the AST, in that order since the consumer may
-  // perform actions in its destructor which require the context.
-  //
-  // FIXME: There is more per-file stuff we could just drop here?
-  if (CI.getFrontendOpts().DisableFree) {
-    BuryPointer(CI.takeASTConsumer());
-    if (!isCurrentFileAST()) {
-      BuryPointer(CI.takeSema());
-      CI.resetAndLeakASTContext();
-    }
-  } else {
-    if (!isCurrentFileAST()) {
-      CI.setSema(0);
-      CI.setASTContext(0);
-    }
-    CI.setASTConsumer(0);
-  }
-
   // Inform the preprocessor we are done.
   if (CI.hasPreprocessor())
     CI.getPreprocessor().EndSourceFile();
+
+  // Finalize the action.
+  EndSourceFileAction();
+
+  // Sema references the ast consumer, so reset sema first.
+  //
+  // FIXME: There is more per-file stuff we could just drop here?
+  bool DisableFree = CI.getFrontendOpts().DisableFree;
+  if (DisableFree) {
+    if (!isCurrentFileAST()) {
+      CI.resetAndLeakSema();
+      CI.resetAndLeakASTContext();
+    }
+    BuryPointer(CI.takeASTConsumer().get());
+  } else {
+    if (!isCurrentFileAST()) {
+      CI.setSema(nullptr);
+      CI.setASTContext(nullptr);
+    }
+    CI.setASTConsumer(nullptr);
+  }
 
   if (CI.getFrontendOpts().ShowStats) {
     llvm::errs() << "\nSTATISTICS FOR '" << getCurrentFile() << "':\n";
@@ -458,15 +483,16 @@ void FrontendAction::EndSourceFile() {
   // FrontendAction.
   CI.clearOutputFiles(/*EraseFiles=*/shouldEraseOutputFiles());
 
+  // FIXME: Only do this if DisableFree is set.
   if (isCurrentFileAST()) {
-    CI.takeSema();
+    CI.resetAndLeakSema();
     CI.resetAndLeakASTContext();
     CI.resetAndLeakPreprocessor();
     CI.resetAndLeakSourceManager();
     CI.resetAndLeakFileManager();
   }
 
-  setCompilerInstance(0);
+  setCompilerInstance(nullptr);
   setCurrentInput(FrontendInputFile());
 }
 
@@ -490,7 +516,7 @@ void ASTFrontendAction::ExecuteAction() {
     CI.createCodeCompletionConsumer();
 
   // Use a code completion consumer?
-  CodeCompleteConsumer *CompletionConsumer = 0;
+  CodeCompleteConsumer *CompletionConsumer = nullptr;
   if (CI.hasCodeCompletionConsumer())
     CompletionConsumer = &CI.getCodeCompletionConsumer();
 
@@ -503,14 +529,15 @@ void ASTFrontendAction::ExecuteAction() {
 
 void PluginASTAction::anchor() { }
 
-ASTConsumer *
+std::unique_ptr<ASTConsumer>
 PreprocessorFrontendAction::CreateASTConsumer(CompilerInstance &CI,
                                               StringRef InFile) {
   llvm_unreachable("Invalid CreateASTConsumer on preprocessor action!");
 }
 
-ASTConsumer *WrapperFrontendAction::CreateASTConsumer(CompilerInstance &CI,
-                                                      StringRef InFile) {
+std::unique_ptr<ASTConsumer>
+WrapperFrontendAction::CreateASTConsumer(CompilerInstance &CI,
+                                         StringRef InFile) {
   return WrappedAction->CreateASTConsumer(CI, InFile);
 }
 bool WrapperFrontendAction::BeginInvocation(CompilerInstance &CI) {

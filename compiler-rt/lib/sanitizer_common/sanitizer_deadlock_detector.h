@@ -50,6 +50,8 @@ class DeadlockDetectorTLS {
     if (epoch_ == current_epoch) return;
     bv_.clear();
     epoch_ = current_epoch;
+    n_recursive_locks = 0;
+    n_all_locks_ = 0;
   }
 
   uptr getEpoch() const { return epoch_; }
@@ -64,12 +66,11 @@ class DeadlockDetectorTLS {
       recursive_locks[n_recursive_locks++] = lock_id;
       return false;
     }
-    if (stk) {
-      CHECK_LT(n_all_locks_, ARRAY_SIZE(all_locks_with_contexts_));
-      // lock_id < BV::kSize, can cast to a smaller int.
-      u32 lock_id_short = static_cast<u32>(lock_id);
-      all_locks_with_contexts_[n_all_locks_++] = {lock_id_short, stk};
-    }
+    CHECK_LT(n_all_locks_, ARRAY_SIZE(all_locks_with_contexts_));
+    // lock_id < BV::kSize, can cast to a smaller int.
+    u32 lock_id_short = static_cast<u32>(lock_id);
+    LockWithContext l = {lock_id_short, stk};
+    all_locks_with_contexts_[n_all_locks_++] = l;
     return true;
   }
 
@@ -84,7 +85,8 @@ class DeadlockDetectorTLS {
       }
     }
     // Printf("remLock: %zx %zx\n", lock_id, epoch_);
-    CHECK(bv_.clearBit(lock_id));
+    if (!bv_.clearBit(lock_id))
+      return;  // probably addLock happened before flush
     if (n_all_locks_) {
       for (sptr i = n_all_locks_ - 1; i >= 0; i--) {
         if (all_locks_with_contexts_[i].lock == static_cast<u32>(lock_id)) {
@@ -108,6 +110,9 @@ class DeadlockDetectorTLS {
     CHECK_EQ(epoch_, current_epoch);
     return bv_;
   }
+
+  uptr getNumLocks() const { return n_all_locks_; }
+  uptr getLock(uptr idx) const { return all_locks_with_contexts_[idx].lock; }
 
  private:
   BV bv_;
@@ -173,6 +178,7 @@ class DeadlockDetector {
     recycled_nodes_.clear();
     available_nodes_.setAll();
     g_.clear();
+    n_edges_ = 0;
     return getAvailableNode(data);
   }
 
@@ -222,7 +228,11 @@ class DeadlockDetector {
     if (cur_node && local_epoch == current_epoch_ &&
         local_epoch == nodeToEpoch(cur_node)) {
       uptr cur_idx = nodeToIndexUnchecked(cur_node);
-      return g_.hasAllEdges(dtls->getLocks(local_epoch), cur_idx);
+      for (uptr i = 0, n = dtls->getNumLocks(); i < n; i++) {
+        if (!g_.hasEdge(dtls->getLock(i), cur_idx))
+          return false;
+      }
+      return true;
     }
     return false;
   }
@@ -239,10 +249,12 @@ class DeadlockDetector {
     uptr n_added_edges = g_.addEdges(dtls->getLocks(current_epoch_), cur_idx,
                                      added_edges, ARRAY_SIZE(added_edges));
     for (uptr i = 0; i < n_added_edges; i++) {
-      if (n_edges_ < ARRAY_SIZE(edges_))
-        edges_[n_edges_++] = {(u16)added_edges[i], (u16)cur_idx,
-                              dtls->findLockContext(added_edges[i]), stk,
-                              unique_tid};
+      if (n_edges_ < ARRAY_SIZE(edges_)) {
+        Edge e = {(u16)added_edges[i], (u16)cur_idx,
+                  dtls->findLockContext(added_edges[i]), stk,
+                  unique_tid};
+        edges_[n_edges_++] = e;
+      }
       // Printf("Edge%zd: %u %zd=>%zd in T%d\n",
       //        n_edges_, stk, added_edges[i], cur_idx, unique_tid);
     }

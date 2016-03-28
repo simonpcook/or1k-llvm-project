@@ -22,11 +22,22 @@
 #include "ProcessFreeBSD.h"
 #include "ProcessPOSIXLog.h"
 #include "Plugins/Process/Utility/InferiorCallPOSIX.h"
+#include "Plugins/Process/Utility/FreeBSDSignals.h"
 #include "ProcessMonitor.h"
 #include "FreeBSDThread.h"
 
 using namespace lldb;
 using namespace lldb_private;
+
+namespace
+{
+    UnixSignalsSP&
+    GetFreeBSDSignals ()
+    {
+        static UnixSignalsSP s_freebsd_signals_sp (new FreeBSDSignals ());
+        return s_freebsd_signals_sp;
+    }
+}
 
 //------------------------------------------------------------------------------
 // Static functions.
@@ -113,7 +124,7 @@ ProcessFreeBSD::EnablePluginLogging(Stream *strm, Args &command)
 // Constructors and destructors.
 
 ProcessFreeBSD::ProcessFreeBSD(Target& target, Listener &listener)
-    : ProcessPOSIX(target, listener),
+    : ProcessPOSIX(target, listener, GetFreeBSDSignals ()),
       m_resume_signo(0)
 {
 }
@@ -132,8 +143,6 @@ ProcessFreeBSD::DoDetach(bool keep_stopped)
         error.SetErrorString("Detaching with keep_stopped true is not currently supported on FreeBSD.");
         return error;
     }
-
-    DisableAllBreakpointSites();
 
     error = m_monitor->Detach(GetID());
 
@@ -170,7 +179,7 @@ ProcessFreeBSD::DoResume()
     }
 
     if (log)
-        log->Printf("process %lu resuming (%s)", GetID(), do_step ? "step" : "continue");
+        log->Printf("process %" PRIu64 " resuming (%s)", GetID(), do_step ? "step" : "continue");
     if (do_step)
         m_monitor->SingleStep(GetID(), m_resume_signo);
     else
@@ -249,8 +258,7 @@ ProcessFreeBSD::SendMessage(const ProcessMessage &message)
 
     case ProcessMessage::eLimboMessage:
     case ProcessMessage::eExitMessage:
-        m_exit_status = message.GetExitStatus();
-        SetExitStatus(m_exit_status, NULL);
+        SetExitStatus(message.GetExitStatus(), NULL);
         break;
 
     case ProcessMessage::eSignalMessage:
@@ -273,4 +281,3 @@ ProcessFreeBSD::SendMessage(const ProcessMessage &message)
 
     m_message_queue.push(message);
 }
-

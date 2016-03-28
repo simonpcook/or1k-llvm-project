@@ -10,6 +10,7 @@
 #ifndef LLD_READER_WRITER_ELF_TARGETS_H
 #define LLD_READER_WRITER_ELF_TARGETS_H
 
+#include "AArch64/AArch64Target.h"
 #include "Hexagon/HexagonTarget.h"
 #include "Mips/MipsTarget.h"
 #include "PPC/PPCTarget.h"

@@ -129,7 +129,10 @@ ObjectFilePECOFF::GetModuleSpecifications (const lldb_private::FileSpec& file,
             if (ParseCOFFHeader(data, &offset, coff_header))
             {
                 ArchSpec spec;
-                spec.SetArchitecture(eArchTypeCOFF, coff_header.machine, LLDB_INVALID_CPUTYPE);
+                if (coff_header.machine == MachineAmd64)
+                    spec.SetTriple("x86_64-pc-windows");
+                else if (coff_header.machine == MachineX86)
+                    spec.SetTriple("i386-pc-windows");
                 specs.Append(ModuleSpec(file, spec));
             }
         }
@@ -232,7 +235,6 @@ ObjectFilePECOFF::SetLoadAddress(Target &target, addr_t value, bool value_is_off
                 }
             }
             changed = num_loaded_sections > 0;
-            return num_loaded_sections > 0;
         }
     }
     return changed;
@@ -753,7 +755,8 @@ ObjectFilePECOFF::CreateSections (SectionList &unified_section_list)
                                                    m_coff_header_opt.image_base + m_sect_headers[idx].vmaddr,   // File VM address == addresses as they are found in the object file
                                                    m_sect_headers[idx].vmsize,   // VM size in bytes of this section
                                                    m_sect_headers[idx].offset,   // Offset to the data for this section in the file
-                                                   m_sect_headers[idx].size,     // Size in bytes of this section as found in the the file
+                                                   m_sect_headers[idx].size,     // Size in bytes of this section as found in the file
+                                                   m_coff_header_opt.sect_alignment, // Section alignment
                                                    m_sect_headers[idx].flags));  // Flags for this section
 
                 //section_sp->SetIsEncrypted (segment_is_encrypted);
@@ -791,19 +794,19 @@ ObjectFilePECOFF::Dump(Stream *s)
     if (module_sp)
     {
         lldb_private::Mutex::Locker locker(module_sp->GetMutex());
-        s->Printf("%p: ", this);
+        s->Printf("%p: ", static_cast<void*>(this));
         s->Indent();
         s->PutCString("ObjectFilePECOFF");
-        
+
         ArchSpec header_arch;
         GetArchitecture (header_arch);
-        
+
         *s << ", file = '" << m_file << "', arch = " << header_arch.GetArchitectureName() << "\n";
-        
+
         SectionList *sections = GetSectionList();
         if (sections)
             sections->Dump(s, NULL, true, UINT32_MAX);
-        
+
         if (m_symtab_ap.get())
             m_symtab_ap->Dump(s, NULL, eSortOrderNone);
 

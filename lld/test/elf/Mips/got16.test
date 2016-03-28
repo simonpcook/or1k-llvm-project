@@ -1,9 +1,11 @@
-# Check handling of global/local GOT16 relocations.
-# RUN: llvm-mc -triple=mipsel -filetype=obj -o=%t1 %s
-# RUN: lld -flavor gnu -target mipsel -shared --noinhibit-exec \
-# RUN:     --output-filetype=yaml %t1 | FileCheck -check-prefix YAML %s
+# REQUIRES: mips
 
-# RUN: lld -flavor gnu -target mipsel -shared --noinhibit-exec -o %t2 %t1
+# Check handling of global/local GOT16 relocations.
+# RUN: yaml2obj -format=elf %s > %t.o
+# RUN: lld -flavor gnu -target mipsel -shared --noinhibit-exec \
+# RUN:     --output-filetype=yaml %t.o \
+# RUN:     | FileCheck -check-prefix YAML %s
+# RUN: lld -flavor gnu -target mipsel -shared --noinhibit-exec -o %t2 %t.o
 # RUN: llvm-objdump -t -disassemble %t2 | FileCheck -check-prefix RAW %s
 
 # Local GOT entries:
@@ -70,36 +72,36 @@
 # YAML-NEXT:        target:          extern
 
 # Function glob
-# YAML:       - name:            glob
-# YAML-NEXT:    scope:           global
-# YAML-NEXT:    content:         [ 00, 00, 84, 8F, 00, 00, 84, 24, 01, 00, 84, 8F,
-# YAML-NEXT:                       00, 02, 84, 24, 00, 00, 84, 8F, 00, 00, 84, 8F,
-# YAML-NEXT:                       00, 00, 84, 8F ]
-# YAML-NEXT:    alignment:       2^2
-# YAML-NEXT:    references:
-# YAML-NEXT:      - kind:            R_MIPS_GOT16
-# YAML-NEXT:        offset:          0
-# YAML-NEXT:        target:          L003
-# YAML-NEXT:      - kind:            R_MIPS_LO16
-# YAML-NEXT:        offset:          4
-# YAML-NEXT:        target:          L006
-# YAML-NEXT:      - kind:            R_MIPS_GOT16
-# YAML-NEXT:        offset:          8
-# YAML-NEXT:        target:          L005
-# YAML-NEXT:        addend:          66048
-# YAML-NEXT:      - kind:            R_MIPS_LO16
-# YAML-NEXT:        offset:          12
-# YAML-NEXT:        target:          L006
-# YAML-NEXT:        addend:          512
-# YAML-NEXT:      - kind:            R_MIPS_GOT16
-# YAML-NEXT:        offset:          16
-# YAML-NEXT:        target:          L007
-# YAML-NEXT:      - kind:            R_MIPS_CALL16
-# YAML-NEXT:        offset:          20
-# YAML-NEXT:        target:          L008
-# YAML-NEXT:      - kind:            R_MIPS_CALL16
-# YAML-NEXT:        offset:          24
-# YAML-NEXT:        target:          L009
+# YAML:  - name:            glob
+# YAML:    scope:           global
+# YAML:    content:         [ 00, 00, 84, 8F, 00, 00, 84, 24, 01, 00, 84, 8F,
+# YAML:                       00, 02, 84, 24, 00, 00, 84, 8F, 00, 00, 84, 8F,
+# YAML:                       00, 00, 84, 8F ]
+# YAML:    alignment:       2^2
+# YAML:    references:
+# YAML:      - kind:            R_MIPS_GOT16
+# YAML:        offset:          0
+# YAML:        target:          L003
+# YAML:      - kind:            R_MIPS_LO16
+# YAML:        offset:          4
+# YAML:        target:          L006
+# YAML:      - kind:            R_MIPS_GOT16
+# YAML:        offset:          8
+# YAML:        target:          L005
+# YAML:        addend:          66048
+# YAML:      - kind:            R_MIPS_LO16
+# YAML:        offset:          12
+# YAML:        target:          L006
+# YAML:        addend:          512
+# YAML:      - kind:            R_MIPS_GOT16
+# YAML:        offset:          16
+# YAML:        target:          L007
+# YAML:      - kind:            R_MIPS_CALL16
+# YAML:        offset:          20
+# YAML:        target:          L008
+# YAML:      - kind:            R_MIPS_CALL16
+# YAML:        offset:          24
+# YAML:        target:          L009
 
 # RAW: Disassembly of section .text:
 # RAW: glob:
@@ -118,33 +120,77 @@
 # RAW: 0000012c g   F .text  0000001c glob
 # RAW: 00012205 g     .data  00000004 hidden
 
-    .global glob
-    .ent    glob
-glob:
-    lw      $4,%got(str1)($28)       # G(str1)
-    addiu   $4,$4,%lo(str1)          # str1
-    lw      $4,%got(str2)($28)       # G(str2)
-    addiu   $4,$4,%lo(str2)          # str2
-    lw      $4,%got(hidden)($28)     # G(hidden)
-    lw      $4,%call16(glob)($28)    # G(glob)
-    lw      $4,%call16(extern)($28)  # G(extern)
-    .end    glob
+---
+FileHeader:
+  Class:           ELFCLASS32
+  Data:            ELFDATA2LSB
+  Type:            ET_REL
+  Machine:         EM_MIPS
+  Flags:           [ EF_MIPS_ABI_O32, EF_MIPS_ARCH_32 ]
 
-    .data
-    .type   str1, %object
-    .size   str1, 0x10200
-str1:
-    .ascii  "str1\000"
-    .space  0x101fb
+Sections:
+  - Name:            .text
+    Type:            SHT_PROGBITS
+    Flags:           [ SHF_ALLOC, SHF_EXECINSTR ]
+    AddressAlign:    0x04
+    Content:         '0000848F000084240100848F000284240000848F0000848F0000848F'
+  - Name:            .rel.text
+    Type:            SHT_REL
+    Link:            .symtab
+    AddressAlign:    0x04
+    Info:            .text
+    Relocations:
+      - Offset:          0x00
+        Symbol:          .data
+        Type:            R_MIPS_GOT16
+      - Offset:          0x04
+        Symbol:          .data
+        Type:            R_MIPS_LO16
+      - Offset:          0x08
+        Symbol:          .data
+        Type:            R_MIPS_GOT16
+      - Offset:          0x0C
+        Symbol:          .data
+        Type:            R_MIPS_LO16
+      - Offset:          0x10
+        Symbol:          hidden
+        Type:            R_MIPS_GOT16
+      - Offset:          0x14
+        Symbol:          glob
+        Type:            R_MIPS_CALL16
+      - Offset:          0x18
+        Symbol:          extern
+        Type:            R_MIPS_CALL16
+  - Name:            .data
+    Type:            SHT_PROGBITS
+    Flags:           [ SHF_WRITE, SHF_ALLOC ]
+    AddressAlign:    0x04
+    Size:            0x10209
 
-    .type str2, @object
-    .size str2, 5
-str2:
-    .ascii  "str2\000"
-
-    .globl  hidden
-    .hidden hidden
-    .type   hidden,%object
-    .size   hidden,4
-hidden:
-    .word   0
+Symbols:
+  Local:
+    - Name:            str1
+      Type:            STT_OBJECT
+      Section:         .data
+      Size:            0x10200
+    - Name:            str2
+      Type:            STT_OBJECT
+      Section:         .data
+      Value:           0x10200
+      Size:            0x05
+    - Name:            .text
+      Type:            STT_SECTION
+      Section:         .text
+    - Name:            .data
+      Type:            STT_SECTION
+      Section:         .data
+  Global:
+    - Name:            glob
+      Section:         .text
+    - Name:            hidden
+      Type:            STT_OBJECT
+      Section:         .data
+      Value:           0x10205
+      Size:            0x04
+      Visibility:      STV_HIDDEN
+    - Name:            extern

@@ -8,13 +8,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/ReaderWriter/Writer.h"
-
 #include "DynamicLibraryWriter.h"
 #include "ExecutableWriter.h"
 
-
 using namespace llvm;
 using namespace llvm::object;
+
 namespace lld {
 
 std::unique_ptr<Writer> createWriterELF(TargetHandlerBase *handler) {

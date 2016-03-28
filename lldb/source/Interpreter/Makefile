@@ -13,18 +13,23 @@ BUILD_ARCHIVE = 1
 include $(LLDB_LEVEL)/../../Makefile.config
 
 ifneq ($(HOST_OS),MingW)
+ifeq (,$(findstring -DLLDB_DISABLE_PYTHON,$(CXXFLAGS)))
+DO_BUILD_LLDBWrapPython = 1
 BUILT_SOURCES := LLDBWrapPython.cpp
+endif
 endif
 
 include $(LLDB_LEVEL)/Makefile
 -include $(PROJ_OBJ_DIR)/LLDBWrapPython.cpp.d
 
+ifeq ($(DO_BUILD_LLDBWrapPython),1)
 # Drop -Wfour-char-constants,  which we are not currently clean with.
 EXTRA_OPTIONS += -Wno-four-char-constants
 
-# Drop -Wself-assign, -Wmissing-field-initializers and -Wsometimes-uninitialized,
-# which we are not currently clean with (due to SWIG generated cpp source).
-EXTRA_OPTIONS += -Wno-missing-field-initializers -Wno-self-assign -Wno-sometimes-uninitialized -Wno-cast-qual
+# Drop -Wself-assign, -Wmissing-field-initializers, -Wsometimes-uninitialized,
+# -Wcast-qual, and -Wdeprecated-register which we are not clean with due to SWIG
+# generated cpp source.
+EXTRA_OPTIONS += -Wno-missing-field-initializers -Wno-self-assign -Wno-sometimes-uninitialized -Wno-cast-qual -Wno-deprecated-register
 
 PYTHON_DIR := $(PROJ_OBJ_ROOT)/$(BuildMode)
 
@@ -40,3 +45,4 @@ install-local:: lldb.py
 
 clean-local::
 	$(Verb) $(RM) -f LLDBWrapPython.cpp lldb.py
+endif

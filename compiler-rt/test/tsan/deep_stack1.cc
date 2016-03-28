@@ -1,5 +1,5 @@
-// RUN: %clangxx_tsan -O1 %s -o %t -DORDER1 && not %t 2>&1 | FileCheck %s
-// RUN: %clangxx_tsan -O1 %s -o %t -DORDER2 && not %t 2>&1 | FileCheck %s
+// RUN: %clangxx_tsan -O1 %s -o %t -DORDER1 && %deflake %run %t | FileCheck %s
+// RUN: %clangxx_tsan -O1 %s -o %t -DORDER2 && %deflake %run %t | FileCheck %s
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>

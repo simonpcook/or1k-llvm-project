@@ -11,7 +11,6 @@
 #define LLD_READER_WRITER_ELF_HEXAGON_HEXAGON_LINKING_CONTEXT_H
 
 #include "lld/ReaderWriter/ELFLinkingContext.h"
-
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/ELF.h"
 
@@ -24,10 +23,10 @@ class HexagonLinkingContext final : public ELFLinkingContext {
 public:
   HexagonLinkingContext(llvm::Triple triple);
 
-  virtual void addPasses(PassManager &);
+  void addPasses(PassManager &) override;
 
-  virtual bool isDynamicRelocation(const DefinedAtom &,
-                                   const Reference &r) const {
+  bool isDynamicRelocation(const DefinedAtom &,
+                           const Reference &r) const override {
     if (r.kindNamespace() != Reference::KindNamespace::ELF)
       return false;
     switch (r.kindValue()) {
@@ -39,7 +38,7 @@ public:
     }
   }
 
-  virtual bool isPLTRelocation(const DefinedAtom &, const Reference &r) const {
+  bool isPLTRelocation(const DefinedAtom &, const Reference &r) const override {
     if (r.kindNamespace() != Reference::KindNamespace::ELF)
       return false;
     switch (r.kindValue()) {
@@ -52,7 +51,7 @@ public:
 
   /// \brief Hexagon has only one relative relocation
   /// a) for supporting relative relocs - R_HEX_RELATIVE
-  virtual bool isRelativeReloc(const Reference &r) const {
+  bool isRelativeReloc(const Reference &r) const override {
     if (r.kindNamespace() != Reference::KindNamespace::ELF)
       return false;
     switch (r.kindValue()) {
@@ -62,9 +61,6 @@ public:
       return false;
     }
   }
-
-  /// \brief Create Internal files for Init/Fini
-  void createInternalFiles(std::vector<std::unique_ptr<File> > &result) const;
 };
 
 } // elf

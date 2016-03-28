@@ -94,9 +94,8 @@ using namespace clang;
 using namespace clang::driver;
 using namespace clang::driver::options;
 using namespace clang::tooling;
-using namespace llvm;
-using namespace llvm::opt;
-using namespace llvm::sys;
+namespace cl = llvm::cl;
+namespace sys = llvm::sys;
 
 // Option for include paths.
 static cl::list<std::string>
@@ -132,11 +131,11 @@ int main(int Argc, const char **Argv) {
 
   // Do the checks.  The return value is the program return code,
   // 0 for okay, 1 for module map warnings produced, 2 for any other error.
-  error_code ReturnCode = Checker->doChecks();
+  std::error_code ReturnCode = Checker->doChecks();
 
-  if (ReturnCode == error_code(1, generic_category()))
+  if (ReturnCode == std::error_code(1, std::generic_category()))
     return 1; // Module map warnings were issued.
-  else if (ReturnCode == error_code(2, generic_category()))
+  else if (ReturnCode == std::error_code(2, std::generic_category()))
     return 2; // Some other error occurred.
   else
     return 0; // No errors or warnings.
@@ -169,7 +168,7 @@ class ModuleMapCheckerConsumer : public ASTConsumer {
 public:
   ModuleMapCheckerConsumer(ModuleMapChecker &Checker, Preprocessor &PP) {
     // PP takes ownership.
-    PP.addPPCallbacks(new ModuleMapCheckerCallbacks(Checker));
+    PP.addPPCallbacks(llvm::make_unique<ModuleMapCheckerCallbacks>(Checker));
   }
 };
 
@@ -178,9 +177,10 @@ public:
   ModuleMapCheckerAction(ModuleMapChecker &Checker) : Checker(Checker) {}
 
 protected:
-  virtual ASTConsumer *CreateASTConsumer(CompilerInstance &CI,
-                                         StringRef InFile) {
-    return new ModuleMapCheckerConsumer(Checker, CI.getPreprocessor());
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                 StringRef InFile) override {
+    return llvm::make_unique<ModuleMapCheckerConsumer>(Checker,
+                                                       CI.getPreprocessor());
   }
 
 private:
@@ -211,17 +211,17 @@ ModuleMapChecker::ModuleMapChecker(StringRef ModuleMapPath,
       DumpModuleMap(DumpModuleMap), CommandLine(CommandLine),
       LangOpts(new LangOptions()), DiagIDs(new DiagnosticIDs()),
       DiagnosticOpts(new DiagnosticOptions()),
-      DC(errs(), DiagnosticOpts.getPtr()),
+      DC(llvm::errs(), DiagnosticOpts.get()),
       Diagnostics(
-          new DiagnosticsEngine(DiagIDs, DiagnosticOpts.getPtr(), &DC, false)),
+          new DiagnosticsEngine(DiagIDs, DiagnosticOpts.get(), &DC, false)),
       TargetOpts(new ModuleMapTargetOptions()),
-      Target(TargetInfo::CreateTargetInfo(*Diagnostics, TargetOpts.getPtr())),
+      Target(TargetInfo::CreateTargetInfo(*Diagnostics, TargetOpts)),
       FileMgr(new FileManager(FileSystemOpts)),
       SourceMgr(new SourceManager(*Diagnostics, *FileMgr, false)),
       HeaderSearchOpts(new HeaderSearchOptions()),
       HeaderInfo(new HeaderSearch(HeaderSearchOpts, *SourceMgr, *Diagnostics,
-                                  *LangOpts, Target.getPtr())),
-      ModMap(new ModuleMap(*SourceMgr, *Diagnostics, *LangOpts, Target.getPtr(),
+                                  *LangOpts, Target.get())),
+      ModMap(new ModuleMap(*SourceMgr, *Diagnostics, *LangOpts, Target.get(),
                            *HeaderInfo)) {}
 
 // Create instance of ModuleMapChecker, to simplify setting up
@@ -243,30 +243,30 @@ ModuleMapChecker *ModuleMapChecker::createModuleMapChecker(
 // Returns error_code of 0 if there were no errors or warnings, 1 if there
 //   were warnings, 2 if any other problem, such as if a bad
 //   module map path argument was specified.
-error_code ModuleMapChecker::doChecks() {
-  error_code returnValue;
+std::error_code ModuleMapChecker::doChecks() {
+  std::error_code returnValue;
 
   // Load the module map.
   if (!loadModuleMap())
-    return error_code(2, generic_category());
+    return std::error_code(2, std::generic_category());
 
   // Collect the headers referenced in the modules.
   collectModuleHeaders();
 
   // Collect the file system headers.
   if (!collectFileSystemHeaders())
-    return error_code(2, generic_category());
+    return std::error_code(2, std::generic_category());
 
   // Do the checks.  These save the problematic file names.
   findUnaccountedForHeaders();
 
   // Check for warnings.
   if (UnaccountedForHeaders.size())
-    returnValue = error_code(1, generic_category());
+    returnValue = std::error_code(1, std::generic_category());
 
   // Dump module map if requested.
   if (DumpModuleMap) {
-    errs() << "\nDump of module map:\n\n";
+    llvm::errs() << "\nDump of module map:\n\n";
     ModMap->dump();
   }
 
@@ -284,16 +284,29 @@ bool ModuleMapChecker::loadModuleMap() {
 
   // return error if not found.
   if (!ModuleMapEntry) {
-    errs() << "error: File \"" << ModuleMapPath << "\" not found.\n";
+    llvm::errs() << "error: File \"" << ModuleMapPath << "\" not found.\n";
     return false;
   }
 
   // Because the module map parser uses a ForwardingDiagnosticConsumer,
   // which doesn't forward the BeginSourceFile call, we do it explicitly here.
-  DC.BeginSourceFile(*LangOpts, 0);
+  DC.BeginSourceFile(*LangOpts, nullptr);
+
+  // Figure out the home directory for the module map file.
+  // FIXME: Add an option to specify this.
+  const DirectoryEntry *Dir = ModuleMapEntry->getDir();
+  StringRef DirName(Dir->getName());
+  if (llvm::sys::path::filename(DirName) == "Modules") {
+    DirName = llvm::sys::path::parent_path(DirName);
+    if (DirName.endswith(".framework"))
+      Dir = FileMgr->getDirectory(DirName);
+    // FIXME: This assert can fail if there's a race between the above check
+    // and the removal of the directory.
+    assert(Dir && "parent must exist");
+  }
 
   // Parse module.map file into module map.
-  if (ModMap->parseModuleMapFile(ModuleMapEntry, false))
+  if (ModMap->parseModuleMapFile(ModuleMapEntry, false, Dir))
     return false;
 
   // Do matching end call.
@@ -331,20 +344,9 @@ bool ModuleMapChecker::collectModuleHeaders(const Module &Mod) {
       return false;
   }
 
-  for (unsigned I = 0, N = Mod.NormalHeaders.size(); I != N; ++I) {
-    ModuleMapHeadersSet.insert(
-        getCanonicalPath(Mod.NormalHeaders[I]->getName()));
-  }
-
-  for (unsigned I = 0, N = Mod.ExcludedHeaders.size(); I != N; ++I) {
-    ModuleMapHeadersSet.insert(
-        getCanonicalPath(Mod.ExcludedHeaders[I]->getName()));
-  }
-
-  for (unsigned I = 0, N = Mod.PrivateHeaders.size(); I != N; ++I) {
-    ModuleMapHeadersSet.insert(
-        getCanonicalPath(Mod.PrivateHeaders[I]->getName()));
-  }
+  for (auto &HeaderKind : Mod.Headers)
+    for (auto &Header : HeaderKind)
+      ModuleMapHeadersSet.insert(getCanonicalPath(Header.Entry->getName()));
 
   for (Module::submodule_const_iterator MI = Mod.submodule_begin(),
                                         MIEnd = Mod.submodule_end();
@@ -363,17 +365,17 @@ bool ModuleMapChecker::collectUmbrellaHeaders(StringRef UmbrellaDirName) {
   if (Directory.size() == 0)
     Directory = ".";
   // Walk the directory.
-  error_code EC;
-  fs::file_status Status;
-  for (fs::directory_iterator I(Directory.str(), EC), E; I != E;
+  std::error_code EC;
+  sys::fs::file_status Status;
+  for (sys::fs::directory_iterator I(Directory.str(), EC), E; I != E;
        I.increment(EC)) {
     if (EC)
       return false;
     std::string File(I->path());
     I->status(Status);
-    fs::file_type Type = Status.type();
+    sys::fs::file_type Type = Status.type();
     // If the file is a directory, ignore the name.
-    if (Type == fs::file_type::directory_file)
+    if (Type == sys::fs::file_type::directory_file)
       continue;
     // If the file does not have a common header extension, ignore it.
     if (!isHeader(File))
@@ -474,24 +476,24 @@ bool ModuleMapChecker::collectFileSystemHeaders(StringRef IncludePath) {
     Directory = ".";
   if (IncludePath.startswith("/") || IncludePath.startswith("\\") ||
       ((IncludePath.size() >= 2) && (IncludePath[1] == ':'))) {
-    errs() << "error: Include path \"" << IncludePath
-           << "\" is not relative to the module map file.\n";
+    llvm::errs() << "error: Include path \"" << IncludePath
+                 << "\" is not relative to the module map file.\n";
     return false;
   }
 
   // Recursively walk the directory tree.
-  error_code EC;
-  fs::file_status Status;
+  std::error_code EC;
+  sys::fs::file_status Status;
   int Count = 0;
-  for (fs::recursive_directory_iterator I(Directory.str(), EC), E; I != E;
+  for (sys::fs::recursive_directory_iterator I(Directory.str(), EC), E; I != E;
        I.increment(EC)) {
     if (EC)
       return false;
     std::string file(I->path());
     I->status(Status);
-    fs::file_type type = Status.type();
+    sys::fs::file_type type = Status.type();
     // If the file is a directory, ignore the name (but still recurses).
-    if (type == fs::file_type::directory_file)
+    if (type == sys::fs::file_type::directory_file)
       continue;
     // If the file does not have a common header extension, ignore it.
     if (!isHeader(file))
@@ -501,8 +503,8 @@ bool ModuleMapChecker::collectFileSystemHeaders(StringRef IncludePath) {
     Count++;
   }
   if (Count == 0) {
-    errs() << "warning: No headers found in include path: \"" << IncludePath
-           << "\"\n";
+    llvm::errs() << "warning: No headers found in include path: \""
+                 << IncludePath << "\"\n";
   }
   return true;
 }
@@ -523,10 +525,10 @@ void ModuleMapChecker::findUnaccountedForHeaders() {
                                                 E = FileSystemHeaders.end();
        I != E; ++I) {
     // Look for header in module map.
-    if (ModuleMapHeadersSet.insert(*I)) {
+    if (ModuleMapHeadersSet.insert(*I).second) {
       UnaccountedForHeaders.push_back(*I);
-      errs() << "warning: " << ModuleMapPath
-             << " does not account for file: " << *I << "\n";
+      llvm::errs() << "warning: " << ModuleMapPath
+                   << " does not account for file: " << *I << "\n";
     }
   }
 }

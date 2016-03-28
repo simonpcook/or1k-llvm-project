@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_SA_CORE_CHECKER
-#define LLVM_CLANG_SA_CORE_CHECKER
+#ifndef LLVM_CLANG_STATICANALYZER_CORE_CHECKER_H
+#define LLVM_CLANG_STATICANALYZER_CORE_CHECKER_H
 
 #include "clang/Analysis/ProgramPoint.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -526,7 +526,7 @@ template <typename EVENT>
 class EventDispatcher {
   CheckerManager *Mgr;
 public:
-  EventDispatcher() : Mgr(0) { }
+  EventDispatcher() : Mgr(nullptr) { }
 
   template <typename CHECKER>
   static void _register(CHECKER *checker, CheckerManager &mgr) {

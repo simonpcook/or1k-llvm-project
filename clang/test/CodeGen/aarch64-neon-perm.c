@@ -1,9 +1,8 @@
 // REQUIRES: aarch64-registered-target
-// RUN: %clang_cc1 -triple aarch64-none-linux-gnu -target-feature +neon \
+// RUN: %clang_cc1 -triple arm64-none-linux-gnu -target-feature +neon \
 // RUN:   -ffp-contract=fast -S -O3 -o - %s | FileCheck %s
 
 // Test new aarch64 intrinsics and types
-
 #include <arm_neon.h>
 
 int8x8_t test_vuzp1_s8(int8x8_t a, int8x8_t b) {
@@ -33,7 +32,7 @@ int16x8_t test_vuzp1q_s16(int16x8_t a, int16x8_t b) {
 int32x2_t test_vuzp1_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vuzp1_s32
   return vuzp1_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 int32x4_t test_vuzp1q_s32(int32x4_t a, int32x4_t b) {
@@ -45,7 +44,7 @@ int32x4_t test_vuzp1q_s32(int32x4_t a, int32x4_t b) {
 int64x2_t test_vuzp1q_s64(int64x2_t a, int64x2_t b) {
   // CHECK-LABEL: test_vuzp1q_s64
   return vuzp1q_s64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 uint8x8_t test_vuzp1_u8(uint8x8_t a, uint8x8_t b) {
@@ -75,7 +74,7 @@ uint16x8_t test_vuzp1q_u16(uint16x8_t a, uint16x8_t b) {
 uint32x2_t test_vuzp1_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vuzp1_u32
   return vuzp1_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 uint32x4_t test_vuzp1q_u32(uint32x4_t a, uint32x4_t b) {
@@ -87,13 +86,13 @@ uint32x4_t test_vuzp1q_u32(uint32x4_t a, uint32x4_t b) {
 uint64x2_t test_vuzp1q_u64(uint64x2_t a, uint64x2_t b) {
   // CHECK-LABEL: test_vuzp1q_u64
   return vuzp1q_u64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 float32x2_t test_vuzp1_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vuzp1_f32
   return vuzp1_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 float32x4_t test_vuzp1q_f32(float32x4_t a, float32x4_t b) {
@@ -105,7 +104,7 @@ float32x4_t test_vuzp1q_f32(float32x4_t a, float32x4_t b) {
 float64x2_t test_vuzp1q_f64(float64x2_t a, float64x2_t b) {
   // CHECK-LABEL: test_vuzp1q_f64
   return vuzp1q_f64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 poly8x8_t test_vuzp1_p8(poly8x8_t a, poly8x8_t b) {
@@ -159,7 +158,7 @@ int16x8_t test_vuzp2q_s16(int16x8_t a, int16x8_t b) {
 int32x2_t test_vuzp2_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vuzp2_s32
   return vuzp2_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 int32x4_t test_vuzp2q_s32(int32x4_t a, int32x4_t b) {
@@ -171,7 +170,7 @@ int32x4_t test_vuzp2q_s32(int32x4_t a, int32x4_t b) {
 int64x2_t test_vuzp2q_s64(int64x2_t a, int64x2_t b) {
   // CHECK-LABEL: test_vuzp2q_s64
   return vuzp2q_s64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 uint8x8_t test_vuzp2_u8(uint8x8_t a, uint8x8_t b) {
@@ -201,7 +200,7 @@ uint16x8_t test_vuzp2q_u16(uint16x8_t a, uint16x8_t b) {
 uint32x2_t test_vuzp2_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vuzp2_u32
   return vuzp2_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 uint32x4_t test_vuzp2q_u32(uint32x4_t a, uint32x4_t b) {
@@ -213,13 +212,13 @@ uint32x4_t test_vuzp2q_u32(uint32x4_t a, uint32x4_t b) {
 uint64x2_t test_vuzp2q_u64(uint64x2_t a, uint64x2_t b) {
   // CHECK-LABEL: test_vuzp2q_u64
   return vuzp2q_u64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 float32x2_t test_vuzp2_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vuzp2_f32
   return vuzp2_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 float32x4_t test_vuzp2q_f32(float32x4_t a, float32x4_t b) {
@@ -231,7 +230,7 @@ float32x4_t test_vuzp2q_f32(float32x4_t a, float32x4_t b) {
 float64x2_t test_vuzp2q_f64(float64x2_t a, float64x2_t b) {
   // CHECK-LABEL: test_vuzp2q_f64
   return vuzp2q_f64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 poly8x8_t test_vuzp2_p8(poly8x8_t a, poly8x8_t b) {
@@ -285,7 +284,7 @@ int16x8_t test_vzip1q_s16(int16x8_t a, int16x8_t b) {
 int32x2_t test_vzip1_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vzip1_s32
   return vzip1_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 int32x4_t test_vzip1q_s32(int32x4_t a, int32x4_t b) {
@@ -297,7 +296,7 @@ int32x4_t test_vzip1q_s32(int32x4_t a, int32x4_t b) {
 int64x2_t test_vzip1q_s64(int64x2_t a, int64x2_t b) {
   // CHECK-LABEL: test_vzip1q_s64
   return vzip1q_s64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 uint8x8_t test_vzip1_u8(uint8x8_t a, uint8x8_t b) {
@@ -327,7 +326,7 @@ uint16x8_t test_vzip1q_u16(uint16x8_t a, uint16x8_t b) {
 uint32x2_t test_vzip1_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vzip1_u32
   return vzip1_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 uint32x4_t test_vzip1q_u32(uint32x4_t a, uint32x4_t b) {
@@ -339,13 +338,13 @@ uint32x4_t test_vzip1q_u32(uint32x4_t a, uint32x4_t b) {
 uint64x2_t test_vzip1q_u64(uint64x2_t a, uint64x2_t b) {
   // CHECK-LABEL: test_vzip1q_u64
   return vzip1q_u64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 float32x2_t test_vzip1_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vzip1_f32
   return vzip1_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 float32x4_t test_vzip1q_f32(float32x4_t a, float32x4_t b) {
@@ -357,7 +356,7 @@ float32x4_t test_vzip1q_f32(float32x4_t a, float32x4_t b) {
 float64x2_t test_vzip1q_f64(float64x2_t a, float64x2_t b) {
   // CHECK-LABEL: test_vzip1q_f64
   return vzip1q_f64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 poly8x8_t test_vzip1_p8(poly8x8_t a, poly8x8_t b) {
@@ -411,7 +410,7 @@ int16x8_t test_vzip2q_s16(int16x8_t a, int16x8_t b) {
 int32x2_t test_vzip2_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vzip2_s32
   return vzip2_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 int32x4_t test_vzip2q_s32(int32x4_t a, int32x4_t b) {
@@ -423,7 +422,7 @@ int32x4_t test_vzip2q_s32(int32x4_t a, int32x4_t b) {
 int64x2_t test_vzip2q_s64(int64x2_t a, int64x2_t b) {
   // CHECK-LABEL: test_vzip2q_s64
   return vzip2q_s64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 uint8x8_t test_vzip2_u8(uint8x8_t a, uint8x8_t b) {
@@ -453,7 +452,7 @@ uint16x8_t test_vzip2q_u16(uint16x8_t a, uint16x8_t b) {
 uint32x2_t test_vzip2_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vzip2_u32
   return vzip2_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 uint32x4_t test_vzip2q_u32(uint32x4_t a, uint32x4_t b) {
@@ -465,13 +464,13 @@ uint32x4_t test_vzip2q_u32(uint32x4_t a, uint32x4_t b) {
 uint64x2_t test_vzip2q_u64(uint64x2_t a, uint64x2_t b) {
   // CHECK-LABEL: test_vzip2q_u64
   return vzip2q_u64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 float32x2_t test_vzip2_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vzip2_f32
   return vzip2_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 float32x4_t test_vzip2q_f32(float32x4_t a, float32x4_t b) {
@@ -483,7 +482,7 @@ float32x4_t test_vzip2q_f32(float32x4_t a, float32x4_t b) {
 float64x2_t test_vzip2q_f64(float64x2_t a, float64x2_t b) {
   // CHECK-LABEL: test_vzip2q_f64
   return vzip2q_f64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 poly8x8_t test_vzip2_p8(poly8x8_t a, poly8x8_t b) {
@@ -537,7 +536,7 @@ int16x8_t test_vtrn1q_s16(int16x8_t a, int16x8_t b) {
 int32x2_t test_vtrn1_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vtrn1_s32
   return vtrn1_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 int32x4_t test_vtrn1q_s32(int32x4_t a, int32x4_t b) {
@@ -549,7 +548,7 @@ int32x4_t test_vtrn1q_s32(int32x4_t a, int32x4_t b) {
 int64x2_t test_vtrn1q_s64(int64x2_t a, int64x2_t b) {
   // CHECK-LABEL: test_vtrn1q_s64
   return vtrn1q_s64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 uint8x8_t test_vtrn1_u8(uint8x8_t a, uint8x8_t b) {
@@ -579,7 +578,7 @@ uint16x8_t test_vtrn1q_u16(uint16x8_t a, uint16x8_t b) {
 uint32x2_t test_vtrn1_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vtrn1_u32
   return vtrn1_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 uint32x4_t test_vtrn1q_u32(uint32x4_t a, uint32x4_t b) {
@@ -591,13 +590,13 @@ uint32x4_t test_vtrn1q_u32(uint32x4_t a, uint32x4_t b) {
 uint64x2_t test_vtrn1q_u64(uint64x2_t a, uint64x2_t b) {
   // CHECK-LABEL: test_vtrn1q_u64
   return vtrn1q_u64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 float32x2_t test_vtrn1_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vtrn1_f32
   return vtrn1_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v0.2s, v0.2s, v1.2s}}
 }
 
 float32x4_t test_vtrn1q_f32(float32x4_t a, float32x4_t b) {
@@ -609,7 +608,7 @@ float32x4_t test_vtrn1q_f32(float32x4_t a, float32x4_t b) {
 float64x2_t test_vtrn1q_f64(float64x2_t a, float64x2_t b) {
   // CHECK-LABEL: test_vtrn1q_f64
   return vtrn1q_f64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[1], {{v[0-9]+}}.d[0]
+  // CHECK: {{ins v[0-9]+.d\[1\], v[0-9]+.d\[0\]|zip1 v0.2d, v0.2d, v1.2d}}
 }
 
 poly8x8_t test_vtrn1_p8(poly8x8_t a, poly8x8_t b) {
@@ -663,7 +662,7 @@ int16x8_t test_vtrn2q_s16(int16x8_t a, int16x8_t b) {
 int32x2_t test_vtrn2_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vtrn2_s32
   return vtrn2_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 int32x4_t test_vtrn2q_s32(int32x4_t a, int32x4_t b) {
@@ -675,7 +674,7 @@ int32x4_t test_vtrn2q_s32(int32x4_t a, int32x4_t b) {
 int64x2_t test_vtrn2q_s64(int64x2_t a, int64x2_t b) {
   // CHECK-LABEL: test_vtrn2q_s64
   return vtrn2q_s64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 uint8x8_t test_vtrn2_u8(uint8x8_t a, uint8x8_t b) {
@@ -705,7 +704,7 @@ uint16x8_t test_vtrn2q_u16(uint16x8_t a, uint16x8_t b) {
 uint32x2_t test_vtrn2_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vtrn2_u32
   return vtrn2_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 uint32x4_t test_vtrn2q_u32(uint32x4_t a, uint32x4_t b) {
@@ -717,13 +716,13 @@ uint32x4_t test_vtrn2q_u32(uint32x4_t a, uint32x4_t b) {
 uint64x2_t test_vtrn2q_u64(uint64x2_t a, uint64x2_t b) {
   // CHECK-LABEL: test_vtrn2q_u64
   return vtrn2q_u64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 float32x2_t test_vtrn2_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vtrn2_f32
   return vtrn2_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v0.2s, v0.2s, v1.2s}}
 }
 
 float32x4_t test_vtrn2q_f32(float32x4_t a, float32x4_t b) {
@@ -735,7 +734,7 @@ float32x4_t test_vtrn2q_f32(float32x4_t a, float32x4_t b) {
 float64x2_t test_vtrn2q_f64(float64x2_t a, float64x2_t b) {
   // CHECK-LABEL: test_vtrn2q_f64
   return vtrn2q_f64(a, b);
-  // CHECK: ins {{v[0-9]+}}.d[0], {{v[0-9]+}}.d[1]
+  // CHECK: {{ins v[0-9]+.d\[0\], v[0-9]+.d\[1\]|zip2 v0.2d, v0.2d, v1.2d}}
 }
 
 poly8x8_t test_vtrn2_p8(poly8x8_t a, poly8x8_t b) {
@@ -778,8 +777,8 @@ int16x4x2_t test_vuzp_s16(int16x4_t a, int16x4_t b) {
 int32x2x2_t test_vuzp_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vuzp_s32
   return vuzp_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 uint8x8x2_t test_vuzp_u8(uint8x8_t a, uint8x8_t b) {
   // CHECK-LABEL: test_vuzp_u8
@@ -796,14 +795,14 @@ uint16x4x2_t test_vuzp_u16(uint16x4_t a, uint16x4_t b) {
 uint32x2x2_t test_vuzp_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vuzp_u32
   return vuzp_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 float32x2x2_t test_vuzp_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vuzp_f32
   return vuzp_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 poly8x8x2_t test_vuzp_p8(poly8x8_t a, poly8x8_t b) {
   // CHECK-LABEL: test_vuzp_p8
@@ -888,8 +887,8 @@ int16x4x2_t test_vzip_s16(int16x4_t a, int16x4_t b) {
 int32x2x2_t test_vzip_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vzip_s32
   return vzip_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 uint8x8x2_t test_vzip_u8(uint8x8_t a, uint8x8_t b) {
   // CHECK-LABEL: test_vzip_u8
@@ -906,14 +905,14 @@ uint16x4x2_t test_vzip_u16(uint16x4_t a, uint16x4_t b) {
 uint32x2x2_t test_vzip_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vzip_u32
   return vzip_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 float32x2x2_t test_vzip_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vzip_f32
   return vzip_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 poly8x8x2_t test_vzip_p8(poly8x8_t a, poly8x8_t b) {
   // CHECK-LABEL: test_vzip_p8
@@ -998,8 +997,8 @@ int16x4x2_t test_vtrn_s16(int16x4_t a, int16x4_t b) {
 int32x2x2_t test_vtrn_s32(int32x2_t a, int32x2_t b) {
   // CHECK-LABEL: test_vtrn_s32
   return vtrn_s32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 uint8x8x2_t test_vtrn_u8(uint8x8_t a, uint8x8_t b) {
   // CHECK-LABEL: test_vtrn_u8
@@ -1016,14 +1015,14 @@ uint16x4x2_t test_vtrn_u16(uint16x4_t a, uint16x4_t b) {
 uint32x2x2_t test_vtrn_u32(uint32x2_t a, uint32x2_t b) {
   // CHECK-LABEL: test_vtrn_u32
   return vtrn_u32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 float32x2x2_t test_vtrn_f32(float32x2_t a, float32x2_t b) {
   // CHECK-LABEL: test_vtrn_f32
   return vtrn_f32(a, b);
-  // CHECK: ins {{v[0-9]+}}.s[1], {{v[0-9]+}}.s[0]
-  // CHECK: ins {{v[0-9]+}}.s[0], {{v[0-9]+}}.s[1]
+  // CHECK: {{ins v[0-9]+.s\[1\], v[0-9]+.s\[0\]|zip1 v2.2s, v0.2s, v1.2s}}
+  // CHECK: {{ins v[0-9]+.s\[0\], v[0-9]+.s\[1\]|zip2 v1.2s, v0.2s, v1.2s}}
 }
 poly8x8x2_t test_vtrn_p8(poly8x8_t a, poly8x8_t b) {
   // CHECK-LABEL: test_vtrn_p8

@@ -11,6 +11,7 @@
 
 // C Includes
 // C++ Includes
+#include <atomic>
 // Other libraries and framework includes
 // Project includes
 #include "lldb/Interpreter/Args.h"
@@ -27,7 +28,7 @@ using namespace lldb_private;
 // that will construct the static g_lob_sp the first time this function is 
 // called.
 
-static bool g_log_enabled = false;
+static std::atomic<bool> g_log_enabled {false};
 static Log * g_log = NULL;
 static Log *
 GetLog ()
@@ -255,7 +256,7 @@ lldb_private::ListLogCategories (Stream *strm)
                  "  host - log host activities\n"
                  "  jit - log JIT events in the target\n"
                  "  mmap - log mmap related activities\n"
-                 "  module - log module activities such as when modules are created, detroyed, replaced, and more\n"
+                 "  module - log module activities such as when modules are created, destroyed, replaced, and more\n"
                  "  object - log object construction/destruction for important objects\n"
                  "  os - log OperatingSystem plugin related activities\n"
                  "  platform - log platform events and activities\n"

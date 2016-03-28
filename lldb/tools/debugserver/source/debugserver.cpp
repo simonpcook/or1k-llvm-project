@@ -23,6 +23,11 @@
 #include <netinet/tcp.h>
 #include <sys/un.h>
 #include <sys/types.h>
+#include <crt_externs.h> // for _NSGetEnviron()
+
+#if defined (__APPLE__)
+#include <sched.h>
+#endif
 
 #include "CFString.h"
 #include "DNB.h"
@@ -196,7 +201,13 @@ RNBRunLoopLaunchInferior (RNBRemote *remote, const char *stdin_path, const char 
         // Our default launch method is posix spawn
         launch_flavor = eLaunchFlavorPosixSpawn;
 
-#ifdef WITH_SPRINGBOARD
+#if defined WITH_BKS
+        // Check if we have an app bundle, if so launch using BackBoard Services.
+        if (strstr(inferior_argv[0], ".app"))
+        {
+            launch_flavor = eLaunchFlavorBKS;
+        }
+#elif defined WITH_SPRINGBOARD
         // Check if we have an app bundle, if so launch using SpringBoard.
         if (strstr(inferior_argv[0], ".app"))
         {
@@ -217,6 +228,7 @@ RNBRunLoopLaunchInferior (RNBRemote *remote, const char *stdin_path, const char 
     launch_err_str[0] = '\0';
     const char * cwd = (ctx.GetWorkingDirPath() != NULL ? ctx.GetWorkingDirPath()
                                                         : ctx.GetWorkingDirectory());
+    const char *process_event = ctx.GetProcessEvent();
     nub_process_t pid = DNBProcessLaunch (resolved_path,
                                           &inferior_argv[0],
                                           &inferior_envp[0],
@@ -227,6 +239,7 @@ RNBRunLoopLaunchInferior (RNBRemote *remote, const char *stdin_path, const char 
                                           no_stdio,
                                           launch_flavor,
                                           g_disable_aslr,
+                                          process_event,
                                           launch_err_str,
                                           sizeof(launch_err_str));
 
@@ -854,6 +867,8 @@ static struct option g_long_options[] =
     { "unix-socket",        required_argument,  NULL,               'u' },  // If we need to handshake with our parent process, an option will be passed down that specifies a unix socket name to use
     { "named-pipe",         required_argument,  NULL,               'P' },
     { "reverse-connect",    no_argument,        NULL,               'R' },
+    { "env",                required_argument,  NULL,               'e' },  // When debugserver launches the process, set a single environment entry as specified by the option value ("./debugserver -e FOO=1 -e BAR=2 localhost:1234 -- /bin/ls")
+    { "forward-env",        no_argument,        NULL,               'F' },  // When debugserver launches the process, forward debugserver's current environment variables to the child process ("./debugserver -F localhost:1234 -- /bin/ls"
     { NULL,                 0,                  NULL,               0   }
 };
 
@@ -865,6 +880,19 @@ int
 main (int argc, char *argv[])
 {
     const char *argv_sub_zero = argv[0]; // save a copy of argv[0] for error reporting post-launch
+
+#if defined (__APPLE__)
+    pthread_setname_np ("main thread");
+#if defined (__arm__) || defined (__arm64__) || defined (__aarch64__)
+    struct sched_param thread_param;
+    int thread_sched_policy;
+    if (pthread_getschedparam(pthread_self(), &thread_sched_policy, &thread_param) == 0) 
+    {
+        thread_param.sched_priority = 47;
+        pthread_setschedparam(pthread_self(), thread_sched_policy, &thread_param);
+    }
+#endif
+#endif
 
     g_isatty = ::isatty (STDIN_FILENO);
 
@@ -878,6 +906,14 @@ main (int argc, char *argv[])
     //    signal (SIGINT, signal_handler);
     signal (SIGPIPE, signal_handler);
     signal (SIGHUP, signal_handler);
+    
+    // We're always sitting in waitpid or kevent waiting on our target process' death,
+    // we don't need no stinking SIGCHLD's...
+    
+    sigset_t sigset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &sigset, NULL);
 
     g_remoteSP.reset (new RNBRemote ());
     
@@ -1051,15 +1087,23 @@ main (int argc, char *argv[])
                     else if (strcasestr(optarg, "spring") == optarg)
                         g_launch_flavor = eLaunchFlavorSpringBoard;
 #endif
+#ifdef WITH_BKS
+                    else if (strcasestr(optarg, "backboard") == optarg)
+                        g_launch_flavor = eLaunchFlavorBKS;
+#endif
+
                     else
                     {
                         RNBLogSTDERR ("error: invalid TYPE for the --launch=TYPE (-x TYPE) option: '%s'\n", optarg);
                         RNBLogSTDERR ("Valid values TYPE are:\n");
-                        RNBLogSTDERR ("  auto    Auto-detect the best launch method to use.\n");
-                        RNBLogSTDERR ("  posix   Launch the executable using posix_spawn.\n");
-                        RNBLogSTDERR ("  fork    Launch the executable using fork and exec.\n");
+                        RNBLogSTDERR ("  auto       Auto-detect the best launch method to use.\n");
+                        RNBLogSTDERR ("  posix      Launch the executable using posix_spawn.\n");
+                        RNBLogSTDERR ("  fork       Launch the executable using fork and exec.\n");
 #ifdef WITH_SPRINGBOARD
-                        RNBLogSTDERR ("  spring  Launch the executable through Springboard.\n");
+                        RNBLogSTDERR ("  spring     Launch the executable through Springboard.\n");
+#endif
+#ifdef WITH_BKS
+                        RNBLogSTDERR ("  backboard  Launch the executable through BackBoard Services.\n");
 #endif
                         exit (5);
                     }
@@ -1169,6 +1213,21 @@ main (int argc, char *argv[])
                 named_pipe_path.assign (optarg);
                 break;
                 
+            case 'e':
+                // Pass a single specified environment variable down to the process that gets launched
+                remote->Context().PushEnvironment(optarg);
+                break;
+            
+            case 'F':
+                // Pass the current environment down to the process that gets launched
+                {
+                    char **host_env = *_NSGetEnviron();
+                    char *env_entry;
+                    size_t i;
+                    for (i=0; (env_entry = host_env[i]) != NULL; ++i)
+                        remote->Context().PushEnvironment(env_entry);
+                }
+                break;
         }
     }
     
@@ -1422,7 +1481,13 @@ main (int argc, char *argv[])
                         // Our default launch method is posix spawn
                         launch_flavor = eLaunchFlavorPosixSpawn;
 
-#ifdef WITH_SPRINGBOARD
+#if defined WITH_BKS
+                        // Check if we have an app bundle, if so launch using SpringBoard.
+                        if (waitfor_pid_name.find (".app") != std::string::npos)
+                        {
+                            launch_flavor = eLaunchFlavorBKS;
+                        }
+#elif defined WITH_SPRINGBOARD
                         // Check if we have an app bundle, if so launch using SpringBoard.
                         if (waitfor_pid_name.find (".app") != std::string::npos)
                         {

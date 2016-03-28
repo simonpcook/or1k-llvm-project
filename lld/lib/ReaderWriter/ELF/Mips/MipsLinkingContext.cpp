@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Atoms.h"
+#include "MipsCtorsOrderPass.h"
 #include "MipsLinkingContext.h"
 #include "MipsRelocationPass.h"
 #include "MipsTargetHandler.h"
@@ -19,8 +20,10 @@ MipsLinkingContext::MipsLinkingContext(llvm::Triple triple)
     : ELFLinkingContext(triple, std::unique_ptr<TargetHandlerBase>(
                                     new MipsTargetHandler(*this))) {}
 
-bool MipsLinkingContext::isLittleEndian() const {
-  return Mips32ElELFType::TargetEndianness == llvm::support::little;
+uint32_t MipsLinkingContext::getMergedELFFlags() const {
+  const auto &handler = static_cast<MipsTargetHandler &>(
+      ELFLinkingContext::getTargetHandler<Mips32ElELFType>());
+  return handler.getELFFlagsMerger().getMergedELFFlags();
 }
 
 uint64_t MipsLinkingContext::getBaseAddress() const {
@@ -44,13 +47,33 @@ void MipsLinkingContext::addPasses(PassManager &pm) {
   if (pass)
     pm.add(std::move(pass));
   ELFLinkingContext::addPasses(pm);
+  pm.add(std::unique_ptr<Pass>(new elf::MipsCtorsOrderPass()));
 }
 
 bool MipsLinkingContext::isDynamicRelocation(const DefinedAtom &,
                                              const Reference &r) const {
   if (r.kindNamespace() != Reference::KindNamespace::ELF)
     return false;
-  return r.kindValue() == llvm::ELF::R_MIPS_COPY;
+  assert(r.kindArch() == Reference::KindArch::Mips);
+  switch (r.kindValue()) {
+  case llvm::ELF::R_MIPS_COPY:
+  case llvm::ELF::R_MIPS_REL32:
+  case llvm::ELF::R_MIPS_TLS_DTPMOD32:
+  case llvm::ELF::R_MIPS_TLS_DTPREL32:
+  case llvm::ELF::R_MIPS_TLS_TPREL32:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool MipsLinkingContext::isCopyRelocation(const Reference &r) const {
+  if (r.kindNamespace() != Reference::KindNamespace::ELF)
+    return false;
+  assert(r.kindArch() == Reference::KindArch::Mips);
+  if (r.kindValue() == llvm::ELF::R_MIPS_COPY)
+    return true;
+  return false;
 }
 
 bool MipsLinkingContext::isPLTRelocation(const DefinedAtom &,

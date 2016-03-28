@@ -11,18 +11,16 @@
 #define LLD_READER_WRITER_ELF_LINKER_CONTEXT_H
 
 #include "lld/Core/LinkingContext.h"
-#include "lld/Core/PassManager.h"
 #include "lld/Core/Pass.h"
-#include "lld/Core/range.h"
+#include "lld/Core/PassManager.h"
 #include "lld/Core/STDExtras.h"
-
+#include "lld/Core/range.h"
 #include "lld/ReaderWriter/Reader.h"
 #include "lld/ReaderWriter/Writer.h"
-
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/ELF.h"
-
 #include <map>
 #include <memory>
 
@@ -60,14 +58,25 @@ public:
   };
 
   llvm::Triple getTriple() const { return _triple; }
-  virtual bool is64Bits() const;
-  virtual bool isLittleEndian() const;
-  virtual uint64_t getPageSize() const { return 0x1000; }
+
+  // Page size.
+  virtual uint64_t getPageSize() const {
+    if (_maxPageSize)
+      return *_maxPageSize;
+    return 0x1000;
+  }
+  virtual void setMaxPageSize(uint64_t pagesize) {
+    _maxPageSize = pagesize;
+  }
   OutputMagic getOutputMagic() const { return _outputMagic; }
   uint16_t getOutputELFType() const { return _outputELFType; }
   uint16_t getOutputMachine() const;
   bool mergeCommonStrings() const { return _mergeCommonStrings; }
   virtual uint64_t getBaseAddress() const { return _baseAddress; }
+  virtual void setBaseAddress(uint64_t address) { _baseAddress = address; }
+
+  void notifySymbolTableCoalesce(const Atom *existingAtom, const Atom *newAtom,
+                                 bool &useNew) override;
 
   /// This controls if undefined atoms need to be created for undefines that are
   /// present in a SharedLibrary. If this option is set, undefined atoms are
@@ -86,9 +95,18 @@ public:
                                    const Reference &) const {
     return false;
   }
+
+  /// \brief Is this a copy relocation?
+  ///
+  /// If this is a copy relocation, its target must be an ObjectAtom. We must
+  /// include in DT_NEEDED the name of the library where this object came from.
+  virtual bool isCopyRelocation(const Reference &) const {
+    return false;
+  }
+
   bool validateImpl(raw_ostream &diagnostics) override;
 
-  /// \brief Does the linker allow dynamic libraries to be linked with ?
+  /// \brief Does the linker allow dynamic libraries to be linked with?
   /// This is true when the output mode of the executable is set to be
   /// having NMAGIC/OMAGIC
   virtual bool allowLinkWithDynamicLibraries() const {
@@ -129,7 +147,7 @@ public:
   /// \brief Does the output have dynamic sections.
   virtual bool isDynamic() const;
 
-  /// \brief Are we creating a shared library ?
+  /// \brief Are we creating a shared library?
   virtual bool isDynamicLibrary() const {
     return _outputELFType == llvm::ELF::ET_DYN;
   }
@@ -148,11 +166,15 @@ public:
 
   void setTriple(llvm::Triple trip) { _triple = trip; }
   void setNoInhibitExec(bool v) { _noInhibitExec = v; }
+  void setExportDynamic(bool v) { _exportDynamic = v; }
   void setIsStaticExecutable(bool v) { _isStaticExecutable = v; }
   void setMergeCommonStrings(bool v) { _mergeCommonStrings = v; }
   void setUseShlibUndefines(bool use) { _useShlibUndefines = use; }
-
   void setOutputELFType(uint32_t type) { _outputELFType = type; }
+
+  bool shouldExportDynamic() const { return _exportDynamic; }
+
+  void createInternalFiles(std::vector<std::unique_ptr<File>> &) const override;
 
   /// \brief Set the dynamic linker path
   void setInterpreter(StringRef dynamicLinker) {
@@ -172,30 +194,42 @@ public:
   /// Searches directories for a match on the input File
   ErrorOr<StringRef> searchLibrary(StringRef libName) const;
 
+  /// \brief Searches directories for a match on the input file.
+  /// If \p fileName is an absolute path and \p isSysRooted is true, check
+  /// the file under sysroot directory. If \p fileName is a relative path
+  /// and is not in the current directory, search the file through library
+  /// search directories.
+  ErrorOr<StringRef> searchFile(StringRef fileName, bool isSysRooted) const;
+
   /// Get the entry symbol name
   StringRef entrySymbolName() const override;
 
-  /// add to the list of initializer functions
-  void addInitFunction(StringRef name) { _initFunctions.push_back(name); }
+  /// \brief Set new initializer function
+  void setInitFunction(StringRef name) { _initFunction = name; }
 
-  /// add to the list of finalizer functions
-  void addFiniFunction(StringRef name) { _finiFunctions.push_back(name); }
+  /// \brief Return an initializer function name.
+  /// Either default "_init" or configured by the -init command line option.
+  StringRef initFunction() const { return _initFunction; }
 
-  /// Return the list of initializer symbols that are specified in the
-  /// linker command line, using the -init option.
-  range<const StringRef *> initFunctions() const {
-    return _initFunctions;
+  /// \brief Set new finalizer function
+  void setFiniFunction(StringRef name) { _finiFunction = name; }
+
+  /// \brief Return a finalizer function name.
+  /// Either default "_fini" or configured by the -fini command line option.
+  StringRef finiFunction() const { return _finiFunction; }
+
+  /// Add an absolute symbol. Used for --defsym.
+  void addInitialAbsoluteSymbol(StringRef name, uint64_t addr) {
+    _absoluteSymbols[name] = addr;
   }
-
-  /// Return the list of finalizer symbols that are specified in the
-  /// linker command line, using the -fini option.
-  range<const StringRef *> finiFunctions() const { return _finiFunctions; }
 
   void setSharedObjectName(StringRef soname) {
     _soname = soname;
   }
 
   StringRef sharedObjectName() const { return _soname; }
+
+  StringRef getSysroot() const { return _sysrootPath; }
 
   /// \brief Set path to the system root
   void setSysroot(StringRef path) {
@@ -218,11 +252,8 @@ public:
     return _rpathLinkList;
   }
 
-  bool addUndefinedAtomsFromSharedLibrary(const SharedLibraryFile *s) override {
-    if (_undefinedAtomsFromFile.find(s) != _undefinedAtomsFromFile.end())
-      return false;
-    _undefinedAtomsFromFile[s] = true;
-    return true;
+  const std::map<std::string, uint64_t> &getAbsoluteSymbols() const {
+    return _absoluteSymbols;
   }
 
   /// \brief Helper function to allocate strings.
@@ -238,6 +269,26 @@ public:
     _inputSearchPaths.push_back(ref);
     return true;
   }
+
+  // By default, the linker would merge sections that are read only with
+  // segments that have read and execute permissions. When the user specifies a
+  // flag --rosegment, a separate segment needs to be created.
+  bool mergeRODataToTextSegment() const { return _mergeRODataToTextSegment; }
+
+  void setCreateSeparateROSegment() { _mergeRODataToTextSegment = false; }
+
+  bool isDynamicallyExportedSymbol(StringRef name) const {
+    return _dynamicallyExportedSymbols.count(name) != 0;
+  }
+
+  /// \brief Demangle symbols.
+  std::string demangle(StringRef symbolName) const override;
+  bool demangleSymbols() const { return _demangle; }
+  void setDemangleSymbols(bool d) { _demangle = d; }
+
+  /// \brief Align segments.
+  bool alignSegments() const { return _alignSegments; }
+  void setAlignSegments(bool align) { _alignSegments = align; }
 
 private:
   ELFLinkingContext() LLVM_DELETED_FUNCTION;
@@ -256,22 +307,29 @@ protected:
   uint64_t _baseAddress;
   bool _isStaticExecutable;
   bool _noInhibitExec;
+  bool _exportDynamic;
   bool _mergeCommonStrings;
   bool _runLayoutPass;
   bool _useShlibUndefines;
   bool _dynamicLinkerArg;
   bool _noAllowDynamicLibraries;
+  bool _mergeRODataToTextSegment;
+  bool _demangle;
+  bool _alignSegments;
+  llvm::Optional<uint64_t> _maxPageSize;
+
   OutputMagic _outputMagic;
   StringRefVector _inputSearchPaths;
   std::unique_ptr<Writer> _writer;
   StringRef _dynamicLinkerPath;
-  StringRefVector _initFunctions;
-  StringRefVector _finiFunctions;
+  StringRef _initFunction;
+  StringRef _finiFunction;
   StringRef _sysrootPath;
   StringRef _soname;
   StringRefVector _rpathList;
   StringRefVector _rpathLinkList;
-  std::map<const SharedLibraryFile *, bool> _undefinedAtomsFromFile;
+  std::map<std::string, uint64_t> _absoluteSymbols;
+  llvm::StringSet<> _dynamicallyExportedSymbols;
 };
 } // end namespace lld
 

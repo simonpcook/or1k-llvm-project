@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fcxx-exceptions -fexceptions -fsyntax-only -verify -std=c++11 %s
+// RUN: %clang_cc1 -fcxx-exceptions -fexceptions -fsyntax-only -verify -std=c++11 -Wc++14-compat %s
 
 // Need std::initializer_list
 namespace std {
@@ -48,13 +48,13 @@ int array_attr [1] [[]];
 alignas(8) int aligned_attr;
 [[test::valid(for 42 [very] **** '+' symbols went on a trip and had a "good"_time; the end.)]] int garbage_attr; // expected-warning {{unknown attribute 'valid' ignored}}
 [[,,,static, class, namespace,, inline, constexpr, mutable,, bitand, bitor::compl(!.*_ Cx.!U^*R),,,]] int more_garbage_attr; // expected-warning {{unknown attribute 'static' ignored}} \
-	// expected-warning {{unknown attribute 'class' ignored}} \
-	// expected-warning {{unknown attribute 'namespace' ignored}} \
-	// expected-warning {{unknown attribute 'inline' ignored}} \
-	// expected-warning {{unknown attribute 'constexpr' ignored}} \
-	// expected-warning {{unknown attribute 'mutable' ignored}} \
-	// expected-warning {{unknown attribute 'bitand' ignored}} \
-        // expected-warning {{unknown attribute 'compl' ignored}}
+    // expected-warning {{unknown attribute 'class' ignored}} \
+    // expected-warning {{unknown attribute 'namespace' ignored}} \
+    // expected-warning {{unknown attribute 'inline' ignored}} \
+    // expected-warning {{unknown attribute 'constexpr' ignored}} \
+    // expected-warning {{unknown attribute 'mutable' ignored}} \
+    // expected-warning {{unknown attribute 'bitand' ignored}} \
+    // expected-warning {{unknown attribute 'compl' ignored}}
 [[u8"invalid!"]] int invalid_string_attr; // expected-error {{expected ']'}}
 void fn_attr () [[]];
 void noexcept_fn_attr () noexcept [[]];
@@ -85,6 +85,10 @@ class [[]] [[]] final_class
 class [[]] [[]] final_class_another
   [[]] [[]] alignas(16) final // expected-error {{an attribute list cannot appear here}}
   [[]] [[]] alignas(16) [[]]{}; // expected-error {{an attribute list cannot appear here}}
+
+// The diagnostics here don't matter much, this just shouldn't crash:
+class C final [[deprecated(l]] {}); // expected-error {{use of undeclared identifier}} expected-error {{expected ']'}} expected-error {{an attribute list cannot appear here}} expected-error {{expected unqualified-id}}
+class D final alignas ([l) {}]{}); // expected-error {{expected ',' or ']' in lambda capture list}} expected-error {{an attribute list cannot appear here}}
 
 [[]] struct with_init_declarators {} init_declarator;
 [[]] struct no_init_declarators; // expected-error {{an attribute list cannot appear here}}
@@ -121,6 +125,7 @@ extern "C++" [[]] { } // expected-error {{an attribute list cannot appear here}}
 [[]] using ns::i; // expected-error {{an attribute list cannot appear here}}
 [[unknown]] using namespace ns; // expected-warning {{unknown attribute 'unknown' ignored}}
 [[noreturn]] using namespace ns; // expected-error {{'noreturn' attribute only applies to functions}}
+namespace [[]] ns2 {} // expected-warning {{attributes on a namespace declaration are incompatible with C++ standards before C++1z}}
 
 using [[]] alignas(4) [[]] ns::i; // expected-error {{an attribute list cannot appear here}}
 using [[]] alignas(4) [[]] foobar = int; // expected-error {{an attribute list cannot appear here}} expected-error {{'alignas' attribute only applies to}}
@@ -172,7 +177,7 @@ enum [[]] E2; // expected-error {{forbids forward references}}
 enum [[]] E1;
 enum [[]] E3 : int;
 enum [[]] {
-  k_123 [[]] = 123 // expected-error {{an attribute list cannot appear here}}
+  k_123 [[]] = 123 // expected-warning {{attributes on an enumerator declaration are incompatible with C++ standards before C++1z}}
 };
 enum [[]] E1 e; // expected-error {{an attribute list cannot appear here}}
 enum [[]] class E4 { }; // expected-error {{an attribute list cannot appear here}}
@@ -281,7 +286,8 @@ enum class [[]] EvenMoreSecrets {};
 
 namespace arguments {
   void f[[gnu::format(printf, 1, 2)]](const char*, ...);
-  void g() [[unknown::foo(arguments of attributes from unknown namespace other than 'gnu' namespace are ignored... blah...)]]; // expected-warning {{unknown attribute 'foo' ignored}}
+  void g() [[unknown::foo(ignore arguments for unknown attributes, even with symbols!)]]; // expected-warning {{unknown attribute 'foo' ignored}}
+  [[deprecated("with argument")]] int i;
 }
 
 // Forbid attributes on decl specifiers.
@@ -320,4 +326,18 @@ namespace GccASan {
   __attribute__((no_sanitize_address)) void f2();
   [[gnu::no_address_safety_analysis]] void f3();
   [[gnu::no_sanitize_address]] void f4();
+}
+
+namespace {
+  [[deprecated]] void bar();
+  [[deprecated("hello")]] void baz();
+  [[deprecated()]] void foo(); // expected-error {{parentheses must be omitted if 'deprecated' attribute's argument list is empty}}
+  [[gnu::deprecated()]] void quux();
+}
+
+namespace {
+[[ // expected-error {{expected ']'}}
+#pragma pack(pop)
+deprecated
+]] void bad();
 }

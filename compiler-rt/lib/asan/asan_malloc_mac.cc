@@ -90,9 +90,9 @@ INTERCEPTOR(void, malloc_set_zone_name, malloc_zone_t *zone, const char *name) {
   ENSURE_ASAN_INITED();
   // Allocate |strlen("asan-") + 1 + internal_strlen(name)| bytes.
   size_t buflen = 6 + (name ? internal_strlen(name) : 0);
-  InternalScopedBuffer<char> new_name(buflen);
+  InternalScopedString new_name(buflen);
   if (name && zone->introspect == asan_zone.introspect) {
-    internal_snprintf(new_name.data(), buflen, "asan-%s", name);
+    new_name.append("asan-%s", name);
     name = new_name.data();
   }
 
@@ -159,7 +159,7 @@ size_t mz_size(malloc_zone_t* zone, const void* ptr) {
 }
 
 void *mz_malloc(malloc_zone_t *zone, size_t size) {
-  if (!asan_inited) {
+  if (UNLIKELY(!asan_inited)) {
     CHECK(system_malloc_zone);
     return malloc_zone_malloc(system_malloc_zone, size);
   }
@@ -168,7 +168,7 @@ void *mz_malloc(malloc_zone_t *zone, size_t size) {
 }
 
 void *mz_calloc(malloc_zone_t *zone, size_t nmemb, size_t size) {
-  if (!asan_inited) {
+  if (UNLIKELY(!asan_inited)) {
     // Hack: dlsym calls calloc before REAL(calloc) is retrieved from dlsym.
     const size_t kCallocPoolSize = 1024;
     static uptr calloc_memory_for_dlsym[kCallocPoolSize];
@@ -184,7 +184,7 @@ void *mz_calloc(malloc_zone_t *zone, size_t nmemb, size_t size) {
 }
 
 void *mz_valloc(malloc_zone_t *zone, size_t size) {
-  if (!asan_inited) {
+  if (UNLIKELY(!asan_inited)) {
     CHECK(system_malloc_zone);
     return malloc_zone_valloc(system_malloc_zone, size);
   }
@@ -242,7 +242,7 @@ void mz_destroy(malloc_zone_t* zone) {
 #if defined(MAC_OS_X_VERSION_10_6) && \
     MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_6
 void *mz_memalign(malloc_zone_t *zone, size_t align, size_t size) {
-  if (!asan_inited) {
+  if (UNLIKELY(!asan_inited)) {
     CHECK(system_malloc_zone);
     return malloc_zone_memalign(system_malloc_zone, align, size);
   }

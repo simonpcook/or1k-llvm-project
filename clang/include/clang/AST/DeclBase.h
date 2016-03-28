@@ -16,7 +16,6 @@
 
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/DeclarationName.h"
-#include "clang/Basic/Linkage.h"
 #include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/iterator_range.h"
@@ -34,6 +33,7 @@ class DependentDiagnostic;
 class EnumDecl;
 class FunctionDecl;
 class FunctionType;
+enum Linkage : unsigned char;
 class LinkageComputer;
 class LinkageSpecDecl;
 class Module;
@@ -48,24 +48,11 @@ class ObjCInterfaceDecl;
 class ObjCMethodDecl;
 class ObjCProtocolDecl;
 struct PrintingPolicy;
+class RecordDecl;
 class Stmt;
 class StoredDeclsMap;
 class TranslationUnitDecl;
 class UsingDirectiveDecl;
-}
-
-namespace llvm {
-// DeclContext* is only 4-byte aligned on 32-bit systems.
-template<>
-  class PointerLikeTypeTraits<clang::DeclContext*> {
-  typedef clang::DeclContext* PT;
-public:
-  static inline void *getAsVoidPointer(PT P) { return P; }
-  static inline PT getFromVoidPointer(void *P) {
-    return static_cast<PT>(P);
-  }
-  enum { NumLowBitsAvailable = 2 };
-};
 }
 
 namespace clang {
@@ -411,6 +398,8 @@ public:
 
   bool isInAnonymousNamespace() const;
 
+  bool isInStdNamespace() const;
+
   ASTContext &getASTContext() const LLVM_READONLY;
 
   void setAccess(AccessSpecifier AS) {
@@ -454,10 +443,10 @@ public:
   }
 
   attr_iterator attr_begin() const {
-    return hasAttrs() ? getAttrs().begin() : 0;
+    return hasAttrs() ? getAttrs().begin() : nullptr;
   }
   attr_iterator attr_end() const {
-    return hasAttrs() ? getAttrs().end() : 0;
+    return hasAttrs() ? getAttrs().end() : nullptr;
   }
 
   template <typename T>
@@ -487,7 +476,7 @@ public:
   }
 
   template<typename T> T *getAttr() const {
-    return hasAttrs() ? getSpecificAttr<T>(getAttrs()) : 0;
+    return hasAttrs() ? getSpecificAttr<T>(getAttrs()) : nullptr;
   }
   template<typename T> bool hasAttr() const {
     return hasAttrs() && hasSpecificAttr<T>(getAttrs());
@@ -527,8 +516,12 @@ public:
   /// indicating the declaration is used.
   void markUsed(ASTContext &C);
 
-  /// \brief Whether this declaration was referenced.
+  /// \brief Whether any declaration of this entity was referenced.
   bool isReferenced() const;
+
+  /// \brief Whether this declaration was referenced. This should not be relied
+  /// upon for anything other than debugging.
+  bool isThisDeclarationReferenced() const { return Referenced; }
 
   void setReferenced(bool R = true) { Referenced = R; }
 
@@ -584,14 +577,14 @@ public:
   /// AR_Available, will be set to a (possibly empty) message
   /// describing why the declaration has not been introduced, is
   /// deprecated, or is unavailable.
-  AvailabilityResult getAvailability(std::string *Message = 0) const;
+  AvailabilityResult getAvailability(std::string *Message = nullptr) const;
 
   /// \brief Determine whether this declaration is marked 'deprecated'.
   ///
   /// \param Message If non-NULL and the declaration is deprecated,
   /// this will be set to the message describing why the declaration
   /// was deprecated (which may be empty).
-  bool isDeprecated(std::string *Message = 0) const {
+  bool isDeprecated(std::string *Message = nullptr) const {
     return getAvailability(Message) == AR_Deprecated;
   }
 
@@ -600,7 +593,7 @@ public:
   /// \param Message If non-NULL and the declaration is unavailable,
   /// this will be set to the message describing why the declaration
   /// was made unavailable (which may be empty).
-  bool isUnavailable(std::string *Message = 0) const {
+  bool isUnavailable(std::string *Message = nullptr) const {
     return getAvailability(Message) == AR_Unavailable;
   }
 
@@ -647,7 +640,7 @@ private:
 public:
   Module *getOwningModule() const {
     if (!isFromASTFile())
-      return 0;
+      return nullptr;
 
     return getOwningModuleSlow();
   }
@@ -687,9 +680,9 @@ public:
     return const_cast<Decl*>(this)->getLexicalDeclContext();
   }
 
-  virtual bool isOutOfLine() const {
-    return getLexicalDeclContext() != getDeclContext();
-  }
+  /// Determine whether this declaration is declared out of line (outside its
+  /// semantic context).
+  virtual bool isOutOfLine() const;
 
   /// setDeclContext - Set both the semantic and lexical DeclContext
   /// to DC.
@@ -702,7 +695,7 @@ public:
   /// roughly global variables and functions, but also handles enums (which
   /// could be defined inside or outside a function etc).
   bool isDefinedOutsideFunctionOrMethod() const {
-    return getParentFunctionOrMethod() == 0;
+    return getParentFunctionOrMethod() == nullptr;
   }
 
   /// \brief If this decl is defined inside a function/method/block it returns
@@ -727,16 +720,16 @@ protected:
   ///
   /// Decl subclasses that can be redeclared should override this method so that
   /// Decl::redecl_iterator can iterate over them.
-  virtual Decl *getNextRedeclaration() { return this; }
+  virtual Decl *getNextRedeclarationImpl() { return this; }
 
   /// \brief Implementation of getPreviousDecl(), to be overridden by any
   /// subclass that has a redeclaration chain.
-  virtual Decl *getPreviousDeclImpl() { return 0; }
-  
+  virtual Decl *getPreviousDeclImpl() { return nullptr; }
+
   /// \brief Implementation of getMostRecentDecl(), to be overridden by any
-  /// subclass that has a redeclaration chain.  
+  /// subclass that has a redeclaration chain.
   virtual Decl *getMostRecentDeclImpl() { return this; }
-  
+
 public:
   /// \brief Iterates through all the redeclarations of the same decl.
   class redecl_iterator {
@@ -751,7 +744,7 @@ public:
     typedef std::forward_iterator_tag iterator_category;
     typedef std::ptrdiff_t difference_type;
 
-    redecl_iterator() : Current(0) { }
+    redecl_iterator() : Current(nullptr) { }
     explicit redecl_iterator(Decl *C) : Current(C), Starter(C) { }
 
     reference operator*() const { return Current; }
@@ -760,9 +753,9 @@ public:
     redecl_iterator& operator++() {
       assert(Current && "Advancing while iterator has reached end");
       // Get either previous decl or latest decl.
-      Decl *Next = Current->getNextRedeclaration();
+      Decl *Next = Current->getNextRedeclarationImpl();
       assert(Next && "Should return next redeclaration or itself, never null!");
-      Current = (Next != Starter ? Next : 0);
+      Current = (Next != Starter) ? Next : nullptr;
       return *this;
     }
 
@@ -805,7 +798,7 @@ public:
 
   /// \brief True if this is the first declaration in its redeclaration chain.
   bool isFirstDecl() const {
-    return getPreviousDecl() == 0;
+    return getPreviousDecl() == nullptr;
   }
 
   /// \brief Retrieve the most recent declaration that declares the same entity
@@ -821,13 +814,13 @@ public:
   /// getBody - If this Decl represents a declaration for a body of code,
   ///  such as a function or method definition, this method returns the
   ///  top-level Stmt* of that body.  Otherwise this method returns null.
-  virtual Stmt* getBody() const { return 0; }
+  virtual Stmt* getBody() const { return nullptr; }
 
   /// \brief Returns true if this \c Decl represents a declaration for a body of
   /// code, such as a function or method definition.
   /// Note that \c hasBody can also return true if any redeclaration of this
   /// \c Decl represents a declaration for a body of code.
-  virtual bool hasBody() const { return getBody() != 0; }
+  virtual bool hasBody() const { return getBody() != nullptr; }
 
   /// getBodyRBrace - Gets the right brace of the body, if a body exists.
   /// This works whether the body is a CompoundStmt or a CXXTryStmt.
@@ -1012,7 +1005,7 @@ public:
   void print(raw_ostream &OS) const override;
 };
 
-typedef llvm::MutableArrayRef<NamedDecl*> DeclContextLookupResult;
+typedef MutableArrayRef<NamedDecl *> DeclContextLookupResult;
 
 typedef ArrayRef<NamedDecl *> DeclContextLookupConstResult;
 
@@ -1082,8 +1075,8 @@ protected:
   DeclContext(Decl::Kind K)
       : DeclKind(K), ExternalLexicalStorage(false),
         ExternalVisibleStorage(false),
-        NeedToReconcileExternalVisibleStorage(false), LookupPtr(0, false),
-        FirstDecl(0), LastDecl(0) {}
+        NeedToReconcileExternalVisibleStorage(false), LookupPtr(nullptr, false),
+        FirstDecl(nullptr), LastDecl(nullptr) {}
 
 public:
   ~DeclContext();
@@ -1170,6 +1163,8 @@ public:
     return DeclKind == Decl::Namespace;
   }
 
+  bool isStdNamespace() const;
+
   bool isInlineNamespace() const;
 
   /// \brief Determines whether this context is dependent on a
@@ -1244,6 +1239,12 @@ public:
     return const_cast<DeclContext *>(this)->getEnclosingNamespaceContext();
   }
 
+  /// \brief Retrieve the outermost lexically enclosing record context.
+  RecordDecl *getOuterLexicalRecordContext();
+  const RecordDecl *getOuterLexicalRecordContext() const {
+    return const_cast<DeclContext *>(this)->getOuterLexicalRecordContext();
+  }
+
   /// \brief Test if this context is part of the enclosing namespace set of
   /// the context NS, as defined in C++0x [namespace.def]p9. If either context
   /// isn't a namespace, this is equivalent to Equals().
@@ -1290,7 +1291,7 @@ public:
     typedef std::forward_iterator_tag iterator_category;
     typedef std::ptrdiff_t            difference_type;
 
-    decl_iterator() : Current(0) { }
+    decl_iterator() : Current(nullptr) { }
     explicit decl_iterator(Decl *C) : Current(C) { }
 
     reference operator*() const { return Current; }
@@ -1652,10 +1653,10 @@ public:
 
   void dumpDeclContext() const;
   void dumpLookups() const;
-  void dumpLookups(llvm::raw_ostream &OS) const;
+  void dumpLookups(llvm::raw_ostream &OS, bool DumpDecls = false) const;
 
 private:
-  void reconcileExternalVisibleStorage();
+  void reconcileExternalVisibleStorage() const;
   void LoadLexicalDeclsFromExternalStorage() const;
 
   /// @brief Makes a declaration visible within this context, but

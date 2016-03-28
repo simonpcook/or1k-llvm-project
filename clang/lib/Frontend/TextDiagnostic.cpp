@@ -176,7 +176,7 @@ static void expandTabs(std::string &SourceLine, unsigned TabStop) {
 ///  of the printable representation of the line to the columns those printable
 ///  characters will appear at (numbering the first column as 0).
 ///
-/// If a byte 'i' corresponds to muliple columns (e.g. the byte contains a tab
+/// If a byte 'i' corresponds to multiple columns (e.g. the byte contains a tab
 ///  character) then the array will map that byte to the first column the
 ///  tab appears at and the next value in the map will have been incremented
 ///  more than once.
@@ -293,14 +293,14 @@ struct SourceColumnMap {
 
   /// \brief Map from a byte index to the next byte which starts a column.
   int startOfNextColumn(int N) const {
-    assert(0 <= N && N < static_cast<int>(m_columnToByte.size() - 1));
+    assert(0 <= N && N < static_cast<int>(m_byteToColumn.size() - 1));
     while (byteToColumn(++N) == -1) {}
     return N;
   }
 
   /// \brief Map from a byte index to the previous byte which starts a column.
   int startOfPreviousColumn(int N) const {
-    assert(0 < N && N < static_cast<int>(m_columnToByte.size()));
+    assert(0 < N && N < static_cast<int>(m_byteToColumn.size()));
     while (byteToColumn(--N) == -1) {}
     return N;
   }
@@ -323,9 +323,10 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
                                           std::string &FixItInsertionLine,
                                           unsigned Columns,
                                           const SourceColumnMap &map) {
-  unsigned MaxColumns = std::max<unsigned>(map.columns(),
-                                           std::max(CaretLine.size(),
-                                                    FixItInsertionLine.size()));
+  unsigned CaretColumns = CaretLine.size();
+  unsigned FixItColumns = llvm::sys::locale::columnWidth(FixItInsertionLine);
+  unsigned MaxColumns = std::max(static_cast<unsigned>(map.columns()),
+                                 std::max(CaretColumns, FixItColumns));
   // if the number of columns is less than the desired number we're done
   if (MaxColumns <= Columns)
     return;
@@ -487,7 +488,7 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
   // We checked up front that the line needed truncation
   assert(FrontColumnsRemoved+ColumnsKept+BackColumnsRemoved > Columns);
 
-  // The line needs some trunctiona, and we'd prefer to keep the front
+  // The line needs some truncation, and we'd prefer to keep the front
   //  if possible, so remove the back
   if (BackColumnsRemoved > strlen(back_ellipse))
     SourceLine.replace(SourceEnd, std::string::npos, back_ellipse);
@@ -689,8 +690,9 @@ TextDiagnostic::emitDiagnosticMessage(SourceLocation Loc,
   
   printDiagnosticLevel(OS, Level, DiagOpts->ShowColors,
                        DiagOpts->CLFallbackMode);
-  printDiagnosticMessage(OS, Level, Message,
-                         OS.tell() - StartOfLocationInfo,
+  printDiagnosticMessage(OS,
+                         /*IsSupplemental*/ Level == DiagnosticsEngine::Note,
+                         Message, OS.tell() - StartOfLocationInfo,
                          DiagOpts->MessageLength, DiagOpts->ShowColors);
 }
 
@@ -735,24 +737,18 @@ TextDiagnostic::printDiagnosticLevel(raw_ostream &OS,
     OS.resetColor();
 }
 
-/*static*/ void
-TextDiagnostic::printDiagnosticMessage(raw_ostream &OS,
-                                       DiagnosticsEngine::Level Level,
-                                       StringRef Message,
-                                       unsigned CurrentColumn, unsigned Columns,
-                                       bool ShowColors) {
+/*static*/
+void TextDiagnostic::printDiagnosticMessage(raw_ostream &OS,
+                                            bool IsSupplemental,
+                                            StringRef Message,
+                                            unsigned CurrentColumn,
+                                            unsigned Columns, bool ShowColors) {
   bool Bold = false;
-  if (ShowColors) {
-    // Print warnings, errors and fatal errors in bold, no color
-    switch (Level) {
-    case DiagnosticsEngine::Warning:
-    case DiagnosticsEngine::Error:
-    case DiagnosticsEngine::Fatal:
-      OS.changeColor(savedColor, true);
-      Bold = true;
-      break;
-    default: break; //don't bold notes
-    }
+  if (ShowColors && !IsSupplemental) {
+    // Print primary diagnostic messages in bold and without color, to visually
+    // indicate the transition from continuation notes and other output.
+    OS.changeColor(savedColor, true);
+    Bold = true;
   }
 
   if (Columns)
@@ -813,7 +809,8 @@ void TextDiagnostic::emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
       if (DiagOpts->getFormat() == DiagnosticOptions::Msvc) {
         OS << ',';
         // Visual Studio 2010 or earlier expects column number to be off by one
-        if (LangOpts.MSCVersion && LangOpts.MSCVersion < 1700)
+        if (LangOpts.MSCompatibilityVersion &&
+            LangOpts.MSCompatibilityVersion < 170000000)
           ColNo--;
       } else
         OS << ':';
@@ -873,12 +870,6 @@ void TextDiagnostic::emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
       OS << ':';
   }
   OS << ' ';
-}
-
-void TextDiagnostic::emitBasicNote(StringRef Message) {
-  // FIXME: Emit this as a real note diagnostic.
-  // FIXME: Format an actual diagnostic rather than a hard coded string.
-  OS << "note: " << Message << "\n";
 }
 
 void TextDiagnostic::emitIncludeLocation(SourceLocation Loc,
@@ -1120,11 +1111,12 @@ void TextDiagnostic::emitSnippetAndCaret(
   // Copy the line of code into an std::string for ease of manipulation.
   std::string SourceLine(LineStart, LineEnd);
 
-  // Create a line for the caret that is filled with spaces that is the same
-  // length as the line of source code.
-  std::string CaretLine(LineEnd-LineStart, ' ');
-
+  // Build the byte to column map.
   const SourceColumnMap sourceColMap(SourceLine, DiagOpts->TabStop);
+
+  // Create a line for the caret that is filled with spaces that is the same
+  // number of columns as the line of source code.
+  std::string CaretLine(sourceColMap.columns(), ' ');
 
   // Highlight all of the characters covered by Ranges with ~ characters.
   for (SmallVectorImpl<CharSourceRange>::iterator I = Ranges.begin(),
@@ -1141,7 +1133,7 @@ void TextDiagnostic::emitSnippetAndCaret(
   std::string FixItInsertionLine = buildFixItInsertionLine(LineNo,
                                                            sourceColMap,
                                                            Hints, SM,
-                                                           DiagOpts.getPtr());
+                                                           DiagOpts.get());
 
   // If the source line is too long for our terminal, select only the
   // "interesting" source region within that line.

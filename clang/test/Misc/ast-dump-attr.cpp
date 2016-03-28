@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple x86_64-pc-linux -std=c++11 -ast-dump -ast-dump-filter Test %s | FileCheck --strict-whitespace %s
+// RUN: %clang_cc1 -triple x86_64-pc-linux -std=c++11 -Wno-deprecated-declarations -ast-dump -ast-dump-filter Test %s | FileCheck --strict-whitespace %s
 
 int TestLocation
 __attribute__((unused));
@@ -108,7 +108,13 @@ namespace Test {
 extern "C" int printf(const char *format, ...);
 // CHECK: FunctionDecl{{.*}}printf
 // CHECK-NEXT: ParmVarDecl{{.*}}format{{.*}}'const char *'
-// CHECK-NEXT: FormatAttr{{.*}}printf 1 2 Implicit
+// CHECK-NEXT: FormatAttr{{.*}}Implicit printf 1 2
+
+alignas(8) extern int x;
+extern int x;
+// CHECK: VarDecl{{.*}} x 'int'
+// CHECK: VarDecl{{.*}} x 'int'
+// CHECK-NEXT: AlignedAttr{{.*}} Inherited
 }
 
 int __attribute__((cdecl)) TestOne(void), TestTwo(void);
@@ -128,4 +134,19 @@ void func() {
   // CHECK: CXXMethodDecl{{.*}}operator() 'void (void) __attribute__((noreturn)) const'
   // CHECK-NOT: NoReturnAttr
   // CHECK: CXXConversionDecl{{.*}}operator void (*)() __attribute__((noreturn))
+}
+
+namespace PR20930 {
+struct S {
+  struct { int Test __attribute__((deprecated)); };
+  // CHECK: FieldDecl{{.*}}Test 'int'
+  // CHECK-NEXT: DeprecatedAttr
+};
+
+void f() {
+  S s;
+  s.Test = 1;
+  // CHECK: IndirectFieldDecl{{.*}}Test 'int'
+  // CHECK: DeprecatedAttr
+}
 }

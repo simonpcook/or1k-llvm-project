@@ -14,21 +14,23 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/CodeGen/BlockGenerators.h"
-#include "polly/CodeGen/Cloog.h"
 #include "polly/ScopDetection.h"
 #include "polly/Support/ScopHelper.h"
+#include "llvm/Analysis/DominanceFrontier.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/CommandLine.h"
-#define DEBUG_TYPE "polly-independent"
 #include "llvm/Support/Debug.h"
 
 #include <vector>
 
 using namespace polly;
 using namespace llvm;
+
+#define DEBUG_TYPE "polly-independent"
 
 static cl::opt<bool> DisableIntraScopScalarToArray(
     "disable-polly-intra-scop-scalar-to-array",
@@ -245,17 +247,15 @@ void IndependentBlocks::moveOperandTree(Instruction *Inst, const Region *R,
 bool IndependentBlocks::createIndependentBlocks(BasicBlock *BB,
                                                 const Region *R) {
   std::vector<Instruction *> WorkList;
-  for (BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II)
-    if (!isSafeToMove(II) && !canSynthesize(II, LI, SE, R))
-      WorkList.push_back(II);
+  for (Instruction &Inst : *BB)
+    if (!isSafeToMove(&Inst) && !canSynthesize(&Inst, LI, SE, R))
+      WorkList.push_back(&Inst);
 
   ReplacedMapType ReplacedMap;
   Instruction *InsertPos = BB->getFirstNonPHIOrDbg();
 
-  for (std::vector<Instruction *>::iterator I = WorkList.begin(),
-                                            E = WorkList.end();
-       I != E; ++I)
-    moveOperandTree(*I, R, ReplacedMap, InsertPos);
+  for (Instruction *Inst : WorkList)
+    moveOperandTree(Inst, R, ReplacedMap, InsertPos);
 
   // The BB was changed if we replaced any operand.
   return !ReplacedMap.empty();
@@ -264,7 +264,7 @@ bool IndependentBlocks::createIndependentBlocks(BasicBlock *BB,
 bool IndependentBlocks::createIndependentBlocks(const Region *R) {
   bool Changed = false;
 
-  for (const auto &BB : R->blocks())
+  for (BasicBlock *BB : R->blocks())
     Changed |= createIndependentBlocks(BB, R);
 
   return Changed;
@@ -274,10 +274,10 @@ bool IndependentBlocks::eliminateDeadCode(const Region *R) {
   std::vector<Instruction *> WorkList;
 
   // Find all trivially dead instructions.
-  for (const auto &BB : R->blocks())
-    for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
-      if (isInstructionTriviallyDead(I))
-        WorkList.push_back(I);
+  for (BasicBlock *BB : R->blocks())
+    for (Instruction &Inst : *BB)
+      if (isInstructionTriviallyDead(&Inst))
+        WorkList.push_back(&Inst);
 
   if (WorkList.empty())
     return false;
@@ -331,17 +331,14 @@ bool IndependentBlocks::splitExitBlock(Region *R) {
   toUpdate.push_back(R);
 
   while (!toUpdate.empty()) {
-    Region *Reg = toUpdate.back();
+    Region *R = toUpdate.back();
     toUpdate.pop_back();
 
-    for (Region::iterator I = Reg->begin(), E = Reg->end(); I != E; ++I) {
-      Region *SubR = *I;
+    for (auto &&SubRegion : *R)
+      if (SubRegion->getExit() == ExitBB)
+        toUpdate.push_back(SubRegion.get());
 
-      if (SubR->getExit() == ExitBB)
-        toUpdate.push_back(SubR);
-    }
-
-    Reg->replaceExit(NewExit);
+    R->replaceExit(NewExit);
   }
 
   RI->setRegionFor(NewExit, R->getParent());
@@ -351,7 +348,7 @@ bool IndependentBlocks::splitExitBlock(Region *R) {
 bool IndependentBlocks::translateScalarToArray(const Region *R) {
   bool Changed = false;
 
-  for (const auto &BB : R->blocks())
+  for (BasicBlock *BB : R->blocks())
     Changed |= translateScalarToArray(BB, R);
 
   return Changed;
@@ -427,6 +424,7 @@ bool IndependentBlocks::translateScalarToArray(Instruction *Inst,
     U->replaceUsesOfWith(Inst, L);
   }
 
+  SE->forgetValue(Inst);
   return true;
 }
 
@@ -448,19 +446,16 @@ bool IndependentBlocks::translateScalarToArray(BasicBlock *BB,
 
 bool IndependentBlocks::isIndependentBlock(const Region *R,
                                            BasicBlock *BB) const {
-  for (BasicBlock::iterator II = BB->begin(), IE = --BB->end(); II != IE;
-       ++II) {
-    Instruction *Inst = &*II;
-
-    if (canSynthesize(Inst, LI, SE, R))
+  for (Instruction &Inst : *BB) {
+    if (canSynthesize(&Inst, LI, SE, R))
       continue;
 
     // A value inside the Scop is referenced outside.
-    for (User *U : Inst->users()) {
+    for (User *U : Inst.users()) {
       if (isEscapeUse(U, R)) {
         DEBUG(dbgs() << "Instruction not independent:\n");
         DEBUG(dbgs() << "Instruction used outside the Scop!\n");
-        DEBUG(Inst->print(dbgs()));
+        DEBUG(Inst.print(dbgs()));
         DEBUG(dbgs() << "\n");
         return false;
       }
@@ -469,17 +464,16 @@ bool IndependentBlocks::isIndependentBlock(const Region *R,
     if (DisableIntraScopScalarToArray)
       continue;
 
-    for (Instruction::op_iterator OI = Inst->op_begin(), OE = Inst->op_end();
-         OI != OE; ++OI) {
-      if (isEscapeOperand(*OI, BB, R)) {
+    for (Value *Op : Inst.operands()) {
+      if (isEscapeOperand(Op, BB, R)) {
         DEBUG(dbgs() << "Instruction in function '";
               BB->getParent()->printAsOperand(dbgs(), false);
               dbgs() << "' not independent:\n");
         DEBUG(dbgs() << "Uses invalid operator\n");
-        DEBUG(Inst->print(dbgs()));
+        DEBUG(Inst.print(dbgs()));
         DEBUG(dbgs() << "\n");
         DEBUG(dbgs() << "Invalid operator is: ";
-              (*OI)->printAsOperand(dbgs(), false); dbgs() << "\n");
+              Op->printAsOperand(dbgs(), false); dbgs() << "\n");
         return false;
       }
     }
@@ -489,7 +483,7 @@ bool IndependentBlocks::isIndependentBlock(const Region *R,
 }
 
 bool IndependentBlocks::areAllBlocksIndependent(const Region *R) const {
-  for (const auto &BB : R->blocks())
+  for (BasicBlock *BB : R->blocks())
     if (!isIndependentBlock(R, BB))
       return false;
 
@@ -502,23 +496,20 @@ void IndependentBlocks::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addPreserved<DominatorTreeWrapperPass>();
   AU.addPreserved<DominanceFrontier>();
   AU.addPreserved<PostDominatorTree>();
-  AU.addRequired<RegionInfo>();
-  AU.addPreserved<RegionInfo>();
+  AU.addRequired<RegionInfoPass>();
+  AU.addPreserved<RegionInfoPass>();
   AU.addRequired<LoopInfo>();
   AU.addPreserved<LoopInfo>();
   AU.addRequired<ScalarEvolution>();
   AU.addPreserved<ScalarEvolution>();
   AU.addRequired<ScopDetection>();
   AU.addPreserved<ScopDetection>();
-#ifdef CLOOG_FOUND
-  AU.addPreserved<CloogInfo>();
-#endif
 }
 
 bool IndependentBlocks::runOnFunction(llvm::Function &F) {
   bool Changed = false;
 
-  RI = &getAnalysis<RegionInfo>();
+  RI = &getAnalysis<RegionInfoPass>().getRegionInfo();
   LI = &getAnalysis<LoopInfo>();
   SD = &getAnalysis<ScopDetection>();
   SE = &getAnalysis<ScalarEvolution>();
@@ -527,8 +518,7 @@ bool IndependentBlocks::runOnFunction(llvm::Function &F) {
 
   DEBUG(dbgs() << "Run IndepBlock on " << F.getName() << '\n');
 
-  for (ScopDetection::iterator I = SD->begin(), E = SD->end(); I != E; ++I) {
-    const Region *R = *I;
+  for (const Region *R : *SD) {
     Changed |= createIndependentBlocks(R);
     Changed |= eliminateDeadCode(R);
     // This may change the RegionTree.
@@ -538,8 +528,8 @@ bool IndependentBlocks::runOnFunction(llvm::Function &F) {
   DEBUG(dbgs() << "Before Scalar to Array------->\n");
   DEBUG(F.dump());
 
-  for (ScopDetection::iterator I = SD->begin(), E = SD->end(); I != E; ++I)
-    Changed |= translateScalarToArray(*I);
+  for (const Region *R : *SD)
+    Changed |= translateScalarToArray(R);
 
   DEBUG(dbgs() << "After Independent Blocks------------->\n");
   DEBUG(F.dump());
@@ -550,9 +540,8 @@ bool IndependentBlocks::runOnFunction(llvm::Function &F) {
 }
 
 void IndependentBlocks::verifyAnalysis() const {
-  for (ScopDetection::const_iterator I = SD->begin(), E = SD->end(); I != E;
-       ++I)
-    verifyScop(*I);
+  for (const Region *R : *SD)
+    verifyScop(R);
 }
 
 void IndependentBlocks::verifyScop(const Region *R) const {
@@ -567,7 +556,7 @@ Pass *polly::createIndependentBlocksPass() { return new IndependentBlocks(); }
 INITIALIZE_PASS_BEGIN(IndependentBlocks, "polly-independent",
                       "Polly - Create independent blocks", false, false);
 INITIALIZE_PASS_DEPENDENCY(LoopInfo);
-INITIALIZE_PASS_DEPENDENCY(RegionInfo);
+INITIALIZE_PASS_DEPENDENCY(RegionInfoPass);
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);
 INITIALIZE_PASS_DEPENDENCY(ScopDetection);
 INITIALIZE_PASS_END(IndependentBlocks, "polly-independent",

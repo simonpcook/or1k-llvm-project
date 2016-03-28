@@ -50,6 +50,10 @@ sub canon_arch($) {
             $arch = "32e";
         } elsif ( $arch =~ m{\Aarm(?:v7\D*)?\z} ) {
             $arch = "arm";
+        } elsif ( $arch =~ m{\Appc64} ) {
+        	$arch = "ppc64";            
+        } elsif ( $arch =~ m{\Aaarch64} ) {               
+                $arch = "aarch64";
         } else {
             $arch = undef;
         }; # if
@@ -62,6 +66,7 @@ sub canon_arch($) {
         "32"  => "IA-32 architecture",
         "32e" => "Intel(R) 64",
         "arm" => "ARM",
+        "aarch64" => "AArch64",
     );
 
     sub legal_arch($) {
@@ -80,6 +85,7 @@ sub canon_arch($) {
         "32e" => "intel64",
         "64"  => "ia64",
         "arm" => "arm",
+        "aarch64" => "aarch",
     );
 
     sub arch_opt($) {
@@ -159,6 +165,10 @@ sub target_options() {
         $_host_arch = "32e";
     } elsif ( $hardware_platform eq "arm" ) {
         $_host_arch = "arm";
+    } elsif ( $hardware_platform eq "ppc64" ) {
+        $_host_arch = "ppc64";
+    } elsif ( $hardware_platform eq "aarch64" ) {         
+        $_host_arch = "aarch64";  
     } else {
         die "Unsupported host hardware platform: \"$hardware_platform\"; stopped";
     }; # if

@@ -12,7 +12,6 @@
 #include <stdlib.h>
 
 // C++ Includes
-#include "llvm/Support/MachO.h"
 #include "llvm/Support/MathExtras.h"
 
 // Other libraries and framework includes
@@ -33,6 +32,8 @@
 #include "StopInfoMachException.h"
 
 // Needed for the plug-in names for the dynamic loaders.
+#include "lldb/Utility/SafeMachO.h"
+
 #include "Plugins/DynamicLoader/MacOSX-DYLD/DynamicLoaderMacOSXDYLD.h"
 #include "Plugins/DynamicLoader/Darwin-Kernel/DynamicLoaderDarwinKernel.h"
 #include "Plugins/ObjectFile/Mach-O/ObjectFileMachO.h"
@@ -68,7 +69,7 @@ ProcessMachCore::CreateInstance (Target &target, Listener &listener, const FileS
     {
         const size_t header_size = sizeof(llvm::MachO::mach_header);
         lldb::DataBufferSP data_sp (crash_file->ReadFileContents(0, header_size));
-        if (data_sp->GetByteSize() == header_size)
+        if (data_sp && data_sp->GetByteSize() == header_size)
         {
             DataExtractor data(data_sp, lldb::eByteOrderLittle, 4);
             
@@ -94,7 +95,11 @@ ProcessMachCore::CanDebug(Target &target, bool plugin_specified_by_name)
     // For now we are just making sure the file exists for a given module
     if (!m_core_module_sp && m_core_file.Exists())
     {
-        ModuleSpec core_module_spec(m_core_file, target.GetArchitecture());
+        // Don't add the Target's architecture to the ModuleSpec - we may be working
+        // with a core file that doesn't have the correct cpusubtype in the header
+        // but we should still try to use it - ModuleSpecList::FindMatchingModuleSpec
+        // enforces a strict arch mach.
+        ModuleSpec core_module_spec(m_core_file);
         Error error (ModuleList::GetSharedModule (core_module_spec, 
                                                   m_core_module_sp, 
                                                   NULL,
@@ -392,7 +397,7 @@ ProcessMachCore::UpdateThreadList (ThreadList &old_thread_list, ThreadList &new_
     {
         const uint32_t num_threads = old_thread_list.GetSize(false);
         for (uint32_t i=0; i<num_threads; ++i)
-            new_thread_list.AddThread (old_thread_list.GetThreadAtIndex (i));
+            new_thread_list.AddThread (old_thread_list.GetThreadAtIndex (i, false));
     }
     return new_thread_list.GetSize(false) > 0;
 }

@@ -15,6 +15,7 @@
 #include "sanitizer_platform.h"
 #if SANITIZER_FREEBSD || SANITIZER_LINUX
 
+#include "sanitizer_allocator_internal.h"
 #include "sanitizer_common.h"
 #include "sanitizer_flags.h"
 #include "sanitizer_internal_defs.h"
@@ -28,6 +29,17 @@
 
 #if !SANITIZER_FREEBSD
 #include <asm/param.h>
+#endif
+
+// For mips64, syscall(__NR_stat) fills the buffer in the 'struct kernel_stat'
+// format. Struct kernel_stat is defined as 'struct stat' in asm/stat.h. To
+// access stat from asm/stat.h, without conflicting with definition in
+// sys/stat.h, we use this trick.
+#if defined(__mips64)
+#include <sys/types.h>
+#define stat kernel_stat
+#include <asm/stat.h>
+#undef stat
 #endif
 
 #include <dlfcn.h>
@@ -46,15 +58,16 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <unwind.h>
 
 #if SANITIZER_FREEBSD
+#include <sys/sysctl.h>
 #include <machine/atomic.h>
 extern "C" {
 // <sys/umtx.h> must be included after <errno.h> and <sys/types.h> on
 // FreeBSD 9.2 and 10.0.
 #include <sys/umtx.h>
 }
+extern char **environ;  // provided by crt1
 #endif  // SANITIZER_FREEBSD
 
 #if !SANITIZER_ANDROID
@@ -96,14 +109,16 @@ namespace __sanitizer {
 #endif
 
 // --------------- sanitizer_libc.h
-uptr internal_mmap(void *addr, uptr length, int prot, int flags,
-                    int fd, u64 offset) {
+uptr internal_mmap(void *addr, uptr length, int prot, int flags, int fd,
+                   u64 offset) {
 #if SANITIZER_FREEBSD || SANITIZER_LINUX_USES_64BIT_SYSCALLS
   return internal_syscall(SYSCALL(mmap), (uptr)addr, length, prot, flags, fd,
                           offset);
 #else
+  // mmap2 specifies file offset in 4096-byte units.
+  CHECK(IsAligned(offset, 4096));
   return internal_syscall(SYSCALL(mmap2), addr, length, prot, flags, fd,
-                          offset);
+                          offset / 4096);
 #endif
 }
 
@@ -134,7 +149,7 @@ uptr internal_open(const char *filename, int flags, u32 mode) {
 
 uptr OpenFile(const char *filename, bool write) {
   return internal_open(filename,
-      write ? O_WRONLY | O_CREAT /*| O_CLOEXEC*/ : O_RDONLY, 0660);
+      write ? O_RDWR | O_CREAT /*| O_CLOEXEC*/ : O_RDONLY, 0660);
 }
 
 uptr internal_read(fd_t fd, void *buf, uptr count) {
@@ -148,6 +163,12 @@ uptr internal_write(fd_t fd, const void *buf, uptr count) {
   sptr res;
   HANDLE_EINTR(res, (sptr)internal_syscall(SYSCALL(write), fd, (uptr)buf,
                count));
+  return res;
+}
+
+uptr internal_ftruncate(fd_t fd, uptr size) {
+  sptr res;
+  HANDLE_EINTR(res, (sptr)internal_syscall(SYSCALL(ftruncate), fd, size));
   return res;
 }
 
@@ -171,6 +192,26 @@ static void stat64_to_stat(struct stat64 *in, struct stat *out) {
 }
 #endif
 
+#if defined(__mips64)
+static void kernel_stat_to_stat(struct kernel_stat *in, struct stat *out) {
+  internal_memset(out, 0, sizeof(*out));
+  out->st_dev = in->st_dev;
+  out->st_ino = in->st_ino;
+  out->st_mode = in->st_mode;
+  out->st_nlink = in->st_nlink;
+  out->st_uid = in->st_uid;
+  out->st_gid = in->st_gid;
+  out->st_rdev = in->st_rdev;
+  out->st_size = in->st_size;
+  out->st_blksize = in->st_blksize;
+  out->st_blocks = in->st_blocks;
+  out->st_atime = in->st_atime_nsec;
+  out->st_mtime = in->st_mtime_nsec;
+  out->st_ctime = in->st_ctime_nsec;
+  out->st_ino = in->st_ino;
+}
+#endif
+
 uptr internal_stat(const char *path, void *buf) {
 #if SANITIZER_FREEBSD
   return internal_syscall(SYSCALL(stat), path, buf);
@@ -178,7 +219,15 @@ uptr internal_stat(const char *path, void *buf) {
   return internal_syscall(SYSCALL(newfstatat), AT_FDCWD, (uptr)path,
                           (uptr)buf, 0);
 #elif SANITIZER_LINUX_USES_64BIT_SYSCALLS
+# if defined(__mips64)
+  // For mips64, stat syscall fills buffer in the format of kernel_stat
+  struct kernel_stat kbuf;
+  int res = internal_syscall(SYSCALL(stat), path, &kbuf);
+  kernel_stat_to_stat(&kbuf, (struct stat *)buf);
+  return res;
+# else
   return internal_syscall(SYSCALL(stat), (uptr)path, (uptr)buf);
+# endif
 #else
   struct stat64 buf64;
   int res = internal_syscall(SYSCALL(stat64), path, &buf64);
@@ -246,6 +295,15 @@ uptr internal_unlink(const char *path) {
 #endif
 }
 
+uptr internal_rename(const char *oldpath, const char *newpath) {
+#if SANITIZER_USES_CANONICAL_LINUX_SYSCALLS
+  return internal_syscall(SYSCALL(renameat), AT_FDCWD, (uptr)oldpath, AT_FDCWD,
+                          (uptr)newpath);
+#else
+  return internal_syscall(SYSCALL(rename), (uptr)oldpath, (uptr)newpath);
+#endif
+}
+
 uptr internal_sched_yield() {
   return internal_syscall(SYSCALL(sched_yield));
 }
@@ -267,17 +325,15 @@ uptr internal_execve(const char *filename, char *const argv[],
 
 // ----------------- sanitizer_common.h
 bool FileExists(const char *filename) {
+  struct stat st;
 #if SANITIZER_USES_CANONICAL_LINUX_SYSCALLS
-  struct stat st;
   if (internal_syscall(SYSCALL(newfstatat), AT_FDCWD, filename, &st, 0))
-    return false;
 #else
-  struct stat st;
   if (internal_stat(filename, &st))
+#endif
     return false;
   // Sanity check: filename is a regular file.
   return S_ISREG(st.st_mode);
-#endif
 }
 
 uptr GetTid() {
@@ -299,9 +355,20 @@ u64 NanoTime() {
   return (u64)tv.tv_sec * 1000*1000*1000 + tv.tv_usec * 1000;
 }
 
-// Like getenv, but reads env directly from /proc and does not use libc.
-// This function should be called first inside __asan_init.
+// Like getenv, but reads env directly from /proc (on Linux) or parses the
+// 'environ' array (on FreeBSD) and does not use libc. This function should be
+// called first inside __asan_init.
 const char *GetEnv(const char *name) {
+#if SANITIZER_FREEBSD
+  if (::environ != 0) {
+    uptr NameLen = internal_strlen(name);
+    for (char **Env = ::environ; *Env != 0; Env++) {
+      if (internal_strncmp(*Env, name, NameLen) == 0 && (*Env)[NameLen] == '=')
+        return (*Env) + NameLen + 1;
+    }
+  }
+  return 0;  // Not found.
+#elif SANITIZER_LINUX
   static char *environ;
   static uptr len;
   static bool inited;
@@ -325,6 +392,9 @@ const char *GetEnv(const char *name) {
     p = endp + 1;
   }
   return 0;  // Not found.
+#else
+#error "Unsupported platform"
+#endif
 }
 
 extern "C" {
@@ -351,6 +421,33 @@ static void ReadNullSepFileToArray(const char *path, char ***arr,
   (*arr)[count] = 0;
 }
 #endif
+
+uptr GetRSS() {
+  uptr fd = OpenFile("/proc/self/statm", false);
+  if ((sptr)fd < 0)
+    return 0;
+  char buf[64];
+  uptr len = internal_read(fd, buf, sizeof(buf) - 1);
+  internal_close(fd);
+  if ((sptr)len <= 0)
+    return 0;
+  buf[len] = 0;
+  // The format of the file is:
+  // 1084 89 69 11 0 79 0
+  // We need the second number which is RSS in pages.
+  char *pos = buf;
+  // Skip the first number.
+  while (*pos >= '0' && *pos <= '9')
+    pos++;
+  // Skip whitespaces.
+  while (!(*pos >= '0' && *pos <= '9') && *pos != 0)
+    pos++;
+  // Read the number.
+  uptr rss = 0;
+  while (*pos >= '0' && *pos <= '9')
+    rss = rss * 10 + *pos++ - '0';
+  return rss * GetPageSizeCached();
+}
 
 static void GetArgsAndEnv(char*** argv, char*** envp) {
 #if !SANITIZER_GO
@@ -389,19 +486,6 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
   *tls_size = 0;
 }
 #endif  // SANITIZER_GO
-
-void PrepareForSandboxing() {
-  // Some kinds of sandboxes may forbid filesystem access, so we won't be able
-  // to read the file mappings from /proc/self/maps. Luckily, neither the
-  // process will be able to load additional libraries, so it's fine to use the
-  // cached mappings.
-  MemoryMappingLayout::CacheMemoryMappings();
-  // Same for /proc/self/exe in the symbolizer.
-#if !SANITIZER_GO
-  if (Symbolizer *sym = Symbolizer::GetOrNull())
-    sym->PrepareForSandboxing();
-#endif
-}
 
 enum MutexState {
   MtxUnlocked = 0,
@@ -453,8 +537,13 @@ void BlockingMutex::CheckLocked() {
 // Note that getdents64 uses a different structure format. We only provide the
 // 32-bit syscall here.
 struct linux_dirent {
+#if SANITIZER_X32
+  u64 d_ino;
+  u64 d_off;
+#else
   unsigned long      d_ino;
   unsigned long      d_off;
+#endif
   unsigned short     d_reclen;
   char               d_name[256];
 };
@@ -501,13 +590,21 @@ uptr internal_sigaltstack(const struct sigaltstack *ss,
   return internal_syscall(SYSCALL(sigaltstack), (uptr)ss, (uptr)oss);
 }
 
+int internal_fork() {
+#if SANITIZER_USES_CANONICAL_LINUX_SYSCALLS
+  return internal_syscall(SYSCALL(clone), SIGCHLD, 0);
+#else
+  return internal_syscall(SYSCALL(fork));
+#endif
+}
+
 #if SANITIZER_LINUX
 // Doesn't set sa_restorer, use with caution (see below).
 int internal_sigaction_norestorer(int signum, const void *act, void *oldact) {
   __sanitizer_kernel_sigaction_t k_act, k_oldact;
   internal_memset(&k_act, 0, sizeof(__sanitizer_kernel_sigaction_t));
   internal_memset(&k_oldact, 0, sizeof(__sanitizer_kernel_sigaction_t));
-  const __sanitizer_sigaction *u_act = (__sanitizer_sigaction *)act;
+  const __sanitizer_sigaction *u_act = (const __sanitizer_sigaction *)act;
   __sanitizer_sigaction *u_oldact = (__sanitizer_sigaction *)oldact;
   if (u_act) {
     k_act.handler = u_act->handler;
@@ -550,8 +647,9 @@ uptr internal_sigprocmask(int how, __sanitizer_sigset_t *set,
 #else
   __sanitizer_kernel_sigset_t *k_set = (__sanitizer_kernel_sigset_t *)set;
   __sanitizer_kernel_sigset_t *k_oldset = (__sanitizer_kernel_sigset_t *)oldset;
-  return internal_syscall(SYSCALL(rt_sigprocmask), (uptr)how, &k_set->sig[0],
-      &k_oldset->sig[0], sizeof(__sanitizer_kernel_sigset_t));
+  return internal_syscall(SYSCALL(rt_sigprocmask), (uptr)how,
+                          (uptr)&k_set->sig[0], (uptr)&k_oldset->sig[0],
+                          sizeof(__sanitizer_kernel_sigset_t));
 #endif
 }
 
@@ -651,24 +749,32 @@ static char proc_self_exe_cache_str[kMaxPathLength];
 static uptr proc_self_exe_cache_len = 0;
 
 uptr ReadBinaryName(/*out*/char *buf, uptr buf_len) {
+  if (proc_self_exe_cache_len > 0) {
+    // If available, use the cached module name.
+    uptr module_name_len =
+        internal_snprintf(buf, buf_len, "%s", proc_self_exe_cache_str);
+    CHECK_LT(module_name_len, buf_len);
+    return module_name_len;
+  }
+#if SANITIZER_FREEBSD
+  const int Mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1 };
+  size_t Size = buf_len;
+  bool IsErr = (sysctl(Mib, 4, buf, &Size, NULL, 0) != 0);
+  int readlink_error = IsErr ? errno : 0;
+  uptr module_name_len = Size;
+#else
   uptr module_name_len = internal_readlink(
       "/proc/self/exe", buf, buf_len);
   int readlink_error;
-  if (internal_iserror(module_name_len, &readlink_error)) {
-    if (proc_self_exe_cache_len) {
-      // If available, use the cached module name.
-      CHECK_LE(proc_self_exe_cache_len, buf_len);
-      internal_strncpy(buf, proc_self_exe_cache_str, buf_len);
-      module_name_len = internal_strlen(proc_self_exe_cache_str);
-    } else {
-      // We can't read /proc/self/exe for some reason, assume the name of the
-      // binary is unknown.
-      Report("WARNING: readlink(\"/proc/self/exe\") failed with errno %d, "
-             "some stack frames may not be symbolized\n", readlink_error);
-      module_name_len = internal_snprintf(buf, buf_len, "/proc/self/exe");
-    }
+  bool IsErr = internal_iserror(module_name_len, &readlink_error);
+#endif
+  if (IsErr) {
+    // We can't read /proc/self/exe for some reason, assume the name of the
+    // binary is unknown.
+    Report("WARNING: readlink(\"/proc/self/exe\") failed with errno %d, "
+           "some stack frames may not be symbolized\n", readlink_error);
+    module_name_len = internal_snprintf(buf, buf_len, "/proc/self/exe");
     CHECK_LT(module_name_len, buf_len);
-    buf[module_name_len] = '\0';
   }
   return module_name_len;
 }
@@ -797,11 +903,19 @@ uptr internal_clone(int (*fn)(void *), void *child_stack, int flags, void *arg,
 #endif  // defined(__x86_64__) && SANITIZER_LINUX
 
 #if SANITIZER_ANDROID
+static atomic_uint8_t android_log_initialized;
+
+void AndroidLogInit() {
+  atomic_store(&android_log_initialized, 1, memory_order_release);
+}
 // This thing is not, strictly speaking, async signal safe, but it does not seem
 // to cause any issues. Alternative is writing to log devices directly, but
 // their location and message format might change in the future, so we'd really
 // like to avoid that.
 void AndroidLogWrite(const char *buffer) {
+  if (!atomic_load(&android_log_initialized, memory_order_acquire))
+    return;
+
   char *copy = internal_strdup(buffer);
   char *p = copy;
   char *q;
@@ -823,8 +937,29 @@ void GetExtraActivationFlags(char *buf, uptr size) {
 #endif
 
 bool IsDeadlySignal(int signum) {
-  return (signum == SIGSEGV) && common_flags()->handle_segv;
+  return (signum == SIGSEGV || signum == SIGBUS) && common_flags()->handle_segv;
 }
+
+#ifndef SANITIZER_GO
+void *internal_start_thread(void(*func)(void *arg), void *arg) {
+  // Start the thread with signals blocked, otherwise it can steal user signals.
+  __sanitizer_sigset_t set, old;
+  internal_sigfillset(&set);
+  internal_sigprocmask(SIG_SETMASK, &set, &old);
+  void *th;
+  real_pthread_create(&th, 0, (void*(*)(void *arg))func, arg);
+  internal_sigprocmask(SIG_SETMASK, &old, 0);
+  return th;
+}
+
+void internal_join_thread(void *th) {
+  real_pthread_join(th, 0);
+}
+#else
+void *internal_start_thread(void (*func)(void *), void *arg) { return 0; }
+
+void internal_join_thread(void *th) {}
+#endif
 
 }  // namespace __sanitizer
 

@@ -10,9 +10,8 @@
 #ifndef LLD_READER_WRITER_NATIVE_NATIVE_FILE_FORMAT_H
 #define LLD_READER_WRITER_NATIVE_NATIVE_FILE_FORMAT_H
 
-#include <cstdint>
-
 #include "llvm/Support/DataTypes.h"
+#include <cstdint>
 
 namespace lld {
 
@@ -156,6 +155,7 @@ struct NativeAtomAttributesV1 {
   uint8_t   dynamicExport;
   uint8_t   permissions;
   uint8_t   alias;
+  uint8_t   codeModel;
 };
 
 

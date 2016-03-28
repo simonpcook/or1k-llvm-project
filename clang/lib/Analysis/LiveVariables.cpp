@@ -37,7 +37,6 @@ public:
       POV(Ctx.getAnalysis<PostOrderCFGView>()) {}
   
   void enqueueBlock(const CFGBlock *block);
-  void enqueueSuccessors(const CFGBlock *block);
   void enqueuePredecessors(const CFGBlock *block);
 
   const CFGBlock *dequeue();
@@ -52,19 +51,6 @@ void DataflowWorklist::enqueueBlock(const clang::CFGBlock *block) {
     enqueuedBlocks[block->getBlockID()] = true;
     worklist.push_back(block);
   }
-}
-  
-void DataflowWorklist::enqueueSuccessors(const clang::CFGBlock *block) {
-  const unsigned OldWorklistSize = worklist.size();
-  for (CFGBlock::const_succ_iterator I = block->succ_begin(),
-       E = block->succ_end(); I != E; ++I) {
-    enqueueBlock(*I);
-  }
-
-  if (OldWorklistSize == 0 || OldWorklistSize == worklist.size())
-    return;
-
-  sortWorklist();
 }
 
 void DataflowWorklist::enqueuePredecessors(const clang::CFGBlock *block) {
@@ -86,7 +72,7 @@ void DataflowWorklist::sortWorklist() {
 
 const CFGBlock *DataflowWorklist::dequeue() {
   if (worklist.empty())
-    return 0;
+    return nullptr;
   const CFGBlock *b = worklist.pop_back_val();
   enqueuedBlocks[b->getBlockID()] = false;
   return b;
@@ -96,7 +82,6 @@ namespace {
 class LiveVariablesImpl {
 public:  
   AnalysisDeclContext &analysisContext;
-  std::vector<LiveVariables::LivenessValues> cfgBlockValues;
   llvm::ImmutableSet<const Stmt *>::Factory SSetFact;
   llvm::ImmutableSet<const VarDecl *>::Factory DSetFact;
   llvm::DenseMap<const CFGBlock *, LiveVariables::LivenessValues> blocksEndToLiveness;
@@ -108,10 +93,10 @@ public:
   LiveVariables::LivenessValues
   merge(LiveVariables::LivenessValues valsA,
         LiveVariables::LivenessValues valsB);
-      
-  LiveVariables::LivenessValues runOnBlock(const CFGBlock *block,
-                                           LiveVariables::LivenessValues val,
-                                           LiveVariables::Observer *obs = 0);
+
+  LiveVariables::LivenessValues
+  runOnBlock(const CFGBlock *block, LiveVariables::LivenessValues val,
+             LiveVariables::Observer *obs = nullptr);
 
   void dumpBlockLiveness(const SourceManager& M);
 
@@ -238,8 +223,8 @@ static const VariableArrayType *FindVA(QualType Ty) {
     
     ty = VT->getElementType().getTypePtr();
   }
-  
-  return 0;
+
+  return nullptr;
 }
 
 static const Stmt *LookThroughStmt(const Stmt *S) {
@@ -305,7 +290,7 @@ void TransferFunctions::Visit(Stmt *S) {
       const DeclStmt *DS = cast<DeclStmt>(S);
       if (const VarDecl *VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
         for (const VariableArrayType* VA = FindVA(VD->getType());
-             VA != 0; VA = FindVA(VA->getElementType())) {
+             VA != nullptr; VA = FindVA(VA->getElementType())) {
           AddLiveStmt(val.liveStmts, LV.SSetFact, VA->getSizeExpr());
         }
       }
@@ -398,8 +383,8 @@ void TransferFunctions::VisitDeclStmt(DeclStmt *DS) {
 
 void TransferFunctions::VisitObjCForCollectionStmt(ObjCForCollectionStmt *OS) {
   // Kill the iteration variable.
-  DeclRefExpr *DR = 0;
-  const VarDecl *VD = 0;
+  DeclRefExpr *DR = nullptr;
+  const VarDecl *VD = nullptr;
 
   Stmt *element = OS->getElement();
   if (DeclStmt *DS = dyn_cast<DeclStmt>(element)) {
@@ -507,12 +492,12 @@ LiveVariables::computeLiveness(AnalysisDeclContext &AC,
   // No CFG?  Bail out.
   CFG *cfg = AC.getCFG();
   if (!cfg)
-    return 0;
+    return nullptr;
 
   // The analysis currently has scalability issues for very large CFGs.
   // Bail out if it looks too large.
   if (cfg->getNumBlockIDs() > 300000)
-    return 0;
+    return nullptr;
 
   LiveVariablesImpl *LV = new LiveVariablesImpl(AC, killAtAssign);
 

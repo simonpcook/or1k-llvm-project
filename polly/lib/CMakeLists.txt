@@ -1,7 +1,7 @@
 set(LLVM_NO_RTTI 1)
 
 if (PLUTO_FOUND)
-  set(POLLY_PLUTO_FILES Pluto.cpp)
+  set(POLLY_PLUTO_FILES Transform/Pluto.cpp)
 endif (PLUTO_FOUND)
 
 set(POLLY_JSON_FILES
@@ -10,14 +10,9 @@ set(POLLY_JSON_FILES
     JSON/json_writer.cpp
 )
 
-if (CLOOG_FOUND)
-  set(CLOOG_FILES
-      CodeGen/Cloog.cpp
-      CodeGen/CodeGeneration.cpp)
-endif (CLOOG_FOUND)
-
 set(ISL_CODEGEN_FILES
     CodeGen/IslAst.cpp
+    CodeGen/IslExprBuilder.cpp
     CodeGen/IslCodeGeneration.cpp)
 
 if (GPU_CODEGEN)
@@ -25,50 +20,50 @@ if (GPU_CODEGEN)
        CodeGen/PTXGenerator.cpp)
 endif (GPU_CODEGEN)
 
-if (OPENSCOP_FOUND)
-  set(POLLY_OPENSCOP_FILES
-      Exchange/OpenScopImporter.cpp
-      Exchange/OpenScopExporter.cpp)
-endif (OPENSCOP_FOUND)
-
-if (SCOPLIB_FOUND)
-  set(POLLY_SCOPLIB_FILES
-      Transform/Pocc.cpp
-      Exchange/ScopLib.cpp
-      Exchange/ScopLibExporter.cpp
-      Exchange/ScopLibImporter.cpp)
-endif (SCOPLIB_FOUND)
-
 add_polly_library(Polly
   Analysis/Dependences.cpp
   Analysis/ScopDetection.cpp
+  Analysis/ScopDetectionDiagnostic.cpp
   Analysis/ScopInfo.cpp
   Analysis/ScopGraphPrinter.cpp
   Analysis/ScopPass.cpp
   Analysis/TempScopInfo.cpp
   CodeGen/BlockGenerators.cpp
-  ${CLOOG_FILES}
   ${ISL_CODEGEN_FILES}
   CodeGen/LoopGenerators.cpp
   CodeGen/IRBuilder.cpp
   CodeGen/Utils.cpp
+  CodeGen/RuntimeDebugBuilder.cpp
   ${GPGPU_CODEGEN_FILES}
   Exchange/JSONExporter.cpp
-  ${POLLY_SCOPLIB_FILES}
   Support/GICHelper.cpp
   Support/SCEVValidator.cpp
   Support/RegisterPasses.cpp
   Support/ScopHelper.cpp
   ${POLLY_JSON_FILES}
-  ${POLLY_OPENSCOP_FILES}
   Transform/Canonicalization.cpp
   Transform/CodePreparation.cpp
   Transform/DeadCodeElimination.cpp
   Transform/IndependentBlocks.cpp
-  Transform/IndVarSimplify.cpp
   Transform/ScheduleOptimizer.cpp
   ${POLLY_PLUTO_FILES}
   )
+
+if (BUILD_SHARED_LIBS)
+  target_link_libraries(Polly
+    LLVMSupport
+    LLVMCore
+    LLVMScalarOpts
+    LLVMInstCombine
+    LLVMTransformUtils
+    LLVMAnalysis
+    LLVMipo
+    LLVMProfileData
+  )
+  link_directories(
+      ${LLVM_LIBRARY_DIR}
+  )
+endif()
 
 # Build a monolithic Polly.a and a thin module LLVMPolly.moduleext that links to
 # that static library.

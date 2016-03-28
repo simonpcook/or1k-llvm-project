@@ -21,12 +21,16 @@ class ExprCommandThatRestartsTestCase(TestBase):
 
     @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
     @dsym_test
+    @skipIfDarwin # llvm.org/pr19246: intermittent failure
     def test_with_dsym(self):
         """Test calling std::String member function."""
         self.buildDsym()
         self.call_function()
 
     @dwarf_test
+    @skipIfLinux # llvm.org/pr19246: intermittent failure
+    @skipIfDarwin # llvm.org/pr19246: intermittent failure
+    @skipIfWindows # Test relies on signals, unsupported on Windows
     def test_with_dwarf(self):
         """Test calling std::String member function."""
         self.buildDwarf()

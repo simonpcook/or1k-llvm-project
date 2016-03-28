@@ -8,11 +8,11 @@ html, body {
 #box {
   margin-left: auto;
   margin-right: auto;
-  max-width: 70em;
+  max-width: 67em;
 }
 [id=content] {
 	/* *****  EDIT THIS VALUE IF CONTENT OVERLAPS MENU ***** */
-        margin-left: 18em;
+        margin-left: 21em;
 	padding-left: 3em;
 }
 
@@ -31,6 +31,8 @@ ul { padding-left:1.5em; }
 TD.done {background-color: #88ff99; text-align: center}
 TD.inprogress{background-color: #ffce00; text-align: center}
 TD.open{background-color: #e6705f; text-align: center}
+TD.nice{background-color: #5555df; text-align: center}
+TD.niceinprogress{background-color: #8888ff; text-align: center}
 
 PRE.code {padding-left: 0.5em; background-color: #eeeeee}
 PRE {padding-left: 0.5em}

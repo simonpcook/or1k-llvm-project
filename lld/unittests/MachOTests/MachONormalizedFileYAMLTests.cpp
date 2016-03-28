@@ -8,11 +8,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "gtest/gtest.h"
-
-#include "llvm/Support/MachO.h"
-
 #include "../../lib/ReaderWriter/MachO/MachONormalizedFile.h"
-
+#include "llvm/Support/MachO.h"
 #include <assert.h>
 #include <vector>
 
@@ -35,7 +32,7 @@ static std::unique_ptr<NormalizedFile> fromYAML(StringRef str) {
 
 static void toYAML(const NormalizedFile &f, std::string &out) {
   llvm::raw_string_ostream ostr(out);
-  llvm::error_code ec = lld::mach_o::normalized::writeYaml(f, ostr);
+  std::error_code ec = lld::mach_o::normalized::writeYaml(f, ostr);
   EXPECT_TRUE(!ec);
 }
 

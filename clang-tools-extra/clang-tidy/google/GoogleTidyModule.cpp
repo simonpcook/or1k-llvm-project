@@ -7,48 +7,74 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "GoogleTidyModule.h"
 #include "../ClangTidy.h"
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
-#include "clang/AST/ASTContext.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "clang/Lex/PPCallbacks.h"
-#include "clang/Lex/Preprocessor.h"
-#include "llvm/Support/raw_ostream.h"
+#include "../readability/BracesAroundStatementsCheck.h"
+#include "../readability/FunctionSize.h"
+#include "../readability/NamespaceCommentCheck.h"
+#include "../readability/RedundantSmartptrGet.h"
+#include "AvoidCStyleCastsCheck.h"
+#include "ExplicitConstructorCheck.h"
+#include "ExplicitMakePairCheck.h"
+#include "IntegerTypesCheck.h"
+#include "MemsetZeroLengthCheck.h"
+#include "NamedParameterCheck.h"
+#include "OverloadedUnaryAndCheck.h"
+#include "StringReferenceMemberCheck.h"
+#include "TodoCommentCheck.h"
+#include "UnnamedNamespaceInHeaderCheck.h"
+#include "UsingNamespaceDirectiveCheck.h"
 
 using namespace clang::ast_matchers;
 
 namespace clang {
 namespace tidy {
 
-void ExplicitConstructorCheck::registerMatchers(MatchFinder *Finder) {
-  Finder->addMatcher(constructorDecl().bind("ctor"), this);
-}
-
-void ExplicitConstructorCheck::check(const MatchFinder::MatchResult &Result) {
-  const CXXConstructorDecl *Ctor =
-      Result.Nodes.getNodeAs<CXXConstructorDecl>("ctor");
-  // Do not be confused: isExplicit means 'explicit' keyword is present,
-  // isImplicit means that it's a compiler-generated constructor.
-  if (Ctor->isOutOfLine() || Ctor->isExplicit() || Ctor->isImplicit() ||
-      Ctor->isDeleted() || Ctor->isCopyOrMoveConstructor())
-    return;
-  if (Ctor->getNumParams() == 0 || Ctor->getMinRequiredArguments() > 1)
-    return;
-  SourceLocation Loc = Ctor->getLocation();
-  diag(Loc, "Single-argument constructors must be explicit")
-      << FixItHint::CreateInsertion(Loc, "explicit ");
-}
-
 class GoogleModule : public ClangTidyModule {
 public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
-    CheckFactories.addCheckFactory(
-        "google-explicit-constructor",
-        new ClangTidyCheckFactory<ExplicitConstructorCheck>());
+    CheckFactories.registerCheck<build::ExplicitMakePairCheck>(
+        "google-build-explicit-make-pair");
+    CheckFactories.registerCheck<build::UnnamedNamespaceInHeaderCheck>(
+        "google-build-namespaces");
+    CheckFactories.registerCheck<build::UsingNamespaceDirectiveCheck>(
+        "google-build-using-namespace");
+    CheckFactories.registerCheck<ExplicitConstructorCheck>(
+        "google-explicit-constructor");
+    CheckFactories.registerCheck<runtime::IntegerTypesCheck>(
+        "google-runtime-int");
+    CheckFactories.registerCheck<runtime::OverloadedUnaryAndCheck>(
+        "google-runtime-operator");
+    CheckFactories.registerCheck<runtime::StringReferenceMemberCheck>(
+        "google-runtime-member-string-references");
+    CheckFactories.registerCheck<runtime::MemsetZeroLengthCheck>(
+        "google-runtime-memset");
+    CheckFactories.registerCheck<readability::AvoidCStyleCastsCheck>(
+        "google-readability-casting");
+    CheckFactories.registerCheck<readability::NamedParameterCheck>(
+        "google-readability-function");
+    CheckFactories.registerCheck<readability::TodoCommentCheck>(
+        "google-readability-todo");
+    CheckFactories.registerCheck<readability::BracesAroundStatementsCheck>(
+        "google-readability-braces-around-statements");
+    CheckFactories.registerCheck<readability::FunctionSizeCheck>(
+        "google-readability-function-size");
+    CheckFactories.registerCheck<readability::NamespaceCommentCheck>(
+        "google-readability-namespace-comments");
+    CheckFactories.registerCheck<readability::RedundantSmartptrGet>(
+        "google-readability-redundant-smartptr-get");
+  }
+
+  ClangTidyOptions getModuleOptions() override {
+    ClangTidyOptions Options;
+    auto &Opts = Options.CheckOptions;
+    Opts["google-readability-braces-around-statements.ShortStatementLines"] =
+        "1";
+    Opts["google-readability-function-size.StatementThreshold"] = "800";
+    Opts["google-readability-namespace-comments.ShortNamespaceLines"] = "10";
+    Opts["google-readability-namespace-comments.SpacesBeforeComments"] = "2";
+    return Options;
   }
 };
 

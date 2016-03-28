@@ -9,8 +9,8 @@ target_link_libraries(clang-apply-replacements
   clangApplyReplacements
   clangBasic
   clangFormat
-  clangRewriteCore
-  clangTooling
+  clangRewrite
+  clangToolingCore
   )
 
 install(TARGETS clang-apply-replacements

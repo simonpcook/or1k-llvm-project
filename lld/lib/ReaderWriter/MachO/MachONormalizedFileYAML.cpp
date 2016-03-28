@@ -16,28 +16,25 @@
 ///                  +------------+         +------+
 
 #include "MachONormalizedFile.h"
-
 #include "lld/Core/Error.h"
 #include "lld/Core/LLVM.h"
 #include "lld/ReaderWriter/YamlContext.h"
-
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MachO.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/system_error.h"
 #include "llvm/Support/YAMLTraits.h"
+#include "llvm/Support/raw_ostream.h"
+#include <system_error>
 
 
 using llvm::StringRef;
-using llvm::error_code;
-using llvm::dyn_cast;
 using namespace llvm::yaml;
 using namespace llvm::MachO;
 using namespace lld::mach_o::normalized;
@@ -49,6 +46,7 @@ LLVM_YAML_IS_SEQUENCE_VECTOR(RebaseLocation)
 LLVM_YAML_IS_SEQUENCE_VECTOR(BindLocation)
 LLVM_YAML_IS_SEQUENCE_VECTOR(Export)
 LLVM_YAML_IS_SEQUENCE_VECTOR(StringRef)
+LLVM_YAML_IS_SEQUENCE_VECTOR(DataInCode)
 
 
 // for compatibility with gcc-4.7 in C++11 mode, add extra namespace
@@ -132,6 +130,7 @@ struct ScalarEnumerationTraits<lld::MachOLinkingContext::Arch> {
     io.enumCase(value, "armv6",  lld::MachOLinkingContext::arch_armv6);
     io.enumCase(value, "armv7",  lld::MachOLinkingContext::arch_armv7);
     io.enumCase(value, "armv7s", lld::MachOLinkingContext::arch_armv7s);
+    io.enumCase(value, "arm64",  lld::MachOLinkingContext::arch_arm64);
   }
 };
 
@@ -279,9 +278,19 @@ struct MappingTraits<Section> {
     io.mapOptional("attributes",      sect.attributes);
     io.mapOptional("alignment",       sect.alignment, 0U);
     io.mapRequired("address",         sect.address);
-    MappingNormalization<NormalizedContent, ArrayRef<uint8_t>> content(
+    if (sect.type == llvm::MachO::S_ZEROFILL) {
+      // S_ZEROFILL sections use "size:" instead of "content:"
+      uint64_t size = sect.content.size();
+      io.mapOptional("size",          size);
+      if (!io.outputting()) {
+        uint8_t *bytes = nullptr;
+        sect.content = makeArrayRef(bytes, size);
+      }
+    } else {
+      MappingNormalization<NormalizedContent, ArrayRef<uint8_t>> content(
         io, sect.content);
-    io.mapOptional("content",         content->_normalizedContent);
+      io.mapOptional("content",         content->_normalizedContent);
+    }
     io.mapOptional("relocations",     sect.relocations);
     io.mapOptional("indirect-syms",   sect.indirectSymbols);
   }
@@ -393,6 +402,30 @@ struct ScalarEnumerationTraits<RelocationInfoType> {
       io.enumCase(value, "ARM_RELOC_HALF_SECTDIFF",
                                   llvm::MachO::ARM_RELOC_HALF_SECTDIFF);
       break;
+    case lld::MachOLinkingContext::arch_arm64:
+      io.enumCase(value, "ARM64_RELOC_UNSIGNED",
+                                  llvm::MachO::ARM64_RELOC_UNSIGNED);
+      io.enumCase(value, "ARM64_RELOC_SUBTRACTOR",
+                                  llvm::MachO::ARM64_RELOC_SUBTRACTOR);
+      io.enumCase(value, "ARM64_RELOC_BRANCH26",
+                                  llvm::MachO::ARM64_RELOC_BRANCH26);
+      io.enumCase(value, "ARM64_RELOC_PAGE21",
+                                  llvm::MachO::ARM64_RELOC_PAGE21);
+      io.enumCase(value, "ARM64_RELOC_PAGEOFF12",
+                                  llvm::MachO::ARM64_RELOC_PAGEOFF12);
+      io.enumCase(value, "ARM64_RELOC_GOT_LOAD_PAGE21",
+                                  llvm::MachO::ARM64_RELOC_GOT_LOAD_PAGE21);
+      io.enumCase(value, "ARM64_RELOC_GOT_LOAD_PAGEOFF12",
+                                  llvm::MachO::ARM64_RELOC_GOT_LOAD_PAGEOFF12);
+      io.enumCase(value, "ARM64_RELOC_POINTER_TO_GOT",
+                                  llvm::MachO::ARM64_RELOC_POINTER_TO_GOT);
+      io.enumCase(value, "ARM64_RELOC_TLVP_LOAD_PAGE21",
+                                  llvm::MachO::ARM64_RELOC_TLVP_LOAD_PAGE21);
+      io.enumCase(value, "ARM64_RELOC_TLVP_LOAD_PAGEOFF12",
+                                  llvm::MachO::ARM64_RELOC_TLVP_LOAD_PAGEOFF12);
+      io.enumCase(value, "ARM64_RELOC_ADDEND",
+                                  llvm::MachO::ARM64_RELOC_ADDEND);
+      break;
     default:
       llvm_unreachable("unknown architecture");
     }
@@ -407,8 +440,18 @@ struct MappingTraits<Symbol> {
     io.mapRequired("type",    sym.type);
     io.mapOptional("scope",   sym.scope, SymbolScope(0));
     io.mapOptional("sect",    sym.sect, (uint8_t)0);
-    io.mapOptional("desc",    sym.desc, SymbolDesc(0));
-    io.mapRequired("value",   sym.value);
+    if (sym.type == llvm::MachO::N_UNDF) {
+      // In undef symbols, desc field contains alignment/ordinal info
+      // which is better represented as a hex vaule.
+      uint16_t t1 = sym.desc;
+      Hex16 t2 = t1;
+      io.mapOptional("desc",  t2, Hex16(0));
+      sym.desc = t2;
+    } else {
+      // In defined symbols, desc fit is a set of option bits.
+      io.mapOptional("desc",    sym.desc, SymbolDesc(0));
+    }
+    io.mapRequired("value",  sym.value);
   }
 };
 
@@ -454,6 +497,7 @@ struct ScalarTraits<VMProtect> {
     // Return the empty string on success,
     return StringRef();
   }
+  static bool mustQuote(StringRef) { return false; }
 };
 
 
@@ -486,11 +530,15 @@ struct ScalarEnumerationTraits<LoadCommandType> {
 template <>
 struct MappingTraits<DependentDylib> {
   static void mapping(IO &io, DependentDylib& dylib) {
-    io.mapRequired("path",    dylib.path);
-    io.mapOptional("kind",    dylib.kind,       llvm::MachO::LC_LOAD_DYLIB);
+    io.mapRequired("path",            dylib.path);
+    io.mapOptional("kind",            dylib.kind,
+                                      llvm::MachO::LC_LOAD_DYLIB);
+    io.mapOptional("compat-version",  dylib.compatVersion,
+                                      PackedVersion(0x10000));
+    io.mapOptional("current-version", dylib.currentVersion,
+                                      PackedVersion(0x10000));
   }
 };
-
 
 template <>
 struct ScalarEnumerationTraits<RebaseType> {
@@ -549,8 +597,10 @@ struct ScalarEnumerationTraits<ExportSymbolKind> {
   static void enumeration(IO &io, ExportSymbolKind &value) {
     io.enumCase(value, "EXPORT_SYMBOL_FLAGS_KIND_REGULAR",
                         llvm::MachO::EXPORT_SYMBOL_FLAGS_KIND_REGULAR);
-    io.enumCase(value, "EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCALl",
+    io.enumCase(value, "EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL",
                         llvm::MachO::EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL);
+    io.enumCase(value, "EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE",
+                        llvm::MachO::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE);
   }
 };
 
@@ -571,15 +621,59 @@ template <>
 struct MappingTraits<Export> {
   static void mapping(IO &io, Export &exp) {
     io.mapRequired("name",         exp.name);
-    io.mapRequired("offset",       exp.offset);
+    io.mapOptional("offset",       exp.offset);
     io.mapOptional("kind",         exp.kind,
                                 llvm::MachO::EXPORT_SYMBOL_FLAGS_KIND_REGULAR);
-    io.mapOptional("flags",        exp.flags);
-    io.mapOptional("other-offset", exp.otherOffset, Hex32(0));
+    if (!io.outputting() || exp.flags)
+      io.mapOptional("flags",      exp.flags);
+    io.mapOptional("other",        exp.otherOffset, Hex32(0));
     io.mapOptional("other-name",   exp.otherName, StringRef());
   }
 };
 
+template <>
+struct ScalarEnumerationTraits<DataRegionType> {
+  static void enumeration(IO &io, DataRegionType &value) {
+    io.enumCase(value, "DICE_KIND_DATA",
+                        llvm::MachO::DICE_KIND_DATA);
+    io.enumCase(value, "DICE_KIND_JUMP_TABLE8",
+                        llvm::MachO::DICE_KIND_JUMP_TABLE8);
+    io.enumCase(value, "DICE_KIND_JUMP_TABLE16",
+                        llvm::MachO::DICE_KIND_JUMP_TABLE16);
+    io.enumCase(value, "DICE_KIND_JUMP_TABLE32",
+                        llvm::MachO::DICE_KIND_JUMP_TABLE32);
+    io.enumCase(value, "DICE_KIND_ABS_JUMP_TABLE32",
+                        llvm::MachO::DICE_KIND_ABS_JUMP_TABLE32);
+  }
+};
+
+template <>
+struct MappingTraits<DataInCode> {
+  static void mapping(IO &io, DataInCode &entry) {
+    io.mapRequired("offset",       entry.offset);
+    io.mapRequired("length",       entry.length);
+    io.mapRequired("kind",         entry.kind);
+  }
+};
+
+template <>
+struct ScalarTraits<PackedVersion> {
+  static void output(const PackedVersion &value, void*, raw_ostream &out) {
+    out << llvm::format("%d.%d", (value >> 16), (value >> 8) & 0xFF);
+    if (value & 0xFF) {
+      out << llvm::format(".%d", (value & 0xFF));
+    }
+  }
+  static StringRef input(StringRef scalar, void*, PackedVersion &result) {
+    uint32_t value;
+    if (lld::MachOLinkingContext::parsePackedVersion(scalar, value))
+      return "malformed version number";
+    result = value;
+    // Return the empty string on success,
+    return StringRef();
+  }
+  static bool mustQuote(StringRef) { return false; }
+};
 
 template <>
 struct MappingTraits<NormalizedFile> {
@@ -589,23 +683,27 @@ struct MappingTraits<NormalizedFile> {
     io.mapOptional("flags",            file.flags);
     io.mapOptional("dependents",       file.dependentDylibs);
     io.mapOptional("install-name",     file.installName,    StringRef());
+    io.mapOptional("compat-version",   file.compatVersion,  PackedVersion(0x10000));
+    io.mapOptional("current-version",  file.currentVersion, PackedVersion(0x10000));
     io.mapOptional("has-UUID",         file.hasUUID,        true);
     io.mapOptional("rpaths",           file.rpaths);
     io.mapOptional("entry-point",      file.entryAddress,   Hex64(0));
     io.mapOptional("source-version",   file.sourceVersion,  Hex64(0));
     io.mapOptional("OS",               file.os);
-    io.mapOptional("min-os-version",   file.minOSverson,    Hex32(0));
-    io.mapOptional("sdk-version",      file.sdkVersion,     Hex32(0));
+    io.mapOptional("min-os-version",   file.minOSverson,    PackedVersion(0));
+    io.mapOptional("sdk-version",      file.sdkVersion,     PackedVersion(0));
     io.mapOptional("segments",         file.segments);
     io.mapOptional("sections",         file.sections);
     io.mapOptional("local-symbols",    file.localSymbols);
     io.mapOptional("global-symbols",   file.globalSymbols);
     io.mapOptional("undefined-symbols",file.undefinedSymbols);
+    io.mapOptional("page-size",        file.pageSize,       Hex32(4096));
     io.mapOptional("rebasings",        file.rebasingInfo);
     io.mapOptional("bindings",         file.bindingInfo);
     io.mapOptional("weak-bindings",    file.weakBindingInfo);
     io.mapOptional("lazy-bindings",    file.lazyBindingInfo);
     io.mapOptional("exports",          file.exportInfo);
+    io.mapOptional("dataInCode",       file.dataInCode);
   }
   static StringRef validate(IO &io, NormalizedFile &file) {
     return StringRef();
@@ -634,13 +732,25 @@ bool MachOYamlIOTaggedDocumentHandler::handledDocTag(llvm::yaml::IO &io,
   // Step 2: parse normalized mach-o struct into atoms.
   ErrorOr<std::unique_ptr<lld::File>> foe = normalizedToAtoms(nf, info->_path,
                                                               true);
+  if (nf.arch != _arch) {
+    io.setError(Twine("file is wrong architecture. Expected ("
+                      + MachOLinkingContext::nameFromArch(_arch)
+                      + ") found ("
+                      + MachOLinkingContext::nameFromArch(nf.arch)
+                      + ")"));
+    return false;
+  }
+  info->_normalizeMachOFile = nullptr;
+
   if (foe) {
     // Transfer ownership to "out" File parameter.
     std::unique_ptr<lld::File> f = std::move(foe.get());
     file = f.release();
     return true;
+  } else {
+    io.setError(foe.getError().message());
+    return false;
   }
-  return false;
 }
 
 
@@ -671,8 +781,7 @@ readYaml(std::unique_ptr<MemoryBuffer> &mb) {
 
 
 /// Writes a yaml encoded mach-o files from an in-memory normalized view.
-error_code
-writeYaml(const NormalizedFile &file, raw_ostream &out) {
+std::error_code writeYaml(const NormalizedFile &file, raw_ostream &out) {
   // YAML I/O is not const aware, so need to cast away ;-(
   NormalizedFile *f = const_cast<NormalizedFile*>(&file);
 
@@ -684,7 +793,7 @@ writeYaml(const NormalizedFile &file, raw_ostream &out) {
   // Stream out yaml.
   yout << *f;
 
-  return error_code::success();
+  return std::error_code();
 }
 
 } // namespace normalized

@@ -1,6 +1,6 @@
 # makefile.mk #
-# $Revision: 42820 $
-# $Date: 2013-11-13 16:53:44 -0600 (Wed, 13 Nov 2013) $
+# $Revision: 43473 $
+# $Date: 2014-09-26 15:02:57 -0500 (Fri, 26 Sep 2014) $
 
 #
 #//===----------------------------------------------------------------------===//
@@ -73,6 +73,8 @@ OPTIMIZATION := $(call check_variable,OPTIMIZATION,off on)
 TARGET_COMPILER := $(call check_variable,TARGET_COMPILER,12 11)
 # Library version: 4 -- legacy, 5 -- compat.
 VERSION      := $(call check_variable,VERSION,5 4)
+# quad precision floating point
+HAVE_QUAD     = 1
 
 VPATH += $(src_dir)
 VPATH += $(src_dir)i18n/
@@ -171,6 +173,7 @@ ifeq "$(c)" "clang"
         ld-flags += -m32 -msse
         as-flags += -m32 -msse
     endif
+    HAVE_QUAD = 0
 endif
 
 ifeq "$(LINK_TYPE)" "dyna"
@@ -215,6 +218,18 @@ ifeq "$(filter gcc clang,$(c))" ""
             cxx-flags  += -sox
             fort-flags += -sox
         endif
+    endif
+endif
+
+# On Linux and Windows Intel64 we need offload attribute for all Fortran entries
+# in order to support OpenMP function calls inside Device constructs
+ifeq "$(fort)" "ifort"
+    ifeq "$(os)_$(arch)" "lin_32e"
+        # TODO: change to -qoffload... when we stop supporting 14.0 compiler (-offload is deprecated)
+        fort-flags += -offload-attribute-target=mic
+    endif
+    ifeq "$(os)_$(arch)" "win_32e"
+        fort-flags += /Qoffload-attribute-target:mic
     endif
 endif
 
@@ -310,9 +325,12 @@ endif
 ifeq "$(CPLUSPLUS)" "on"
     ifeq "$(os)" "win"
         c-flags   += -TP
+    else ifeq "$(arch)" "ppc64"
+    # c++11 on ppc64 linux removes definition of preproc. macros, needed in .hs
+      c-flags   += -x c++ -std=gnu++11
     else
         ifneq "$(filter gcc clang,$(c))" ""
-            c-flags   += -x c++ -std=c++0x
+            c-flags   += -x c++ -std=c++11
         else
             c-flags   += -Kc++
         endif
@@ -355,6 +373,7 @@ ifeq "$(os)" "lin"
         # to remove dependency on libgcc_s:
         ifeq "$(c)" "gcc"
             ld-flags-dll += -static-libgcc
+            # omp_os is non-empty only in the open-source code
             ifneq "$(omp_os)" "freebsd"
                 ld-flags-extra += -Wl,-ldl
             endif
@@ -370,7 +389,7 @@ ifeq "$(os)" "lin"
             ld-flags-extra += -lirc_pic
             endif
         endif
-        ifeq "$(filter 32 32e 64,$(arch))" ""
+        ifeq "$(filter 32 32e 64 ppc64,$(arch))" ""
             ld-flags-extra += $(shell pkg-config --libs libffi)
         endif
     else
@@ -411,11 +430,15 @@ ifeq "$(os)" "lrb"
             ld-flags += -ldl
         endif
     endif
+    # include the c++ library for stats-gathering code
+    ifeq "$(stats)" "on"
+        ld-flags-extra += -Wl,-lstdc++
+    endif
   endif
 endif
 
 ifeq "$(os)" "mac"
-    ifeq "$(c)" "icc"
+    ifeq "$(ld)" "icc"
         ld-flags += -no-intel-extensions
     endif
     ld-flags += -single_module
@@ -466,10 +489,32 @@ ifneq "$(os)" "win"
 endif
 cpp-flags += -D KMP_LIBRARY_FILE=\"$(lib_file)\"
 cpp-flags += -D KMP_VERSION_MAJOR=$(VERSION)
-cpp-flags += -D CACHE_LINE=64
+
+# customize ppc64 cache line size to 128, 64 otherwise
+ifeq "$(arch)" "ppc64"
+	cpp-flags += -D CACHE_LINE=128
+else 
+	cpp-flags += -D CACHE_LINE=64
+endif
+
+# customize aarch64 cache line size to 128, 64 otherwise magic won't happen
+# Just kidding.. can we have some documentation on this, please
+ifeq "$(arch)" "aarch64"
+	cpp-flags += -D CACHE_LINE=128
+else 
+	cpp-flags += -D CACHE_LINE=64
+endif
+
 cpp-flags += -D KMP_ADJUST_BLOCKTIME=1
 cpp-flags += -D BUILD_PARALLEL_ORDERED
 cpp-flags += -D KMP_ASM_INTRINS
+cpp-flags += -D KMP_USE_INTERNODE_ALIGNMENT=0
+# Linux and MIC compile with version symbols
+ifneq "$(filter lin lrb,$(os))" ""
+ifeq "$(filter ppc64,$(arch))" ""
+    cpp-flags += -D KMP_USE_VERSION_SYMBOLS
+endif
+endif
 ifneq "$(os)" "lrb"
     cpp-flags += -D USE_LOAD_BALANCE
 endif
@@ -493,43 +538,52 @@ else # 5
         cpp-flags += -D KMP_GOMP_COMPAT
     endif
 endif
-
+cpp-flags += -D KMP_NESTED_HOT_TEAMS
 ifneq "$(filter 32 32e,$(arch))" ""
 cpp-flags += -D KMP_USE_ADAPTIVE_LOCKS=1 -D KMP_DEBUG_ADAPTIVE_LOCKS=0
+endif
+
+# is the std c++ library needed? (for stats-gathering, it is)
+std_cpp_lib=0
+ifneq "$(filter lin lrb,$(os))" ""
+    ifeq "$(stats)" "on"
+        cpp-flags += -D KMP_STATS_ENABLED=1
+        std_cpp_lib=1
+    else
+        cpp-flags += -D KMP_STATS_ENABLED=0
+    endif
+else # no mac or windows support for stats-gathering
+    ifeq "$(stats)" "on"
+        $(error Statistics-gathering functionality not available on $(os) platform)
+    endif
+    cpp-flags += -D KMP_STATS_ENABLED=0
 endif
 
 # define compatibility with different OpenMP versions
 have_omp_50=0
 have_omp_41=0
 have_omp_40=0
-have_omp_30=0
 ifeq "$(OMP_VERSION)" "50"
 	have_omp_50=1
 	have_omp_41=1
 	have_omp_40=1
-	have_omp_30=1
 endif
 ifeq "$(OMP_VERSION)" "41"
 	have_omp_50=0
 	have_omp_41=1
 	have_omp_40=1
-	have_omp_30=1
 endif
 ifeq "$(OMP_VERSION)" "40"
 	have_omp_50=0
 	have_omp_41=0
 	have_omp_40=1
-	have_omp_30=1
 endif
 ifeq "$(OMP_VERSION)" "30"
 	have_omp_50=0
 	have_omp_41=0
 	have_omp_40=0
-	have_omp_30=1
 endif
-cpp-flags += -D OMP_50_ENABLED=$(have_omp_50) -D OMP_41_ENABLED=$(have_omp_41)
-cpp-flags += -D OMP_40_ENABLED=$(have_omp_40) -D OMP_30_ENABLED=$(have_omp_30)
-
+cpp-flags += -D OMP_50_ENABLED=$(have_omp_50) -D OMP_41_ENABLED=$(have_omp_41) -D OMP_40_ENABLED=$(have_omp_40)
 
 # Using ittnotify is enabled by default.
 USE_ITT_NOTIFY = 1
@@ -581,9 +635,15 @@ ifneq "$(os)" "win"
     ifeq "$(arch)" "arm"
         z_Linux_asm$(obj) : \
 		    cpp-flags += -D KMP_ARCH_ARM
+    else ifeq "$(arch)" "ppc64" 
+        z_Linux_asm$(obj) : \
+			cpp-flags += -D KMP_ARCH_PPC64		    
+    else ifeq "$(arch)" "aarch64"
+        z_Linux_asm$(obj) : \                            
+                        cpp-flags += -D KMP_ARCH_AARCH64
     else
         z_Linux_asm$(obj) : \
-            cpp-flags += -D KMP_ARCH_X86$(if $(filter 32e,$(arch)),_64)
+		    cpp-flags += -D KMP_ARCH_X86$(if $(filter 32e,$(arch)),_64)
     endif
 endif
 
@@ -596,6 +656,9 @@ kmp_version$(obj) : cpp-flags += -D _KMP_BUILD_TIME="\"$(date)\""
 
 gd-flags += -D arch_$(arch)
 gd-flags += -D $(LIB_TYPE)
+ifeq "$(HAVE_QUAD)" "1"
+    gd-flags += -D HAVE_QUAD
+endif
 ifeq "$(OMP_VERSION)" "40"
     gd-flags += -D OMP_40 -D OMP_30
 else
@@ -680,6 +743,8 @@ else # norm or prof
         kmp_i18n                     \
         kmp_io                       \
         kmp_runtime                  \
+        kmp_wait_release             \
+        kmp_barrier                  \
         kmp_settings                 \
         kmp_str                      \
         kmp_tasking                  \
@@ -695,6 +760,10 @@ else # norm or prof
 ifeq "$(OMP_VERSION)" "40"
     lib_cpp_items += kmp_taskdeps
     lib_cpp_items += kmp_cancel
+endif
+ifeq "$(stats)" "on"
+    lib_cpp_items += kmp_stats
+    lib_cpp_items += kmp_stats_timing
 endif
 
     # OS-specific files.
@@ -729,7 +798,9 @@ endif
         else # 5
             lib_c_items += kmp_gsupport
         endif
+#        ifneq "$(arch)" "ppc64"
         lib_asm_items += z_Linux_asm
+#	     endif
     endif
 endif
 
@@ -1251,8 +1322,20 @@ ifneq "$(os)" "lrb"
         # On Linux* OS and OS X* the test is good enough because GNU compiler knows nothing
         # about libirc and Intel compiler private lib directories, but we will grep verbose linker
         # output just in case.
-        tt-c        = cc
-        ifeq "$(os)" "lin"    # GCC on OS X* does not recognize -pthread.
+        # Using clang on OS X* because of discontinued support of GNU compilers.
+        ifeq "$(os)" "mac"
+            ifeq "$(std_cpp_lib)" "1"
+                tt-c        = clang++
+            else
+                tt-c        = clang
+            endif
+        else # lin
+            ifeq "$(std_cpp_lib)" "1"
+                tt-c        = g++
+            else
+                tt-c        = gcc
+            endif
+            # GCC on OS X* does not recognize -pthread.
             tt-c-flags  += -pthread
         endif
         tt-c-flags += -o $(tt-exe-file)
@@ -1391,9 +1474,21 @@ ifneq "$(filter %-dyna win-%,$(os)-$(LINK_TYPE))" ""
             td_exp += libc.so.6
             td_exp += ld-linux-armhf.so.3
         endif
+        ifeq "$(arch)" "ppc64"
+            td_exp += libc.so.6
+            td_exp += ld64.so.1
+        endif
+        ifeq "$(arch)" "aarch"
+            td_exp += libc.so.6
+            td_exp += ld-linux-aarch64.so.1
+        endif
+        ifeq "$(std_cpp_lib)" "1"
+            td_exp += libstdc++.so.6
+        endif
+
         td_exp += libdl.so.2
         td_exp += libgcc_s.so.1
-        ifeq "$(filter 32 32e 64,$(arch))" ""
+        ifeq "$(filter 32 32e 64 ppc64,$(arch))" ""
             td_exp += libffi.so.6
             td_exp += libffi.so.5
         endif
@@ -1403,6 +1498,9 @@ ifneq "$(filter %-dyna win-%,$(os)-$(LINK_TYPE))" ""
     endif
     ifeq "$(os)" "lrb"
         ifeq "$(MIC_OS)" "lin"
+            ifeq "$(std_cpp_lib)" "1"
+                td_exp += libstdc++.so.6
+            endif
             ifeq "$(MIC_ARCH)" "knf"
                 td_exp += "ld-linux-l1om.so.2"
                 td_exp += libc.so.6
@@ -1434,8 +1532,9 @@ ifneq "$(filter %-dyna win-%,$(os)-$(LINK_TYPE))" ""
             td_exp += uuid
         endif
     endif
+
     ifeq "$(omp_os)" "freebsd"
-        td_exp =
+        td_exp = 
         td_exp += libc.so.7
         td_exp += libthr.so.3
         td_exp += libunwind.so.5

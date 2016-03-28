@@ -61,7 +61,8 @@ public:
 
 void clang::AttachDependencyGraphGen(Preprocessor &PP, StringRef OutputFile,
                                      StringRef SysRoot) {
-  PP.addPPCallbacks(new DependencyGraphCallback(&PP, OutputFile, SysRoot));
+  PP.addPPCallbacks(llvm::make_unique<DependencyGraphCallback>(&PP, OutputFile,
+                                                               SysRoot));
 }
 
 void DependencyGraphCallback::InclusionDirective(SourceLocation HashLoc,
@@ -79,7 +80,7 @@ void DependencyGraphCallback::InclusionDirective(SourceLocation HashLoc,
   SourceManager &SM = PP->getSourceManager();
   const FileEntry *FromFile
     = SM.getFileEntryForID(SM.getFileID(SM.getExpansionLoc(HashLoc)));
-  if (FromFile == 0) 
+  if (!FromFile)
     return;
 
   Dependencies[FromFile].push_back(File);
@@ -96,11 +97,11 @@ DependencyGraphCallback::writeNodeReference(raw_ostream &OS,
 }
 
 void DependencyGraphCallback::OutputGraphFile() {
-  std::string Err;
-  llvm::raw_fd_ostream OS(OutputFile.c_str(), Err, llvm::sys::fs::F_Text);
-  if (!Err.empty()) {
-    PP->getDiagnostics().Report(diag::err_fe_error_opening)
-      << OutputFile << Err;
+  std::error_code EC;
+  llvm::raw_fd_ostream OS(OutputFile, EC, llvm::sys::fs::F_Text);
+  if (EC) {
+    PP->getDiagnostics().Report(diag::err_fe_error_opening) << OutputFile
+                                                            << EC.message();
     return;
   }
 

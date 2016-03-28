@@ -10,8 +10,8 @@
 //  This file defines ExternalSemaSource interface, dispatching to all clients
 //
 //===----------------------------------------------------------------------===//
-#ifndef LLVM_CLANG_SEMA_MULTIPLEX_EXTERNAL_SEMA_SOURCE_H
-#define LLVM_CLANG_SEMA_MULTIPLEX_EXTERNAL_SEMA_SOURCE_H
+#ifndef LLVM_CLANG_SEMA_MULTIPLEXEXTERNALSEMASOURCE_H
+#define LLVM_CLANG_SEMA_MULTIPLEXEXTERNALSEMASOURCE_H
 
 #include "clang/Sema/ExternalSemaSource.h"
 #include "clang/Sema/Weak.h"
@@ -67,6 +67,10 @@ public:
   /// building a new declaration.
   Decl *GetExternalDecl(uint32_t ID) override;
 
+  /// \brief Complete the redeclaration chain if it's been extended since the
+  /// previous generation of the AST source.
+  void CompleteRedeclChain(const Decl *D) override;
+
   /// \brief Resolve a selector ID into a selector.
   Selector GetExternalSelector(uint32_t ID) override;
 
@@ -109,7 +113,7 @@ public:
   /// \return true if an error occurred
   ExternalLoadResult FindExternalLexicalDecls(const DeclContext *DC,
                                 SmallVectorImpl<Decl*> &Result) {
-    return FindExternalLexicalDecls(DC, 0, Result);
+    return FindExternalLexicalDecls(DC, nullptr, Result);
   }
 
   template <typename DeclTy>
@@ -278,6 +282,15 @@ public:
   /// introduce the same declarations repeatedly.
   void ReadDynamicClasses(SmallVectorImpl<CXXRecordDecl*> &Decls) override;
 
+  /// \brief Read the set of potentially unused typedefs known to the source.
+  ///
+  /// The external source should append its own potentially unused local
+  /// typedefs to the given vector of declarations. Note that this routine may
+  /// be invoked multiple times; the external source should take care not to
+  /// introduce the same declarations repeatedly.
+  void ReadUnusedLocalTypedefNameCandidates(
+      llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) override;
+
   /// \brief Read the set of locally-scoped extern "C" declarations known to the
   /// external Sema source.
   ///
@@ -364,4 +377,4 @@ public:
 
 } // end namespace clang
 
-#endif // LLVM_CLANG_SEMA_MULTIPLEX_EXTERNAL_SEMA_SOURCE_H
+#endif

@@ -13,15 +13,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Analysis/Analyses/ReachableCode.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
-#include "clang/AST/StmtCXX.h"
 #include "clang/AST/ParentMap.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/Analysis/AnalysisContext.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -59,32 +59,57 @@ static bool isTrivialDoWhile(const CFGBlock *B, const Stmt *S) {
 }
 
 static bool isDeadReturn(const CFGBlock *B, const Stmt *S) {
-  // Look to see if the block ends with a 'return', and see if 'S'
-  // is a substatement.  The 'return' may not be the last element in
-  // the block because of destructors.
-  for (CFGBlock::const_reverse_iterator I = B->rbegin(), E = B->rend();
-       I != E; ++I) {
-    if (Optional<CFGStmt> CS = I->getAs<CFGStmt>()) {
-      if (const ReturnStmt *RS = dyn_cast<ReturnStmt>(CS->getStmt())) {
-        if (RS == S)
-          return true;
-        if (const Expr *RE = RS->getRetValue()) {
-          RE = RE->IgnoreParenCasts();
-          if (RE == S)
+  // Look to see if the current control flow ends with a 'return', and see if
+  // 'S' is a substatement. The 'return' may not be the last element in the
+  // block, or may be in a subsequent block because of destructors.
+  const CFGBlock *Current = B;
+  while (true) {
+    for (CFGBlock::const_reverse_iterator I = Current->rbegin(),
+                                          E = Current->rend();
+         I != E; ++I) {
+      if (Optional<CFGStmt> CS = I->getAs<CFGStmt>()) {
+        if (const ReturnStmt *RS = dyn_cast<ReturnStmt>(CS->getStmt())) {
+          if (RS == S)
             return true;
-          ParentMap PM(const_cast<Expr*>(RE));
-          // If 'S' is in the ParentMap, it is a subexpression of
-          // the return statement.  Note also that we are restricting
-          // to looking at return statements in the same CFGBlock,
-          // so this will intentionally not catch cases where the
-          // return statement contains nested control-flow.
-          return PM.getParent(S);
+          if (const Expr *RE = RS->getRetValue()) {
+            RE = RE->IgnoreParenCasts();
+            if (RE == S)
+              return true;
+            ParentMap PM(const_cast<Expr *>(RE));
+            // If 'S' is in the ParentMap, it is a subexpression of
+            // the return statement.
+            return PM.getParent(S);
+          }
         }
+        break;
       }
-      break;
+    }
+    // Note also that we are restricting the search for the return statement
+    // to stop at control-flow; only part of a return statement may be dead,
+    // without the whole return statement being dead.
+    if (Current->getTerminator().isTemporaryDtorsBranch()) {
+      // Temporary destructors have a predictable control flow, thus we want to
+      // look into the next block for the return statement.
+      // We look into the false branch, as we know the true branch only contains
+      // the call to the destructor.
+      assert(Current->succ_size() == 2);
+      Current = *(Current->succ_begin() + 1);
+    } else if (!Current->getTerminator() && Current->succ_size() == 1) {
+      // If there is only one successor, we're not dealing with outgoing control
+      // flow. Thus, look into the next block.
+      Current = *Current->succ_begin();
+      if (Current->pred_size() > 1) {
+        // If there is more than one predecessor, we're dealing with incoming
+        // control flow - if the return statement is in that block, it might
+        // well be reachable via a different control flow, thus it's not dead.
+        return false;
+      }
+    } else {
+      // We hit control flow or a dead end. Stop searching.
+      return false;
     }
   }
-  return false;
+  llvm_unreachable("Broke out of infinite loop.");
 }
 
 static SourceLocation getTopMostMacro(SourceLocation Loc, SourceManager &SM) {
@@ -133,12 +158,25 @@ static bool isConfigurationValue(const ValueDecl *D, Preprocessor &PP);
 /// those blocks.
 static bool isConfigurationValue(const Stmt *S,
                                  Preprocessor &PP,
-                                 bool IncludeIntegers = true) {
+                                 SourceRange *SilenceableCondVal = nullptr,
+                                 bool IncludeIntegers = true,
+                                 bool WrappedInParens = false) {
   if (!S)
     return false;
 
   if (const Expr *Ex = dyn_cast<Expr>(S))
-    S = Ex->IgnoreParenCasts();
+    S = Ex->IgnoreCasts();
+
+  // Special case looking for the sigil '()' around an integer literal.
+  if (const ParenExpr *PE = dyn_cast<ParenExpr>(S))
+    if (!PE->getLocStart().isMacroID())
+      return isConfigurationValue(PE->getSubExpr(), PP, SilenceableCondVal, 
+                                  IncludeIntegers, true);
+
+  if (const Expr *Ex = dyn_cast<Expr>(S))
+    S = Ex->IgnoreCasts();
+
+  bool IgnoreYES_NO = false;
 
   switch (S->getStmtClass()) {
     case Stmt::CallExprClass: {
@@ -148,13 +186,21 @@ static bool isConfigurationValue(const Stmt *S,
     }
     case Stmt::DeclRefExprClass:
       return isConfigurationValue(cast<DeclRefExpr>(S)->getDecl(), PP);
-    case Stmt::IntegerLiteralClass:
-      return IncludeIntegers ? isExpandedFromConfigurationMacro(S, PP)
-                             : false;
+    case Stmt::ObjCBoolLiteralExprClass:
+      IgnoreYES_NO = true;
+      // Fallthrough.
+    case Stmt::CXXBoolLiteralExprClass:
+    case Stmt::IntegerLiteralClass: {
+      const Expr *E = cast<Expr>(S);
+      if (IncludeIntegers) {
+        if (SilenceableCondVal && !SilenceableCondVal->getBegin().isValid())
+          *SilenceableCondVal = E->getSourceRange();
+        return WrappedInParens || isExpandedFromConfigurationMacro(E, PP, IgnoreYES_NO);
+      }
+      return false;
+    }
     case Stmt::MemberExprClass:
       return isConfigurationValue(cast<MemberExpr>(S)->getMemberDecl(), PP);
-    case Stmt::ObjCBoolLiteralExprClass:
-      return isExpandedFromConfigurationMacro(S, PP, /* IgnoreYES_NO */ true);
     case Stmt::UnaryExprOrTypeTraitExprClass:
       return true;
     case Stmt::BinaryOperatorClass: {
@@ -163,13 +209,18 @@ static bool isConfigurationValue(const Stmt *S,
       // values if they are used in a logical or comparison operator
       // (not arithmetic).
       IncludeIntegers &= (B->isLogicalOp() || B->isComparisonOp());
-      return isConfigurationValue(B->getLHS(), PP, IncludeIntegers) ||
-             isConfigurationValue(B->getRHS(), PP, IncludeIntegers);
+      return isConfigurationValue(B->getLHS(), PP, SilenceableCondVal,
+                                  IncludeIntegers) ||
+             isConfigurationValue(B->getRHS(), PP, SilenceableCondVal,
+                                  IncludeIntegers);
     }
     case Stmt::UnaryOperatorClass: {
       const UnaryOperator *UO = cast<UnaryOperator>(S);
+      if (SilenceableCondVal) 
+        *SilenceableCondVal = UO->getSourceRange();      
       return UO->getOpcode() == UO_LNot &&
-             isConfigurationValue(UO->getSubExpr(), PP);
+             isConfigurationValue(UO->getSubExpr(), PP, SilenceableCondVal,
+                                  IncludeIntegers, WrappedInParens);
     }
     default:
       return false;
@@ -204,11 +255,13 @@ static bool shouldTreatSuccessorsAsReachable(const CFGBlock *B,
     if (isa<SwitchStmt>(Term))
       return true;
     // Specially handle '||' and '&&'.
-    if (isa<BinaryOperator>(Term))
+    if (isa<BinaryOperator>(Term)) {
       return isConfigurationValue(Term, PP);
+    }
   }
 
-  return isConfigurationValue(B->getTerminatorCondition(), PP);
+  const Stmt *Cond = B->getTerminatorCondition(/* stripParens */ false);
+  return isConfigurationValue(Cond, PP);
 }
 
 static unsigned scanFromBlock(const CFGBlock *Start,
@@ -314,9 +367,9 @@ namespace {
     const Stmt *findDeadCode(const CFGBlock *Block);
 
     void reportDeadCode(const CFGBlock *B,
-    const Stmt *S,
-    clang::reachable_code::Callback &CB);
-    };
+                        const Stmt *S,
+                        clang::reachable_code::Callback &CB);
+  };
 }
 
 void DeadCodeScan::enqueue(const CFGBlock *block) {
@@ -374,7 +427,7 @@ const Stmt *DeadCodeScan::findDeadCode(const clang::CFGBlock *Block) {
     }
   }
 
-  return 0;
+  return nullptr;
 }
 
 static int SrcCmp(const std::pair<const CFGBlock *, const Stmt *> *p1,
@@ -529,6 +582,8 @@ void DeadCodeScan::reportDeadCode(const CFGBlock *B,
     UK = reachable_code::UK_Return;
   }
 
+  SourceRange SilenceableCondVal;
+
   if (UK == reachable_code::UK_Other) {
     // Check if the dead code is part of the "loop target" of
     // a for/for-range loop.  This is the block that contains
@@ -544,14 +599,26 @@ void DeadCodeScan::reportDeadCode(const CFGBlock *B,
       }
 
       CB.HandleUnreachable(reachable_code::UK_Loop_Increment,
-                           Loc, SourceRange(Loc, Loc), R2);
+                           Loc, SourceRange(), SourceRange(Loc, Loc), R2);
       return;
+    }
+    
+    // Check if the dead block has a predecessor whose branch has
+    // a configuration value that *could* be modified to
+    // silence the warning.
+    CFGBlock::const_pred_iterator PI = B->pred_begin();
+    if (PI != B->pred_end()) {
+      if (const CFGBlock *PredBlock = PI->getPossiblyUnreachableBlock()) {
+        const Stmt *TermCond =
+            PredBlock->getTerminatorCondition(/* strip parens */ false);
+        isConfigurationValue(TermCond, PP, &SilenceableCondVal);
+      }
     }
   }
 
   SourceRange R1, R2;
   SourceLocation Loc = GetUnreachableLoc(S, R1, R2);
-  CB.HandleUnreachable(UK, Loc, R1, R2);
+  CB.HandleUnreachable(UK, Loc, SilenceableCondVal, R1, R2);
 }
 
 //===----------------------------------------------------------------------===//
@@ -564,7 +631,7 @@ void Callback::anchor() { }
 
 unsigned ScanReachableFromBlock(const CFGBlock *Start,
                                 llvm::BitVector &Reachable) {
-  return scanFromBlock(Start, Reachable, /* SourceManager* */ 0, false);
+  return scanFromBlock(Start, Reachable, /* SourceManager* */ nullptr, false);
 }
 
 void FindUnreachableCode(AnalysisDeclContext &AC, Preprocessor &PP,

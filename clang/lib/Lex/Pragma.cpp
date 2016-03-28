@@ -59,15 +59,13 @@ PragmaHandler *PragmaNamespace::FindHandler(StringRef Name,
                                             bool IgnoreNull) const {
   if (PragmaHandler *Handler = Handlers.lookup(Name))
     return Handler;
-  return IgnoreNull ? 0 : Handlers.lookup(StringRef());
+  return IgnoreNull ? nullptr : Handlers.lookup(StringRef());
 }
 
 void PragmaNamespace::AddPragma(PragmaHandler *Handler) {
   assert(!Handlers.lookup(Handler->getName()) &&
          "A handler with this name is already registered in this namespace");
-  llvm::StringMapEntry<PragmaHandler *> &Entry =
-    Handlers.GetOrCreateValue(Handler->getName());
-  Entry.setValue(Handler);
+  Handlers[Handler->getName()] = Handler;
 }
 
 void PragmaNamespace::RemovePragmaHandler(PragmaHandler *Handler) {
@@ -88,7 +86,7 @@ void PragmaNamespace::HandlePragma(Preprocessor &PP,
     = FindHandler(Tok.getIdentifierInfo() ? Tok.getIdentifierInfo()->getName()
                                           : StringRef(),
                   /*IgnoreNull=*/false);
-  if (Handler == 0) {
+  if (!Handler) {
     PP.Diag(Tok, diag::warn_pragma_ignored);
     return;
   }
@@ -193,7 +191,7 @@ void Preprocessor::Handle_Pragma(Token &Tok) {
   if (!tok::isStringLiteral(Tok.getKind())) {
     Diag(PragmaLoc, diag::err__Pragma_malformed);
     // Skip this token, and the ')', if present.
-    if (Tok.isNot(tok::r_paren))
+    if (Tok.isNot(tok::r_paren) && Tok.isNot(tok::eof))
       Lex(Tok);
     if (Tok.is(tok::r_paren))
       Lex(Tok);
@@ -290,7 +288,7 @@ void Preprocessor::Handle_Pragma(Token &Tok) {
   Lexer *TL = Lexer::Create_PragmaLexer(TokLoc, PragmaLoc, RParenLoc,
                                         StrVal.size(), *this);
 
-  EnterSourceFileWithLexer(TL, 0);
+  EnterSourceFileWithLexer(TL, nullptr);
 
   // With everything set up, lex this as a #pragma directive.
   HandlePragmaDirective(PragmaLoc, PIK__Pragma);
@@ -472,9 +470,10 @@ void Preprocessor::HandlePragmaDependency(Token &DependencyTok) {
 
   // Search include directories for this file.
   const DirectoryLookup *CurDir;
-  const FileEntry *File = LookupFile(FilenameTok.getLocation(), Filename,
-                                     isAngled, 0, CurDir, NULL, NULL, NULL);
-  if (File == 0) {
+  const FileEntry *File =
+      LookupFile(FilenameTok.getLocation(), Filename, isAngled, nullptr,
+                 nullptr, CurDir, nullptr, nullptr, nullptr);
+  if (!File) {
     if (!SuppressIncludeNotFoundError)
       Diag(FilenameTok, diag::err_pp_file_not_found) << Filename;
     return;
@@ -510,7 +509,7 @@ IdentifierInfo *Preprocessor::ParsePragmaPushOrPopMacro(Token &Tok) {
   if (Tok.isNot(tok::l_paren)) {
     Diag(PragmaTok.getLocation(), diag::err_pragma_push_pop_macro_malformed)
       << getSpelling(PragmaTok);
-    return 0;
+    return nullptr;
   }
 
   // Read the macro name string.
@@ -518,12 +517,12 @@ IdentifierInfo *Preprocessor::ParsePragmaPushOrPopMacro(Token &Tok) {
   if (Tok.isNot(tok::string_literal)) {
     Diag(PragmaTok.getLocation(), diag::err_pragma_push_pop_macro_malformed)
       << getSpelling(PragmaTok);
-    return 0;
+    return nullptr;
   }
 
   if (Tok.hasUDSuffix()) {
     Diag(Tok, diag::err_invalid_string_udl);
-    return 0;
+    return nullptr;
   }
 
   // Remember the macro string.
@@ -534,7 +533,7 @@ IdentifierInfo *Preprocessor::ParsePragmaPushOrPopMacro(Token &Tok) {
   if (Tok.isNot(tok::r_paren)) {
     Diag(PragmaTok.getLocation(), diag::err_pragma_push_pop_macro_malformed)
       << getSpelling(PragmaTok);
-    return 0;
+    return nullptr;
   }
 
   assert(StrVal[0] == '"' && StrVal[StrVal.size()-1] == '"' &&
@@ -604,7 +603,7 @@ void Preprocessor::HandlePragmaPopMacro(Token &PopMacroTok) {
     if (MacroToReInstall) {
       // Reinstall the previously pushed macro.
       appendDefMacroDirective(IdentInfo, MacroToReInstall, MessageLoc,
-                              /*isImported=*/false);
+                              /*isImported=*/false, /*Overrides*/None);
     }
 
     // Pop PragmaPushMacroInfo stack.
@@ -727,7 +726,7 @@ void Preprocessor::HandlePragmaIncludeAlias(Token &Tok) {
 /// pragma line before the pragma string starts, e.g. "STDC" or "GCC".
 void Preprocessor::AddPragmaHandler(StringRef Namespace,
                                     PragmaHandler *Handler) {
-  PragmaNamespace *InsertNS = PragmaHandlers;
+  PragmaNamespace *InsertNS = PragmaHandlers.get();
 
   // If this is specified to be in a namespace, step down into it.
   if (!Namespace.empty()) {
@@ -736,7 +735,7 @@ void Preprocessor::AddPragmaHandler(StringRef Namespace,
     // we already have the namespace to insert into.
     if (PragmaHandler *Existing = PragmaHandlers->FindHandler(Namespace)) {
       InsertNS = Existing->getIfNamespace();
-      assert(InsertNS != 0 && "Cannot have a pragma namespace and pragma"
+      assert(InsertNS != nullptr && "Cannot have a pragma namespace and pragma"
              " handler with the same name!");
     } else {
       // Otherwise, this namespace doesn't exist yet, create and insert the
@@ -758,7 +757,7 @@ void Preprocessor::AddPragmaHandler(StringRef Namespace,
 /// a handler that has not been registered.
 void Preprocessor::RemovePragmaHandler(StringRef Namespace,
                                        PragmaHandler *Handler) {
-  PragmaNamespace *NS = PragmaHandlers;
+  PragmaNamespace *NS = PragmaHandlers.get();
 
   // If this is specified to be in a namespace, step down into it.
   if (!Namespace.empty()) {
@@ -771,9 +770,8 @@ void Preprocessor::RemovePragmaHandler(StringRef Namespace,
 
   NS->RemovePragmaHandler(Handler);
 
-  // If this is a non-default namespace and it is now empty, remove
-  // it.
-  if (NS != PragmaHandlers && NS->IsEmpty()) {
+  // If this is a non-default namespace and it is now empty, remove it.
+  if (NS != PragmaHandlers.get() && NS->IsEmpty()) {
     PragmaHandlers->RemovePragmaHandler(NS);
     delete NS;
   }
@@ -953,16 +951,7 @@ public:
     IdentifierInfo *II = Tok.getIdentifierInfo();
     PPCallbacks *Callbacks = PP.getPPCallbacks();
 
-    diag::Mapping Map;
-    if (II->isStr("warning"))
-      Map = diag::MAP_WARNING;
-    else if (II->isStr("error"))
-      Map = diag::MAP_ERROR;
-    else if (II->isStr("ignored"))
-      Map = diag::MAP_IGNORE;
-    else if (II->isStr("fatal"))
-      Map = diag::MAP_FATAL;
-    else if (II->isStr("pop")) {
+    if (II->isStr("pop")) {
       if (!PP.getDiagnostics().popMappings(DiagLoc))
         PP.Diag(Tok, diag::warn_pragma_diagnostic_cannot_pop);
       else if (Callbacks)
@@ -973,7 +962,16 @@ public:
       if (Callbacks)
         Callbacks->PragmaDiagnosticPush(DiagLoc, Namespace);
       return;
-    } else {
+    }
+
+    diag::Severity SV = llvm::StringSwitch<diag::Severity>(II->getName())
+                            .Case("ignored", diag::Severity::Ignored)
+                            .Case("warning", diag::Severity::Warning)
+                            .Case("error", diag::Severity::Error)
+                            .Case("fatal", diag::Severity::Fatal)
+                            .Default(diag::Severity());
+
+    if (SV == diag::Severity()) {
       PP.Diag(Tok, diag::warn_pragma_diagnostic_invalid);
       return;
     }
@@ -992,17 +990,19 @@ public:
     }
 
     if (WarningName.size() < 3 || WarningName[0] != '-' ||
-        WarningName[1] != 'W') {
+        (WarningName[1] != 'W' && WarningName[1] != 'R')) {
       PP.Diag(StringLoc, diag::warn_pragma_diagnostic_invalid_option);
       return;
     }
 
-    if (PP.getDiagnostics().setDiagnosticGroupMapping(WarningName.substr(2),
-                                                      Map, DiagLoc))
+    if (PP.getDiagnostics().setSeverityForGroup(
+            WarningName[1] == 'W' ? diag::Flavor::WarningOrError
+                                  : diag::Flavor::Remark,
+            WarningName.substr(2), SV, DiagLoc))
       PP.Diag(StringLoc, diag::warn_pragma_diagnostic_unknown_warning)
         << WarningName;
     else if (Callbacks)
-      Callbacks->PragmaDiagnostic(DiagLoc, Namespace, Map, WarningName);
+      Callbacks->PragmaDiagnostic(DiagLoc, Namespace, SV, WarningName);
   }
 };
 
@@ -1384,4 +1384,27 @@ void Preprocessor::RegisterBuiltinPragmas() {
     AddPragmaHandler(new PragmaRegionHandler("region"));
     AddPragmaHandler(new PragmaRegionHandler("endregion"));
   }
+}
+
+/// Ignore all pragmas, useful for modes such as -Eonly which would otherwise
+/// warn about those pragmas being unknown.
+void Preprocessor::IgnorePragmas() {
+  AddPragmaHandler(new EmptyPragmaHandler());
+  // Also ignore all pragmas in all namespaces created
+  // in Preprocessor::RegisterBuiltinPragmas().
+  AddPragmaHandler("GCC", new EmptyPragmaHandler());
+  AddPragmaHandler("clang", new EmptyPragmaHandler());
+  if (PragmaHandler *NS = PragmaHandlers->FindHandler("STDC")) {
+    // Preprocessor::RegisterBuiltinPragmas() already registers
+    // PragmaSTDC_UnknownHandler as the empty handler, so remove it first,
+    // otherwise there will be an assert about a duplicate handler.
+    PragmaNamespace *STDCNamespace = NS->getIfNamespace();
+    assert(STDCNamespace &&
+           "Invalid namespace, registered as a regular pragma handler!");
+    if (PragmaHandler *Existing = STDCNamespace->FindHandler("", false)) {
+      RemovePragmaHandler("STDC", Existing);
+      delete Existing;
+    }
+  }
+  AddPragmaHandler("STDC", new EmptyPragmaHandler());
 }

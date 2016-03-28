@@ -23,12 +23,16 @@
 #include <memory>
 #include <string>
 
+namespace llvm {
+template <typename Info> class OnDiskChainedHashTable;
+template <typename Info> class OnDiskIterableChainedHashTable;
+}
+
 namespace clang {
 
 class FileEntry;
 class DeclContext;
 class Module;
-template<typename Info> class OnDiskChainedHashTable;
 
 namespace serialization {
 
@@ -38,10 +42,11 @@ namespace reader {
 
 /// \brief Specifies the kind of module that has been loaded.
 enum ModuleKind {
-  MK_Module,   ///< File is a module proper.
-  MK_PCH,      ///< File is a PCH file treated as such.
-  MK_Preamble, ///< File is a PCH file treated as the preamble.
-  MK_MainFile  ///< File is a PCH file treated as the actual main file.
+  MK_ImplicitModule, ///< File is an implicitly-loaded module.
+  MK_ExplicitModule, ///< File is an explicitly-loaded module.
+  MK_PCH,            ///< File is a PCH file treated as such.
+  MK_Preamble,       ///< File is a PCH file treated as the preamble.
+  MK_MainFile        ///< File is a PCH file treated as the actual main file.
 };
 
 /// \brief Information about the contents of a DeclContext.
@@ -49,7 +54,7 @@ struct DeclContextInfo {
   DeclContextInfo()
     : NameLookupTableData(), LexicalDecls(), NumLexicalDecls() {}
 
-  OnDiskChainedHashTable<reader::ASTDeclContextNameLookupTrait>
+  llvm::OnDiskIterableChainedHashTable<reader::ASTDeclContextNameLookupTrait>
     *NameLookupTableData; // an ASTDeclContextNameLookupTable.
   const KindDeclIDPair *LexicalDecls;
   unsigned NumLexicalDecls;
@@ -92,6 +97,8 @@ public:
   bool isNotFound() const { return Val.getInt() == NotFound; }
 };
 
+typedef unsigned ASTFileSignature;
+
 /// \brief Information about a module that has been loaded by the ASTReader.
 ///
 /// Each instance of the Module class corresponds to a single AST file, which
@@ -115,6 +122,12 @@ public:
   /// \brief The file name of the module file.
   std::string FileName;
 
+  /// \brief The name of the module.
+  std::string ModuleName;
+
+  /// \brief The base directory of the module.
+  std::string BaseDirectory;
+
   std::string getTimestampFilename() const {
     return FileName + ".timestamp";
   }
@@ -136,11 +149,17 @@ public:
   /// allow resolving headers even after headers+PCH was moved to a new path.
   std::string OriginalDir;
 
+  std::string ModuleMapPath;
+
   /// \brief Whether this precompiled header is a relocatable PCH file.
   bool RelocatablePCH;
 
   /// \brief The file entry for the module file.
   const FileEntry *File;
+
+  /// \brief The signature of the module file, which may be used along with size
+  /// and modification time to identify this particular file.
+  ASTFileSignature Signature;
 
   /// \brief Whether this module has been directly imported by the
   /// user.

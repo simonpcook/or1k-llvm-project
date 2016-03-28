@@ -1,10 +1,9 @@
-// Check the presense of interface symbols in compiled file.
+// Check the presence of interface symbols in compiled file.
 
 // RUN: %clang_asan -O2 %s -o %t.exe
 // RUN: nm -D %t.exe | grep " T " | sed "s/.* T //" \
 // RUN:    | grep "__asan_" | sed "s/___asan_/__asan_/" \
-// RUN:    | grep -v "__asan_malloc_hook" \
-// RUN:    | grep -v "__asan_free_hook" \
+// RUN:    | sed -E "s/__asan_init_v[0-9]+/__asan_init/" \
 // RUN:    | grep -v "__asan_default_options" \
 // RUN:    | grep -v "__asan_stack_" \
 // RUN:    | grep -v "__asan_on_error" > %t.symbols
@@ -31,6 +30,6 @@
 
 // FIXME: nm -D on powerpc somewhy shows ASan interface symbols residing
 // in "initialized data section".
-// REQUIRES: x86_64-supported-target,i386-supported-target
+// REQUIRES: x86_64-supported-target,i386-supported-target,asan-static-runtime
 
 int main() { return 0; }

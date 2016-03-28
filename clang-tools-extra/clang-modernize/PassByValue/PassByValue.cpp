@@ -35,7 +35,7 @@ int PassByValueTransform::apply(const tooling::CompilationDatabase &Database,
   // make the replacer available to handleBeginSource()
   this->Replacer = &Replacer;
 
-  if (Tool.run(createActionFactory(Finder))) {
+  if (Tool.run(createActionFactory(Finder).get())) {
     llvm::errs() << "Error encountered during translation.\n";
     return 1;
   }

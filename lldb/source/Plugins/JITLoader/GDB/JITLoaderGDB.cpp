@@ -36,21 +36,24 @@ typedef enum
     JIT_UNREGISTER_FN
 } jit_actions_t;
 
+#pragma pack(push, 4)
+template <typename ptr_t>
 struct jit_code_entry
 {
-    struct jit_code_entry *next_entry;
-    struct jit_code_entry *prev_entry;
-    const char *symfile_addr;
+    ptr_t    next_entry; // pointer
+    ptr_t    prev_entry; // pointer
+    ptr_t    symfile_addr; // pointer
     uint64_t symfile_size;
 };
-
+template <typename ptr_t>
 struct jit_descriptor
 {
     uint32_t version;
     uint32_t action_flag; // Values are jit_action_t
-    struct jit_code_entry *relevant_entry;
-    struct jit_code_entry *first_entry;
+    ptr_t    relevant_entry; // pointer
+    ptr_t    first_entry; // pointer
 };
+#pragma pack(pop)
 
 JITLoaderGDB::JITLoaderGDB (lldb_private::Process *process) :
     JITLoader(process),
@@ -102,13 +105,15 @@ JITLoaderGDB::SetJITBreakpoint(lldb_private::ModuleList &module_list)
         log->Printf("JITLoaderGDB::%s looking for JIT register hook",
                     __FUNCTION__);
 
-    addr_t jit_addr = GetSymbolAddress(
-        module_list, ConstString("__jit_debug_register_code"), eSymbolTypeAny);
+    addr_t jit_addr = GetSymbolAddress(module_list,
+                                       ConstString("__jit_debug_register_code"),
+                                       eSymbolTypeAny);
     if (jit_addr == LLDB_INVALID_ADDRESS)
         return;
 
-    m_jit_descriptor_addr = GetSymbolAddress(
-        module_list, ConstString("__jit_debug_descriptor"), eSymbolTypeData);
+    m_jit_descriptor_addr = GetSymbolAddress(module_list,
+                                             ConstString("__jit_debug_descriptor"),
+                                             eSymbolTypeData);
     if (m_jit_descriptor_addr == LLDB_INVALID_ADDRESS)
     {
         if (log)
@@ -144,8 +149,68 @@ JITLoaderGDB::JITDebugBreakpointHit(void *baton,
     return instance->ReadJITDescriptor(false);
 }
 
+static void updateSectionLoadAddress(const SectionList &section_list,
+                                     Target &target,
+                                     uint64_t symbolfile_addr,
+                                     uint64_t symbolfile_size,
+                                     uint64_t &vmaddrheuristic,
+                                     uint64_t &min_addr,
+                                     uint64_t &max_addr)
+{
+    const uint32_t num_sections = section_list.GetSize();
+    for (uint32_t i = 0; i<num_sections; ++i)
+    {
+        SectionSP section_sp(section_list.GetSectionAtIndex(i));
+        if (section_sp)
+        {
+            if(section_sp->IsFake()) {
+                uint64_t lower = (uint64_t)-1;
+                uint64_t upper = 0;
+                updateSectionLoadAddress(section_sp->GetChildren(), target, symbolfile_addr, symbolfile_size, vmaddrheuristic,
+                    lower, upper);
+                if (lower < min_addr)
+                    min_addr = lower;
+                if (upper > max_addr)
+                    max_addr = upper;
+                const lldb::addr_t slide_amount = lower - section_sp->GetFileAddress();
+                section_sp->Slide(slide_amount, false);
+                section_sp->GetChildren().Slide(-slide_amount, false);
+                section_sp->SetByteSize (upper - lower);
+            } else {
+                vmaddrheuristic += 2<<section_sp->GetLog2Align();
+                uint64_t lower;
+                if (section_sp->GetFileAddress() > vmaddrheuristic)
+                    lower = section_sp->GetFileAddress();
+                else {
+                    lower = symbolfile_addr+section_sp->GetFileOffset();
+                    section_sp->SetFileAddress(symbolfile_addr+section_sp->GetFileOffset());
+                }
+                target.SetSectionLoadAddress(section_sp, lower, true);
+                uint64_t upper = lower + section_sp->GetByteSize();
+                if (lower < min_addr)
+                    min_addr = lower;
+                if (upper > max_addr)
+                    max_addr = upper;
+                // This is an upper bound, but a good enough heuristic
+                vmaddrheuristic += section_sp->GetByteSize();
+            }
+        }
+    }
+}
+
 bool
 JITLoaderGDB::ReadJITDescriptor(bool all_entries)
+{
+    Target &target = m_process->GetTarget();
+    if (target.GetArchitecture().GetAddressByteSize() == 8)
+        return ReadJITDescriptorImpl<uint64_t>(all_entries);
+    else
+        return ReadJITDescriptorImpl<uint32_t>(all_entries);
+}
+
+template <typename ptr_t>
+bool
+JITLoaderGDB::ReadJITDescriptorImpl(bool all_entries)
 {
     if (m_jit_descriptor_addr == LLDB_INVALID_ADDRESS)
         return false;
@@ -154,7 +219,7 @@ JITLoaderGDB::ReadJITDescriptor(bool all_entries)
     Target &target = m_process->GetTarget();
     ModuleList &module_list = target.GetImages();
 
-    jit_descriptor jit_desc;
+    jit_descriptor<ptr_t> jit_desc;
     const size_t jit_desc_size = sizeof(jit_desc);
     Error error;
     size_t bytes_read = m_process->DoReadMemory(
@@ -177,7 +242,7 @@ JITLoaderGDB::ReadJITDescriptor(bool all_entries)
 
     while (jit_relevant_entry != 0)
     {
-        jit_code_entry jit_entry;
+        jit_code_entry<ptr_t> jit_entry;
         const size_t jit_entry_size = sizeof(jit_entry);
         bytes_read = m_process->DoReadMemory(jit_relevant_entry, &jit_entry, jit_entry_size, error);
         if (bytes_read != jit_entry_size || !error.Success())
@@ -209,10 +274,27 @@ JITLoaderGDB::ReadJITDescriptor(bool all_entries)
             if (module_sp && module_sp->GetObjectFile())
             {
                 bool changed;
-                m_jit_objects.insert(
-                    std::pair<lldb::addr_t, const lldb::ModuleSP>(
-                        symbolfile_addr, module_sp));
-                module_sp->SetLoadAddress(target, 0, true, changed);
+                m_jit_objects.insert(std::make_pair(symbolfile_addr, module_sp));
+                if (module_sp->GetObjectFile()->GetPluginName() == ConstString("mach-o"))
+                {
+                    ObjectFile *image_object_file = module_sp->GetObjectFile();
+                    if (image_object_file)
+                    {
+                        const SectionList *section_list = image_object_file->GetSectionList ();
+                        if (section_list)
+                        {
+                            uint64_t vmaddrheuristic = 0;
+                            uint64_t lower = (uint64_t)-1;
+                            uint64_t upper = 0;
+                            updateSectionLoadAddress(*section_list, target, symbolfile_addr, symbolfile_size,
+                                vmaddrheuristic, lower, upper);
+                        }
+                    }
+                }
+                else
+                {
+                    module_sp->SetLoadAddress(target, 0, true, changed);
+                }
 
                 // load the symbol table right away
                 module_sp->GetObjectFile()->GetSymtab();
@@ -294,7 +376,10 @@ JITLoaderGDB::GetPluginNameStatic()
 JITLoaderSP
 JITLoaderGDB::CreateInstance(Process *process, bool force)
 {
-    JITLoaderSP jit_loader_sp(new JITLoaderGDB(process));
+    JITLoaderSP jit_loader_sp;
+    ArchSpec arch (process->GetTarget().GetArchitecture());
+    if (arch.GetTriple().getVendor() != llvm::Triple::Apple)
+        jit_loader_sp.reset(new JITLoaderGDB(process));
     return jit_loader_sp;
 }
 

@@ -12,7 +12,7 @@ if (NOT DEFINED LLVM_MAIN_SRC_DIR)
   #FileCheck is not install by default, warn the user to Copy FileCheck
   if( NOT EXISTS ${LLVM_INSTALL_ROOT}/bin/FileCheck
       OR NOT EXISTS ${LLVM_INSTALL_ROOT}/bin/not)
-    message(WARNING "FileCheck or not are requred by running regress tests, "
+    message(WARNING "FileCheck or not are required by running regress tests, "
                     "but they are not installed! Please copy it to "
                     "${LLVM_INSTALL_ROOT}/bin.")
   endif(NOT EXISTS ${LLVM_INSTALL_ROOT}/bin/FileCheck
@@ -89,16 +89,6 @@ if(PLUTO_FOUND)
   set(POLLY_LINK_LIBS ${POLLY_LINK_LIBS} ${PLUTO_LIBRARY})
 endif(PLUTO_FOUND)
 
-option(POLLY_USE_CLOOG "Build Polly with Cloog support" ON)
-if(POLLY_USE_CLOOG)
-  # Build Cloog support in Polly (default is for cloog-isl).
-  FIND_PACKAGE(Cloog)
-  FIND_PACKAGE(Gmp REQUIRED)
-  if(CLOOG_FOUND)
-    set(POLLY_LINK_LIBS ${POLLY_LINK_LIBS} ${CLOOG_LIBRARY})
-  endif(CLOOG_FOUND)
-endif(POLLY_USE_CLOOG)
-
 if(GMP_FOUND)
   set(POLLY_LINK_LIBS ${POLLY_LINK_LIBS} ${GMP_LIBRARY})
 endif(GMP_FOUND)
@@ -111,25 +101,6 @@ if (POLLY_ENABLE_GPGPU_CODEGEN)
   set(GPU_CODEGEN TRUE)
 endif(POLLY_ENABLE_GPGPU_CODEGEN)
 
-option(POLLY_ENABLE_OPENSCOP "Enable Openscop library for scop import/export" ON)
-if (POLLY_ENABLE_OPENSCOP)
-  FIND_PACKAGE(OpenScop)
-  if(OPENSCOP_FOUND)
-    set(POLLY_LINK_LIBS ${POLLY_LINK_LIBS} ${OPENSCOP_LIBRARY})
-  endif(OPENSCOP_FOUND)
-endif(POLLY_ENABLE_OPENSCOP)
-
-option(POLLY_ENABLE_SCOPLIB "Enable SCoPLib library for scop import/export" ON)
-if (POLLY_ENABLE_SCOPLIB)
-  FIND_PACKAGE(SCoPLib)
-  if(SCOPLIB_FOUND)
-    set(POLLY_LINK_LIBS ${POLLY_LINK_LIBS} ${SCOPLIB_LIBRARY})
-  endif(SCOPLIB_FOUND)
-endif(POLLY_ENABLE_SCOPLIB)
-
-if (CLOOG_FOUND)
-  INCLUDE_DIRECTORIES( ${CLOOG_INCLUDE_DIR} )
-endif(CLOOG_FOUND)
 if (PLUTO_FOUND)
   INCLUDE_DIRECTORIES( ${PLUTO_INCLUDE_DIR} )
 endif(PLUTO_FOUND)
@@ -143,16 +114,8 @@ if (CUDALIB_FOUND)
   INCLUDE_DIRECTORIES( ${CUDALIB_INCLUDE_DIR} )
 endif(CUDALIB_FOUND)
 
-# Support OpenScop export/import if the library is available.
-if (OPENSCOP_FOUND)
-  INCLUDE_DIRECTORIES( ${OPENSCOP_INCLUDE_DIR} )
-endif(OPENSCOP_FOUND)
-if (SCOPLIB_FOUND)
-  INCLUDE_DIRECTORIES( ${SCOPLIB_INCLUDE_DIR} )
-endif(SCOPLIB_FOUND)
-
-
 include_directories(
+  BEFORE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/lib/JSON/include
   ${CMAKE_CURRENT_BINARY_DIR}/include

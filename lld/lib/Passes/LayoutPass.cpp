@@ -7,28 +7,26 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "LayoutPass"
-
+#include "lld/Passes/LayoutPass.h"
+#include "lld/Core/Instrumentation.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/Debug.h"
 #include <algorithm>
 #include <set>
 
-#include "lld/Passes/LayoutPass.h"
-#include "lld/Core/Instrumentation.h"
-
-#include "llvm/ADT/Twine.h"
-#include "llvm/Support/Debug.h"
-
 using namespace lld;
 
+#define DEBUG_TYPE "LayoutPass"
+
 static bool compareAtoms(const LayoutPass::SortKey &,
-                         const LayoutPass::SortKey &);
+                         const LayoutPass::SortKey &,
+                         LayoutPass::SortOverride customSorter=nullptr);
 
 #ifndef NDEBUG
 // Return "reason (leftval, rightval)"
 static std::string formatReason(StringRef reason, int leftVal, int rightVal) {
-  Twine msg =
-      Twine(reason) + " (" + Twine(leftVal) + ", " + Twine(rightVal) + ")";
-  return msg.str();
+  return (Twine(reason) + " (" + Twine(leftVal) + ", " + Twine(rightVal) + ")")
+      .str();
 }
 
 // Less-than relationship of two atoms must be transitive, which is, if a < b
@@ -107,17 +105,19 @@ static void checkReachabilityFromRoot(AtomToAtomT &followOnRoots,
   if (!atom) return;
   auto i = followOnRoots.find(atom);
   if (i == followOnRoots.end()) {
-    Twine msg(Twine("Atom <") + atomToDebugString(atom)
-              + "> has no follow-on root!");
-    llvm_unreachable(msg.str().c_str());
+    llvm_unreachable(((Twine("Atom <") + atomToDebugString(atom) +
+                       "> has no follow-on root!"))
+                         .str()
+                         .c_str());
   }
   const DefinedAtom *ap = i->second;
   while (true) {
     const DefinedAtom *next = followOnRoots[ap];
     if (!next) {
-      Twine msg(Twine("Atom <" + atomToDebugString(atom)
-                      + "> is not reachable from its root!"));
-      llvm_unreachable(msg.str().c_str());
+      llvm_unreachable((Twine("Atom <" + atomToDebugString(atom) +
+                              "> is not reachable from its root!"))
+                           .str()
+                           .c_str());
     }
     if (next == ap)
       return;
@@ -159,14 +159,15 @@ void LayoutPass::checkFollowonChain(MutableFile::DefinedAtomRange &range) {
 
 /// The function compares atoms by sorting atoms in the following order
 /// a) Sorts atoms by Section position preference
-/// b) Sorts atoms by their ordinal overrides
-///    (layout-after/layout-before/ingroup)
+/// b) Sorts atoms by their ordinal overrides (layout-after/ingroup)
 /// c) Sorts atoms by their permissions
 /// d) Sorts atoms by their content
-/// e) Sorts atoms on how they appear using File Ordinality
-/// f) Sorts atoms on how they appear within the File
+/// e) If custom sorter provided, let it sort
+/// f) Sorts atoms on how they appear using File Ordinality
+/// g) Sorts atoms on how they appear within the File
 static bool compareAtomsSub(const LayoutPass::SortKey &lc,
                             const LayoutPass::SortKey &rc,
+                            LayoutPass::SortOverride customSorter,
                             std::string &reason) {
   const DefinedAtom *left = lc._atom;
   const DefinedAtom *right = rc._atom;
@@ -218,6 +219,13 @@ static bool compareAtomsSub(const LayoutPass::SortKey &lc,
     return leftType < rightType;
   }
 
+  // Use custom sorter if supplied.
+  if (customSorter) {
+    bool leftBeforeRight;
+    if (customSorter(leftRoot, rightRoot, leftBeforeRight))
+      return leftBeforeRight;
+  }
+
   // Sort by .o order.
   const File *leftFile = &leftRoot->file();
   const File *rightFile = &rightRoot->file();
@@ -244,9 +252,10 @@ static bool compareAtomsSub(const LayoutPass::SortKey &lc,
 }
 
 static bool compareAtoms(const LayoutPass::SortKey &lc,
-                         const LayoutPass::SortKey &rc) {
+                         const LayoutPass::SortKey &rc,
+                         LayoutPass::SortOverride customSorter) {
   std::string reason;
-  bool result = compareAtomsSub(lc, rc, reason);
+  bool result = compareAtomsSub(lc, rc, customSorter, reason);
   DEBUG({
     StringRef comp = result ? "<" : ">=";
     llvm::dbgs() << "Layout: '" << lc._atom->name() << "' " << comp << " '"
@@ -255,7 +264,8 @@ static bool compareAtoms(const LayoutPass::SortKey &lc,
   return result;
 }
 
-LayoutPass::LayoutPass(const Registry &registry) : _registry(registry) {}
+LayoutPass::LayoutPass(const Registry &registry, SortOverride sorter)
+  : _registry(registry), _customSorter(sorter) {}
 
 // Returns the atom immediately followed by the given atom in the followon
 // chain.
@@ -348,7 +358,15 @@ void LayoutPass::buildFollowOnTable(MutableFile::DefinedAtomRange &range) {
       if (iter == _followOnRoots.end()) {
         // If the targetAtom is not a root of any chain, let's make the root of
         // the targetAtom to the root of the current chain.
-        _followOnRoots[targetAtom] = _followOnRoots[ai];
+
+        // The expression m[i] = m[j] where m is a DenseMap and i != j is not
+        // safe. m[j] returns a reference, which would be invalidated when a
+        // rehashing occurs. If rehashing occurs to make room for m[i], m[j]
+        // becomes invalid, and that invalid reference would be used as the RHS
+        // value of the expression.
+        // Copy the value to workaround.
+        const DefinedAtom *tmp = _followOnRoots[ai];
+        _followOnRoots[targetAtom] = tmp;
         continue;
       }
       if (iter->second == targetAtom) {
@@ -369,7 +387,8 @@ void LayoutPass::buildFollowOnTable(MutableFile::DefinedAtomRange &range) {
       if (currentAtomSize == 0) {
         const DefinedAtom *targetPrevAtom = findAtomFollowedBy(targetAtom);
         _followOnNexts[targetPrevAtom] = ai;
-        _followOnRoots[ai] = _followOnRoots[targetPrevAtom];
+        const DefinedAtom *tmp = _followOnRoots[targetPrevAtom];
+        _followOnRoots[ai] = tmp;
         continue;
       }
       if (!checkAllPrevAtomsZeroSize(targetAtom))
@@ -448,75 +467,6 @@ void LayoutPass::buildInGroupTable(MutableFile::DefinedAtomRange &range) {
   }
 }
 
-/// This pass builds the followon tables using Preceded By relationships
-/// The algorithm follows a very simple approach
-/// a) If the targetAtom is not part of any root and the current atom is not
-///    part of any root, create a chain with the current atom as root and
-///    the targetAtom as following the current atom
-/// b) Chain the targetAtom to the current Atom if the targetAtom is not part
-///    of any chain and the currentAtom has no followOn's
-/// c) If the targetAtom is part of a different tree and the root of the
-///    targetAtom is itself, and if the current atom is not part of any root
-///    chain all the atoms together
-/// d) If the current atom has no followon and the root of the targetAtom is
-///    not equal to the root of the current atom(the targetAtom is not in the
-///    same chain), chain all the atoms that are lead by the targetAtom into
-///    the current chain
-void LayoutPass::buildPrecededByTable(MutableFile::DefinedAtomRange &range) {
-  ScopedTask task(getDefaultDomain(), "LayoutPass::buildPrecededByTable");
-  // This table would convert precededby references to follow on
-  // references so that we have only one table
-  for (const DefinedAtom *ai : range) {
-    for (const Reference *r : *ai) {
-      if (r->kindNamespace() != lld::Reference::KindNamespace::all ||
-          r->kindValue() != lld::Reference::kindLayoutBefore)
-        continue;
-      const DefinedAtom *targetAtom = dyn_cast<DefinedAtom>(r->target());
-      // Is the targetAtom not chained
-      if (_followOnRoots.count(targetAtom) == 0) {
-        // Is the current atom not part of any root?
-        if (_followOnRoots.count(ai) == 0) {
-          _followOnRoots[ai] = ai;
-          _followOnNexts[ai] = targetAtom;
-          _followOnRoots[targetAtom] = _followOnRoots[ai];
-          continue;
-        }
-        if (_followOnNexts.count(ai) == 0) {
-          // Chain the targetAtom to the current Atom
-          // if the currentAtom has no followon references
-          _followOnNexts[ai] = targetAtom;
-          _followOnRoots[targetAtom] = _followOnRoots[ai];
-        }
-        continue;
-      }
-      if (_followOnRoots.find(targetAtom)->second != targetAtom)
-        continue;
-      // Is the targetAtom in chain with the targetAtom as the root?
-      bool changeRoots = false;
-      if (_followOnRoots.count(ai) == 0) {
-        _followOnRoots[ai] = ai;
-        _followOnNexts[ai] = targetAtom;
-        _followOnRoots[targetAtom] = _followOnRoots[ai];
-        changeRoots = true;
-      } else if (_followOnNexts.count(ai) == 0) {
-        // Chain the targetAtom to the current Atom
-        // if the currentAtom has no followon references
-        if (_followOnRoots[ai] != _followOnRoots[targetAtom]) {
-          _followOnNexts[ai] = targetAtom;
-          _followOnRoots[targetAtom] = _followOnRoots[ai];
-          changeRoots = true;
-        }
-      }
-      // Change the roots of the targetAtom and its chain to
-      // the current atoms root
-      if (changeRoots) {
-        setChainRoot(_followOnRoots[targetAtom], _followOnRoots[ai]);
-      }
-    }
-  }
-}
-
-
 /// Build an ordinal override map by traversing the followon chain, and
 /// assigning ordinals to each atom, if the atoms have their ordinals
 /// already assigned skip the atom and move to the next. This is the
@@ -572,9 +522,6 @@ void LayoutPass::perform(std::unique_ptr<MutableFile> &mergedFile) {
   // Build Ingroup reference table
   buildInGroupTable(atomRange);
 
-  // Build preceded by tables
-  buildPrecededByTable(atomRange);
-
   // Check the structure of followon graph if running in debug mode.
   DEBUG(checkFollowonChain(atomRange));
 
@@ -587,7 +534,10 @@ void LayoutPass::perform(std::unique_ptr<MutableFile> &mergedFile) {
   });
 
   std::vector<LayoutPass::SortKey> vec = decorate(atomRange);
-  std::sort(vec.begin(), vec.end(), compareAtoms);
+  std::sort(vec.begin(), vec.end(),
+      [&](const LayoutPass::SortKey &l, const LayoutPass::SortKey &r) -> bool {
+        return compareAtoms(l, r, _customSorter);
+      });
   DEBUG(checkTransitivity(vec));
   undecorate(atomRange, vec);
 

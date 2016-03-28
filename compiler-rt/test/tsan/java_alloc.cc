@@ -1,4 +1,4 @@
-// RUN: %clangxx_tsan -O1 %s -o %t && %t 2>&1 | FileCheck %s
+// RUN: %clangxx_tsan -O1 %s -o %t && %run %t 2>&1 | FileCheck %s
 #include "java.h"
 
 int const kHeapSize = 1024 * 1024;
@@ -19,14 +19,20 @@ void *Thread(void *p) {
 }
 
 int main() {
-  jptr jheap = (jptr)malloc(kHeapSize);
+  jptr jheap = (jptr)malloc(kHeapSize + 8) + 8;
   __tsan_java_init(jheap, kHeapSize);
   pthread_t th;
   pthread_create(&th, 0, Thread, (void*)(jheap + kHeapSize / 4));
   stress(jheap);
   pthread_join(th, 0);
-  printf("OK\n");
-  return __tsan_java_fini();
+  if (__tsan_java_fini() != 0) {
+    printf("FAILED\n");
+    return 1;
+  }
+  printf("DONE\n");
+  return 0;
 }
 
 // CHECK-NOT: WARNING: ThreadSanitizer: data race
+// CHECK-NOT: FAILED
+// CHECK: DONE

@@ -15,7 +15,19 @@
 
 #include "sanitizer_platform.h"
 #if SANITIZER_LINUX || SANITIZER_FREEBSD || SANITIZER_MAC
-
+// Tests in this file assume that off_t-dependent data structures match the
+// libc ABI. For example, struct dirent here is what readdir() function (as
+// exported from libc) returns, and not the user-facing "dirent", which
+// depends on _FILE_OFFSET_BITS setting.
+// To get this "true" dirent definition, we undefine _FILE_OFFSET_BITS below.
+#ifdef _FILE_OFFSET_BITS
+#undef _FILE_OFFSET_BITS
+#endif
+#if SANITIZER_FREEBSD
+#define _WANT_RTENTRY
+#include <sys/param.h>
+#include <sys/socketvar.h>
+#endif
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
@@ -44,9 +56,11 @@
 
 #if !SANITIZER_ANDROID
 #include <sys/mount.h>
+#include <sys/timeb.h>
 #endif
 
 #if SANITIZER_LINUX
+#include <malloc.h>
 #include <mntent.h>
 #include <netinet/ether.h>
 #include <sys/sysinfo.h>
@@ -113,11 +127,13 @@
 
 #if SANITIZER_LINUX && !SANITIZER_ANDROID
 #include <glob.h>
+#include <obstack.h>
 #include <mqueue.h>
 #include <net/if_ppp.h>
 #include <netax25/ax25.h>
 #include <netipx/ipx.h>
 #include <netrom/netrom.h>
+#include <rpc/xdr.h>
 #include <scsi/scsi.h>
 #include <sys/mtio.h>
 #include <sys/kd.h>
@@ -187,13 +203,14 @@ namespace __sanitizer {
   unsigned struct_tms_sz = sizeof(struct tms);
   unsigned struct_sigevent_sz = sizeof(struct sigevent);
   unsigned struct_sched_param_sz = sizeof(struct sched_param);
-  unsigned struct_statfs_sz = sizeof(struct statfs);
+
 
 #if SANITIZER_MAC && !SANITIZER_IOS
   unsigned struct_statfs64_sz = sizeof(struct statfs64);
 #endif // SANITIZER_MAC && !SANITIZER_IOS
 
 #if !SANITIZER_ANDROID
+  unsigned struct_statfs_sz = sizeof(struct statfs);
   unsigned struct_sockaddr_sz = sizeof(struct sockaddr);
   unsigned ucontext_t_sz = sizeof(ucontext_t);
 #endif // !SANITIZER_ANDROID
@@ -285,15 +302,22 @@ namespace __sanitizer {
   int ptrace_setfpregs = PTRACE_SETFPREGS;
   int ptrace_getfpxregs = PTRACE_GETFPXREGS;
   int ptrace_setfpxregs = PTRACE_SETFPXREGS;
+  int ptrace_geteventmsg = PTRACE_GETEVENTMSG;
+#if (defined(PTRACE_GETSIGINFO) && defined(PTRACE_SETSIGINFO)) ||              \
+    (defined(PT_GETSIGINFO) && defined(PT_SETSIGINFO))
   int ptrace_getsiginfo = PTRACE_GETSIGINFO;
   int ptrace_setsiginfo = PTRACE_SETSIGINFO;
+#else
+  int ptrace_getsiginfo = -1;
+  int ptrace_setsiginfo = -1;
+#endif  // PTRACE_GETSIGINFO/PTRACE_SETSIGINFO
 #if defined(PTRACE_GETREGSET) && defined(PTRACE_SETREGSET)
   int ptrace_getregset = PTRACE_GETREGSET;
   int ptrace_setregset = PTRACE_SETREGSET;
 #else
   int ptrace_getregset = -1;
   int ptrace_setregset = -1;
-#endif
+#endif  // PTRACE_GETREGSET/PTRACE_SETREGSET
 #endif
 
   unsigned path_max = PATH_MAX;
@@ -388,7 +412,7 @@ namespace __sanitizer {
   unsigned struct_sioc_vif_req_sz = sizeof(struct sioc_vif_req);
 #endif
 
-  unsigned IOCTL_NOT_PRESENT = 0;
+  const unsigned IOCTL_NOT_PRESENT = 0;
 
   unsigned IOCTL_FIOASYNC = FIOASYNC;
   unsigned IOCTL_FIOCLEX = FIOCLEX;
@@ -541,7 +565,9 @@ namespace __sanitizer {
   unsigned IOCTL_PPPIOCSMAXCID = PPPIOCSMAXCID;
   unsigned IOCTL_PPPIOCSMRU = PPPIOCSMRU;
   unsigned IOCTL_PPPIOCSXASYNCMAP = PPPIOCSXASYNCMAP;
+  unsigned IOCTL_SIOCADDRT = SIOCADDRT;
   unsigned IOCTL_SIOCDARP = SIOCDARP;
+  unsigned IOCTL_SIOCDELRT = SIOCDELRT;
   unsigned IOCTL_SIOCDRARP = SIOCDRARP;
   unsigned IOCTL_SIOCGARP = SIOCGARP;
   unsigned IOCTL_SIOCGIFENCAP = SIOCGIFENCAP;
@@ -627,8 +653,6 @@ namespace __sanitizer {
 #if SANITIZER_LINUX || SANITIZER_FREEBSD
   unsigned IOCTL_MTIOCGET = MTIOCGET;
   unsigned IOCTL_MTIOCTOP = MTIOCTOP;
-  unsigned IOCTL_SIOCADDRT = SIOCADDRT;
-  unsigned IOCTL_SIOCDELRT = SIOCDELRT;
   unsigned IOCTL_SNDCTL_DSP_GETBLKSIZE = SNDCTL_DSP_GETBLKSIZE;
   unsigned IOCTL_SNDCTL_DSP_GETFMTS = SNDCTL_DSP_GETFMTS;
   unsigned IOCTL_SNDCTL_DSP_NONBLOCK = SNDCTL_DSP_NONBLOCK;
@@ -981,8 +1005,12 @@ CHECK_SIZE_AND_OFFSET(__sysctl_args, newlen);
 
 CHECK_TYPE_SIZE(__kernel_uid_t);
 CHECK_TYPE_SIZE(__kernel_gid_t);
+
+#if !defined(__aarch64__)
 CHECK_TYPE_SIZE(__kernel_old_uid_t);
 CHECK_TYPE_SIZE(__kernel_old_gid_t);
+#endif
+
 CHECK_TYPE_SIZE(__kernel_off_t);
 CHECK_TYPE_SIZE(__kernel_loff_t);
 CHECK_TYPE_SIZE(__kernel_fd_set);
@@ -1048,6 +1076,10 @@ CHECK_SIZE_AND_OFFSET(shmid_ds, shm_nattch);
 
 CHECK_TYPE_SIZE(clock_t);
 
+#if SANITIZER_LINUX
+CHECK_TYPE_SIZE(clockid_t);
+#endif
+
 #if !SANITIZER_ANDROID
 CHECK_TYPE_SIZE(ifaddrs);
 CHECK_SIZE_AND_OFFSET(ifaddrs, ifa_next);
@@ -1072,6 +1104,86 @@ COMPILER_CHECK(offsetof(__sanitizer_ifaddrs, ifa_dstaddr) ==
 CHECK_SIZE_AND_OFFSET(ifaddrs, ifa_dstaddr);
 #endif  // SANITIZER_LINUX
 CHECK_SIZE_AND_OFFSET(ifaddrs, ifa_data);
+#endif
+
+#if SANITIZER_LINUX
+COMPILER_CHECK(sizeof(__sanitizer_mallinfo) == sizeof(struct mallinfo));
+#endif
+
+#if !SANITIZER_ANDROID
+CHECK_TYPE_SIZE(timeb);
+CHECK_SIZE_AND_OFFSET(timeb, time);
+CHECK_SIZE_AND_OFFSET(timeb, millitm);
+CHECK_SIZE_AND_OFFSET(timeb, timezone);
+CHECK_SIZE_AND_OFFSET(timeb, dstflag);
+#endif
+
+CHECK_TYPE_SIZE(passwd);
+CHECK_SIZE_AND_OFFSET(passwd, pw_name);
+CHECK_SIZE_AND_OFFSET(passwd, pw_passwd);
+CHECK_SIZE_AND_OFFSET(passwd, pw_uid);
+CHECK_SIZE_AND_OFFSET(passwd, pw_gid);
+CHECK_SIZE_AND_OFFSET(passwd, pw_dir);
+CHECK_SIZE_AND_OFFSET(passwd, pw_shell);
+
+#if !SANITIZER_ANDROID
+CHECK_SIZE_AND_OFFSET(passwd, pw_gecos);
+#endif
+
+#if SANITIZER_MAC
+CHECK_SIZE_AND_OFFSET(passwd, pw_change);
+CHECK_SIZE_AND_OFFSET(passwd, pw_expire);
+CHECK_SIZE_AND_OFFSET(passwd, pw_class);
+#endif
+
+
+CHECK_TYPE_SIZE(group);
+CHECK_SIZE_AND_OFFSET(group, gr_name);
+CHECK_SIZE_AND_OFFSET(group, gr_passwd);
+CHECK_SIZE_AND_OFFSET(group, gr_gid);
+CHECK_SIZE_AND_OFFSET(group, gr_mem);
+
+#if SANITIZER_LINUX && !SANITIZER_ANDROID
+CHECK_TYPE_SIZE(XDR);
+CHECK_SIZE_AND_OFFSET(XDR, x_op);
+CHECK_SIZE_AND_OFFSET(XDR, x_ops);
+CHECK_SIZE_AND_OFFSET(XDR, x_public);
+CHECK_SIZE_AND_OFFSET(XDR, x_private);
+CHECK_SIZE_AND_OFFSET(XDR, x_base);
+CHECK_SIZE_AND_OFFSET(XDR, x_handy);
+COMPILER_CHECK(__sanitizer_XDR_ENCODE == XDR_ENCODE);
+COMPILER_CHECK(__sanitizer_XDR_DECODE == XDR_DECODE);
+COMPILER_CHECK(__sanitizer_XDR_FREE == XDR_FREE);
+#endif
+
+#if SANITIZER_LINUX && !SANITIZER_ANDROID
+COMPILER_CHECK(sizeof(__sanitizer_FILE) <= sizeof(FILE));
+CHECK_SIZE_AND_OFFSET(FILE, _flags);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_read_ptr);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_read_end);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_read_base);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_write_ptr);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_write_end);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_write_base);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_buf_base);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_buf_end);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_save_base);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_backup_base);
+CHECK_SIZE_AND_OFFSET(FILE, _IO_save_end);
+CHECK_SIZE_AND_OFFSET(FILE, _markers);
+CHECK_SIZE_AND_OFFSET(FILE, _chain);
+CHECK_SIZE_AND_OFFSET(FILE, _fileno);
+#endif
+
+#if SANITIZER_LINUX && !SANITIZER_ANDROID
+COMPILER_CHECK(sizeof(__sanitizer__obstack_chunk) <= sizeof(_obstack_chunk));
+CHECK_SIZE_AND_OFFSET(_obstack_chunk, limit);
+CHECK_SIZE_AND_OFFSET(_obstack_chunk, prev);
+CHECK_TYPE_SIZE(obstack);
+CHECK_SIZE_AND_OFFSET(obstack, chunk_size);
+CHECK_SIZE_AND_OFFSET(obstack, chunk);
+CHECK_SIZE_AND_OFFSET(obstack, object_base);
+CHECK_SIZE_AND_OFFSET(obstack, next_free);
 #endif
 
 #endif  // SANITIZER_LINUX || SANITIZER_FREEBSD || SANITIZER_MAC

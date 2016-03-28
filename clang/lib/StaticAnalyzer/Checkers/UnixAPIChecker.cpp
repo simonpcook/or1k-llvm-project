@@ -62,6 +62,10 @@ private:
       return;
     BT.reset(new BugType(this, name, categories::UnixAPI));
   }
+  void ReportOpenBug(CheckerContext &C,
+                     ProgramStateRef State,
+                     const char *Msg,
+                     SourceRange SR) const;
 };
 } //end anonymous namespace
 
@@ -69,7 +73,44 @@ private:
 // "open" (man 2 open)
 //===----------------------------------------------------------------------===//
 
+void UnixAPIChecker::ReportOpenBug(CheckerContext &C,
+                                   ProgramStateRef State,
+                                   const char *Msg,
+                                   SourceRange SR) const {
+  ExplodedNode *N = C.generateSink(State);
+  if (!N)
+    return;
+
+  LazyInitialize(BT_open, "Improper use of 'open'");
+
+  BugReport *Report = new BugReport(*BT_open, Msg, N);
+  Report->addRange(SR);
+  C.emitReport(Report);
+}
+
 void UnixAPIChecker::CheckOpen(CheckerContext &C, const CallExpr *CE) const {
+  ProgramStateRef state = C.getState();
+
+  if (CE->getNumArgs() < 2) {
+    // The frontend should issue a warning for this case, so this is a sanity
+    // check.
+    return;
+  } else if (CE->getNumArgs() == 3) {
+    const Expr *Arg = CE->getArg(2);
+    QualType QT = Arg->getType();
+    if (!QT->isIntegerType()) {
+      ReportOpenBug(C, state,
+                    "Third argument to 'open' is not an integer",
+                    Arg->getSourceRange());
+      return;
+    }
+  } else if (CE->getNumArgs() > 3) {
+    ReportOpenBug(C, state,
+                  "Call to 'open' with more than three arguments",
+                  CE->getArg(3)->getSourceRange());
+    return;
+  }
+
   // The definition of O_CREAT is platform specific.  We need a better way
   // of querying this information from the checking environment.
   if (!Val_O_CREAT.hasValue()) {
@@ -80,17 +121,9 @@ void UnixAPIChecker::CheckOpen(CheckerContext &C, const CallExpr *CE) const {
       // FIXME: We need a more general way of getting the O_CREAT value.
       // We could possibly grovel through the preprocessor state, but
       // that would require passing the Preprocessor object to the ExprEngine.
+      // See also: MallocChecker.cpp / M_ZERO.
       return;
     }
-  }
-
-  // Look at the 'oflags' argument for the O_CREAT flag.
-  ProgramStateRef state = C.getState();
-
-  if (CE->getNumArgs() < 2) {
-    // The frontend should issue a warning for this case, so this is a sanity
-    // check.
-    return;
   }
 
   // Now check if oflags has O_CREAT set.
@@ -121,18 +154,10 @@ void UnixAPIChecker::CheckOpen(CheckerContext &C, const CallExpr *CE) const {
     return;
 
   if (CE->getNumArgs() < 3) {
-    ExplodedNode *N = C.generateSink(trueState);
-    if (!N)
-      return;
-
-    LazyInitialize(BT_open, "Improper use of 'open'");
-
-    BugReport *report =
-      new BugReport(*BT_open,
-                            "Call to 'open' requires a third argument when "
-                            "the 'O_CREAT' flag is set", N);
-    report->addRange(oflagsEx->getSourceRange());
-    C.emitReport(report);
+    ReportOpenBug(C, trueState,
+                  "Call to 'open' requires a third argument when "
+                  "the 'O_CREAT' flag is set",
+                  oflagsEx->getSourceRange());
   }
 }
 
@@ -238,7 +263,7 @@ void UnixAPIChecker::BasicAllocationCheck(CheckerContext &C,
 
   // Check if the allocation size is 0.
   ProgramStateRef state = C.getState();
-  ProgramStateRef trueState = NULL, falseState = NULL;
+  ProgramStateRef trueState = nullptr, falseState = nullptr;
   const Expr *arg = CE->getArg(sizeArg);
   SVal argVal = state->getSVal(arg, C.getLocationContext());
 
@@ -263,7 +288,7 @@ void UnixAPIChecker::CheckCallocZero(CheckerContext &C,
     return;
 
   ProgramStateRef state = C.getState();
-  ProgramStateRef trueState = NULL, falseState = NULL;
+  ProgramStateRef trueState = nullptr, falseState = nullptr;
 
   unsigned int i;
   for (i = 0; i < nArgs; i++) {
@@ -342,7 +367,7 @@ void UnixAPIChecker::checkPreStmt(const CallExpr *CE,
       .Case("reallocf", &UnixAPIChecker::CheckReallocfZero)
       .Cases("alloca", "__builtin_alloca", &UnixAPIChecker::CheckAllocaZero)
       .Case("valloc", &UnixAPIChecker::CheckVallocZero)
-      .Default(NULL);
+      .Default(nullptr);
 
   if (SC)
     (this->*SC)(C, CE);

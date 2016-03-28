@@ -13,8 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_CODEGEN_EHSCOPESTACK_H
-#define CLANG_CODEGEN_EHSCOPESTACK_H
+#ifndef LLVM_CLANG_LIB_CODEGEN_EHSCOPESTACK_H
+#define LLVM_CLANG_LIB_CODEGEN_EHSCOPESTACK_H
 
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/SmallVector.h"
@@ -74,7 +74,7 @@ template <class T> struct DominatingPointer<T,false> : InvariantValue<T*> {};
 
 template <class T> struct DominatingValue<T*> : DominatingPointer<T> {};
 
-enum CleanupKind {
+enum CleanupKind : unsigned {
   EHCleanup = 0x1,
   NormalCleanup = 0x2,
   NormalAndEHCleanup = EHCleanup | NormalCleanup,
@@ -301,8 +301,8 @@ private:
   void *pushCleanup(CleanupKind K, size_t DataSize);
 
 public:
-  EHScopeStack() : StartOfBuffer(0), EndOfBuffer(0), StartOfData(0),
-                   InnermostNormalCleanup(stable_end()),
+  EHScopeStack() : StartOfBuffer(nullptr), EndOfBuffer(nullptr),
+                   StartOfData(nullptr), InnermostNormalCleanup(stable_end()),
                    InnermostEHScope(stable_end()) {}
   ~EHScopeStack() { delete[] StartOfBuffer; }
 

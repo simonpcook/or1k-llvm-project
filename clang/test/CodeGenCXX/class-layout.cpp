@@ -14,7 +14,7 @@ namespace Test2 {
 
 namespace Test3 {
   // C should have a vtable pointer.
-  // CHECK: %"struct.Test3::A" = type { i32 (...)**, i32 }
+  // CHECK: %"struct.Test3::A" = type <{ i32 (...)**, i32, [4 x i8] }>
   struct A { virtual void f(); int a; } *a;
 }
 
@@ -90,4 +90,13 @@ namespace Test7 {
   };
   B* b;
   #pragma pack ()
+}
+
+// Shouldn't crash.
+namespace Test8 {
+  struct A {};
+  struct D { int a; };
+  struct B : virtual D, A { };
+  struct C : B, A { void f() {} };
+  C c;
 }

@@ -10,10 +10,10 @@
 #include "lldb/Target/Thread.h"
 #include "lldb/Core/RegisterValue.h"
 
-#include "RegisterContextPOSIX_mips64.h"
+#include "Plugins/Process/Utility/RegisterContextPOSIX_mips64.h"
 #include "ProcessPOSIX.h"
 #include "RegisterContextPOSIXProcessMonitor_mips64.h"
-#include "ProcessMonitor.h"
+#include "Plugins/Process/Linux/ProcessMonitor.h"
 
 using namespace lldb_private;
 using namespace lldb;
@@ -22,7 +22,7 @@ using namespace lldb;
 
 RegisterContextPOSIXProcessMonitor_mips64::RegisterContextPOSIXProcessMonitor_mips64(Thread &thread,
                                                                                      uint32_t concrete_frame_idx,
-                                                                                     RegisterInfoInterface *register_info)
+                                                                                     lldb_private::RegisterInfoInterface *register_info)
     : RegisterContextPOSIX_mips64(thread, concrete_frame_idx, register_info)
 {
 }
@@ -196,7 +196,6 @@ RegisterContextPOSIXProcessMonitor_mips64::ReadAllRegisterValues(DataBufferSP &d
         if (success)
         {
             ::memcpy (dst, &m_gpr_mips64, GetGPRSize());
-            dst += GetGPRSize();
         }
     }
     return success;

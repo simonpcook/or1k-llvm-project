@@ -13,8 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_GR_EXPRENGINE
-#define LLVM_CLANG_GR_EXPRENGINE
+#ifndef LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_EXPRENGINE_H
+#define LLVM_CLANG_STATICANALYZER_CORE_PATHSENSITIVE_EXPRENGINE_H
 
 #include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
@@ -106,7 +106,7 @@ public:
 
   /// Returns true if there is still simulation state on the worklist.
   bool ExecuteWorkList(const LocationContext *L, unsigned Steps = 150000) {
-    return Engine.ExecuteWorkList(L, Steps, 0);
+    return Engine.ExecuteWorkList(L, Steps, nullptr);
   }
 
   /// Execute the work list with an initial state. Nodes that reaches the exit
@@ -186,7 +186,7 @@ public:
   ///        and \p ReferenceStmt must be valid (non-null).
   void removeDead(ExplodedNode *Node, ExplodedNodeSet &Out,
             const Stmt *ReferenceStmt, const LocationContext *LC,
-            const Stmt *DiagnosticStmt = 0,
+            const Stmt *DiagnosticStmt = nullptr,
             ProgramPoint::Kind K = ProgramPoint::PreStmtPurgeDeadSymbolsKind);
 
   /// processCFGElement - Called by CoreEngine. Used to generate new successor
@@ -226,6 +226,15 @@ public:
                      ExplodedNodeSet &Dst,
                      const CFGBlock *DstT,
                      const CFGBlock *DstF) override;
+
+  /// Called by CoreEngine.
+  /// Used to generate successor nodes for temporary destructors depending
+  /// on whether the corresponding constructor was visited.
+  void processCleanupTemporaryBranch(const CXXBindTemporaryExpr *BTE,
+                                     NodeBuilderContext &BldCtx,
+                                     ExplodedNode *Pred, ExplodedNodeSet &Dst,
+                                     const CFGBlock *DstT,
+                                     const CFGBlock *DstF) override;
 
   /// Called by CoreEngine.  Used to processing branching behavior
   /// at static initalizers.
@@ -408,7 +417,11 @@ public:
   void VisitIncrementDecrementOperator(const UnaryOperator* U,
                                        ExplodedNode *Pred,
                                        ExplodedNodeSet &Dst);
-  
+
+  void VisitCXXBindTemporaryExpr(const CXXBindTemporaryExpr *BTE,
+                                 ExplodedNodeSet &PreVisit,
+                                 ExplodedNodeSet &Dst);
+
   void VisitCXXCatchStmt(const CXXCatchStmt *CS, ExplodedNode *Pred,
                          ExplodedNodeSet &Dst);
 
@@ -477,7 +490,7 @@ protected:
   ///  This method is used by evalStore, VisitDeclStmt, and others.
   void evalBind(ExplodedNodeSet &Dst, const Stmt *StoreE, ExplodedNode *Pred,
                 SVal location, SVal Val, bool atDeclInit = false,
-                const ProgramPoint *PP = 0);
+                const ProgramPoint *PP = nullptr);
 
   /// Call PointerEscape callback when a value escapes as a result of bind.
   ProgramStateRef processPointerEscapedOnBind(ProgramStateRef State,
@@ -506,14 +519,14 @@ public:
                 ExplodedNode *Pred,
                 ProgramStateRef St,
                 SVal location,
-                const ProgramPointTag *tag = 0,
+                const ProgramPointTag *tag = nullptr,
                 QualType LoadTy = QualType());
 
   // FIXME: 'tag' should be removed, and a LocationContext should be used
   // instead.
   void evalStore(ExplodedNodeSet &Dst, const Expr *AssignE, const Expr *StoreE,
                  ExplodedNode *Pred, ProgramStateRef St, SVal TargetLV, SVal Val,
-                 const ProgramPointTag *tag = 0);
+                 const ProgramPointTag *tag = nullptr);
 
   /// \brief Create a new state in which the call return value is binded to the
   /// call origin expression.
@@ -586,7 +599,7 @@ private:
   ProgramStateRef createTemporaryRegionIfNeeded(ProgramStateRef State,
                                                 const LocationContext *LC,
                                                 const Expr *E,
-                                                const Expr *ResultE = 0);
+                                                const Expr *ResultE = nullptr);
 };
 
 /// Traits for storing the call processing policy inside GDM.

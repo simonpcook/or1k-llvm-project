@@ -48,7 +48,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 
 using namespace clang;
 using namespace clang::ast_matchers;
@@ -183,11 +183,11 @@ int main(int argc, const char **argv) {
   cl::ParseCommandLineOptions(argc, argv);
   if (!Compilations) {
     std::string ErrorMessage;
-    Compilations.reset(
-           CompilationDatabase::loadFromDirectory(BuildPath, ErrorMessage));
+    Compilations =
+        CompilationDatabase::loadFromDirectory(BuildPath, ErrorMessage);
     if (!Compilations)
       llvm::report_fatal_error(ErrorMessage);
-    }
+  }
   tooling::RefactoringTool Tool(*Compilations, SourcePaths);
   ast_matchers::MatchFinder Finder;
   FixCStrCall Callback(&Tool.getReplacements());
@@ -233,5 +233,5 @@ int main(int argc, const char **argv) {
                   callee(methodDecl(hasName(StringCStrMethod))),
                   on(id("arg", expr())))))),
       &Callback);
-  return Tool.runAndSave(newFrontendActionFactory(&Finder));
+  return Tool.runAndSave(newFrontendActionFactory(&Finder).get());
 }

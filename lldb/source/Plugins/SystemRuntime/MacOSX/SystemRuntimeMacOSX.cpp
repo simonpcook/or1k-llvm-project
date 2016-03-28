@@ -16,6 +16,7 @@
 #include "lldb/Core/DataExtractor.h"
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/Section.h"
+#include "lldb/Core/StreamString.h"
 #include "lldb/Expression/ClangFunction.h"
 #include "lldb/Expression/ClangUtilityFunction.h"
 #include "lldb/Host/FileSpec.h"
@@ -27,7 +28,7 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/Process.h"
-
+#include "lldb/Utility/ProcessStructReader.h"
 
 #include "SystemRuntimeMacOSX.h"
 
@@ -93,7 +94,13 @@ SystemRuntimeMacOSX::SystemRuntimeMacOSX (Process* process) :
     m_page_to_free_size(0),
     m_lib_backtrace_recording_info(),
     m_dispatch_queue_offsets_addr (LLDB_INVALID_ADDRESS),
-    m_libdispatch_offsets()
+    m_libdispatch_offsets(),
+    m_libpthread_layout_offsets_addr (LLDB_INVALID_ADDRESS),
+    m_libpthread_offsets(),
+    m_dispatch_tsd_indexes_addr (LLDB_INVALID_ADDRESS),
+    m_libdispatch_tsd_indexes(),
+    m_dispatch_voucher_offsets_addr (LLDB_INVALID_ADDRESS),
+    m_libdispatch_voucher_offsets()
 {
 }
 
@@ -214,6 +221,45 @@ SystemRuntimeMacOSX::GetQueueKind (addr_t dispatch_queue_addr)
     return kind;
 }
 
+void
+SystemRuntimeMacOSX::AddThreadExtendedInfoPacketHints (lldb_private::StructuredData::ObjectSP dict_sp)
+{
+    StructuredData::Dictionary *dict = dict_sp->GetAsDictionary();
+    if (dict)
+    {
+        ReadLibpthreadOffsets();
+        if (m_libpthread_offsets.IsValid())
+        {
+            dict->AddIntegerItem ("plo_pthread_tsd_base_offset", m_libpthread_offsets.plo_pthread_tsd_base_offset);
+            dict->AddIntegerItem ("plo_pthread_tsd_base_address_offset", m_libpthread_offsets.plo_pthread_tsd_base_address_offset);
+            dict->AddIntegerItem ("plo_pthread_tsd_entry_size", m_libpthread_offsets.plo_pthread_tsd_entry_size);
+        }
+    
+        ReadLibdispatchTSDIndexes ();
+        if (m_libdispatch_tsd_indexes.IsValid())
+        {
+            dict->AddIntegerItem ("dti_queue_index", m_libdispatch_tsd_indexes.dti_queue_index);
+            dict->AddIntegerItem ("dti_voucher_index", m_libdispatch_tsd_indexes.dti_voucher_index);
+            dict->AddIntegerItem ("dti_qos_class_index", m_libdispatch_tsd_indexes.dti_qos_class_index);
+        }
+    }
+}
+
+bool
+SystemRuntimeMacOSX::SafeToCallFunctionsOnThisThread (ThreadSP thread_sp)
+{
+    if (thread_sp && thread_sp->GetStackFrameCount() > 0 && thread_sp->GetFrameWithConcreteFrameIndex(0))
+    {
+        const SymbolContext sym_ctx (thread_sp->GetFrameWithConcreteFrameIndex(0)->GetSymbolContext (eSymbolContextSymbol));
+        static ConstString g_select_symbol ("__select");
+        if (sym_ctx.GetFunctionName() == g_select_symbol)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 lldb::queue_id_t
 SystemRuntimeMacOSX::GetQueueIDFromThreadQAddress (lldb::addr_t dispatch_qaddr)
 {
@@ -294,6 +340,127 @@ SystemRuntimeMacOSX::ReadLibdispatchOffsets ()
         // The struct LibdispatchOffsets is a series of uint16_t's - extract them all
         // in one big go.
         data.GetU16 (&data_offset, &m_libdispatch_offsets.dqo_version, sizeof (struct LibdispatchOffsets) / sizeof (uint16_t));
+    }
+}
+
+void
+SystemRuntimeMacOSX::ReadLibpthreadOffsetsAddress ()
+{
+    if (m_libpthread_layout_offsets_addr != LLDB_INVALID_ADDRESS)
+        return;
+
+    static ConstString g_libpthread_layout_offsets_symbol_name ("pthread_layout_offsets");
+    const Symbol *libpthread_layout_offsets_symbol = NULL;
+
+    ModuleSpec libpthread_module_spec (FileSpec("libsystem_pthread.dylib", false));
+    ModuleSP module_sp (m_process->GetTarget().GetImages().FindFirstModule (libpthread_module_spec));
+    if (module_sp)
+    {
+        libpthread_layout_offsets_symbol = module_sp->FindFirstSymbolWithNameAndType 
+                                                           (g_libpthread_layout_offsets_symbol_name, eSymbolTypeData);
+        if (libpthread_layout_offsets_symbol)
+        {
+            m_libpthread_layout_offsets_addr =  libpthread_layout_offsets_symbol->GetAddress().GetLoadAddress(&m_process->GetTarget());
+        }
+    }
+}
+
+void
+SystemRuntimeMacOSX::ReadLibpthreadOffsets ()
+{
+    if (m_libpthread_offsets.IsValid())
+        return;
+
+    ReadLibpthreadOffsetsAddress ();
+
+    if (m_libpthread_layout_offsets_addr != LLDB_INVALID_ADDRESS)
+    {
+        uint8_t memory_buffer[sizeof (struct LibpthreadOffsets)];
+        DataExtractor data (memory_buffer, 
+                            sizeof(memory_buffer), 
+                            m_process->GetByteOrder(), 
+                            m_process->GetAddressByteSize());
+        Error error;
+        if (m_process->ReadMemory (m_libpthread_layout_offsets_addr, memory_buffer, sizeof(memory_buffer), error) == sizeof(memory_buffer))
+        {
+            lldb::offset_t data_offset = 0;
+    
+            // The struct LibpthreadOffsets is a series of uint16_t's - extract them all
+            // in one big go.
+            data.GetU16 (&data_offset, &m_libpthread_offsets.plo_version, sizeof (struct LibpthreadOffsets) / sizeof (uint16_t));
+        }
+    }
+}
+
+void
+SystemRuntimeMacOSX::ReadLibdispatchTSDIndexesAddress ()
+{
+    if (m_dispatch_tsd_indexes_addr != LLDB_INVALID_ADDRESS)
+        return;
+
+    static ConstString g_libdispatch_tsd_indexes_symbol_name ("dispatch_tsd_indexes");
+    const Symbol *libdispatch_tsd_indexes_symbol = NULL;
+
+    ModuleSpec libpthread_module_spec (FileSpec("libdispatch.dylib", false));
+    ModuleSP module_sp (m_process->GetTarget().GetImages().FindFirstModule (libpthread_module_spec));
+    if (module_sp)
+    {
+        libdispatch_tsd_indexes_symbol = module_sp->FindFirstSymbolWithNameAndType 
+                                                           (g_libdispatch_tsd_indexes_symbol_name, eSymbolTypeData);
+        if (libdispatch_tsd_indexes_symbol)
+        {
+            m_dispatch_tsd_indexes_addr =  libdispatch_tsd_indexes_symbol->GetAddress().GetLoadAddress(&m_process->GetTarget());
+        }
+    }
+}
+
+void
+SystemRuntimeMacOSX::ReadLibdispatchTSDIndexes ()
+{
+    if (m_libdispatch_tsd_indexes.IsValid())
+        return;
+
+    ReadLibdispatchTSDIndexesAddress ();
+
+    if (m_dispatch_tsd_indexes_addr != LLDB_INVALID_ADDRESS)
+    {
+
+        // We don't need to check the version number right now, it will be at least 2, but
+        // keep this code around to fetch just the version # for the future where we need
+        // to fetch alternate versions of the struct.
+# if 0
+        uint16_t dti_version = 2;
+        Address dti_struct_addr;
+        if (m_process->GetTarget().ResolveLoadAddress (m_dispatch_tsd_indexes_addr, dti_struct_addr))
+        {
+            Error error;
+            uint16_t version = m_process->GetTarget().ReadUnsignedIntegerFromMemory (dti_struct_addr, false, 2, UINT16_MAX, error);
+            if (error.Success() && dti_version != UINT16_MAX)
+            {
+                dti_version = version;
+            }
+        }
+#endif
+
+        ClangASTContext *ast_ctx = m_process->GetTarget().GetScratchClangASTContext();
+        if (ast_ctx->getASTContext() && m_dispatch_tsd_indexes_addr != LLDB_INVALID_ADDRESS)
+        {
+            ClangASTType uint16 = ast_ctx->GetIntTypeFromBitSize(16, false);
+            ClangASTType dispatch_tsd_indexes_s = ast_ctx->CreateRecordType(nullptr, lldb::eAccessPublic, "__lldb_dispatch_tsd_indexes_s", clang::TTK_Struct, lldb::eLanguageTypeC);
+            dispatch_tsd_indexes_s.StartTagDeclarationDefinition();
+            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_version", uint16, lldb::eAccessPublic, 0);
+            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_queue_index", uint16, lldb::eAccessPublic, 0);
+            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_voucher_index", uint16, lldb::eAccessPublic, 0);
+            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_qos_class_index", uint16, lldb::eAccessPublic, 0);
+            dispatch_tsd_indexes_s.CompleteTagDeclarationDefinition();
+
+            ProcessStructReader struct_reader (m_process, m_dispatch_tsd_indexes_addr, dispatch_tsd_indexes_s);
+
+            m_libdispatch_tsd_indexes.dti_version = struct_reader.GetField<uint16_t>(ConstString("dti_version"));
+            m_libdispatch_tsd_indexes.dti_queue_index = struct_reader.GetField<uint16_t>(ConstString("dti_queue_index"));
+            m_libdispatch_tsd_indexes.dti_voucher_index = struct_reader.GetField<uint16_t>(ConstString("dti_voucher_index"));
+            m_libdispatch_tsd_indexes.dti_qos_class_index = struct_reader.GetField<uint16_t>(ConstString("dti_qos_class_index"));
+        }
     }
 }
 
@@ -524,26 +691,7 @@ SystemRuntimeMacOSX::GetExtendedBacktraceTypes ()
 void
 SystemRuntimeMacOSX::PopulateQueueList (lldb_private::QueueList &queue_list)
 {
-    if (!BacktraceRecordingHeadersInitialized())
-    {
-        // We don't have libBacktraceRecording -- build the list of queues by looking at
-        // all extant threads, and the queues that they currently belong to.
-
-        for (ThreadSP thread_sp : m_process->Threads())
-        {
-            if (thread_sp->GetQueueID() != LLDB_INVALID_QUEUE_ID)
-            {
-                if (queue_list.FindQueueByID (thread_sp->GetQueueID()).get() == NULL)
-                {
-                    QueueSP queue_sp (new Queue(m_process->shared_from_this(), thread_sp->GetQueueID(), thread_sp->GetQueueName()));
-                    queue_sp->SetKind (GetQueueKind (thread_sp->GetQueueLibdispatchQueueAddress()));
-                    queue_sp->SetLibdispatchQueueAddress (thread_sp->GetQueueLibdispatchQueueAddress());
-                    queue_list.AddQueue (queue_sp);
-                }
-            }
-        }
-    }
-    else
+    if (BacktraceRecordingHeadersInitialized())
     {
         AppleGetQueuesHandler::GetQueuesReturnInfo queue_info_pointer;
         ThreadSP cur_thread_sp (m_process->GetThreadList().GetSelectedThread());
@@ -563,6 +711,26 @@ SystemRuntimeMacOSX::PopulateQueueList (lldb_private::QueueList &queue_list)
                 {
                     PopulateQueuesUsingLibBTR (queue_info_pointer.queues_buffer_ptr, queue_info_pointer.queues_buffer_size, queue_info_pointer.count, queue_list);
                 }
+            }
+        }
+    }
+
+    // We either didn't have libBacktraceRecording (and need to create the queues list based on threads)
+    // or we did get the queues list from libBacktraceRecording but some special queues may not be
+    // included in its information.  This is needed because libBacktraceRecording
+    // will only list queues with pending or running items by default - but the magic com.apple.main-thread
+    // queue on thread 1 is always around.
+
+    for (ThreadSP thread_sp : m_process->Threads())
+    {
+        if (thread_sp->GetQueueID() != LLDB_INVALID_QUEUE_ID)
+        {
+            if (queue_list.FindQueueByID (thread_sp->GetQueueID()).get() == NULL)
+            {
+                QueueSP queue_sp (new Queue(m_process->shared_from_this(), thread_sp->GetQueueID(), thread_sp->GetQueueName()));
+                queue_sp->SetKind (GetQueueKind (thread_sp->GetQueueLibdispatchQueueAddress()));
+                queue_sp->SetLibdispatchQueueAddress (thread_sp->GetQueueLibdispatchQueueAddress());
+                queue_list.AddQueue (queue_sp);
             }
         }
     }
@@ -620,7 +788,8 @@ SystemRuntimeMacOSX::GetPendingItemRefsForQueue (lldb::addr_t queue)
                         pending_item_refs.new_style = true;
                         uint32_t item_size = extractor.GetU32(&offset);
                         uint32_t start_of_array_offset = offset;
-                        while (offset < pending_items_pointer.items_buffer_size && i < pending_items_pointer.count)
+                        while (offset < pending_items_pointer.items_buffer_size &&
+                               static_cast<size_t>(i) < pending_items_pointer.count)
                         {
                             offset = start_of_array_offset + (i * item_size);
                             ItemRefAndCodeAddress item;
@@ -634,7 +803,8 @@ SystemRuntimeMacOSX::GetPendingItemRefsForQueue (lldb::addr_t queue)
                     {
                         offset = 0;
                         pending_item_refs.new_style = false;
-                        while (offset < pending_items_pointer.items_buffer_size && i < pending_items_pointer.count)
+                        while (offset < pending_items_pointer.items_buffer_size &&
+                               static_cast<size_t>(i) < pending_items_pointer.count)
                         {
                             ItemRefAndCodeAddress item;
                             item.item_ref = extractor.GetPointer (&offset);

@@ -83,6 +83,8 @@ void test() {
 #define EQ(x,y) (x) == (y)
   EQ(x, 5);
 #undef EQ
+
+  (void)sizeof(1 < 2, true); // No warning; unevaluated context.
 }
 
 namespace PR10291 {
@@ -105,4 +107,31 @@ namespace PR10291 {
   };
 
   X<int> x;
+}
+
+namespace PR19724 {
+class stream {
+} cout, cin;
+
+stream &operator<(stream &s, int);
+bool operator<(stream &s, stream &s2);
+
+void test() {
+  cout < 5;    // no warning, operator returns a reference
+  cout < cin;  // expected-warning {{relational comparison result unused}}
+}
+}
+
+namespace PR19791 {
+struct S {
+  void operator!=(int);
+  int operator==(int);
+};
+
+void test() {
+  S s;
+  s != 1;
+  s == 1;  // expected-warning{{equality comparison result unused}}
+           // expected-note@-1{{use '=' to turn this equality comparison into an assignment}}
+}
 }

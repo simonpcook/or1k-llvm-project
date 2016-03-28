@@ -16,13 +16,10 @@
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/ScopPass.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
-#include "llvm/Support/system_error.h"
-
-#define DEBUG_TYPE "polly-import-jscop"
 
 #include "json/reader.h"
 #include "json/writer.h"
@@ -32,25 +29,29 @@
 #include "isl/constraint.h"
 #include "isl/printer.h"
 
+#include <memory>
 #include <string>
+#include <system_error>
 
 using namespace llvm;
 using namespace polly;
+
+#define DEBUG_TYPE "polly-import-jscop"
 
 STATISTIC(NewAccessMapFound, "Number of updated access functions");
 
 namespace {
 static cl::opt<std::string>
-ImportDir("polly-import-jscop-dir",
-          cl::desc("The directory to import the .jscop files from."),
-          cl::Hidden, cl::value_desc("Directory path"), cl::ValueRequired,
-          cl::init("."), cl::cat(PollyCategory));
+    ImportDir("polly-import-jscop-dir",
+              cl::desc("The directory to import the .jscop files from."),
+              cl::Hidden, cl::value_desc("Directory path"), cl::ValueRequired,
+              cl::init("."), cl::cat(PollyCategory));
 
 static cl::opt<std::string>
-ImportPostfix("polly-import-jscop-postfix",
-              cl::desc("Postfix to append to the import .jsop files."),
-              cl::Hidden, cl::value_desc("File postfix"), cl::ValueRequired,
-              cl::init(""), cl::cat(PollyCategory));
+    ImportPostfix("polly-import-jscop-postfix",
+                  cl::desc("Postfix to append to the import .jsop files."),
+                  cl::Hidden, cl::value_desc("File postfix"), cl::ValueRequired,
+                  cl::init(""), cl::cat(PollyCategory));
 
 struct JSONExporter : public ScopPass {
   static char ID;
@@ -103,13 +104,11 @@ Json::Value JSONExporter::getJSON(Scop &scop) const {
     statement["schedule"] = Stmt->getScatteringStr();
     statement["accesses"];
 
-    for (ScopStmt::memacc_iterator MI = Stmt->memacc_begin(),
-                                   ME = Stmt->memacc_end();
-         MI != ME; ++MI) {
+    for (MemoryAccess *MA : *Stmt) {
       Json::Value access;
 
-      access["kind"] = (*MI)->isRead() ? "read" : "write";
-      access["relation"] = (*MI)->getAccessRelationStr();
+      access["kind"] = MA->isRead() ? "read" : "write";
+      access["relation"] = MA->getOriginalAccessRelationStr();
 
       statement["accesses"].append(access);
     }
@@ -131,14 +130,14 @@ bool JSONExporter::runOnScop(Scop &scop) {
   std::string fileContent = writer.write(jscop);
 
   // Write to file.
-  std::string ErrInfo;
-  tool_output_file F(FileName.c_str(), ErrInfo, llvm::sys::fs::F_Text);
+  std::error_code EC;
+  tool_output_file F(FileName, EC, llvm::sys::fs::F_Text);
 
   std::string FunctionName = R.getEntry()->getParent()->getName();
   errs() << "Writing JScop '" << R.getNameStr() << "' in function '"
          << FunctionName << "' to '" << FileName << "'.\n";
 
-  if (ErrInfo.empty()) {
+  if (!EC) {
     F.os() << fileContent;
     F.os().close();
     if (!F.os().has_error()) {
@@ -186,14 +185,16 @@ bool JSONImporter::runOnScop(Scop &scop) {
   S = &scop;
   Region &R = S->getRegion();
   Dependences *D = &getAnalysis<Dependences>();
+  const DataLayout &DL = getAnalysis<DataLayoutPass>().getDataLayout();
 
   std::string FileName = ImportDir + "/" + getFileName(S);
 
   std::string FunctionName = R.getEntry()->getParent()->getName();
   errs() << "Reading JScop '" << R.getNameStr() << "' in function '"
          << FunctionName << "' from '" << FileName << "'.\n";
-  OwningPtr<MemoryBuffer> result;
-  error_code ec = MemoryBuffer::getFile(FileName, result);
+  ErrorOr<std::unique_ptr<MemoryBuffer>> result =
+      MemoryBuffer::getFile(FileName);
+  std::error_code ec = result.getError();
 
   if (ec) {
     errs() << "File could not be read: " << ec.message() << "\n";
@@ -203,7 +204,7 @@ bool JSONImporter::runOnScop(Scop &scop) {
   Json::Reader reader;
   Json::Value jscop;
 
-  bool parsingSuccessful = reader.parse(result->getBufferStart(), jscop);
+  bool parsingSuccessful = reader.parse(result.get()->getBufferStart(), jscop);
 
   if (!parsingSuccessful) {
     errs() << "JSCoP file could not be parsed\n";
@@ -262,14 +263,12 @@ bool JSONImporter::runOnScop(Scop &scop) {
     ScopStmt *Stmt = *SI;
 
     int memoryAccessIdx = 0;
-    for (ScopStmt::memacc_iterator MI = Stmt->memacc_begin(),
-                                   ME = Stmt->memacc_end();
-         MI != ME; ++MI) {
+    for (MemoryAccess *MA : *Stmt) {
       Json::Value accesses = jscop["statements"][statementIdx]["accesses"]
                                   [memoryAccessIdx]["relation"];
       isl_map *newAccessMap =
           isl_map_read_from_str(S->getIslCtx(), accesses.asCString());
-      isl_map *currentAccessMap = (*MI)->getAccessRelation();
+      isl_map *currentAccessMap = MA->getAccessRelation();
 
       if (isl_map_dim(newAccessMap, isl_dim_param) !=
           isl_map_dim(currentAccessMap, isl_dim_param)) {
@@ -277,6 +276,39 @@ bool JSONImporter::runOnScop(Scop &scop) {
         isl_map_free(currentAccessMap);
         isl_map_free(newAccessMap);
         return false;
+      }
+
+      isl_id *OutId = isl_map_get_tuple_id(currentAccessMap, isl_dim_out);
+      newAccessMap = isl_map_set_tuple_id(newAccessMap, isl_dim_out, OutId);
+
+      // We keep the old alignment, thus we cannot allow accesses to memory
+      // locations that were not accessed before if the alignment of the access
+      // is not the default alignment.
+      bool SpecialAlignment = true;
+      if (LoadInst *LoadI = dyn_cast<LoadInst>(MA->getAccessInstruction())) {
+        SpecialAlignment =
+            DL.getABITypeAlignment(LoadI->getType()) != LoadI->getAlignment();
+      } else if (StoreInst *StoreI =
+                     dyn_cast<StoreInst>(MA->getAccessInstruction())) {
+        SpecialAlignment =
+            DL.getABITypeAlignment(StoreI->getValueOperand()->getType()) !=
+            StoreI->getAlignment();
+      }
+
+      if (SpecialAlignment) {
+        isl_set *newAccessSet = isl_map_range(isl_map_copy(newAccessMap));
+        isl_set *currentAccessSet =
+            isl_map_range(isl_map_copy(currentAccessMap));
+        bool isSubset = isl_set_is_subset(newAccessSet, currentAccessSet);
+        isl_set_free(newAccessSet);
+        isl_set_free(currentAccessSet);
+
+        if (!isSubset) {
+          errs() << "JScop file changes the accessed memory\n";
+          isl_map_free(currentAccessMap);
+          isl_map_free(newAccessMap);
+          return false;
+        }
       }
 
       // We need to copy the isl_ids for the parameter dimensions to the new
@@ -310,7 +342,7 @@ bool JSONImporter::runOnScop(Scop &scop) {
         // Statistics.
         ++NewAccessMapFound;
         newAccessStrings.push_back(accesses.asCString());
-        (*MI)->setNewAccessRelation(newAccessMap);
+        MA->setNewAccessRelation(newAccessMap);
       } else {
         isl_map_free(newAccessMap);
       }
@@ -326,6 +358,7 @@ bool JSONImporter::runOnScop(Scop &scop) {
 void JSONImporter::getAnalysisUsage(AnalysisUsage &AU) const {
   ScopPass::getAnalysisUsage(AU);
   AU.addRequired<Dependences>();
+  AU.addRequired<DataLayoutPass>();
 }
 Pass *polly::createJSONImporterPass() { return new JSONImporter(); }
 
@@ -344,6 +377,7 @@ INITIALIZE_PASS_BEGIN(JSONImporter, "polly-import-jscop",
                       " (Reads a .jscop file for each Scop)",
                       false, false);
 INITIALIZE_PASS_DEPENDENCY(Dependences)
+INITIALIZE_PASS_DEPENDENCY(DataLayoutPass)
 INITIALIZE_PASS_END(JSONImporter, "polly-import-jscop",
                     "Polly - Import Scops from JSON"
                     " (Reads a .jscop file for each Scop)",

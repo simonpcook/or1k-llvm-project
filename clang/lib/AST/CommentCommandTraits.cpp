@@ -89,6 +89,10 @@ CommandInfo *CommandTraits::createCommandInfoWithName(StringRef CommandName) {
   // Value-initialize (=zero-initialize in this case) a new CommandInfo.
   CommandInfo *Info = new (Allocator) CommandInfo();
   Info->Name = Name;
+  // We only have a limited number of bits to encode command IDs in the
+  // CommandInfo structure, so the ID numbers can potentially wrap around.
+  assert((NextID < (1 << CommandInfo::NumCommandIDBits))
+         && "Too many commands. We have limited bits for the command ID.");
   Info->ID = NextID++;
 
   RegisteredCommands.push_back(Info);
@@ -113,7 +117,7 @@ const CommandInfo *CommandTraits::getBuiltinCommandInfo(
                                                   unsigned CommandID) {
   if (CommandID < llvm::array_lengthof(Commands))
     return &Commands[CommandID];
-  return NULL;
+  return nullptr;
 }
 
 const CommandInfo *CommandTraits::getRegisteredCommandInfo(
@@ -122,7 +126,7 @@ const CommandInfo *CommandTraits::getRegisteredCommandInfo(
     if (RegisteredCommands[i]->Name == Name)
       return RegisteredCommands[i];
   }
-  return NULL;
+  return nullptr;
 }
 
 const CommandInfo *CommandTraits::getRegisteredCommandInfo(

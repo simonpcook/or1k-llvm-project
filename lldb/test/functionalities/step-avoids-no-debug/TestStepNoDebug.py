@@ -6,6 +6,7 @@ import os
 import re
 import unittest2
 import lldb, lldbutil
+import sys
 from lldbtest import *
 
 class ReturnValueTestCase(TestBase):
@@ -40,6 +41,7 @@ class ReturnValueTestCase(TestBase):
 
     @python_api_test
     @dwarf_test
+    @skipIfLinux # intermittent failure - llvm.org/pr19247
     def test_step_over_with_dwarf_python(self):
         """Test stepping over using avoid-no-debug with dwarf."""
         self.buildDwarf()
@@ -57,6 +59,7 @@ class ReturnValueTestCase(TestBase):
 
     @python_api_test
     @dwarf_test
+    @skipIfLinux # intermittent failure - llvm.org/pr19247
     def test_step_in_with_dwarf_python(self):
         """Test stepping in using avoid-no-debug with dwarf."""
         self.buildDwarf()
@@ -71,6 +74,7 @@ class ReturnValueTestCase(TestBase):
 
     def tearDown (self):
         self.dbg.HandleCommand ("settings set target.process.thread.step-out-avoid-nodebug false")
+        TestBase.tearDown(self)
 
     def hit_correct_line (self, pattern):
         target_line = line_number (self.main_source, pattern)
@@ -101,7 +105,7 @@ class ReturnValueTestCase(TestBase):
         threads = lldbutil.get_threads_stopped_at_breakpoint (self.process, inner_bkpt)
         self.assertTrue(len(threads) == 1, "Stopped at inner breakpoint.")
         self.thread = threads[0]
-    
+
     def do_step_out_past_nodebug(self):
         # The first step out takes us to the called_from_nodebug frame, just to make sure setting
         # step-out-avoid-nodebug doesn't change the behavior in frames with debug info.

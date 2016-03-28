@@ -17,9 +17,11 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
-#include <stdlib.h>
-#include <io.h>
 #include <windows.h>
+#include <dbghelp.h>
+#include <io.h>
+#include <psapi.h>
+#include <stdlib.h>
 
 #include "sanitizer_common.h"
 #include "sanitizer_libc.h"
@@ -64,6 +66,7 @@ uptr GetThreadSelf() {
   return GetTid();
 }
 
+#if !SANITIZER_GO
 void GetThreadStackTopAndBottom(bool at_initialization, uptr *stack_top,
                                 uptr *stack_bottom) {
   CHECK(stack_top);
@@ -76,6 +79,7 @@ void GetThreadStackTopAndBottom(bool at_initialization, uptr *stack_top,
   *stack_top = (uptr)mbi.BaseAddress + mbi.RegionSize;
   *stack_bottom = (uptr)mbi.AllocationBase;
 }
+#endif  // #if !SANITIZER_GO
 
 void *MmapOrDie(uptr size, const char *mem_type) {
   void *rv = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -129,11 +133,17 @@ void FlushUnneededShadowMemory(uptr addr, uptr size) {
 }
 
 bool MemoryRangeIsAvailable(uptr range_start, uptr range_end) {
-  // FIXME: shall we do anything here on Windows?
-  return true;
+  MEMORY_BASIC_INFORMATION mbi;
+  CHECK(VirtualQuery((void *)range_start, &mbi, sizeof(mbi)));
+  return mbi.Protect & PAGE_NOACCESS &&
+         (uptr)mbi.BaseAddress + mbi.RegionSize >= range_end;
 }
 
 void *MapFileToMemory(const char *file_name, uptr *buff_size) {
+  UNIMPLEMENTED();
+}
+
+void *MapWritableFileToMemory(void *addr, uptr size, uptr fd, uptr offset) {
   UNIMPLEMENTED();
 }
 
@@ -180,19 +190,89 @@ u32 GetUid() {
   UNIMPLEMENTED();
 }
 
+namespace {
+struct ModuleInfo {
+  HMODULE handle;
+  uptr base_address;
+  uptr end_address;
+};
+
+int CompareModulesBase(const void *pl, const void *pr) {
+  const ModuleInfo &l = *(ModuleInfo *)pl, &r = *(ModuleInfo *)pr;
+  if (l.base_address < r.base_address)
+    return -1;
+  return l.base_address > r.base_address;
+}
+}  // namespace
+
 void DumpProcessMap() {
-  UNIMPLEMENTED();
+  Report("Dumping process modules:\n");
+  HANDLE cur_process = GetCurrentProcess();
+
+  // Query the list of modules.  Start by assuming there are no more than 256
+  // modules and retry if that's not sufficient.
+  ModuleInfo *modules;
+  size_t num_modules;
+  {
+    HMODULE *hmodules = 0;
+    uptr modules_buffer_size = sizeof(HMODULE) * 256;
+    DWORD bytes_required;
+    while (!hmodules) {
+      hmodules = (HMODULE *)MmapOrDie(modules_buffer_size, __FUNCTION__);
+      CHECK(EnumProcessModules(cur_process, hmodules, modules_buffer_size,
+                               &bytes_required));
+      if (bytes_required > modules_buffer_size) {
+        // Either there turned out to be more than 256 hmodules, or new hmodules
+        // could have loaded since the last try.  Retry.
+        UnmapOrDie(hmodules, modules_buffer_size);
+        hmodules = 0;
+        modules_buffer_size = bytes_required;
+      }
+    }
+
+    num_modules = bytes_required / sizeof(HMODULE);
+    modules =
+        (ModuleInfo *)MmapOrDie(num_modules * sizeof(ModuleInfo), __FUNCTION__);
+    for (size_t i = 0; i < num_modules; ++i) {
+      modules[i].handle = hmodules[i];
+      MODULEINFO mi;
+      if (!GetModuleInformation(cur_process, hmodules[i], &mi, sizeof(mi)))
+        continue;
+      modules[i].base_address = (uptr)mi.lpBaseOfDll;
+      modules[i].end_address = (uptr)mi.lpBaseOfDll + mi.SizeOfImage;
+    }
+    UnmapOrDie(hmodules, modules_buffer_size);
+  }
+
+  qsort(modules, num_modules, sizeof(ModuleInfo), CompareModulesBase);
+
+  for (size_t i = 0; i < num_modules; ++i) {
+    const ModuleInfo &mi = modules[i];
+    char module_name[MAX_PATH];
+    bool got_module_name = GetModuleFileNameEx(
+        cur_process, mi.handle, module_name, sizeof(module_name));
+    if (mi.end_address != 0) {
+      Printf("\t%p-%p %s\n", mi.base_address, mi.end_address,
+             got_module_name ? module_name : "[no name]");
+    } else if (got_module_name) {
+      Printf("\t??\?-??? %s\n", module_name);
+    } else {
+      Printf("\t???\n");
+    }
+  }
+  UnmapOrDie(modules, num_modules * sizeof(ModuleInfo));
 }
 
-void DisableCoreDumper() {
-  UNIMPLEMENTED();
+void DisableCoreDumperIfNecessary() {
+  // Do nothing.
 }
 
 void ReExec() {
   UNIMPLEMENTED();
 }
 
-void PrepareForSandboxing() {
+void PrepareForSandboxing(__sanitizer_sandbox_arguments *args) {
+  (void)args;
   // Nothing here for now.
 }
 
@@ -201,6 +281,14 @@ bool StackSizeIsUnlimited() {
 }
 
 void SetStackSizeLimitInBytes(uptr limit) {
+  UNIMPLEMENTED();
+}
+
+bool AddressSpaceIsUnlimited() {
+  UNIMPLEMENTED();
+}
+
+void SetAddressSpaceUnlimited() {
   UNIMPLEMENTED();
 }
 
@@ -222,8 +310,9 @@ u64 NanoTime() {
 }
 
 void Abort() {
-  abort();
-  internal__exit(-1);  // abort is not NORETURN on Windows.
+  if (::IsDebuggerPresent())
+    __debugbreak();
+  internal__exit(3);
 }
 
 uptr GetListOfModules(LoadedModule *modules, uptr max_modules,
@@ -351,6 +440,21 @@ void internal__exit(int exitcode) {
   ExitProcess(exitcode);
 }
 
+uptr internal_ftruncate(fd_t fd, uptr size) {
+  UNIMPLEMENTED();
+}
+
+uptr internal_rename(const char *oldpath, const char *newpath) {
+  UNIMPLEMENTED();
+}
+
+uptr GetRSS() {
+  return 0;
+}
+
+void *internal_start_thread(void (*func)(void *arg), void *arg) { return 0; }
+void internal_join_thread(void *th) { }
+
 // ---------------------- BlockingMutex ---------------- {{{1
 const uptr LOCK_UNINITIALIZED = 0;
 const uptr LOCK_READY = (uptr)-1;
@@ -419,7 +523,8 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
 #endif
 }
 
-void StackTrace::SlowUnwindStack(uptr pc, uptr max_depth) {
+#if !SANITIZER_GO
+void BufferedStackTrace::SlowUnwindStack(uptr pc, uptr max_depth) {
   CHECK_GE(max_depth, 2);
   // FIXME: CaptureStackBackTrace might be too slow for us.
   // FIXME: Compare with StackWalk64.
@@ -434,20 +539,39 @@ void StackTrace::SlowUnwindStack(uptr pc, uptr max_depth) {
   PopStackFrames(pc_location);
 }
 
-void StackTrace::SlowUnwindStackWithContext(uptr pc, void *context,
-                                            uptr max_depth) {
-  UNREACHABLE("no signal context on windows");
+void BufferedStackTrace::SlowUnwindStackWithContext(uptr pc, void *context,
+                                                    uptr max_depth) {
+  CONTEXT ctx = *(CONTEXT *)context;
+  STACKFRAME64 stack_frame;
+  memset(&stack_frame, 0, sizeof(stack_frame));
+  size = 0;
+#if defined(_WIN64)
+  int machine_type = IMAGE_FILE_MACHINE_AMD64;
+  stack_frame.AddrPC.Offset = ctx.Rip;
+  stack_frame.AddrFrame.Offset = ctx.Rbp;
+  stack_frame.AddrStack.Offset = ctx.Rsp;
+#else
+  int machine_type = IMAGE_FILE_MACHINE_I386;
+  stack_frame.AddrPC.Offset = ctx.Eip;
+  stack_frame.AddrFrame.Offset = ctx.Ebp;
+  stack_frame.AddrStack.Offset = ctx.Esp;
+#endif
+  stack_frame.AddrPC.Mode = AddrModeFlat;
+  stack_frame.AddrFrame.Mode = AddrModeFlat;
+  stack_frame.AddrStack.Mode = AddrModeFlat;
+  while (StackWalk64(machine_type, GetCurrentProcess(), GetCurrentThread(),
+                     &stack_frame, &ctx, NULL, &SymFunctionTableAccess64,
+                     &SymGetModuleBase64, NULL) &&
+         size < Min(max_depth, kStackTraceMax)) {
+    trace_buffer[size++] = (uptr)stack_frame.AddrPC.Offset;
+  }
 }
+#endif  // #if !SANITIZER_GO
 
-void MaybeOpenReportFile() {
-  // Windows doesn't have native fork, and we don't support Cygwin or other
-  // environments that try to fake it, so the initial report_fd will always be
-  // correct.
-}
-
-void RawWrite(const char *buffer) {
-  uptr length = (uptr)internal_strlen(buffer);
-  if (length != internal_write(report_fd, buffer, length)) {
+void ReportFile::Write(const char *buffer, uptr length) {
+  SpinMutexLock l(mu);
+  ReopenIfNecessary();
+  if (length != internal_write(fd, buffer, length)) {
     // stderr may be closed, but we may be able to print to the debugger
     // instead.  This is the case when launching a program from Visual Studio,
     // and the following routine should write to its console.
@@ -471,6 +595,11 @@ void InstallDeadlySignalHandlers(SignalHandlerType handler) {
 bool IsDeadlySignal(int signum) {
   // FIXME: Decide what to do on Windows.
   return false;
+}
+
+bool IsAccessibleMemoryRange(uptr beg, uptr size) {
+  // FIXME: Actually implement this function.
+  return true;
 }
 
 }  // namespace __sanitizer

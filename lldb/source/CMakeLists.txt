@@ -1,5 +1,16 @@
 include_directories(.)
 
+if (__ANDROID_NDK__ OR (CMAKE_SYSTEM_NAME MATCHES "Windows"))
+  set(LLDB_DEFAULT_DISABLE_LIBEDIT 1)
+else()
+  set(LLDB_DEFAULT_DISABLE_LIBEDIT 0)
+endif ()
+
+set(LLDB_DISABLE_LIBEDIT ${LLDB_DEFAULT_DISABLE_LIBEDIT} CACHE BOOL "Disables the use of editline.")
+if (LLDB_DISABLE_LIBEDIT)
+  add_definitions( -DLLDB_DISABLE_LIBEDIT )
+endif()
+
 if ( CMAKE_SYSTEM_NAME MATCHES "Linux" )
 include_directories(
   Plugins/Process/Linux
@@ -31,171 +42,8 @@ add_subdirectory(Symbol)
 add_subdirectory(Target)
 add_subdirectory(Utility)
 
-set( LLDB_USED_LIBS
-  lldbBreakpoint
-  lldbCommands
-  lldbDataFormatters
-  lldbHostCommon
-  lldbCore
-  lldbExpression
-  lldbInterpreter
-  lldbSymbol
-  lldbTarget
-  lldbUtility
+include(../cmake/LLDBDependencies.cmake)
 
-  # Plugins
-  lldbPluginDisassemblerLLVM
-  lldbPluginSymbolFileDWARF
-  lldbPluginSymbolFileSymtab
-  lldbPluginDynamicLoaderStatic
-  lldbPluginDynamicLoaderPosixDYLD
-
-  lldbPluginObjectFileMachO
-  lldbPluginObjectFileELF
-  lldbPluginSymbolVendorELF
-  lldbPluginObjectContainerBSDArchive
-  lldbPluginObjectContainerMachOArchive
-  lldbPluginProcessGDBRemote  
-  lldbPluginProcessMachCore
-  lldbPluginProcessUtility
-  lldbPluginPlatformGDB
-  lldbPluginPlatformFreeBSD
-  lldbPluginPlatformLinux
-  lldbPluginPlatformPOSIX
-  lldbPluginPlatformWindows
-  lldbPluginObjectFileMachO
-  lldbPluginObjectContainerMachOArchive
-  lldbPluginObjectContainerBSDArchive
-  lldbPluginPlatformMacOSX
-  lldbPluginDynamicLoaderMacOSXDYLD
-  lldbPluginUnwindAssemblyInstEmulation
-  lldbPluginUnwindAssemblyX86
-  lldbPluginAppleObjCRuntime
-  lldbPluginCXXItaniumABI
-  lldbPluginABIMacOSX_arm
-  lldbPluginABIMacOSX_i386
-  lldbPluginABISysV_x86_64
-  lldbPluginInstructionARM
-  lldbPluginObjectFilePECOFF
-  lldbPluginOSPython
-  )
-
-# Need to export the API in the liblldb.dll for Windows
-# The lldbAPI source files are added directly in liblldb
-if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows" )
-  list(APPEND LLDB_USED_LIBS
-    lldbAPI
-    )
-endif ()
-
-# Windows-only libraries
-if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
-  list(APPEND LLDB_USED_LIBS
-    lldbHostWindows
-    lldbPluginProcessElfCore
-    lldbPluginJITLoaderGDB
-    Ws2_32
-    )
-endif ()
-
-# Linux-only libraries
-if ( CMAKE_SYSTEM_NAME MATCHES "Linux" )
-  list(APPEND LLDB_USED_LIBS
-    lldbHostLinux
-    lldbPluginProcessLinux
-    lldbPluginProcessPOSIX
-    lldbPluginProcessElfCore
-    lldbPluginJITLoaderGDB
-    )
-endif ()
-
-# FreeBSD-only libraries
-if ( CMAKE_SYSTEM_NAME MATCHES "FreeBSD" )
-  list(APPEND LLDB_USED_LIBS
-    lldbHostFreeBSD
-    lldbPluginProcessFreeBSD
-    lldbPluginProcessPOSIX
-    lldbPluginProcessElfCore
-    lldbPluginJITLoaderGDB
-    )
-endif ()
-
-# Darwin-only libraries
-if ( CMAKE_SYSTEM_NAME MATCHES "Darwin" )
-  set(LLDB_VERS_GENERATED_FILE ${LLDB_BINARY_DIR}/source/LLDB_vers.c)
-  add_custom_command(OUTPUT ${LLDB_VERS_GENERATED_FILE}
-    COMMAND ${LLDB_SOURCE_DIR}/scripts/generate-vers.pl
-            ${LLDB_SOURCE_DIR}/lldb.xcodeproj/project.pbxproj liblldb_core
-            > ${LLDB_VERS_GENERATED_FILE})
-
-  set_source_files_properties(${LLDB_VERS_GENERATED_FILE} PROPERTIES GENERATED 1)
-  list(APPEND LLDB_USED_LIBS
-    lldbHostMacOSX
-    lldbPluginDynamicLoaderDarwinKernel
-    lldbPluginProcessMacOSXKernel
-    lldbPluginSymbolVendorMacOSX
-    lldbPluginSystemRuntimeMacOSX
-    lldbPluginProcessPOSIX
-    lldbPluginProcessElfCore
-    lldbPluginJITLoaderGDB
-    )
-endif()
-
-set( CLANG_USED_LIBS
-  clangAnalysis
-  clangAST
-  clangBasic
-  clangCodeGen
-  clangDriver
-  clangEdit
-  clangFrontend
-  clangLex
-  clangParse
-  clangRewriteCore
-  clangRewriteFrontend
-  clangSema
-  clangSerialization
-  )
-
-set(LLDB_SYSTEM_LIBS)
-if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
-  list(APPEND LLDB_SYSTEM_LIBS edit panel ncurses)
-endif()
-# On FreeBSD backtrace() is provided by libexecinfo, not libc.
-if (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
-  list(APPEND LLDB_SYSTEM_LIBS execinfo)
-endif()
-
-if (NOT LLDB_DISABLE_PYTHON)
-  list(APPEND LLDB_SYSTEM_LIBS ${PYTHON_LIBRARIES})
-endif()
-
-list(APPEND LLDB_SYSTEM_LIBS ${system_libs})
-
-set( LLVM_LINK_COMPONENTS
-  ${LLVM_TARGETS_TO_BUILD}
-  jit
-  interpreter
-  asmparser
-  bitreader
-  bitwriter
-  codegen
-  ipo
-  selectiondag
-  bitreader
-  mc
-  mcjit
-  core
-  mcdisassembler
-  executionengine
-  option
-  )
-
-
-if ( NOT LLDB_DISABLE_PYTHON )
-  set_source_files_properties(${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp PROPERTIES GENERATED 1)
-  set(LLDB_WRAP_PYTHON ${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp)
-endif()
 set(SHARED_LIBRARY 1)
 
 if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
@@ -205,6 +53,9 @@ endif()
 # Need to export the API in the liblldb.dll for Windows
 # The lldbAPI source files are added directly in liblldb
 if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+# On Non-Windows, the corresponding file list is maintained in
+# source\API\CMakeLists.txt.  When editing this list, do not forget to make a
+# corresponding change in that file as well (when appropriate).
 add_lldb_library(liblldb
   lldb.cpp
   lldb-log.cpp
@@ -222,6 +73,7 @@ add_lldb_library(liblldb
   API/SBDeclaration.cpp
   API/SBError.cpp
   API/SBEvent.cpp
+  API/SBExecutionContext.cpp
   API/SBExpressionOptions.cpp
   API/SBFileSpec.cpp
   API/SBFileSpecList.cpp
@@ -247,13 +99,17 @@ add_lldb_library(liblldb
   API/SBSymbolContextList.cpp
   API/SBTarget.cpp
   API/SBThread.cpp
+  API/SBThreadPlan.cpp
+  API/SBThreadCollection.cpp
   API/SBType.cpp
   API/SBTypeCategory.cpp
+  API/SBTypeEnumMember.cpp
   API/SBTypeFilter.cpp
   API/SBTypeFormat.cpp
   API/SBTypeNameSpecifier.cpp
   API/SBTypeSummary.cpp
   API/SBTypeSynthetic.cpp
+  API/SBUnixSignals.cpp
   API/SBValue.cpp
   API/SBValueList.cpp
   API/SBWatchpoint.cpp
@@ -285,13 +141,9 @@ set_target_properties(liblldb
 endif()
 
 if (LLDB_WRAP_PYTHON OR LLDB_VERS_GENERATED_FILE)
-  add_dependencies(liblldb
-    swig_wrapper
-    ${LLDB_WRAP_PYTHON}
-    ${LLDB_VERS_GENERATED_FILE}
-    )
+  add_dependencies(liblldb swig_wrapper)
 endif()
-target_link_libraries(liblldb ${LLDB_SYSTEM_LIBS})
+target_link_libraries(liblldb ${cmake_2_8_12_PRIVATE} ${LLDB_SYSTEM_LIBS})
 
 # Determine LLDB revision and repository. GetSourceVersion and GetRepositoryPath are shell-scripts, and as
 # such will not work on Windows.
@@ -319,8 +171,18 @@ endif ()
 # FIXME: implement svn/git revision and repository parsing solution on Windows. There is an SVN-only
 #        revision parsing solution in tools/clang/lib/Basic/CMakelists.txt.
 
+if ( LLDB_ENABLE_PYTHON_SCRIPTS_SWIG_API_GENERATION )
+	# Add a Post-Build Event to copy over Python files and create the symlink to liblldb.so for the Python API(hardlink on Windows)
+	if ( NOT LLDB_DISABLE_PYTHON )
+	    add_custom_command( TARGET liblldb
+	        POST_BUILD
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/finishSwigWrapperClasses.py
+	        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/finishSwigWrapperClasses.py --buildConfig=${CMAKE_BUILD_TYPE} "--srcRoot=${LLDB_SOURCE_DIR}" "--targetDir=${CMAKE_CURRENT_BINARY_DIR}/../scripts" "--cfgBldDir=${CMAKE_CURRENT_BINARY_DIR}/../scripts" "--prefix=${CMAKE_BINARY_DIR}" "--cmakeBuildConfiguration=${CMAKE_CFG_INTDIR}" -m
+	        COMMENT "Python script sym-linking LLDB Python API")
+	endif ()
+endif ()
 
 install(TARGETS liblldb
   RUNTIME DESTINATION bin
-  LIBRARY DESTINATION lib
-  ARCHIVE DESTINATION lib)
+  LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+  ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX})

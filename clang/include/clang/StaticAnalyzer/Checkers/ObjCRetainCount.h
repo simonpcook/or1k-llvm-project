@@ -16,10 +16,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_OBJCRETAINCOUNT_H
-#define LLVM_CLANG_OBJCRETAINCOUNT_H
+#ifndef LLVM_CLANG_STATICANALYZER_CHECKERS_OBJCRETAINCOUNT_H
+#define LLVM_CLANG_STATICANALYZER_CHECKERS_OBJCRETAINCOUNT_H
 
-namespace clang { namespace ento { namespace objc_retain {
+#include "clang/Basic/LLVM.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+
+namespace clang {
+class FunctionDecl;
+class ObjCMethodDecl;
+
+namespace ento { namespace objc_retain {
 
 /// An ArgEffect summarizes the retain count behavior on an argument or receiver
 /// to a function or method.
@@ -197,7 +205,7 @@ class CallEffects {
 
 public:
   /// Returns the argument effects for a call.
-  llvm::ArrayRef<ArgEffect> getArgs() const { return Args; }
+  ArrayRef<ArgEffect> getArgs() const { return Args; }
 
   /// Returns the effects on the receiver.
   ArgEffect getReceiver() const { return Receiver; }

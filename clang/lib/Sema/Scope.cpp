@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/Scope.h"
+#include "clang/AST/Decl.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
@@ -27,7 +28,7 @@ void Scope::Init(Scope *parent, unsigned flags) {
   } else {
     // Control scopes do not contain the contents of nested function scopes for
     // control flow purposes.
-    BreakParent = ContinueParent = 0;
+    BreakParent = ContinueParent = nullptr;
   }
 
   if (parent) {
@@ -38,12 +39,16 @@ void Scope::Init(Scope *parent, unsigned flags) {
     BlockParent    = parent->BlockParent;
     TemplateParamParent = parent->TemplateParamParent;
     MSLocalManglingParent = parent->MSLocalManglingParent;
+    if ((Flags & (FnScope | ClassScope | BlockScope | TemplateParamScope |
+                  FunctionPrototypeScope | AtCatchScope | ObjCMethodScope)) ==
+        0)
+      Flags |= parent->getFlags() & OpenMPSimdDirectiveScope;
   } else {
     Depth = 0;
     PrototypeDepth = 0;
     PrototypeIndex = 0;
-    MSLocalManglingParent = FnParent = BlockParent = 0;
-    TemplateParamParent = 0;
+    MSLocalManglingParent = FnParent = BlockParent = nullptr;
+    TemplateParamParent = nullptr;
     MSLocalManglingNumber = 1;
   }
 
@@ -62,6 +67,7 @@ void Scope::Init(Scope *parent, unsigned flags) {
 
   // If this is a prototype scope, record that.
   if (flags & FunctionPrototypeScope) PrototypeDepth++;
+
   if (flags & DeclScope) {
     if (flags & FunctionPrototypeScope)
       ; // Prototype scopes are uninteresting.
@@ -69,14 +75,17 @@ void Scope::Init(Scope *parent, unsigned flags) {
       ; // Nested class scopes aren't ambiguous.
     else if ((flags & ClassScope) && getParent()->getFlags() == DeclScope)
       ; // Classes inside of namespaces aren't ambiguous.
+    else if ((flags & EnumScope))
+      ; // Don't increment for enum scopes.
     else
       incrementMSLocalManglingNumber();
   }
 
   DeclsInScope.clear();
   UsingDirectives.clear();
-  Entity = 0;
+  Entity = nullptr;
   ErrorTrap.reset();
+  NRVO.setPointerAndInt(nullptr, 0);
 }
 
 bool Scope::containedInPrototypeScope() const {
@@ -101,6 +110,21 @@ void Scope::AddFlags(unsigned FlagsToSet) {
     ContinueParent = this;
   }
   Flags |= FlagsToSet;
+}
+
+void Scope::mergeNRVOIntoParent() {
+  if (VarDecl *Candidate = NRVO.getPointer()) {
+    if (isDeclScope(Candidate))
+      Candidate->setNRVOVariable(true);
+  }
+
+  if (getEntity())
+    return;
+
+  if (NRVO.getInt())
+    getParent()->setNoNRVO();
+  else if (NRVO.getPointer())
+    getParent()->addNRVOCandidate(NRVO.getPointer());
 }
 
 void Scope::dump() const { dumpImpl(llvm::errs()); }
@@ -158,9 +182,18 @@ void Scope::dumpImpl(raw_ostream &OS) const {
     } else if (Flags & FnTryCatchScope) {
       OS << "FnTryCatchScope";
       Flags &= ~FnTryCatchScope;
+    } else if (Flags & SEHTryScope) {
+      OS << "SEHTryScope";
+      Flags &= ~SEHTryScope;
     } else if (Flags & OpenMPDirectiveScope) {
       OS << "OpenMPDirectiveScope";
       Flags &= ~OpenMPDirectiveScope;
+    } else if (Flags & OpenMPLoopDirectiveScope) {
+      OS << "OpenMPLoopDirectiveScope";
+      Flags &= ~OpenMPLoopDirectiveScope;
+    } else if (Flags & OpenMPSimdDirectiveScope) {
+      OS << "OpenMPSimdDirectiveScope";
+      Flags &= ~OpenMPSimdDirectiveScope;
     }
 
     if (Flags)
@@ -176,4 +209,9 @@ void Scope::dumpImpl(raw_ostream &OS) const {
   OS << "MSLocalManglingNumber: " << getMSLocalManglingNumber() << '\n';
   if (const DeclContext *DC = getEntity())
     OS << "Entity : (clang::DeclContext*)" << DC << '\n';
+
+  if (NRVO.getInt())
+    OS << "NRVO not allowed";
+  else if (NRVO.getPointer())
+    OS << "NRVO candidate : (clang::VarDecl*)" << NRVO.getPointer() << '\n';
 }

@@ -19,8 +19,8 @@
 #include "clang/Tooling/Refactoring.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/system_error.h"
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace clang {
@@ -45,8 +45,9 @@ TUReplacements;
 typedef std::vector<std::string> TUReplacementFiles;
 
 /// \brief Map mapping file name to Replacements targeting that file.
-typedef llvm::StringMap<std::vector<clang::tooling::Replacement> >
-FileToReplacementsMap;
+typedef llvm::DenseMap<const clang::FileEntry *,
+                       std::vector<clang::tooling::Replacement>>
+    FileToReplacementsMap;
 
 /// \brief Recursively descends through a directory structure rooted at \p
 /// Directory and attempts to deserialize *.yaml files as
@@ -65,7 +66,7 @@ FileToReplacementsMap;
 ///
 /// \returns An error_code indicating success or failure in navigating the
 /// directory structure.
-llvm::error_code
+std::error_code
 collectReplacementsFromDirectory(const llvm::StringRef Directory,
                                  TUReplacements &TUs,
                                  TUReplacementFiles &TURFiles,

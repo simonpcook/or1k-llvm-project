@@ -124,6 +124,15 @@ public:
   
   // Iterators
   child_range children() { return child_range(&SubExpr, &SubExpr+1); }
+
+  typedef ConstExprIterator const_arg_iterator;
+
+  const_arg_iterator arg_begin() const {
+    return reinterpret_cast<Stmt const * const*>(&SubExpr);
+  }
+  const_arg_iterator arg_end() const {
+    return reinterpret_cast<Stmt const * const*>(&SubExpr + 1);
+  }
   
   friend class ASTStmtReader;
 };
@@ -277,14 +286,14 @@ class ObjCDictionaryLiteral : public Expr {
 
   ExpansionData *getExpansionData() {
     if (!HasPackExpansions)
-      return 0;
+      return nullptr;
     
     return reinterpret_cast<ExpansionData *>(getKeyValues() + NumElements);
   }
 
   const ExpansionData *getExpansionData() const {
     if (!HasPackExpansions)
-      return 0;
+      return nullptr;
     
     return reinterpret_cast<const ExpansionData *>(getKeyValues()+NumElements);
   }
@@ -743,7 +752,7 @@ private:
   void setExplicitProperty(ObjCPropertyDecl *D, unsigned methRefFlags) {
     PropertyOrGetter.setPointer(D);
     PropertyOrGetter.setInt(false);
-    SetterAndMethodRefFlags.setPointer(0);
+    SetterAndMethodRefFlags.setPointer(nullptr);
     SetterAndMethodRefFlags.setInt(methRefFlags);
   }
   void setImplicitProperty(ObjCMethodDecl *Getter, ObjCMethodDecl *Setter,
@@ -1174,7 +1183,7 @@ public:
     if (getReceiverKind() == Instance)
       return static_cast<Expr *>(getReceiverPointer());
 
-    return 0;
+    return nullptr;
   }
   const Expr *getInstanceReceiver() const {
     return const_cast<ObjCMessageExpr*>(this)->getInstanceReceiver();
@@ -1201,7 +1210,7 @@ public:
   TypeSourceInfo *getClassReceiverTypeInfo() const {
     if (getReceiverKind() == Class)
       return reinterpret_cast<TypeSourceInfo *>(getReceiverPointer());
-    return 0;
+    return nullptr;
   }
 
   void setClassReceiver(TypeSourceInfo *TSInfo) {
@@ -1270,14 +1279,14 @@ public:
     if (HasMethod)
       return reinterpret_cast<const ObjCMethodDecl *>(SelectorOrMethod);
 
-    return 0;
+    return nullptr;
   }
 
   ObjCMethodDecl *getMethodDecl() { 
     if (HasMethod)
       return reinterpret_cast<ObjCMethodDecl *>(SelectorOrMethod);
 
-    return 0;
+    return nullptr;
   }
 
   void setMethodDecl(ObjCMethodDecl *MD) { 

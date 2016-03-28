@@ -1,7 +1,12 @@
-// RUN: %clangxx_tsan -O1 %s -o %t && not %t 2>&1 | FileCheck %s
+// RUN: %clangxx_tsan -O1 %s -o %t && %deflake %run %t | FileCheck %s
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
+
+#if defined(__FreeBSD__)
+#include <pthread_np.h>
+#define pthread_setname_np pthread_set_name_np
+#endif
 
 int Global;
 
@@ -29,4 +34,3 @@ int main() {
 // CHECK: WARNING: ThreadSanitizer: data race
 // CHECK:   Thread T1 'foobar1'
 // CHECK:   Thread T2 'foobar2'
-

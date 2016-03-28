@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_REACHABLECODE_H
-#define LLVM_CLANG_REACHABLECODE_H
+#ifndef LLVM_CLANG_ANALYSIS_ANALYSES_REACHABLECODE_H
+#define LLVM_CLANG_ANALYSIS_ANALYSES_REACHABLECODE_H
 
 #include "clang/Basic/SourceLocation.h"
 
@@ -50,7 +50,9 @@ class Callback {
 public:
   virtual ~Callback() {}
   virtual void HandleUnreachable(UnreachableKind UK,
-                                 SourceLocation L, SourceRange R1,
+                                 SourceLocation L,
+                                 SourceRange ConditionVal,
+                                 SourceRange R1,
                                  SourceRange R2) = 0;
 };
 

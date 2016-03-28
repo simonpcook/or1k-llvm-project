@@ -17,13 +17,16 @@
 namespace lld {
 namespace elf {
 
+template <typename ELFT> class MipsSymbolTable;
+template <typename ELFT> class MipsDynamicSymbolTable;
 template <typename ELFT> class MipsTargetLayout;
 
 template <class ELFT>
 class MipsDynamicLibraryWriter : public DynamicLibraryWriter<ELFT> {
 public:
-  MipsDynamicLibraryWriter(MipsLinkingContext &context,
-                           MipsTargetLayout<ELFT> &layout);
+  MipsDynamicLibraryWriter(MipsLinkingContext &ctx,
+                           MipsTargetLayout<ELFT> &layout,
+                           MipsELFFlagsMerger &elfFlagsMerger);
 
 protected:
   // Add any runtime files and their atoms to the output
@@ -31,46 +34,37 @@ protected:
 
   void finalizeDefaultAtomValues() override;
 
-  error_code setELFHeader() override {
+  std::error_code setELFHeader() override {
     DynamicLibraryWriter<ELFT>::setELFHeader();
     _writeHelper.setELFHeader(*this->_elfHeader);
-    return error_code::success();
+    return std::error_code();
   }
 
-  LLD_UNIQUE_BUMP_PTR(DynamicTable<ELFT>) createDynamicTable();
+  LLD_UNIQUE_BUMP_PTR(SymbolTable<ELFT>) createSymbolTable() override;
+  LLD_UNIQUE_BUMP_PTR(DynamicTable<ELFT>) createDynamicTable() override;
 
-  LLD_UNIQUE_BUMP_PTR(DynamicSymbolTable<ELFT>) createDynamicSymbolTable();
+  LLD_UNIQUE_BUMP_PTR(DynamicSymbolTable<ELFT>)
+      createDynamicSymbolTable() override;
 
 private:
-  void addDefaultAtoms() {
-    if (this->_context.isDynamic()) {
-      _mipsRuntimeFile->addAbsoluteAtom("_GLOBAL_OFFSET_TABLE_");
-      _mipsRuntimeFile->addAbsoluteAtom("_gp");
-      _mipsRuntimeFile->addAbsoluteAtom("_gp_disp");
-    }
-  }
-
   MipsELFWriter<ELFT> _writeHelper;
-  std::unique_ptr<MipsRuntimeFile<ELFT>> _mipsRuntimeFile;
   MipsLinkingContext &_mipsContext;
   MipsTargetLayout<Mips32ElELFType> &_mipsTargetLayout;
 };
 
 template <class ELFT>
 MipsDynamicLibraryWriter<ELFT>::MipsDynamicLibraryWriter(
-    MipsLinkingContext &context, MipsTargetLayout<ELFT> &layout)
-    : DynamicLibraryWriter<ELFT>(context, layout),
-      _writeHelper(context, layout),
-      _mipsRuntimeFile(new MipsRuntimeFile<ELFT>(context)),
-      _mipsContext(context), _mipsTargetLayout(layout) {}
+    MipsLinkingContext &ctx, MipsTargetLayout<ELFT> &layout,
+    MipsELFFlagsMerger &elfFlagsMerger)
+    : DynamicLibraryWriter<ELFT>(ctx, layout),
+      _writeHelper(ctx, layout, elfFlagsMerger), _mipsContext(ctx),
+      _mipsTargetLayout(layout) {}
 
 template <class ELFT>
 bool MipsDynamicLibraryWriter<ELFT>::createImplicitFiles(
     std::vector<std::unique_ptr<File>> &result) {
   DynamicLibraryWriter<ELFT>::createImplicitFiles(result);
-  // Add the default atoms as defined for mips
-  addDefaultAtoms();
-  result.push_back(std::move(_mipsRuntimeFile));
+  result.push_back(std::move(_writeHelper.createRuntimeFile()));
   return true;
 }
 
@@ -79,6 +73,13 @@ void MipsDynamicLibraryWriter<ELFT>::finalizeDefaultAtomValues() {
   // Finalize the atom values that are part of the parent.
   DynamicLibraryWriter<ELFT>::finalizeDefaultAtomValues();
   _writeHelper.finalizeMipsRuntimeAtomValues();
+}
+
+template <class ELFT>
+LLD_UNIQUE_BUMP_PTR(SymbolTable<ELFT>)
+    MipsDynamicLibraryWriter<ELFT>::createSymbolTable() {
+  return LLD_UNIQUE_BUMP_PTR(SymbolTable<ELFT>)(new (
+      this->_alloc) MipsSymbolTable<ELFT>(_mipsContext));
 }
 
 /// \brief create dynamic table
@@ -93,8 +94,9 @@ LLD_UNIQUE_BUMP_PTR(DynamicTable<ELFT>)
 template <class ELFT>
 LLD_UNIQUE_BUMP_PTR(DynamicSymbolTable<ELFT>)
     MipsDynamicLibraryWriter<ELFT>::createDynamicSymbolTable() {
-  return LLD_UNIQUE_BUMP_PTR(DynamicSymbolTable<ELFT>)(new (
-      this->_alloc) MipsDynamicSymbolTable(_mipsContext, _mipsTargetLayout));
+  return LLD_UNIQUE_BUMP_PTR(
+      DynamicSymbolTable<ELFT>)(new (this->_alloc) MipsDynamicSymbolTable<ELFT>(
+      _mipsContext, _mipsTargetLayout));
 }
 
 } // namespace elf

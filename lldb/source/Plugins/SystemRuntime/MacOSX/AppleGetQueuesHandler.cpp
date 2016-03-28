@@ -228,7 +228,8 @@ AppleGetQueuesHandler::SetupGetQueuesFunction (Thread &thread, ValueList &get_qu
             m_get_queues_function.reset(new ClangFunction (thread,
                                                      get_queues_return_type,
                                                      impl_code_address,
-                                                     get_queues_arglist));
+                                                     get_queues_arglist,
+                                                     "queue-fetch-queues"));
             
             errors.Clear();        
             unsigned num_errors = m_get_queues_function->CompileFunction(errors);
@@ -280,6 +281,14 @@ AppleGetQueuesHandler::GetCurrentQueues (Thread &thread, addr_t page_to_free, ui
     return_value.count = 0;
 
     error.Clear();
+
+    if (thread.SafeToCallFunctions() == false)
+    {
+        if (log)
+            log->Printf ("Not safe to call functions on thread 0x%" PRIx64, thread.GetID());
+        error.SetErrorString ("Not safe to call functions on this thread.");
+        return return_value;
+    }
 
     // Set up the arguments for a call to
 
@@ -354,6 +363,7 @@ AppleGetQueuesHandler::GetCurrentQueues (Thread &thread, addr_t page_to_free, ui
     if (m_get_queues_function == NULL)
     {
         error.SetErrorString ("Unable to compile function to call __introspection_dispatch_get_queues");
+        return return_value;
     }
 
     StreamString errors;
@@ -362,15 +372,17 @@ AppleGetQueuesHandler::GetCurrentQueues (Thread &thread, addr_t page_to_free, ui
     options.SetUnwindOnError (true);
     options.SetIgnoreBreakpoints (true);
     options.SetStopOthers (true);
+    options.SetTimeoutUsec(500000);
+    options.SetTryAllThreads (false);
     thread.CalculateExecutionContext (exe_ctx);
 
-    ExecutionResults func_call_ret;
+    ExpressionResults func_call_ret;
     Value results;
     func_call_ret =  m_get_queues_function->ExecuteFunction (exe_ctx, &args_addr, options, errors, results);
-    if (func_call_ret != eExecutionCompleted || !error.Success())
+    if (func_call_ret != eExpressionCompleted || !error.Success())
     {
         if (log)
-            log->Printf ("Unable to call introspection_get_dispatch_queues(), got ExecutionResults %d, error contains %s", func_call_ret, error.AsCString(""));
+            log->Printf ("Unable to call introspection_get_dispatch_queues(), got ExpressionResults %d, error contains %s", func_call_ret, error.AsCString(""));
         error.SetErrorString ("Unable to call introspection_get_dispatch_queues() for list of queues");
         return return_value;
     }

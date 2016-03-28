@@ -240,6 +240,9 @@ public:
     lldb::SBError
     Signal (int signal);
 
+    lldb::SBUnixSignals
+    GetUnixSignals();
+
     %feature("docstring", "
     Returns a stop id that will increase every time the process executes.  If
     include_expression_stops is true, then stops caused by expression evaluation
@@ -362,6 +365,9 @@ public:
     
     lldb::SBError
     UnloadImage (uint32_t image_token);
+    
+    lldb::SBError
+    SendEventData (const char *event_data);
 
     %feature("autodoc", "
     Return the number of different thread-origin extended backtraces
@@ -382,6 +388,12 @@ public:
 
     const char *
     GetExtendedBacktraceTypeAtIndex (uint32_t idx);
+
+    lldb::SBThreadCollection
+    GetHistoryThreads (addr_t addr);
+             
+    bool
+    IsInstrumentationRuntimePresent(lldb::InstrumentationRuntimeType type);
 
     %pythoncode %{
         def __get_is_alive__(self):

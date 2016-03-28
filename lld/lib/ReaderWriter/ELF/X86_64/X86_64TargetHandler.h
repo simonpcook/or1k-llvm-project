@@ -11,15 +11,14 @@
 #define LLD_READER_WRITER_ELF_X86_64_X86_64_TARGET_HANDLER_H
 
 #include "DefaultTargetHandler.h"
-#include "ELFFile.h"
-#include "X86_64RelocationHandler.h"
 #include "TargetLayout.h"
-
-#include "lld/ReaderWriter/Simple.h"
+#include "X86_64ELFFile.h"
+#include "X86_64ELFReader.h"
+#include "X86_64RelocationHandler.h"
+#include "lld/Core/Simple.h"
 
 namespace lld {
 namespace elf {
-typedef llvm::object::ELFType<llvm::support::little, 2, true> X86_64ELFType;
 class X86_64LinkingContext;
 
 template <class ELFT> class X86_64TargetLayout : public TargetLayout<ELFT> {
@@ -33,17 +32,25 @@ class X86_64TargetHandler final
 public:
   X86_64TargetHandler(X86_64LinkingContext &context);
 
-  virtual X86_64TargetLayout<X86_64ELFType> &getTargetLayout() {
+  X86_64TargetLayout<X86_64ELFType> &getTargetLayout() override {
     return *(_x86_64TargetLayout.get());
   }
 
-  virtual void registerRelocationNames(Registry &registry);
+  void registerRelocationNames(Registry &registry) override;
 
-  virtual const X86_64TargetRelocationHandler &getRelocationHandler() const {
+  const X86_64TargetRelocationHandler &getRelocationHandler() const override {
     return *(_x86_64RelocationHandler.get());
   }
 
-  virtual std::unique_ptr<Writer> getWriter();
+  std::unique_ptr<Reader> getObjReader(bool atomizeStrings) override {
+    return std::unique_ptr<Reader>(new X86_64ELFObjectReader(atomizeStrings));
+  }
+
+  std::unique_ptr<Reader> getDSOReader(bool useShlibUndefines) override {
+    return std::unique_ptr<Reader>(new X86_64ELFDSOReader(useShlibUndefines));
+  }
+
+  std::unique_ptr<Writer> getWriter() override;
 
 private:
   static const Registry::KindStrings kindStrings[];

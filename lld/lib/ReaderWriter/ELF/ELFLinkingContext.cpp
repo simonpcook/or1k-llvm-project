@@ -8,22 +8,41 @@
 //===----------------------------------------------------------------------===//
 
 #include "lld/ReaderWriter/ELFLinkingContext.h"
-
 #include "ArrayOrderPass.h"
 #include "ELFFile.h"
 #include "TargetHandler.h"
 #include "Targets.h"
-
 #include "lld/Core/Instrumentation.h"
 #include "lld/Passes/LayoutPass.h"
 #include "lld/Passes/RoundTripYAMLPass.h"
-
 #include "llvm/ADT/Triple.h"
+#include "llvm/Config/config.h"
 #include "llvm/Support/ELF.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#if defined(HAVE_CXXABI_H)
+#include <cxxabi.h>
+#endif
+
 namespace lld {
+
+class CommandLineAbsoluteAtom : public AbsoluteAtom {
+public:
+  CommandLineAbsoluteAtom(const File &file, StringRef name, uint64_t value)
+      : _file(file), _name(name), _value(value) {}
+
+  const File &file() const override { return _file; }
+  StringRef name() const override { return _name; }
+  uint64_t value() const override { return _value; }
+  Scope scope() const override { return scopeGlobal; }
+
+private:
+  const File &_file;
+  StringRef _name;
+  uint64_t _value;
+};
 
 class CommandLineUndefinedAtom : public SimpleUndefinedAtom {
 public:
@@ -39,18 +58,12 @@ ELFLinkingContext::ELFLinkingContext(
     llvm::Triple triple, std::unique_ptr<TargetHandlerBase> targetHandler)
     : _outputELFType(elf::ET_EXEC), _triple(triple),
       _targetHandler(std::move(targetHandler)), _baseAddress(0),
-      _isStaticExecutable(false), _noInhibitExec(false),
+      _isStaticExecutable(false), _noInhibitExec(false), _exportDynamic(false),
       _mergeCommonStrings(false), _runLayoutPass(true),
       _useShlibUndefines(true), _dynamicLinkerArg(false),
-      _noAllowDynamicLibraries(false), _outputMagic(OutputMagic::DEFAULT),
-      _sysrootPath("") {}
-
-bool ELFLinkingContext::is64Bits() const { return getTriple().isArch64Bit(); }
-
-bool ELFLinkingContext::isLittleEndian() const {
-  // TODO: Do this properly. It is not defined purely by arch.
-  return true;
-}
+      _noAllowDynamicLibraries(false), _mergeRODataToTextSegment(true),
+      _demangle(true), _alignSegments(true), _outputMagic(OutputMagic::DEFAULT),
+      _initFunction("_init"), _finiFunction("_fini"), _sysrootPath("") {}
 
 void ELFLinkingContext::addPasses(PassManager &pm) {
   if (_runLayoutPass)
@@ -70,6 +83,8 @@ uint16_t ELFLinkingContext::getOutputMachine() const {
     return llvm::ELF::EM_MIPS;
   case llvm::Triple::ppc:
     return llvm::ELF::EM_PPC;
+  case llvm::Triple::aarch64:
+    return llvm::ELF::EM_AARCH64;
   default:
     llvm_unreachable("Unhandled arch");
   }
@@ -130,53 +145,85 @@ ELFLinkingContext::create(llvm::Triple triple) {
   case llvm::Triple::ppc:
     return std::unique_ptr<ELFLinkingContext>(
         new lld::elf::PPCLinkingContext(triple));
+  case llvm::Triple::aarch64:
+    return std::unique_ptr<ELFLinkingContext>(
+        new lld::elf::AArch64LinkingContext(triple));
   default:
     return nullptr;
   }
 }
 
+static void buildSearchPath(SmallString<128> &path, StringRef dir,
+                            StringRef sysRoot) {
+  if (!dir.startswith("=/"))
+    path.assign(dir);
+  else {
+    path.assign(sysRoot);
+    path.append(dir.substr(1));
+  }
+}
+
 ErrorOr<StringRef> ELFLinkingContext::searchLibrary(StringRef libName) const {
-  bool foundFile = false;
-  StringRef pathref;
+  bool hasColonPrefix = libName[0] == ':';
   SmallString<128> path;
   for (StringRef dir : _inputSearchPaths) {
     // Search for dynamic library
     if (!_isStaticExecutable) {
-      path.clear();
-      if (dir.startswith("=/")) {
-        path.assign(_sysrootPath);
-        path.append(dir.substr(1));
-      } else {
-        path.assign(dir);
-      }
-      llvm::sys::path::append(path, Twine("lib") + libName + ".so");
-      pathref = path.str();
-      if (llvm::sys::fs::exists(pathref)) {
-        foundFile = true;
-      }
+      buildSearchPath(path, dir, _sysrootPath);
+      llvm::sys::path::append(path, hasColonPrefix
+                                        ? libName.drop_front()
+                                        : Twine("lib", libName) + ".so");
+      if (llvm::sys::fs::exists(path.str()))
+        return StringRef(*new (_allocator) std::string(path.str()));
     }
     // Search for static libraries too
-    if (!foundFile) {
-      path.clear();
-      if (dir.startswith("=/")) {
-        path.assign(_sysrootPath);
-        path.append(dir.substr(1));
-      } else {
-        path.assign(dir);
-      }
-      llvm::sys::path::append(path, Twine("lib") + libName + ".a");
-      pathref = path.str();
-      if (llvm::sys::fs::exists(pathref)) {
-        foundFile = true;
-      }
-    }
-    if (foundFile)
-      return StringRef(*new (_allocator) std::string(pathref));
+    buildSearchPath(path, dir, _sysrootPath);
+    llvm::sys::path::append(path, hasColonPrefix
+                                      ? libName.drop_front()
+                                      : Twine("lib", libName) + ".a");
+    if (llvm::sys::fs::exists(path.str()))
+      return StringRef(*new (_allocator) std::string(path.str()));
   }
   if (!llvm::sys::fs::exists(libName))
-    return llvm::make_error_code(llvm::errc::no_such_file_or_directory);
+    return make_error_code(llvm::errc::no_such_file_or_directory);
 
   return libName;
+}
+
+ErrorOr<StringRef> ELFLinkingContext::searchFile(StringRef fileName,
+                                                 bool isSysRooted) const {
+  SmallString<128> path;
+  if (llvm::sys::path::is_absolute(fileName) && isSysRooted) {
+    path.assign(_sysrootPath);
+    path.append(fileName);
+    if (llvm::sys::fs::exists(path.str()))
+      return StringRef(*new (_allocator) std::string(path.str()));
+  } else if (llvm::sys::fs::exists(fileName))
+    return fileName;
+
+  if (llvm::sys::path::is_absolute(fileName))
+    return make_error_code(llvm::errc::no_such_file_or_directory);
+
+  for (StringRef dir : _inputSearchPaths) {
+    buildSearchPath(path, dir, _sysrootPath);
+    llvm::sys::path::append(path, fileName);
+    if (llvm::sys::fs::exists(path.str()))
+      return StringRef(*new (_allocator) std::string(path.str()));
+  }
+  return make_error_code(llvm::errc::no_such_file_or_directory);
+}
+
+void ELFLinkingContext::createInternalFiles(
+    std::vector<std::unique_ptr<File>> &files) const {
+  std::unique_ptr<SimpleFile> file(
+      new SimpleFile("<internal file for --defsym>"));
+  for (auto &i : getAbsoluteSymbols()) {
+    StringRef sym = i.first;
+    uint64_t val = i.second;
+    file->addAtom(*(new (_allocator) CommandLineAbsoluteAtom(*file, sym, val)));
+  }
+  files.push_back(std::move(file));
+  LinkingContext::createInternalFiles(files);
 }
 
 std::unique_ptr<File> ELFLinkingContext::createUndefinedSymbolFile() const {
@@ -186,8 +233,54 @@ std::unique_ptr<File> ELFLinkingContext::createUndefinedSymbolFile() const {
       new SimpleFile("command line option -u"));
   for (auto undefSymStr : _initialUndefinedSymbols)
     undefinedSymFile->addAtom(*(new (_allocator) CommandLineUndefinedAtom(
-                                   *undefinedSymFile, undefSymStr)));
+        *undefinedSymFile, undefSymStr)));
   return std::move(undefinedSymFile);
+}
+
+void ELFLinkingContext::notifySymbolTableCoalesce(const Atom *existingAtom,
+                                                  const Atom *newAtom,
+                                                  bool &useNew) {
+  // First suppose that the `existingAtom` is defined
+  // and the `newAtom` is undefined.
+  auto *da = dyn_cast<DefinedAtom>(existingAtom);
+  auto *ua = dyn_cast<UndefinedAtom>(newAtom);
+  if (!da && !ua) {
+    // Then try to reverse the assumption.
+    da = dyn_cast<DefinedAtom>(newAtom);
+    ua = dyn_cast<UndefinedAtom>(existingAtom);
+  }
+
+  if (da && ua && da->scope() == Atom::scopeGlobal &&
+      isa<SharedLibraryFile>(ua->file()))
+    // If strong defined atom coalesces away an atom declared
+    // in the shared object the strong atom needs to be dynamically exported.
+    // Save its name.
+    _dynamicallyExportedSymbols.insert(ua->name());
+}
+
+std::string ELFLinkingContext::demangle(StringRef symbolName) const {
+  if (!_demangle)
+    return symbolName;
+
+  // Only try to demangle symbols that look like C++ symbols
+  if (!symbolName.startswith("_Z"))
+    return symbolName;
+
+#if defined(HAVE_CXXABI_H)
+  SmallString<256> symBuff;
+  StringRef nullTermSym = Twine(symbolName).toNullTerminatedStringRef(symBuff);
+  const char *cstr = nullTermSym.data();
+  int status;
+  char *demangled = abi::__cxa_demangle(cstr, nullptr, nullptr, &status);
+  if (demangled != NULL) {
+    std::string result(demangled);
+    // __cxa_demangle() always uses a malloc'ed buffer to return the result.
+    free(demangled);
+    return result;
+  }
+#endif
+
+  return symbolName;
 }
 
 } // end namespace lld

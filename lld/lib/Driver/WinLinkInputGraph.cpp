@@ -12,15 +12,20 @@
 namespace lld {
 
 /// \brief Parse the input file to lld::File.
-error_code PECOFFFileNode::parse(const LinkingContext &ctx,
-                                 raw_ostream &diagnostics) {
+std::error_code PECOFFFileNode::parse(const LinkingContext &ctx,
+                                      raw_ostream &diagnostics) {
+  if (_parsed)
+    return std::error_code();
+  _parsed = true;
   ErrorOr<StringRef> filePath = getPath(ctx);
-  if (error_code ec = filePath.getError()) {
+  if (std::error_code ec = filePath.getError()) {
     diagnostics << "File not found: " << _path << "\n";
     return ec;
   }
 
-  if (error_code ec = getBuffer(*filePath)) {
+  ErrorOr<std::unique_ptr<MemoryBuffer>> mb =
+      MemoryBuffer::getFileOrSTDIN(*filePath);
+  if (std::error_code ec = mb.getError()) {
     diagnostics << "Cannot open file: " << *filePath << "\n";
     return ec;
   }
@@ -28,27 +33,7 @@ error_code PECOFFFileNode::parse(const LinkingContext &ctx,
   if (ctx.logInputFiles())
     diagnostics << *filePath << "\n";
 
-  return ctx.registry().parseFile(_buffer, _files);
-}
-
-ErrorOr<File &> PECOFFFileNode::getNextFile() {
-  if (_nextFileIndex == _files.size())
-    return make_error_code(InputGraphError::no_more_files);
-  return *_files[_nextFileIndex++];
-}
-
-ErrorOr<StringRef> PECOFFFileNode::getPath(const LinkingContext &) const {
-  if (_path.endswith_lower(".lib"))
-    return _ctx.searchLibraryFile(_path);
-  if (llvm::sys::path::extension(_path).empty())
-    return _ctx.allocate(_path.str() + ".obj");
-  return _path;
-}
-
-ErrorOr<StringRef> PECOFFLibraryNode::getPath(const LinkingContext &) const {
-  if (_path.endswith_lower(".lib"))
-    return _ctx.searchLibraryFile(_path);
-  return _ctx.searchLibraryFile(_ctx.allocate(_path.str() + ".lib"));
+  return ctx.registry().parseFile(std::move(mb.get()), _files);
 }
 
 } // end anonymous namespace

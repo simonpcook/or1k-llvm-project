@@ -32,7 +32,7 @@ class IncludeDirectivesPPCallback : public clang::PPCallbacks {
   // Struct helping the detection of header guards in the various callbacks
   struct GuardDetection {
     GuardDetection(FileID FID)
-      : FID(FID), Count(0), TheMacro(0), CountAtEndif(0) {}
+      : FID(FID), Count(0), TheMacro(nullptr), CountAtEndif(0) {}
 
     FileID FID;
     // count for relevant preprocessor directives
@@ -58,10 +58,11 @@ class IncludeDirectivesPPCallback : public clang::PPCallbacks {
   };
 
 public:
-  IncludeDirectivesPPCallback(IncludeDirectives *Self) : Self(Self), Guard(0) {}
+  IncludeDirectivesPPCallback(IncludeDirectives *Self)
+      : Self(Self), Guard(nullptr) {}
+  virtual ~IncludeDirectivesPPCallback() {}
 
 private:
-  virtual ~IncludeDirectivesPPCallback() {}
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange, const FileEntry *File,
@@ -115,7 +116,8 @@ private:
     // checking for equality because it can also be part of the preamble if the
     // preamble is the whole file.
     unsigned Preamble =
-        Lexer::ComputePreamble(SM.getBuffer(Guard.FID), LangOpts).first;
+        Lexer::ComputePreamble(SM.getBuffer(Guard.FID)->getBuffer(), LangOpts)
+            .first;
     unsigned IfndefOffset = SM.getFileOffset(Guard.IfndefLoc);
     if (IfndefOffset > (Preamble + 1))
       return;
@@ -148,7 +150,7 @@ private:
     // If this #ifndef is the top-most directive and the symbol isn't defined
     // store those information in the guard detection, the next step will be to
     // check for the define.
-    if (Guard->Count == 1 && MD == 0) {
+    if (Guard->Count == 1 && MD == nullptr) {
       IdentifierInfo *MII = MacroNameTok.getIdentifierInfo();
 
       if (MII->hasMacroDefinition())
@@ -165,7 +167,7 @@ private:
     // If this #define is the second directive of the file and the symbol
     // defined is the same as the one checked in the #ifndef then store the
     // information about this define.
-    if (Guard->Count == 2 && Guard->TheMacro != 0) {
+    if (Guard->Count == 2 && Guard->TheMacro != nullptr) {
       IdentifierInfo *MII = MacroNameTok.getIdentifierInfo();
 
       // macro unrelated to the ifndef, doesn't look like a proper header guard
@@ -176,7 +178,7 @@ private:
     }
   }
 
-  virtual void Endif(SourceLocation Loc, SourceLocation IfLoc) override {
+  void Endif(SourceLocation Loc, SourceLocation IfLoc) override {
     Guard->Count++;
 
     // If it's the #endif corresponding to the top-most #ifndef
@@ -218,7 +220,7 @@ private:
                      const MacroDirective *) override {
     Guard->Count++;
   }
-  virtual void Else(SourceLocation, SourceLocation) override {
+  void Else(SourceLocation, SourceLocation) override {
     Guard->Count++;
   }
 
@@ -309,7 +311,8 @@ static std::pair<unsigned, bool> findDirectiveEnd(SourceLocation HashLoc,
 IncludeDirectives::IncludeDirectives(clang::CompilerInstance &CI)
     : CI(CI), Sources(CI.getSourceManager()) {
   // addPPCallbacks takes ownership of the callback
-  CI.getPreprocessor().addPPCallbacks(new IncludeDirectivesPPCallback(this));
+  CI.getPreprocessor().addPPCallbacks(
+                          llvm::make_unique<IncludeDirectivesPPCallback>(this));
 }
 
 bool IncludeDirectives::lookForInclude(const FileEntry *File,

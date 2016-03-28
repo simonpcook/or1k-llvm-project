@@ -22,7 +22,7 @@
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Host/Host.h"
+#include "lldb/Host/HostInfo.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Breakpoint/BreakpointLocation.h"
@@ -32,7 +32,41 @@ using namespace lldb_private;
 
 static uint32_t g_initialize_count = 0;
 
-Platform *
+namespace
+{
+    class SupportedArchList
+    {
+    public:
+        SupportedArchList()
+        {
+            AddArch(ArchSpec("i686-pc-windows"));
+            AddArch(HostInfo::GetArchitecture(HostInfo::eArchKindDefault));
+            AddArch(HostInfo::GetArchitecture(HostInfo::eArchKind32));
+            AddArch(HostInfo::GetArchitecture(HostInfo::eArchKind64));
+            AddArch(ArchSpec("i386-pc-windows"));
+        }
+
+        size_t Count() const { return m_archs.size(); }
+
+        const ArchSpec& operator[](int idx) { return m_archs[idx]; }
+
+    private:
+        void AddArch(const ArchSpec& spec)
+        {
+            auto iter = std::find_if(
+                m_archs.begin(), m_archs.end(), 
+                [spec](const ArchSpec& rhs) { return spec.IsExactMatch(rhs); });
+            if (iter != m_archs.end())
+                return;
+            if (spec.IsValid())
+                m_archs.push_back(spec);
+        }
+
+        std::vector<ArchSpec> m_archs;
+    };
+}
+
+PlatformSP
 PlatformWindows::CreateInstance (bool force, const lldb_private::ArchSpec *arch)
 {
     // The only time we create an instance is when we are creating a remote
@@ -62,7 +96,6 @@ PlatformWindows::CreateInstance (bool force, const lldb_private::ArchSpec *arch)
             switch (triple.getOS())
             {
             case llvm::Triple::Win32:
-            case llvm::Triple::MinGW32:
                 break;
 
             case llvm::Triple::UnknownOS:
@@ -76,8 +109,8 @@ PlatformWindows::CreateInstance (bool force, const lldb_private::ArchSpec *arch)
         }
     }
     if (create)
-        return new PlatformWindows (is_host);
-    return NULL;
+        return PlatformSP(new PlatformWindows (is_host));
+    return PlatformSP();
 
 }
 
@@ -120,8 +153,8 @@ PlatformWindows::Initialize(void)
         WSAStartup(MAKEWORD(2,2), &dummy);
         // Force a host flag to true for the default platform object.
         PlatformSP default_platform_sp (new PlatformWindows(true));
-        default_platform_sp->SetSystemArchitecture (Host::GetArchitecture());
-        Platform::SetDefaultPlatform (default_platform_sp);
+        default_platform_sp->SetSystemArchitecture(HostInfo::GetArchitecture());
+        Platform::SetHostPlatform (default_platform_sp);
 #endif
         PluginManager::RegisterPlugin(PlatformWindows::GetPluginNameStatic(false),
                                       PlatformWindows::GetPluginDescriptionStatic(false),
@@ -163,8 +196,7 @@ PlatformWindows::~PlatformWindows()
 }
 
 Error
-PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
-                                    const ArchSpec &exe_arch,
+PlatformWindows::ResolveExecutable (const ModuleSpec &ms,
                                     lldb::ModuleSP &exe_module_sp,
                                     const FileSpecList *module_search_paths_ptr)
 {
@@ -172,25 +204,25 @@ PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
     // Nothing special to do here, just use the actual file and architecture
 
     char exe_path[PATH_MAX];
-    FileSpec resolved_exe_file (exe_file);
+    ModuleSpec resolved_module_spec(ms);
 
     if (IsHost())
     {
         // if we cant resolve the executable loation based on the current path variables
-        if (!resolved_exe_file.Exists())
+        if (!resolved_module_spec.GetFileSpec().Exists())
         {
-            exe_file.GetPath(exe_path, sizeof(exe_path));
-            resolved_exe_file.SetFile(exe_path, true);
+            resolved_module_spec.GetFileSpec().GetPath(exe_path, sizeof(exe_path));
+            resolved_module_spec.GetFileSpec().SetFile(exe_path, true);
         }
 
-        if (!resolved_exe_file.Exists())
-            resolved_exe_file.ResolveExecutableLocation ();
+        if (!resolved_module_spec.GetFileSpec().Exists())
+            resolved_module_spec.GetFileSpec().ResolveExecutableLocation ();
 
-        if (resolved_exe_file.Exists())
+        if (resolved_module_spec.GetFileSpec().Exists())
             error.Clear();
         else
         {
-            exe_file.GetPath(exe_path, sizeof(exe_path));
+            ms.GetFileSpec().GetPath(exe_path, sizeof(exe_path));
             error.SetErrorStringWithFormat("unable to find executable for '%s'", exe_path);
         }
     }
@@ -198,15 +230,14 @@ PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
     {
         if (m_remote_platform_sp)
         {
-            error = m_remote_platform_sp->ResolveExecutable (exe_file,
-                                                             exe_arch,
+            error = m_remote_platform_sp->ResolveExecutable (ms,
                                                              exe_module_sp,
                                                              NULL);
         }
         else
         {
             // We may connect to a process and use the provided executable (Don't use local $PATH).
-            if (resolved_exe_file.Exists())
+            if (resolved_module_spec.GetFileSpec().Exists())
                 error.Clear();
             else
                 error.SetErrorStringWithFormat("the platform is not currently connected, and '%s' doesn't exist in the system root.", exe_path);
@@ -215,10 +246,9 @@ PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
 
     if (error.Success())
     {
-        ModuleSpec module_spec (resolved_exe_file, exe_arch);
-        if (exe_arch.IsValid())
+        if (resolved_module_spec.GetArchitecture().IsValid())
         {
-            error = ModuleList::GetSharedModule (module_spec,
+            error = ModuleList::GetSharedModule (resolved_module_spec,
                                                  exe_module_sp,
                                                  NULL,
                                                  NULL,
@@ -228,8 +258,8 @@ PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
             {
                 exe_module_sp.reset();
                 error.SetErrorStringWithFormat ("'%s' doesn't contain the architecture %s",
-                                                exe_file.GetPath().c_str(),
-                                                exe_arch.GetArchitectureName());
+                                                resolved_module_spec.GetFileSpec().GetPath().c_str(),
+                                                resolved_module_spec.GetArchitecture().GetArchitectureName());
             }
         }
         else
@@ -238,9 +268,9 @@ PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
             // the architectures that we should be using (in the correct order)
             // and see if we can find a match that way
             StreamString arch_names;
-            for (uint32_t idx = 0; GetSupportedArchitectureAtIndex (idx, module_spec.GetArchitecture()); ++idx)
+            for (uint32_t idx = 0; GetSupportedArchitectureAtIndex (idx, resolved_module_spec.GetArchitecture()); ++idx)
             {
-                error = ModuleList::GetSharedModule (module_spec,
+                error = ModuleList::GetSharedModule (resolved_module_spec,
                                                      exe_module_sp,
                                                      NULL,
                                                      NULL,
@@ -256,15 +286,22 @@ PlatformWindows::ResolveExecutable (const FileSpec &exe_file,
 
                 if (idx > 0)
                     arch_names.PutCString (", ");
-                arch_names.PutCString (module_spec.GetArchitecture().GetArchitectureName());
+                arch_names.PutCString (resolved_module_spec.GetArchitecture().GetArchitectureName());
             }
 
             if (error.Fail() || !exe_module_sp)
             {
-                error.SetErrorStringWithFormat ("'%s' doesn't contain any '%s' platform architectures: %s",
-                                                exe_file.GetPath().c_str(),
-                                                GetPluginName().GetCString(),
-                                                arch_names.GetString().c_str());
+                if (resolved_module_spec.GetFileSpec().Readable())
+                {
+                    error.SetErrorStringWithFormat ("'%s' doesn't contain any '%s' platform architectures: %s",
+                                                    resolved_module_spec.GetFileSpec().GetPath().c_str(),
+                                                    GetPluginName().GetCString(),
+                                                    arch_names.GetString().c_str());
+                }
+                else
+                {
+                    error.SetErrorStringWithFormat("'%s' is not readable", resolved_module_spec.GetFileSpec().GetPath().c_str());
+                }
             }
         }
     }
@@ -291,7 +328,12 @@ PlatformWindows::GetSoftwareBreakpointTrapOpcode (Target &target, BreakpointSite
         break;
 
     case llvm::Triple::hexagon:
-        return 0;
+        {
+            static const uint8_t g_hex_opcode[] = { 0x0c, 0xdb, 0x00, 0x54 };
+            trap_opcode = g_hex_opcode;
+            trap_opcode_size = sizeof(g_hex_opcode);
+        }
+        break;
     default:
         llvm_unreachable("Unhandled architecture in PlatformWindows::GetSoftwareBreakpointTrapOpcode()");
         break;
@@ -372,7 +414,7 @@ PlatformWindows::ConnectRemote (Args& args)
     else
     {
         if (!m_remote_platform_sp)
-            m_remote_platform_sp = Platform::Create ("remote-gdb-server", error);
+            m_remote_platform_sp = Platform::Create (ConstString("remote-gdb-server"), error);
 
         if (m_remote_platform_sp)
         {
@@ -473,7 +515,6 @@ lldb::ProcessSP
 PlatformWindows::Attach(ProcessAttachInfo &attach_info,
                         Debugger &debugger,
                         Target *target,
-                        Listener &listener,
                         Error &error)
 {
     lldb::ProcessSP process_sp;
@@ -502,7 +543,7 @@ PlatformWindows::Attach(ProcessAttachInfo &attach_info,
             // The Windows platform always currently uses the GDB remote debugger plug-in
             // so even when debugging locally we are debugging remotely!
             // Just like the darwin plugin.
-            process_sp = target->CreateProcess (listener, "gdb-remote", NULL);
+            process_sp = target->CreateProcess (attach_info.GetListenerForProcess(debugger), "gdb-remote", NULL);
 
             if (process_sp)
                 error = process_sp->Attach (attach_info);
@@ -511,7 +552,7 @@ PlatformWindows::Attach(ProcessAttachInfo &attach_info,
     else
     {
         if (m_remote_platform_sp)
-            process_sp = m_remote_platform_sp->Attach (attach_info, debugger, target, listener, error);
+            process_sp = m_remote_platform_sp->Attach (attach_info, debugger, target, error);
         else
             error.SetErrorString ("the platform is not currently connected");
     }
@@ -600,26 +641,12 @@ PlatformWindows::GetSharedModule (const ModuleSpec &module_spec,
 bool
 PlatformWindows::GetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &arch)
 {
-    // From macosx;s plugin code. For FreeBSD we may want to support more archs.
-    if (idx == 0)
-    {
-        arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture);
-        return arch.IsValid();
-    }
-    else if (idx == 1)
-    {
-        ArchSpec platform_arch (Host::GetArchitecture (Host::eSystemDefaultArchitecture));
-        ArchSpec platform_arch64 (Host::GetArchitecture (Host::eSystemDefaultArchitecture64));
-        if (platform_arch.IsExactMatch(platform_arch64))
-        {
-            // This freebsd platform supports both 32 and 64 bit. Since we already
-            // returned the 64 bit arch for idx == 0, return the 32 bit arch
-            // for idx == 1
-            arch = Host::GetArchitecture (Host::eSystemDefaultArchitecture32);
-            return arch.IsValid();
-        }
-    }
-    return false;
+    static SupportedArchList architectures;
+
+    if (idx >= architectures.Count())
+        return false;
+    arch = architectures[idx];
+    return true;
 }
 
 void
@@ -628,19 +655,17 @@ PlatformWindows::GetStatus (Stream &strm)
     Platform::GetStatus(strm);
 
 #ifdef _WIN32
-    OSVERSIONINFO info;
-
-    ZeroMemory(&info, sizeof(OSVERSIONINFO));
-    info.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-
-    if (GetVersionEx(&info) == 0)
+    uint32_t major;
+    uint32_t minor;
+    uint32_t update;
+    if (!HostInfo::GetOSVersion(major, minor, update))
     {
         strm << "Windows";
         return;
     }
 
-    strm << "Host: Windows " << (int) info.dwMajorVersion
-        << '.' << (int) info.dwMinorVersion
-        << " Build: " << (int) info.dwBuildNumber << '\n';
+    strm << "Host: Windows " << major
+         << '.' << minor
+         << " Build: " << update << '\n';
 #endif
 }

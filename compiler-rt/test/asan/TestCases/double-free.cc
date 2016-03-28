@@ -1,9 +1,11 @@
 // RUN: %clangxx_asan -O0 %s -o %t 2>&1
-// RUN: not %t 2>&1 | FileCheck %s --check-prefix=CHECK --check-prefix=MALLOC-CTX
+// RUN: not %run %t 2>&1 | FileCheck %s --check-prefix=CHECK --check-prefix=MALLOC-CTX
 
 // Also works if no malloc context is available.
-// RUN: ASAN_OPTIONS=malloc_context_size=0:fast_unwind_on_malloc=0 not %t 2>&1 | FileCheck %s
-// RUN: ASAN_OPTIONS=malloc_context_size=0:fast_unwind_on_malloc=1 not %t 2>&1 | FileCheck %s
+// RUN: env ASAN_OPTIONS=malloc_context_size=0:fast_unwind_on_malloc=0 not %run %t 2>&1 | FileCheck %s
+// RUN: env ASAN_OPTIONS=malloc_context_size=0:fast_unwind_on_malloc=1 not %run %t 2>&1 | FileCheck %s
+// XFAIL: arm-linux-gnueabi
+// XFAIL: armv7l-unknown-linux-gnueabihf
 
 #include <stdlib.h>
 #include <string.h>

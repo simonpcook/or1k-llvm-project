@@ -5,9 +5,13 @@ include_directories(../POSIX)
 include_directories(../Utility)
 
 add_lldb_library(lldbPluginProcessLinux
+  LinuxThread.cpp
+  NativeProcessLinux.cpp
+  NativeRegisterContextLinux_x86_64.cpp
+  NativeThreadLinux.cpp
   ProcessLinux.cpp
   ProcessMonitor.cpp
-  LinuxSignals.cpp
-  LinuxThread.cpp
+  ProcFileReader.cpp
+  ThreadStateCoordinator.cpp
   )
 

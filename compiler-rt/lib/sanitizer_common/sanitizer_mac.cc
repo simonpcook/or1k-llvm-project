@@ -109,6 +109,10 @@ uptr internal_readlink(const char *path, char *buf, uptr bufsize) {
   return readlink(path, buf, bufsize);
 }
 
+uptr internal_unlink(const char *path) {
+  return unlink(path);
+}
+
 uptr internal_sched_yield() {
   return sched_yield();
 }
@@ -124,6 +128,19 @@ uptr internal_getpid() {
 int internal_sigaction(int signum, const void *act, void *oldact) {
   return sigaction(signum,
                    (struct sigaction *)act, (struct sigaction *)oldact);
+}
+
+int internal_fork() {
+  // TODO(glider): this may call user's pthread_atfork() handlers which is bad.
+  return fork();
+}
+
+uptr internal_rename(const char *oldpath, const char *newpath) {
+  return rename(oldpath, newpath);
+}
+
+uptr internal_ftruncate(fd_t fd, uptr size) {
+  return ftruncate(fd, size);
 }
 
 // ----------------- sanitizer_common.h
@@ -147,7 +164,7 @@ void GetThreadStackTopAndBottom(bool at_initialization, uptr *stack_top,
   // pthread_get_stacksize_np() returns an incorrect stack size for the main
   // thread on Mavericks. See
   // https://code.google.com/p/address-sanitizer/issues/detail?id=261
-  if ((GetMacosVersion() == MACOS_VERSION_MAVERICKS) && at_initialization &&
+  if ((GetMacosVersion() >= MACOS_VERSION_MAVERICKS) && at_initialization &&
       stacksize == (1 << 19))  {
     struct rlimit rl;
     CHECK_EQ(getrlimit(RLIMIT_STACK, &rl), 0);
@@ -191,7 +208,8 @@ void ReExec() {
   UNIMPLEMENTED();
 }
 
-void PrepareForSandboxing() {
+void PrepareForSandboxing(__sanitizer_sandbox_arguments *args) {
+  (void)args;
   // Nothing here for now.
 }
 
@@ -283,7 +301,12 @@ MacosVersion GetMacosVersionInternal() {
         case '1': return MACOS_VERSION_LION;
         case '2': return MACOS_VERSION_MOUNTAIN_LION;
         case '3': return MACOS_VERSION_MAVERICKS;
-        default: return MACOS_VERSION_UNKNOWN;
+        case '4': return MACOS_VERSION_YOSEMITE;
+        default:
+          if (IsDigit(version[1]))
+            return MACOS_VERSION_UNKNOWN_NEWER;
+          else
+            return MACOS_VERSION_UNKNOWN;
       }
     }
     default: return MACOS_VERSION_UNKNOWN;
@@ -302,17 +325,12 @@ MacosVersion GetMacosVersion() {
   return result;
 }
 
-int call_pthread_cancel_with_cleanup(int(*fn)(void *c, void *m,
-    void *abstime), void *c, void *m, void *abstime,
-    void(*cleanup)(void *arg), void *arg) {
-  // pthread_cleanup_push/pop are hardcore macros mess.
-  // We can't intercept nor call them w/o including pthread.h.
-  int res;
-  pthread_cleanup_push(cleanup, arg);
-  res = fn(c, m, abstime);
-  pthread_cleanup_pop(0);
-  return res;
+uptr GetRSS() {
+  return 0;
 }
+
+void *internal_start_thread(void (*func)(void *arg), void *arg) { return 0; }
+void internal_join_thread(void *th) { }
 
 }  // namespace __sanitizer
 

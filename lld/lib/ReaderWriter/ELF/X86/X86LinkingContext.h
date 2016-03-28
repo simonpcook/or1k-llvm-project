@@ -11,9 +11,7 @@
 #define LLD_READER_WRITER_ELF_X86_TARGETINFO_H
 
 #include "X86TargetHandler.h"
-
 #include "lld/ReaderWriter/ELFLinkingContext.h"
-
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/ELF.h"
 
@@ -28,7 +26,7 @@ public:
   /// \brief X86 has only two relative relocation
   /// a) for supporting IFUNC relocs - R_386_IRELATIVE
   /// b) for supporting relative relocs - R_386_RELATIVE
-  virtual bool isRelativeReloc(const Reference &r) const {
+  bool isRelativeReloc(const Reference &r) const override {
     if (r.kindNamespace() != Reference::KindNamespace::ELF)
       return false;
     assert(r.kindArch() == Reference::KindArch::x86);

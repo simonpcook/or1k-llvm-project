@@ -99,11 +99,14 @@ public:
     virtual ClassDescriptorSP
     GetClassDescriptorFromISA (ObjCISA isa);
     
-    virtual TypeVendor *
-    GetTypeVendor();
+    virtual DeclVendor *
+    GetDeclVendor();
     
     virtual lldb::addr_t
     LookupRuntimeSymbol (const ConstString &name);
+    
+    virtual EncodingToTypeSP
+    GetEncodingToType ();
     
 protected:
     virtual lldb::BreakpointResolverSP
@@ -154,6 +157,8 @@ private:
         uint64_t                                                    m_objc_debug_isa_magic_mask;
         uint64_t                                                    m_objc_debug_isa_magic_value;
 
+        friend class AppleObjCRuntimeV2;
+        
         DISALLOW_COPY_AND_ASSIGN(NonPointerISACache);
     };
     
@@ -226,15 +231,9 @@ private:
         GetClassDescriptor (lldb::addr_t ptr);
     protected:
         TaggedPointerVendorLegacy (AppleObjCRuntimeV2& runtime) :
-        TaggedPointerVendor (runtime),
-        m_Foundation_version(0)
+        TaggedPointerVendor (runtime)
         {
         }
-        
-        static uint32_t
-        GetFoundationVersion (Target& target);
-        
-        uint32_t m_Foundation_version;
         
         friend class AppleObjCRuntimeV2::TaggedPointerVendor;
         
@@ -243,6 +242,9 @@ private:
     
     AppleObjCRuntimeV2 (Process *process,
                         const lldb::ModuleSP &objc_module_sp);
+    
+    ObjCISA
+    GetPointerISA (ObjCISA isa);
     
     bool
     IsTaggedPointer(lldb::addr_t ptr);
@@ -266,6 +268,8 @@ private:
     lldb::addr_t
     GetSharedCacheReadOnlyAddress();
     
+    friend class ClassDescriptorV2;
+
     std::unique_ptr<ClangFunction>            m_get_class_info_function;
     std::unique_ptr<ClangUtilityFunction>     m_get_class_info_code;
     lldb::addr_t                            m_get_class_info_args;
@@ -276,13 +280,14 @@ private:
     lldb::addr_t                            m_get_shared_cache_class_info_args;
     Mutex                                   m_get_shared_cache_class_info_args_mutex;
 
-    std::unique_ptr<TypeVendor>               m_type_vendor_ap;
+    std::unique_ptr<DeclVendor>               m_decl_vendor_ap;
     lldb::addr_t                            m_isa_hash_table_ptr;
     HashTableSignature                      m_hash_signature;
     bool                                    m_has_object_getClass;
     bool                                    m_loaded_objc_opt;
     std::unique_ptr<NonPointerISACache>       m_non_pointer_isa_cache_ap;
     std::unique_ptr<TaggedPointerVendor>    m_tagged_pointer_vendor_ap;
+    EncodingToTypeSP                        m_encoding_to_type_sp;
 };
     
 } // namespace lldb_private

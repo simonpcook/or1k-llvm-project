@@ -22,46 +22,59 @@ namespace clang {
 namespace tidy {
 namespace test {
 
-class TestPPAction : public PreprocessOnlyAction {
+class TestClangTidyAction : public ASTFrontendAction {
 public:
-  TestPPAction(ClangTidyCheck &Check, ClangTidyContext *Context)
-      : Check(Check), Context(Context) {}
+  TestClangTidyAction(ClangTidyCheck &Check, ast_matchers::MatchFinder &Finder,
+                      ClangTidyContext &Context)
+      : Check(Check), Finder(Finder), Context(Context) {}
 
 private:
-  bool BeginSourceFileAction(CompilerInstance &Compiler,
-                             llvm::StringRef file_name) override {
-    Context->setSourceManager(&Compiler.getSourceManager());
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &Compiler,
+                                                 StringRef File) override {
+    Context.setSourceManager(&Compiler.getSourceManager());
     Check.registerPPCallbacks(Compiler);
-    return true;
+    return Finder.newASTConsumer();
   }
 
   ClangTidyCheck &Check;
-  ClangTidyContext *Context;
+  ast_matchers::MatchFinder &Finder;
+  ClangTidyContext &Context;
 };
 
-template <typename T> std::string runCheckOnCode(StringRef Code) {
-  T Check;
-  SmallVector<ClangTidyError, 16> Errors;
-  ClangTidyContext Context(&Errors, ".*", "");
+template <typename T>
+std::string runCheckOnCode(StringRef Code,
+                           std::vector<ClangTidyError> *Errors = nullptr,
+                           const Twine &Filename = "input.cc",
+                           ArrayRef<std::string> ExtraArgs = None) {
+  ClangTidyOptions Options;
+  Options.Checks = "*";
+  ClangTidyContext Context(llvm::make_unique<DefaultOptionsProvider>(
+      ClangTidyGlobalOptions(), Options));
   ClangTidyDiagnosticConsumer DiagConsumer(Context);
-  Check.setContext(&Context);
-  std::vector<std::string> ArgCXX11(1, "-std=c++11");
-
-  if (!tooling::runToolOnCodeWithArgs(new TestPPAction(Check, &Context), Code,
-                                      ArgCXX11))
-    return "";
+  T Check("test-check", &Context);
   ast_matchers::MatchFinder Finder;
   Check.registerMatchers(&Finder);
-  std::unique_ptr<tooling::FrontendActionFactory> Factory(
-      tooling::newFrontendActionFactory(&Finder));
-  if (!tooling::runToolOnCodeWithArgs(Factory->create(), Code, ArgCXX11))
+
+  std::vector<std::string> ArgCXX11(1, "clang-tidy");
+  ArgCXX11.push_back("-fsyntax-only");
+  ArgCXX11.push_back("-std=c++11");
+  ArgCXX11.insert(ArgCXX11.end(), ExtraArgs.begin(), ExtraArgs.end());
+  ArgCXX11.push_back(Filename.str());
+  llvm::IntrusiveRefCntPtr<FileManager> Files(
+      new FileManager(FileSystemOptions()));
+  tooling::ToolInvocation Invocation(
+      ArgCXX11, new TestClangTidyAction(Check, Finder, Context), Files.get());
+  Invocation.mapVirtualFile(Filename.str(), Code);
+  Invocation.setDiagnosticConsumer(&DiagConsumer);
+  if (!Invocation.run())
     return "";
+
   DiagConsumer.finish();
   tooling::Replacements Fixes;
-  for (SmallVector<ClangTidyError, 16>::const_iterator I = Errors.begin(),
-                                                       E = Errors.end();
-       I != E; ++I)
-    Fixes.insert(I->Fix.begin(), I->Fix.end());
+  for (const ClangTidyError &Error : Context.getErrors())
+    Fixes.insert(Error.Fix.begin(), Error.Fix.end());
+  if (Errors)
+    *Errors = Context.getErrors();
   return tooling::applyAllReplacements(Code, Fixes);
 }
 

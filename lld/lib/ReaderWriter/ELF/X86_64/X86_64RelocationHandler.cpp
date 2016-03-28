@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "X86_64TargetHandler.h"
 #include "X86_64LinkingContext.h"
+#include "X86_64TargetHandler.h"
 
 using namespace lld;
 using namespace elf;
@@ -47,20 +47,7 @@ static void reloc32S(uint8_t *location, uint64_t P, uint64_t S, int64_t A) {
   // TODO: Make sure that the result sign extends to the 64bit value.
 }
 
-int64_t X86_64TargetRelocationHandler::relocAddend(const Reference &ref) const {
-  if (ref.kindNamespace() != Reference::KindNamespace::ELF)
-    return false;
-  assert(ref.kindArch() == Reference::KindArch::x86_64);
-  switch (ref.kindValue()) {
-  case R_X86_64_PC32:
-    return 4;
-  default:
-    return 0;
-  }
-  return 0;
-}
-
-error_code X86_64TargetRelocationHandler::applyRelocation(
+std::error_code X86_64TargetRelocationHandler::applyRelocation(
     ELFWriter &writer, llvm::FileOutputBuffer &buf, const lld::AtomLayout &atom,
     const Reference &ref) const {
   uint8_t *atomContent = buf.getBufferStart() + atom._fileOffset;
@@ -69,7 +56,7 @@ error_code X86_64TargetRelocationHandler::applyRelocation(
   uint64_t relocVAddress = atom._virtualAddr + ref.offsetInAtom();
 
   if (ref.kindNamespace() != Reference::KindNamespace::ELF)
-    return error_code::success();
+    return std::error_code();
   assert(ref.kindArch() == Reference::KindArch::x86_64);
   switch (ref.kindValue()) {
   case R_X86_64_NONE:
@@ -101,6 +88,10 @@ error_code X86_64TargetRelocationHandler::applyRelocation(
     }
     break;
   }
+  case R_X86_64_TLSGD: {
+    relocPC32(location, relocVAddress, targetVAddress, ref.addend());
+    break;
+  }
   case R_X86_64_TLSLD: {
     // Rewrite to move %fs:0 into %rax. Technically we should verify that the
     // next relocation is a PC32 to __tls_get_addr...
@@ -128,17 +119,12 @@ error_code X86_64TargetRelocationHandler::applyRelocation(
   case R_X86_64_IRELATIVE:
   case R_X86_64_JUMP_SLOT:
   case R_X86_64_GLOB_DAT:
+  case R_X86_64_DTPMOD64:
+  case R_X86_64_DTPOFF64:
     break;
-  default: {
-    std::string str;
-    llvm::raw_string_ostream s(str);
-    s << "Unhandled relocation: " << atom._atom->file().path() << ":"
-      << atom._atom->name() << "@" << ref.offsetInAtom() << " "
-      << "#" << ref.kindValue();
-    s.flush();
-    llvm_unreachable(str.c_str());
-  }
+  default:
+    unhandledReferenceType(*atom._atom, ref);
   }
 
-  return error_code::success();
+  return std::error_code();
 }

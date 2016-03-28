@@ -50,6 +50,15 @@ static bool ParseScanList(FormatStringHandler &H,
     }
   }
 
+  // Special case: "^]" are the first characters.
+  if (I + 1 != E && I[0] == '^' && I[1] == ']') {
+    I += 2;
+    if (I == E) {
+      H.HandleIncompleteScanList(start, I - 1);
+      return true;
+    }
+  }
+
   // Look for a ']' character which denotes the end of the scan list.
   while (*I != ']') {
     if (++I == E) {
@@ -73,7 +82,7 @@ static ScanfSpecifierResult ParseScanfSpecifier(FormatStringHandler &H,
   
   using namespace clang::analyze_scanf;
   const char *I = Beg;
-  const char *Start = 0;
+  const char *Start = nullptr;
   UpdateOnReturn <const char*> UpdateBeg(Beg, I);
 
     // Look for a '%' character that indicates the start of a format specifier.
@@ -248,6 +257,7 @@ ArgType ScanfSpecifier::getArgType(ASTContext &Ctx) const {
         case LengthModifier::AsMAllocate:
         case LengthModifier::AsInt32:
         case LengthModifier::AsInt3264:
+        case LengthModifier::AsWide:
           return ArgType::Invalid();
       }
 
@@ -286,6 +296,7 @@ ArgType ScanfSpecifier::getArgType(ASTContext &Ctx) const {
         case LengthModifier::AsMAllocate:
         case LengthModifier::AsInt32:
         case LengthModifier::AsInt3264:
+        case LengthModifier::AsWide:
           return ArgType::Invalid();
       }
 
@@ -317,10 +328,14 @@ ArgType ScanfSpecifier::getArgType(ASTContext &Ctx) const {
         case LengthModifier::None:
           return ArgType::PtrTo(ArgType::AnyCharTy);
         case LengthModifier::AsLong:
+        case LengthModifier::AsWide:
           return ArgType::PtrTo(ArgType(Ctx.getWideCharType(), "wchar_t"));
         case LengthModifier::AsAllocate:
         case LengthModifier::AsMAllocate:
           return ArgType::PtrTo(ArgType::CStrTy);
+        case LengthModifier::AsShort:
+          if (Ctx.getTargetInfo().getTriple().isOSMSVCRT())
+            return ArgType::PtrTo(ArgType::AnyCharTy);
         default:
           return ArgType::Invalid();
       }
@@ -329,10 +344,14 @@ ArgType ScanfSpecifier::getArgType(ASTContext &Ctx) const {
       // FIXME: Mac OS X specific?
       switch (LM.getKind()) {
         case LengthModifier::None:
+        case LengthModifier::AsWide:
           return ArgType::PtrTo(ArgType(Ctx.getWideCharType(), "wchar_t"));
         case LengthModifier::AsAllocate:
         case LengthModifier::AsMAllocate:
           return ArgType::PtrTo(ArgType(ArgType::WCStrTy, "wchar_t *"));
+        case LengthModifier::AsShort:
+          if (Ctx.getTargetInfo().getTriple().isOSMSVCRT())
+            return ArgType::PtrTo(ArgType::AnyCharTy);
         default:
           return ArgType::Invalid();
       }
@@ -369,6 +388,7 @@ ArgType ScanfSpecifier::getArgType(ASTContext &Ctx) const {
         case LengthModifier::AsMAllocate:
         case LengthModifier::AsInt32:
         case LengthModifier::AsInt3264:
+        case LengthModifier::AsWide:
           return ArgType::Invalid();
         }
 

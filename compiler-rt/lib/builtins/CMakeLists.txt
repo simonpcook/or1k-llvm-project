@@ -8,6 +8,7 @@ set(GENERIC_SOURCES
   absvti2.c
   adddf3.c
   addsf3.c
+  addtf3.c
   addvdi3.c
   addvsi3.c
   addvti3.c
@@ -38,6 +39,7 @@ set(GENERIC_SOURCES
   divsf3.c
   divsi3.c
   divti3.c
+  divtf3.c
   divxc3.c
   enable_execute_stack.c
   eprintf.c
@@ -77,7 +79,6 @@ set(GENERIC_SOURCES
   floatuntidf.c
   floatuntisf.c
   floatuntixf.c
-  gcc_personality_v0.c
   int_util.c
   lshrdi3.c
   lshrti3.c
@@ -93,6 +94,7 @@ set(GENERIC_SOURCES
   mulsc3.c
   mulsf3.c
   multi3.c
+  multf3.c
   mulvdi3.c
   mulvsi3.c
   mulvti3.c
@@ -119,6 +121,7 @@ set(GENERIC_SOURCES
   subvdi3.c
   subvsi3.c
   subvti3.c
+  subtf3.c
   trampoline_setup.c
   truncdfsf2.c
   ucmpdi2.c
@@ -132,6 +135,12 @@ set(GENERIC_SOURCES
   umoddi3.c
   umodsi3.c
   umodti3.c)
+
+if (HAVE_UNWIND_H)
+  set(GENERIC_SOURCES
+      ${GENERIC_SOURCES}
+      gcc_personality_v0.c)
+endif ()
 
 set(x86_64_SOURCES
   x86_64/floatdidf.c
@@ -159,10 +168,14 @@ set(i386_SOURCES
   i386/umoddi3.S
   ${GENERIC_SOURCES})
 
+set(i686_SOURCES
+  ${i386_SOURCES})
+
 set(arm_SOURCES
   arm/adddf3vfp.S
   arm/addsf3vfp.S
   arm/aeabi_dcmp.S
+  arm/aeabi_div0.c
   arm/aeabi_fcmp.S
   arm/aeabi_idivmod.S
   arm/aeabi_ldivmod.S
@@ -245,14 +258,26 @@ set(arm_SOURCES
 add_custom_target(builtins)
 
 if (NOT WIN32)
-  foreach(arch x86_64 i386 arm)
-    if(CAN_TARGET_${arch})
-      add_compiler_rt_static_runtime(clang_rt.${arch} ${arch}
-        SOURCES ${${arch}_SOURCES}
-        CFLAGS "-std=c99")
-      add_dependencies(builtins clang_rt.${arch})
-    endif()
-  endforeach()
-endif()
+  foreach (arch x86_64 i386 i686 arm)
+    if (CAN_TARGET_${arch})
+      # Filter out generic versions of routines that are re-implemented in
+      # architecture specific manner.  This prevents multiple definitions of the
+      # same symbols, making the symbol selection non-deterministic.
+      foreach (_file ${${arch}_SOURCES})
+        if (${_file} MATCHES ${arch}/*)
+          get_filename_component(_name ${_file} NAME)
+          string(REPLACE ".S" ".c" _cname "${_name}")
+          list(REMOVE_ITEM ${arch}_SOURCES ${_cname})
+        endif ()
+      endforeach ()
+
+      set_source_files_properties(${${arch}_SOURCES} PROPERTIES LANGUAGE C)
+      add_compiler_rt_runtime(clang_rt.builtins-${arch} ${arch} STATIC
+                              SOURCES ${${arch}_SOURCES}
+                              CFLAGS "-std=c99")
+      add_dependencies(builtins clang_rt.builtins-${arch})
+    endif ()
+  endforeach ()
+endif ()
 
 add_dependencies(compiler-rt builtins)

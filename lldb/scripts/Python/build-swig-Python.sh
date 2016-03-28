@@ -20,6 +20,8 @@ SWIG=$6
 makefile_flag=$7
 dependency_flag=$8
 
+PYTHON=${PYTHON_EXECUTABLE:-/usr/bin/env python}
+
 if [ -n "$makefile_flag" -a "$makefile_flag" = "-m" ]
 then
     MakefileCalled=1
@@ -89,6 +91,7 @@ HEADER_FILES="${SRC_ROOT}/include/lldb/lldb.h"\
 " ${SRC_ROOT}/include/lldb/API/SBDebugger.h"\
 " ${SRC_ROOT}/include/lldb/API/SBError.h"\
 " ${SRC_ROOT}/include/lldb/API/SBEvent.h"\
+" ${SRC_ROOT}/include/lldb/API/SBExecutionContext.h"\
 " ${SRC_ROOT}/include/lldb/API/SBExpressionOptions.h"\
 " ${SRC_ROOT}/include/lldb/API/SBFileSpec.h"\
 " ${SRC_ROOT}/include/lldb/API/SBFrame.h"\
@@ -111,6 +114,8 @@ HEADER_FILES="${SRC_ROOT}/include/lldb/lldb.h"\
 " ${SRC_ROOT}/include/lldb/API/SBSymbolContextList.h"\
 " ${SRC_ROOT}/include/lldb/API/SBTarget.h"\
 " ${SRC_ROOT}/include/lldb/API/SBThread.h"\
+" ${SRC_ROOT}/include/lldb/API/SBThreadCollection.h"\
+" ${SRC_ROOT}/include/lldb/API/SBThreadPlan.h"\
 " ${SRC_ROOT}/include/lldb/API/SBType.h"\
 " ${SRC_ROOT}/include/lldb/API/SBTypeCategory.h"\
 " ${SRC_ROOT}/include/lldb/API/SBTypeFilter.h"\
@@ -120,7 +125,8 @@ HEADER_FILES="${SRC_ROOT}/include/lldb/lldb.h"\
 " ${SRC_ROOT}/include/lldb/API/SBTypeSynthetic.h"\
 " ${SRC_ROOT}/include/lldb/API/SBValue.h"\
 " ${SRC_ROOT}/include/lldb/API/SBValueList.h"\
-" ${SRC_ROOT}/include/lldb/API/SBWatchpoint.h"
+" ${SRC_ROOT}/include/lldb/API/SBWatchpoint.h"\
+" ${SRC_ROOT}/include/lldb/API/SBUnixSignals.h"
 
 INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBBlock.i"\
@@ -136,6 +142,7 @@ INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBDeclaration.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBError.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBEvent.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBExecutionContext.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBExpressionOptions.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBFileSpec.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBFrame.i"\
@@ -158,6 +165,8 @@ INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBSymbolContext.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBTarget.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBThread.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBThreadCollection.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBThreadPlan.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBType.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBTypeCategory.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBTypeFilter.i"\
@@ -167,7 +176,8 @@ INTERFACE_FILES="${SRC_ROOT}/scripts/Python/interface/SBAddress.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBTypeSynthetic.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBValue.i"\
 " ${SRC_ROOT}/scripts/Python/interface/SBValueList.i"\
-" ${SRC_ROOT}/scripts/Python/interface/SBWatchpoint.i"
+" ${SRC_ROOT}/scripts/Python/interface/SBWatchpoint.i"\
+" ${SRC_ROOT}/scripts/Python/interface/SBUnixSignals.i"
 
 if [ $Debug -eq 1 ]
 then
@@ -292,7 +302,7 @@ then
     fi
 fi
 
-python_version=`/usr/bin/env python --version 2>&1 | sed -e 's,Python ,,' -e 's,[.][0-9],,2' -e 's,[a-z][a-z][0-9],,'`
+python_version=`${PYTHON} --version 2>&1 | sed -e 's,Python ,,' -e 's,[.][0-9],,2' -e 's,[a-z][a-z][0-9],,'`
 
 if [ $MakefileCalled -eq 0 ]
 then
@@ -300,9 +310,9 @@ then
 else
     if [ -n "${PYTHON_INSTALL_DIR}" ]
     then
-        framework_python_dir=`/usr/bin/env python -c "from distutils.sysconfig import get_python_lib; print get_python_lib(True, False, \"${PYTHON_INSTALL_DIR}\");"`/lldb
+        framework_python_dir=`${PYTHON} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(True, False, \"${PYTHON_INSTALL_DIR}\");"`/lldb
     else
-        framework_python_dir=`/usr/bin/env python -c "from distutils.sysconfig import get_python_lib; print get_python_lib(True, False);"`/lldb
+        framework_python_dir=`${PYTHON} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(True, False);"`/lldb
     fi
 fi
 
@@ -353,7 +363,7 @@ fi
 current_dir=`pwd`
 if [ -f "${current_dir}/modify-python-lldb.py" ]
 then
-    /usr/bin/env python ${current_dir}/modify-python-lldb.py ${CONFIG_BUILD_DIR}
+    ${PYTHON} ${current_dir}/modify-python-lldb.py ${CONFIG_BUILD_DIR}
 fi
 
 

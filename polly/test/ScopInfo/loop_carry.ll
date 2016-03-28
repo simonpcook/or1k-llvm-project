@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly %defaultOpts -polly-prepare -polly-scops -analyze  < %s | FileCheck %s
+; RUN: opt %loadPolly -basicaa -polly-prepare -polly-scops -analyze  < %s | FileCheck %s
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
 target triple = "x86_64-linux-gnu"
@@ -53,7 +53,7 @@ bb2:                                              ; preds = %bb, %entry
 ; CHECK:             Domain :=
 ; CHECK:                 [n] -> { Stmt_bb_nph[] : n >= 2 };
 ; CHECK:             Scattering :=
-; CHECK:                 [n] -> { Stmt_bb_nph[] -> scattering[0, 0, 0] };
+; CHECK:                 [n] -> { Stmt_bb_nph[] -> scattering[0, 0] };
 ; CHECK:             ReadAccess :=
 ; CHECK:                 [n] -> { Stmt_bb_nph[] -> MemRef_a[0] };
 ; CHECK:             MustWriteAccess :=
@@ -64,7 +64,7 @@ bb2:                                              ; preds = %bb, %entry
 ; CHECK:             Domain :=
 ; CHECK:                 [n] -> { Stmt_bb[i0] : i0 >= 0 and i0 <= -2 + n and n >= 2 };
 ; CHECK:             Scattering :=
-; CHECK:                 [n] -> { Stmt_bb[i0] -> scattering[1, i0, 0] };
+; CHECK:                 [n] -> { Stmt_bb[i0] -> scattering[1, i0] };
 ; CHECK:             ReadAccess :=
 ; CHECK:                 [n] -> { Stmt_bb[i0] -> MemRef__reg2mem[0] };
 ; CHECK:             ReadAccess :=

@@ -95,7 +95,7 @@ public:
     if (FD) {
       IdentifierInfo *II = FD->getIdentifier();
       if (II == II_malloc || II == II_calloc || II == II_realloc)
-        return TypeCallPair((const TypeSourceInfo *)0, E);
+        return TypeCallPair((const TypeSourceInfo *)nullptr, E);
     }
     return TypeCallPair();
   }
@@ -137,6 +137,10 @@ public:
 // Determine if the pointee and sizeof types are compatible.  Here
 // we ignore constness of pointer types.
 static bool typesCompatible(ASTContext &C, QualType A, QualType B) {
+  // sizeof(void*) is compatible with any other pointer.
+  if (B->isVoidPointerType() && A->getAs<PointerType>())
+    return true;
+
   while (true) {
     A = A.getCanonicalType();
     B = B.getCanonicalType();
@@ -205,7 +209,7 @@ public:
         if (compatibleWithArrayType(BR.getContext(), PointeeType, SizeofType))
           continue;
 
-        const TypeSourceInfo *TSI = 0;
+        const TypeSourceInfo *TSI = nullptr;
         if (i->CastedExprParent.is<const VarDecl *>()) {
           TSI =
               i->CastedExprParent.get<const VarDecl *>()->getTypeSourceInfo();

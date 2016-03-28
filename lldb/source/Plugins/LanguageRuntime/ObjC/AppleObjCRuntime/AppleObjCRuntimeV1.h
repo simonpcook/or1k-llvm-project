@@ -40,6 +40,9 @@ public:
         virtual ClassDescriptorSP
         GetSuperclass ();
         
+        virtual ClassDescriptorSP
+        GetMetaclass () const;
+        
         virtual bool
         IsValid ()
         {
@@ -71,7 +74,7 @@ public:
         Describe (std::function <void (ObjCLanguageRuntime::ObjCISA)> const &superclass_func,
                   std::function <bool (const char *, const char *)> const &instance_method_func,
                   std::function <bool (const char *, const char *)> const &class_method_func,
-                  std::function <bool (const char *, const char *, lldb::addr_t, uint64_t)> const &ivar_func);
+                  std::function <bool (const char *, const char *, lldb::addr_t, uint64_t)> const &ivar_func) const;
         
         virtual
         ~ClassDescriptorV1 ()
@@ -135,8 +138,8 @@ public:
     virtual void
     UpdateISAToDescriptorMapIfNeeded();
     
-    virtual TypeVendor *
-    GetTypeVendor();
+    virtual DeclVendor *
+    GetDeclVendor();
 
 protected:
     virtual lldb::BreakpointResolverSP
@@ -185,7 +188,7 @@ protected:
     
     HashTableSignature m_hash_signature;
     lldb::addr_t m_isa_hash_table_ptr;
-    std::unique_ptr<TypeVendor> m_type_vendor_ap;
+    std::unique_ptr<DeclVendor> m_decl_vendor_ap;
 private:
     AppleObjCRuntimeV1(Process *process);
 };

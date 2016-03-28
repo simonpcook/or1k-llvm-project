@@ -234,7 +234,8 @@ class SymbolizerProcess : public ExternalSymbolizerInterface {
     CHECK(infd);
     CHECK(outfd);
 
-    int pid = fork();
+    // Real fork() may call user callbacks registered with pthread_atfork().
+    int pid = internal_fork();
     if (pid == -1) {
       // Fork() failed.
       internal_close(infd[0]);
@@ -254,7 +255,7 @@ class SymbolizerProcess : public ExternalSymbolizerInterface {
       internal_close(outfd[1]);
       internal_close(infd[0]);
       internal_close(infd[1]);
-      for (int fd = getdtablesize(); fd > 2; fd--)
+      for (int fd = sysconf(_SC_OPEN_MAX); fd > 2; fd--)
         internal_close(fd);
       ExecuteWithDefaultArgs(path_);
       internal__exit(1);
@@ -340,12 +341,19 @@ class LLVMSymbolizerProcess : public SymbolizerProcess {
     const char* const kSymbolizerArch = "--default-arch=x86_64";
 #elif defined(__i386__)
     const char* const kSymbolizerArch = "--default-arch=i386";
-#elif defined(__powerpc64__)
+#elif defined(__powerpc64__) && defined(__BIG_ENDIAN__)
     const char* const kSymbolizerArch = "--default-arch=powerpc64";
+#elif defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
+    const char* const kSymbolizerArch = "--default-arch=powerpc64le";
 #else
     const char* const kSymbolizerArch = "--default-arch=unknown";
 #endif
-    execl(path_to_binary, path_to_binary, kSymbolizerArch, (char *)0);
+
+    const char *const inline_flag = common_flags()->symbolize_inline_frames
+                                        ? "--inlining=true"
+                                        : "--inlining=false";
+    execl(path_to_binary, path_to_binary, inline_flag, kSymbolizerArch,
+          (char *)0);
   }
 };
 
@@ -506,34 +514,32 @@ class POSIXSymbolizer : public Symbolizer {
         internal_symbolizer_(internal_symbolizer),
         libbacktrace_symbolizer_(libbacktrace_symbolizer) {}
 
-  uptr SymbolizePC(uptr addr, AddressInfo *frames, uptr max_frames) {
+  SymbolizedStack *SymbolizePC(uptr addr) override {
     BlockingMutexLock l(&mu_);
-    if (max_frames == 0)
-      return 0;
     const char *module_name;
     uptr module_offset;
     if (!FindModuleNameAndOffsetForAddress(addr, &module_name, &module_offset))
-      return 0;
+      return SymbolizedStack::New(addr);
     // First, try to use libbacktrace symbolizer (if it's available).
     if (libbacktrace_symbolizer_ != 0) {
       mu_.CheckLocked();
-      uptr res = libbacktrace_symbolizer_->SymbolizeCode(
-          addr, frames, max_frames, module_name, module_offset);
-      if (res > 0)
+      if (SymbolizedStack *res = libbacktrace_symbolizer_->SymbolizeCode(
+              addr, module_name, module_offset))
         return res;
     }
+    // Always fill data about module name and offset.
+    SymbolizedStack *res = SymbolizedStack::New(addr);
+    res->info.FillAddressAndModuleInfo(addr, module_name, module_offset);
+
     const char *str = SendCommand(false, module_name, module_offset);
     if (str == 0) {
-      // Symbolizer was not initialized or failed. Fill only data
-      // about module name and offset.
-      AddressInfo *info = &frames[0];
-      info->Clear();
-      info->FillAddressAndModuleInfo(addr, module_name, module_offset);
-      return 1;
+      // Symbolizer was not initialized or failed.
+      return res;
     }
-    uptr frame_id = 0;
-    for (frame_id = 0; frame_id < max_frames; frame_id++) {
-      AddressInfo *info = &frames[frame_id];
+
+    bool top_frame = true;
+    SymbolizedStack *last = res;
+    while (true) {
       char *function_name = 0;
       str = ExtractToken(str, "\n", &function_name);
       CHECK(function_name);
@@ -541,8 +547,18 @@ class POSIXSymbolizer : public Symbolizer {
         // There are no more frames.
         break;
       }
-      info->Clear();
-      info->FillAddressAndModuleInfo(addr, module_name, module_offset);
+      SymbolizedStack *cur;
+      if (top_frame) {
+        cur = res;
+        top_frame = false;
+      } else {
+        cur = SymbolizedStack::New(addr);
+        cur->info.FillAddressAndModuleInfo(addr, module_name, module_offset);
+        last->next = cur;
+        last = cur;
+      }
+
+      AddressInfo *info = &cur->info;
       info->function = function_name;
       // Parse <file>:<line>:<column> buffer.
       char *file_line_info = 0;
@@ -564,31 +580,23 @@ class POSIXSymbolizer : public Symbolizer {
         info->file = 0;
       }
     }
-    if (frame_id == 0) {
-      // Make sure we return at least one frame.
-      AddressInfo *info = &frames[0];
-      info->Clear();
-      info->FillAddressAndModuleInfo(addr, module_name, module_offset);
-      frame_id = 1;
-    }
-    return frame_id;
+    return res;
   }
 
-  bool SymbolizeData(uptr addr, DataInfo *info) {
+  bool SymbolizeData(uptr addr, DataInfo *info) override {
     BlockingMutexLock l(&mu_);
     LoadedModule *module = FindModuleForAddress(addr);
     if (module == 0)
       return false;
     const char *module_name = module->full_name();
     uptr module_offset = addr - module->base_address();
-    internal_memset(info, 0, sizeof(*info));
-    info->address = addr;
+    info->Clear();
     info->module = internal_strdup(module_name);
     info->module_offset = module_offset;
     // First, try to use libbacktrace symbolizer (if it's available).
     if (libbacktrace_symbolizer_ != 0) {
       mu_.CheckLocked();
-      if (libbacktrace_symbolizer_->SymbolizeData(info))
+      if (libbacktrace_symbolizer_->SymbolizeData(addr, info))
         return true;
     }
     const char *str = SendCommand(true, module_name, module_offset);
@@ -602,17 +610,17 @@ class POSIXSymbolizer : public Symbolizer {
   }
 
   bool GetModuleNameAndOffsetForPC(uptr pc, const char **module_name,
-                                   uptr *module_address) {
+                                   uptr *module_address) override {
     BlockingMutexLock l(&mu_);
     return FindModuleNameAndOffsetForAddress(pc, module_name, module_address);
   }
 
-  bool CanReturnFileLineInfo() {
+  bool CanReturnFileLineInfo() override {
     return internal_symbolizer_ != 0 || external_symbolizer_ != 0 ||
            libbacktrace_symbolizer_ != 0;
   }
 
-  void Flush() {
+  void Flush() override {
     BlockingMutexLock l(&mu_);
     if (internal_symbolizer_ != 0) {
       SymbolizerScope sym_scope(this);
@@ -620,7 +628,7 @@ class POSIXSymbolizer : public Symbolizer {
     }
   }
 
-  const char *Demangle(const char *name) {
+  const char *Demangle(const char *name) override {
     BlockingMutexLock l(&mu_);
     // Run hooks even if we don't use internal symbolizer, as cxxabi
     // demangle may call system functions.
@@ -635,7 +643,7 @@ class POSIXSymbolizer : public Symbolizer {
     return DemangleCXXABI(name);
   }
 
-  void PrepareForSandboxing() {
+  void PrepareForSandboxing() override {
 #if SANITIZER_LINUX && !SANITIZER_ANDROID
     BlockingMutexLock l(&mu_);
     // Cache /proc/self/exe on Linux.
@@ -715,7 +723,7 @@ class POSIXSymbolizer : public Symbolizer {
   LibbacktraceSymbolizer *libbacktrace_symbolizer_;   // Leaked.
 };
 
-Symbolizer *Symbolizer::PlatformInit(const char *path_to_external) {
+Symbolizer *Symbolizer::PlatformInit() {
   if (!common_flags()->symbolize) {
     return new(symbolizer_allocator_) POSIXSymbolizer(0, 0, 0);
   }
@@ -728,6 +736,7 @@ Symbolizer *Symbolizer::PlatformInit(const char *path_to_external) {
     libbacktrace_symbolizer =
         LibbacktraceSymbolizer::get(&symbolizer_allocator_);
     if (!libbacktrace_symbolizer) {
+      const char *path_to_external = common_flags()->external_symbolizer_path;
       if (path_to_external && path_to_external[0] == '\0') {
         // External symbolizer is explicitly disabled. Do nothing.
       } else {

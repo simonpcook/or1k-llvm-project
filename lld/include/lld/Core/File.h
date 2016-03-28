@@ -12,13 +12,14 @@
 
 #include "lld/Core/AbsoluteAtom.h"
 #include "lld/Core/DefinedAtom.h"
-#include "lld/Core/range.h"
 #include "lld/Core/SharedLibraryAtom.h"
-#include "lld/Core/LinkingContext.h"
 #include "lld/Core/UndefinedAtom.h"
-
+#include "lld/Core/range.h"
+#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
-
+#include <functional>
+#include <memory>
 #include <vector>
 
 namespace lld {
@@ -59,12 +60,6 @@ public:
     return _path;
   }
 
-  /// \brief Returns the path of the source file used to create the object
-  /// file which this (File) object represents.  This information is usually
-  /// parsed out of the DWARF debug information. If the source file cannot
-  /// be ascertained, this method returns the empty string.
-  virtual StringRef translationUnitSource() const;
-
   /// Returns the command line order of the file.
   uint64_t ordinal() const {
     assert(_ordinal != UINT64_MAX);
@@ -77,8 +72,12 @@ public:
   /// Sets the command line order of the file.
   void setOrdinal(uint64_t ordinal) const { _ordinal = ordinal; }
 
-public:
   template <typename T> class atom_iterator; // forward reference
+
+  /// For allocating any objects owned by this File.
+  llvm::BumpPtrAllocator &allocator() const {
+    return _allocator;
+  }
 
   /// \brief For use interating over DefinedAtoms in this File.
   typedef atom_iterator<DefinedAtom>  defined_iterator;
@@ -105,6 +104,7 @@ public:
     virtual const T *deref(const void *it) const = 0;
     virtual void next(const void *&it) const = 0;
     virtual uint64_t size() const = 0;
+    bool empty() const { return size() == 0; }
   };
 
   /// \brief The class is the iterator type used to iterate through a File's
@@ -155,38 +155,64 @@ public:
   /// all AbsoluteAtoms in this File.
   virtual const atom_collection<AbsoluteAtom> &absolute() const = 0;
 
+  /// \brief If a file is parsed using a different method than doParse(),
+  /// one must use this method to set the last error status, so that
+  /// doParse will not be called twice. Only YAML reader uses this
+  /// (because YAML reader does not read blobs but structured data).
+  void setLastError(std::error_code err) { _lastError = err; }
+
+  std::error_code parse() {
+    if (!_lastError.hasValue())
+      _lastError = doParse();
+    return _lastError.getValue();
+  }
+
+  // Usually each file owns a std::unique_ptr<MemoryBuffer>.
+  // However, there's one special case. If a file is an archive file,
+  // the archive file and its children all shares the same memory buffer.
+  // This method is used by the ArchiveFile to give its children
+  // co-ownership of the buffer.
+  void setSharedMemoryBuffer(std::shared_ptr<MemoryBuffer> mb) {
+    _sharedMemoryBuffer = mb;
+  }
+
 protected:
   /// \brief only subclasses of File can be instantiated
-  File(StringRef p, Kind kind) : _path(p), _kind(kind), _ordinal(UINT64_MAX) {}
+  File(StringRef p, Kind kind)
+      : _path(p), _kind(kind), _ordinal(UINT64_MAX) {}
+
+  /// \brief Subclasses should override this method to parse the
+  /// memory buffer passed to this file's constructor.
+  virtual std::error_code doParse() { return std::error_code(); }
 
   /// \brief This is a convenience class for File subclasses which manage their
   /// atoms as a simple std::vector<>.
   template <typename T>
   class atom_collection_vector : public atom_collection<T> {
   public:
-    virtual atom_iterator<T> begin() const {
+    atom_iterator<T> begin() const override {
       auto *it = _atoms.empty() ? nullptr
                                 : reinterpret_cast<const void *>(_atoms.data());
       return atom_iterator<T>(*this, it);
     }
 
-    virtual atom_iterator<T> end() const{
+    atom_iterator<T> end() const override {
       auto *it = _atoms.empty() ? nullptr : reinterpret_cast<const void *>(
                                                 _atoms.data() + _atoms.size());
       return atom_iterator<T>(*this, it);
     }
 
-    virtual const T *deref(const void *it) const {
-      return *reinterpret_cast<const T* const*>(it);
+    const T *deref(const void *it) const override {
+      return *reinterpret_cast<const T *const *>(it);
     }
 
-    virtual void next(const void *&it) const {
-      const T *const *p = reinterpret_cast<const T *const*>(it);
+    void next(const void *&it) const override {
+      const T *const *p = reinterpret_cast<const T *const *>(it);
       ++p;
       it = reinterpret_cast<const void*>(p);
     }
 
-    virtual uint64_t size() const { return _atoms.size(); }
+    uint64_t size() const override { return _atoms.size(); }
 
     std::vector<const T *> _atoms;
   };
@@ -196,32 +222,31 @@ protected:
   template <typename T>
   class atom_collection_empty : public atom_collection<T> {
   public:
-    virtual atom_iterator<T> begin() const {
+    atom_iterator<T> begin() const override {
       return atom_iterator<T>(*this, nullptr);
     }
-    virtual atom_iterator<T> end() const{
+    atom_iterator<T> end() const override {
       return atom_iterator<T>(*this, nullptr);
     }
-    virtual const T *deref(const void *it) const {
+    const T *deref(const void *it) const override {
       llvm_unreachable("empty collection should never be accessed");
     }
-    virtual void next(const void *&it) const {
-    }
-    virtual void push_back(const T *element) {
-      llvm_unreachable("empty collection should never be grown");
-    }
-    virtual uint64_t size() const { return 0; }
+    void next(const void *&it) const override {}
+    uint64_t size() const override { return 0; }
   };
 
   static atom_collection_empty<DefinedAtom>       _noDefinedAtoms;
   static atom_collection_empty<UndefinedAtom>     _noUndefinedAtoms;
   static atom_collection_empty<SharedLibraryAtom> _noSharedLibraryAtoms;
   static atom_collection_empty<AbsoluteAtom>      _noAbsoluteAtoms;
+  llvm::Optional<std::error_code>                 _lastError;
+  mutable llvm::BumpPtrAllocator                  _allocator;
 
 private:
   StringRef _path;
   Kind              _kind;
   mutable uint64_t  _ordinal;
+  std::shared_ptr<MemoryBuffer> _sharedMemoryBuffer;
 };
 
 /// \brief A mutable File.
@@ -234,10 +259,42 @@ public:
   typedef range<std::vector<const DefinedAtom *>::iterator> DefinedAtomRange;
   virtual DefinedAtomRange definedAtoms() = 0;
 
+  virtual void
+  removeDefinedAtomsIf(std::function<bool(const DefinedAtom *)> pred) = 0;
+
 protected:
   /// \brief only subclasses of MutableFile can be instantiated
   MutableFile(StringRef p) : File(p, kindObject) {}
 };
+
+/// An ErrorFile represents a file that doesn't exist.
+/// If you try to parse a file which doesn't exist, an instance of this
+/// class will be returned. That's parse method always returns an error.
+/// This is useful to delay erroring on non-existent files, so that we
+/// can do unit testing a driver using non-existing file paths.
+class ErrorFile : public File {
+public:
+  ErrorFile(StringRef p, std::error_code ec) : File(p, kindObject), _ec(ec) {}
+
+  std::error_code doParse() override { return _ec; }
+
+  const atom_collection<DefinedAtom> &defined() const override {
+    llvm_unreachable("internal error");
+  }
+  const atom_collection<UndefinedAtom> &undefined() const override {
+    llvm_unreachable("internal error");
+  }
+  const atom_collection<SharedLibraryAtom> &sharedLibrary() const override {
+    llvm_unreachable("internal error");
+  }
+  const atom_collection<AbsoluteAtom> &absolute() const override {
+    llvm_unreachable("internal error");
+  }
+
+private:
+  std::error_code _ec;
+};
+
 } // end namespace lld
 
 #endif

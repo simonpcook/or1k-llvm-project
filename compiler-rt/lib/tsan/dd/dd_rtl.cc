@@ -19,26 +19,26 @@ namespace __dsan {
 static Context *ctx;
 
 static u32 CurrentStackTrace(Thread *thr, uptr skip) {
-  StackTrace trace;
+  BufferedStackTrace stack;
   thr->ignore_interceptors = true;
-  trace.Unwind(1000, 0, 0, 0, 0, 0, false);
+  stack.Unwind(1000, 0, 0, 0, 0, 0, false);
   thr->ignore_interceptors = false;
-  if (trace.size <= skip)
+  if (stack.size <= skip)
     return 0;
-  return StackDepotPut(trace.trace + skip, trace.size - skip);
+  return StackDepotPut(StackTrace(stack.trace + skip, stack.size - skip));
 }
 
 static void PrintStackTrace(Thread *thr, u32 stk) {
-  uptr size = 0;
-  const uptr *trace = StackDepotGet(stk, &size);
+  StackTrace stack = StackDepotGet(stk);
   thr->ignore_interceptors = true;
-  StackTrace::PrintStack(trace, size);
+  stack.Print();
   thr->ignore_interceptors = false;
 }
 
 static void ReportDeadlock(Thread *thr, DDReport *rep) {
   if (rep == 0)
     return;
+  BlockingMutexLock lock(&ctx->report_mutex);
   Printf("==============================\n");
   Printf("WARNING: lock-order-inversion (potential deadlock)\n");
   for (int i = 0; i < rep->n; i++) {
@@ -52,7 +52,6 @@ static void ReportDeadlock(Thread *thr, DDReport *rep) {
     }
   }
   Printf("==============================\n");
-  Die();
 }
 
 Callback::Callback(Thread *thr)
@@ -71,16 +70,18 @@ void InitializeFlags(Flags *f, const char *env) {
   // Default values.
   f->second_deadlock_stack = false;
 
-  SetCommonFlagsDefaults(f);
-  // Override some common flags defaults.
-  f->allow_addr2line = true;
+  SetCommonFlagsDefaults();
+  {
+    // Override some common flags defaults.
+    CommonFlags cf;
+    cf.CopyFrom(*common_flags());
+    cf.allow_addr2line = true;
+    OverrideCommonFlags(cf);
+  }
 
   // Override from command line.
   ParseFlag(env, &f->second_deadlock_stack, "second_deadlock_stack", "");
-  ParseCommonFlagsFromString(f, env);
-
-  // Copy back to common flags.
-  *common_flags() = *f;
+  ParseCommonFlagsFromString(env);
 }
 
 void Initialize() {
@@ -89,7 +90,6 @@ void Initialize() {
 
   InitializeInterceptors();
   InitializeFlags(flags(), GetEnv("DSAN_OPTIONS"));
-  common_flags()->symbolize = true;
   ctx->dd = DDetector::Create(flags());
 }
 

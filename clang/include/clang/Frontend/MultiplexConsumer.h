@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_FRONTEND_MULTIPLEXCONSUMER_H
-#define CLANG_FRONTEND_MULTIPLEXCONSUMER_H
+#ifndef LLVM_CLANG_FRONTEND_MULTIPLEXCONSUMER_H
+#define LLVM_CLANG_FRONTEND_MULTIPLEXCONSUMER_H
 
 #include "clang/Basic/LLVM.h"
 #include "clang/Sema/SemaConsumer.h"
@@ -29,18 +29,25 @@ class MultiplexASTDeserializationListener;
 class MultiplexConsumer : public SemaConsumer {
 public:
   // Takes ownership of the pointers in C.
-  MultiplexConsumer(ArrayRef<ASTConsumer*> C);
+  MultiplexConsumer(std::vector<std::unique_ptr<ASTConsumer>> C);
   ~MultiplexConsumer();
 
   // ASTConsumer
   void Initialize(ASTContext &Context) override;
   void HandleCXXStaticMemberVarInstantiation(VarDecl *VD) override;
   bool HandleTopLevelDecl(DeclGroupRef D) override;
+  void HandleInlineMethodDefinition(CXXMethodDecl *D) override;
   void HandleInterestingDecl(DeclGroupRef D) override;
   void HandleTranslationUnit(ASTContext &Ctx) override;
   void HandleTagDeclDefinition(TagDecl *D) override;
+  void HandleTagDeclRequiredDefinition(const TagDecl *D) override;
   void HandleCXXImplicitFunctionInstantiation(FunctionDecl *D) override;
   void HandleTopLevelDeclInObjCContainer(DeclGroupRef D) override;
+  void HandleImplicitImportDecl(ImportDecl *D) override;
+  void HandleLinkerOptionPragma(llvm::StringRef Opts) override;
+  void HandleDetectMismatch(llvm::StringRef Name,
+                            llvm::StringRef Value) override;
+  void HandleDependentLibrary(llvm::StringRef Lib) override;
   void CompleteTentativeDefinition(VarDecl *D) override;
   void HandleVTable(CXXRecordDecl *RD, bool DefinitionRequired) override;
   ASTMutationListener *GetASTMutationListener() override;
@@ -52,7 +59,7 @@ public:
   void ForgetSema() override;
 
 private:
-  std::vector<ASTConsumer*> Consumers;  // Owns these.
+  std::vector<std::unique_ptr<ASTConsumer>> Consumers; // Owns these.
   std::unique_ptr<MultiplexASTMutationListener> MutationListener;
   std::unique_ptr<MultiplexASTDeserializationListener> DeserializationListener;
 };

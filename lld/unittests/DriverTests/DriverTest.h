@@ -7,13 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <stdarg.h>
-
-#include "gtest/gtest.h"
-
 #include "lld/Driver/Driver.h"
-
 #include "llvm/Support/raw_ostream.h"
+#include "gtest/gtest.h"
+#include <stdarg.h>
 
 namespace {
 
@@ -29,25 +26,15 @@ protected:
   std::string &errorMessage() { return  _errorMessage; }
 
   // Convenience method for getting number of input files.
-  int inputFileCount() { return linkingContext()->inputGraph().size(); }
+  int inputFileCount() { return linkingContext()->getInputGraph().size(); }
 
   // Convenience method for getting i'th input files name.
   std::string inputFile(int index) {
-    const InputElement &inputElement = linkingContext()->inputGraph()[index];
+    const InputElement &inputElement =
+        *linkingContext()->getInputGraph().inputElements()[index];
     if (inputElement.kind() == InputElement::Kind::File)
-      return *dyn_cast<FileNode>(&inputElement)->getPath(*linkingContext());
+      return *cast<FileNode>(&inputElement)->getPath(*linkingContext());
     llvm_unreachable("not handling other types of input files");
-  }
-
-  // Convenience method for getting i'th input files name.
-  std::string inputFile(int index1, int index2) {
-    Group *group = dyn_cast<Group>(&linkingContext()->inputGraph()[index1]);
-    if (!group)
-      llvm_unreachable("not handling other types of input files");
-    FileNode *file = dyn_cast<FileNode>(group->elements()[index2].get());
-    if (!file)
-      llvm_unreachable("not handling other types of input files");
-    return *file->getPath(*linkingContext());
   }
 
   // For unit tests to call driver with various command lines.

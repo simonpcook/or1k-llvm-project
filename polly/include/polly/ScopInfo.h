@@ -47,6 +47,7 @@ struct isl_union_set;
 struct isl_union_map;
 struct isl_space;
 struct isl_constraint;
+struct isl_pw_multi_aff;
 
 namespace polly {
 
@@ -58,7 +59,70 @@ class TempScop;
 class SCEVAffFunc;
 class Comparison;
 
-//===----------------------------------------------------------------------===//
+/// @brief A class to store information about arrays in the SCoP.
+///
+/// Objects are accessible via the ScoP, MemoryAccess or the id associated with
+/// the MemoryAccess access function.
+///
+class ScopArrayInfo {
+public:
+  /// @brief Construct a ScopArrayInfo object.
+  ///
+  /// @param BasePtr        The array base pointer.
+  /// @param AccessType     The type used to access this array.
+  /// @param IslCtx         The isl context used to create the base pointer id.
+  /// @param DimensionSizes A vector containing the size of each dimension.
+  ScopArrayInfo(Value *BasePtr, Type *AccessType, isl_ctx *IslCtx,
+                const SmallVector<const SCEV *, 4> &DimensionSizes);
+
+  /// @brief Destructor to free the isl id of the base pointer.
+  ~ScopArrayInfo();
+
+  /// @brief Return the base pointer.
+  Value *getBasePtr() const { return BasePtr; }
+
+  /// @brief Return the number of dimensions.
+  unsigned getNumberOfDimensions() const { return DimensionSizes.size(); }
+
+  /// @brief Return the size of dimension @p dim.
+  const SCEV *getDimensionSize(unsigned dim) const {
+    assert(dim < getNumberOfDimensions() && "Invalid dimension");
+    return DimensionSizes[dim];
+  }
+
+  /// @brief Return the type used to access this array in the SCoP.
+  Type *getType() const { return AccessType; }
+
+  /// @brief Return the isl id for the base pointer.
+  __isl_give isl_id *getBasePtrId() const;
+
+  /// @brief Dump a readable representation to stderr.
+  void dump() const;
+
+  /// @brief Print a readable representation to @p OS.
+  void print(raw_ostream &OS) const;
+
+  /// @brief Access the ScopArrayInfo associated with an access function.
+  static const ScopArrayInfo *
+  getFromAccessFunction(__isl_keep isl_pw_multi_aff *PMA);
+
+  /// @brief Access the ScopArrayInfo associated with an isl Id.
+  static const ScopArrayInfo *getFromId(__isl_take isl_id *Id);
+
+private:
+  /// @brief The base pointer.
+  Value *BasePtr;
+
+  /// @brief The type used to access this array.
+  Type *AccessType;
+
+  /// @brief The isl id for the base pointer.
+  isl_id *Id;
+
+  /// @brief The sizes of each dimension.
+  SmallVector<const SCEV *, 4> DimensionSizes;
+};
+
 /// @brief Represent memory accesses in statements.
 class MemoryAccess {
 public:
@@ -84,71 +148,149 @@ public:
   /// remain, if no write happens.
   enum AccessType { READ, MUST_WRITE, MAY_WRITE };
 
+  /// @brief Reduction access type
+  ///
+  /// Commutative and associative binary operations suitable for reductions
+  enum ReductionType {
+    RT_NONE, ///< Indicate no reduction at all
+    RT_ADD,  ///< Addition
+    RT_MUL,  ///< Multiplication
+    RT_BOR,  ///< Bitwise Or
+    RT_BXOR, ///< Bitwise XOr
+    RT_BAND, ///< Bitwise And
+  };
+
 private:
   MemoryAccess(const MemoryAccess &) LLVM_DELETED_FUNCTION;
   const MemoryAccess &operator=(const MemoryAccess &) LLVM_DELETED_FUNCTION;
 
   isl_map *AccessRelation;
-  enum AccessType Type;
+  enum AccessType AccType;
 
-  const Value *BaseAddr;
+  /// @brief The base address (e.g., A for A[i+j]).
+  Value *BaseAddr;
+
   std::string BaseName;
   isl_basic_map *createBasicAccessMap(ScopStmt *Statement);
-  void setBaseName();
-  ScopStmt *statement;
+  ScopStmt *Statement;
 
-  const Instruction *Inst;
+  /// @brief Reduction type for reduction like accesses, RT_NONE otherwise
+  ///
+  /// An access is reduction like if it is part of a load-store chain in which
+  /// both access the same memory location (use the same LLVM-IR value
+  /// as pointer reference). Furthermore, between the load and the store there
+  /// is exactly one binary operator which is known to be associative and
+  /// commutative.
+  ///
+  /// TODO:
+  ///
+  /// We can later lift the constraint that the same LLVM-IR value defines the
+  /// memory location to handle scops such as the following:
+  ///
+  ///    for i
+  ///      for j
+  ///        sum[i+j] = sum[i] + 3;
+  ///
+  /// Here not all iterations access the same memory location, but iterations
+  /// for which j = 0 holds do. After lifing the equality check in ScopInfo,
+  /// subsequent transformations do not only need check if a statement is
+  /// reduction like, but they also need to verify that that the reduction
+  /// property is only exploited for statement instances that load from and
+  /// store to the same data location. Doing so at dependence analysis time
+  /// could allow us to handle the above example.
+  ReductionType RedType = RT_NONE;
+
+  /// @brief The access instruction of this memory access.
+  Instruction *Inst;
 
   /// Updated access relation read from JSCOP file.
   isl_map *newAccessRelation;
 
-public:
-  // @brief Create a memory access from an access in LLVM-IR.
-  //
-  // @param Access     The memory access.
-  // @param Statement  The statement that contains the access.
-  // @param SE         The ScalarEvolution analysis.
-  MemoryAccess(const IRAccess &Access, const Instruction *AccInst,
-               ScopStmt *Statement);
+  void assumeNoOutOfBound(const IRAccess &Access);
 
-  // @brief Create a memory access that reads a complete memory object.
-  //
-  // @param BaseAddress The base address of the memory object.
-  // @param Statement   The statement that contains this access.
-  MemoryAccess(const Value *BaseAddress, ScopStmt *Statement);
+  /// @brief Get the original access function as read from IR.
+  isl_map *getOriginalAccessRelation() const;
+
+  /// @brief Return the space in which the access relation lives in.
+  __isl_give isl_space *getOriginalAccessRelationSpace() const;
+
+  /// @brief Get the new access function imported or set by a pass
+  isl_map *getNewAccessRelation() const;
+
+public:
+  /// @brief Create a memory access from an access in LLVM-IR.
+  ///
+  /// @param Access    The memory access.
+  /// @param AccInst   The access instruction.
+  /// @param Statement The statement that contains the access.
+  /// @param SAI       The ScopArrayInfo object for this base pointer.
+  MemoryAccess(const IRAccess &Access, Instruction *AccInst,
+               ScopStmt *Statement, const ScopArrayInfo *SAI);
 
   ~MemoryAccess();
 
   /// @brief Get the type of a memory access.
-  enum AccessType getType() { return Type; }
+  enum AccessType getType() { return AccType; }
+
+  /// @brief Is this a reduction like access?
+  bool isReductionLike() const { return RedType != RT_NONE; }
 
   /// @brief Is this a read memory access?
-  bool isRead() const { return Type == MemoryAccess::READ; }
+  bool isRead() const { return AccType == MemoryAccess::READ; }
 
   /// @brief Is this a must-write memory access?
-  bool isMustWrite() const { return Type == MemoryAccess::MUST_WRITE; }
+  bool isMustWrite() const { return AccType == MemoryAccess::MUST_WRITE; }
 
   /// @brief Is this a may-write memory access?
-  bool isMayWrite() const { return Type == MemoryAccess::MAY_WRITE; }
+  bool isMayWrite() const { return AccType == MemoryAccess::MAY_WRITE; }
 
   /// @brief Is this a write memory access?
-  bool isWrite() const {
-    return Type == MemoryAccess::MUST_WRITE || Type == MemoryAccess::MAY_WRITE;
+  bool isWrite() const { return isMustWrite() || isMayWrite(); }
+
+  /// @brief Check if a new access relation was imported or set by a pass.
+  bool hasNewAccessRelation() const { return newAccessRelation; }
+
+  /// @brief Return the newest access relation of this access.
+  ///
+  /// There are two possibilities:
+  ///   1) The original access relation read from the LLVM-IR.
+  ///   2) A new access relation imported from a json file or set by another
+  ///      pass (e.g., for privatization).
+  ///
+  /// As 2) is by construction "newer" than 1) we return the new access
+  /// relation if present.
+  ///
+  isl_map *getAccessRelation() const {
+    return hasNewAccessRelation() ? getNewAccessRelation()
+                                  : getOriginalAccessRelation();
   }
 
-  isl_map *getAccessRelation() const;
+  /// @brief Return the access relation after the schedule was applied.
+  __isl_give isl_pw_multi_aff *
+  applyScheduleToAccessRelation(__isl_keep isl_union_map *Schedule) const;
 
-  /// @brief Get an isl string representing this access function.
-  std::string getAccessRelationStr() const;
+  /// @brief Get an isl string representing the access function read from IR.
+  std::string getOriginalAccessRelationStr() const;
 
-  const Value *getBaseAddr() const { return BaseAddr; }
+  /// @brief Get the base address of this access (e.g. A for A[i+j]).
+  Value *getBaseAddr() const { return BaseAddr; }
+
+  /// @brief Get the base array isl_id for this access.
+  __isl_give isl_id *getArrayId() const;
+
+  /// @brief Get the ScopArrayInfo object for the base address.
+  const ScopArrayInfo *getScopArrayInfo() const;
+
+  /// @brief Return a string representation of the accesse's reduction type.
+  const std::string getReductionOperatorStr() const;
+
+  /// @brief Return a string representation of the reduction type @p RT.
+  static const std::string getReductionOperatorStr(ReductionType RT);
 
   const std::string &getBaseName() const { return BaseName; }
 
-  const Instruction *getAccessInstruction() const { return Inst; }
-
-  /// @brief Get the new access function imported from JSCOP file
-  isl_map *getNewAccessRelation() const;
+  /// @brief Return the access instruction of this memory access.
+  Instruction *getAccessInstruction() const { return Inst; }
 
   /// Get the stride of this memory access in the specified Schedule. Schedule
   /// is a map from the statement to a schedule where the innermost dimension is
@@ -172,11 +314,20 @@ public:
   /// statement.
   bool isStrideZero(__isl_take const isl_map *Schedule) const;
 
+  /// @brief Check if this is a scalar memory access.
+  bool isScalar() const;
+
   /// @brief Get the statement that contains this memory access.
-  ScopStmt *getStatement() const { return statement; }
+  ScopStmt *getStatement() const { return Statement; }
+
+  /// @brief Get the reduction type of this access
+  ReductionType getReductionType() const { return RedType; }
 
   /// @brief Set the updated access relation read from JSCOP file.
-  void setNewAccessRelation(isl_map *newAccessRelation);
+  void setNewAccessRelation(__isl_take isl_map *newAccessRelation);
+
+  /// @brief Mark this a reduction like access
+  void markAsReductionLike(ReductionType RT) { RedType = RT; }
 
   /// @brief Align the parameters in the access relation to the scop context
   void realignParams();
@@ -190,7 +341,10 @@ public:
   void dump() const;
 };
 
-//===----------------------------------------------------------------------===//
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
+                              MemoryAccess::ReductionType RT);
+
+///===----------------------------------------------------------------------===//
 /// @brief Statement of the Scop
 ///
 /// A Scop statement represents an instruction in the Scop.
@@ -272,10 +426,6 @@ class ScopStmt {
   /// The BasicBlock represented by this statement.
   BasicBlock *BB;
 
-  /// @brief The loop induction variables surrounding the statement.
-  ///
-  /// This information is only needed for final code generation.
-  std::vector<PHINode *> IVS;
   std::vector<Loop *> NestLoops;
 
   std::string BaseName;
@@ -290,8 +440,48 @@ class ScopStmt {
                                             TempScop &tempScop);
   __isl_give isl_set *buildDomain(TempScop &tempScop, const Region &CurRegion);
   void buildScattering(SmallVectorImpl<unsigned> &Scatter);
-  void buildAccesses(TempScop &tempScop, const Region &CurRegion);
+  void buildAccesses(TempScop &tempScop);
+
+  /// @brief Detect and mark reductions in the ScopStmt
+  void checkForReductions();
+
+  /// @brief Collect loads which might form a reduction chain with @p StoreMA
+  void
+  collectCandiateReductionLoads(MemoryAccess *StoreMA,
+                                llvm::SmallVectorImpl<MemoryAccess *> &Loads);
   //@}
+
+  /// @brief Derive assumptions about parameter values from GetElementPtrInst
+  ///
+  /// In case a GEP instruction references into a fixed size array e.g., an
+  /// access A[i][j] into an array A[100x100], LLVM-IR does not guarantee that
+  /// the subscripts always compute values that are within array bounds. In this
+  /// function we derive the set of parameter values for which all accesses are
+  /// within bounds and add the assumption that the scop is only every executed
+  /// with this set of parameter values.
+  ///
+  /// Example:
+  ///
+  ///   void foo(float A[][20], long n, long m {
+  ///     for (long i = 0; i < n; i++)
+  ///       for (long j = 0; j < m; j++)
+  ///         A[i][j] = ...
+  ///
+  /// This loop yields out-of-bound accesses if m is at least 20 and at the same
+  /// time at least one iteration of the outer loop is executed. Hence, we
+  /// assume:
+  ///
+  ///   n <= 0 or m <= 20.
+  ///
+  /// TODO: The location where the GEP instruction is executed is not
+  /// necessarily the location where the memory is actually accessed. As a
+  /// result scanning for GEP[s] is imprecise. Even though this is not a
+  /// correctness problem, this imprecision may result in missed optimizations
+  /// or non-optimal run-time checks.
+  void deriveAssumptionsFromGEP(GetElementPtrInst *Inst);
+
+  /// @brief Scan the scop and derive assumptions about parameter values.
+  void deriveAssumptions();
 
   /// Create the ScopStmt from a BasicBlock.
   ScopStmt(Scop &parent, TempScop &tempScop, const Region &CurRegion,
@@ -302,6 +492,7 @@ class ScopStmt {
 
 public:
   ~ScopStmt();
+
   /// @brief Get an isl_ctx pointer.
   isl_ctx *getIslCtx() const;
 
@@ -351,9 +542,13 @@ public:
 
   void setBasicBlock(BasicBlock *Block) { BB = Block; }
 
-  typedef MemoryAccessVec::iterator memacc_iterator;
-  memacc_iterator memacc_begin() { return MemAccs.begin(); }
-  memacc_iterator memacc_end() { return MemAccs.end(); }
+  typedef MemoryAccessVec::iterator iterator;
+  typedef MemoryAccessVec::const_iterator const_iterator;
+
+  iterator begin() { return MemAccs.begin(); }
+  iterator end() { return MemAccs.end(); }
+  const_iterator begin() const { return MemAccs.begin(); }
+  const_iterator end() const { return MemAccs.end(); }
 
   unsigned getNumParams() const;
   unsigned getNumIterators() const;
@@ -363,11 +558,6 @@ public:
   const Scop *getParent() const { return &Parent; }
 
   const char *getBaseName() const;
-  /// @brief Get the induction variable for a dimension.
-  ///
-  /// @param Dimension The dimension of the induction variable
-  /// @return The induction variable at a certain dimension.
-  const PHINode *getInductionVariableForDimension(unsigned Dimension) const;
 
   /// @brief Restrict the domain of the statement.
   ///
@@ -398,7 +588,7 @@ static inline raw_ostream &operator<<(raw_ostream &O, const ScopStmt &S) {
   return O;
 }
 
-//===----------------------------------------------------------------------===//
+///===----------------------------------------------------------------------===//
 /// @brief Static Control Part
 ///
 /// A Scop is the polyhedral representation of a control flow region detected
@@ -417,7 +607,17 @@ static inline raw_ostream &operator<<(raw_ostream &O, const ScopStmt &S) {
 ///   This context contains information about the values the parameters
 ///   can take and relations between different parameters.
 class Scop {
-  //===-------------------------------------------------------------------===//
+public:
+  /// @brief Type to represent a pair of minimal/maximal access to an array.
+  using MinMaxAccessTy = std::pair<isl_pw_multi_aff *, isl_pw_multi_aff *>;
+
+  /// @brief Vector of minimal/maximal accesses to different arrays.
+  using MinMaxVectorTy = SmallVector<MinMaxAccessTy, 4>;
+
+  /// @brief Vector of minimal/maximal access vectors one for each alias group.
+  using MinMaxVectorVectorTy = SmallVector<MinMaxVectorTy *, 4>;
+
+private:
   Scop(const Scop &) LLVM_DELETED_FUNCTION;
   const Scop &operator=(const Scop &) LLVM_DELETED_FUNCTION;
 
@@ -444,8 +644,14 @@ class Scop {
   /// Isl context.
   isl_ctx *IslCtx;
 
+  /// @brief A map from basic blocks to SCoP statements.
+  DenseMap<BasicBlock *, ScopStmt *> StmtMap;
+
   /// Constraints on parameters.
   isl_set *Context;
+
+  /// @brief A map to remember ScopArrayInfo objects for all base pointers.
+  DenseMap<const Value *, const ScopArrayInfo *> ScopArrayInfoMap;
 
   /// @brief The assumptions under which this scop was built.
   ///
@@ -455,6 +661,21 @@ class Scop {
   /// assumed context records the assumptions taken during the construction of
   /// this scop and that need to be code generated as a run-time test.
   isl_set *AssumedContext;
+
+  /// @brief The set of minimal/maximal accesses for each alias group.
+  ///
+  /// When building runtime alias checks we look at all memory instructions and
+  /// build so called alias groups. Each group contains a set of accesses to
+  /// different base arrays which might alias with each other. However, between
+  /// alias groups there is no aliasing possible.
+  ///
+  /// In a program with int and float pointers annotated with tbaa information
+  /// we would probably generate two alias groups, one for the int pointers and
+  /// one for the float pointers.
+  ///
+  /// During code generation we will create a runtime alias check for each alias
+  /// group to ensure the SCoP is executed in an alias free environment.
+  MinMaxVectorVectorTy MinMaxAliasGroups;
 
   /// Create the static control part with a region, max loop depth of this
   /// region and parameters used in this region.
@@ -477,6 +698,9 @@ class Scop {
   /// @brief Add the bounds of the parameters to the context.
   void addParameterBounds();
 
+  /// @brief Simplify the assumed context.
+  void simplifyAssumedContext();
+
   /// Build the Scop and Statement with precalculated scop information.
   void buildScop(TempScop &TempScop, const Region &CurRegion,
                  // Loops in Scop containing CurRegion
@@ -484,9 +708,13 @@ class Scop {
                  // The scattering numbers
                  SmallVectorImpl<unsigned> &Scatter, LoopInfo &LI);
 
-  /// Helper function for printing the Scop.
+  /// @name Helper function for printing the Scop.
+  ///
+  ///{
   void printContext(raw_ostream &OS) const;
   void printStatements(raw_ostream &OS) const;
+  void printAliasAssumptions(raw_ostream &OS) const;
+  ///}
 
   friend class ScopInfo;
 
@@ -567,8 +795,46 @@ public:
   /// @return The assumed context of this Scop.
   __isl_give isl_set *getAssumedContext() const;
 
+  /// @brief Add assumptions to assumed context.
+  ///
+  /// The assumptions added will be assumed to hold during the execution of the
+  /// scop. However, as they are generally not statically provable, at code
+  /// generation time run-time checks will be generated that ensure the
+  /// assumptions hold.
+  ///
+  /// WARNING: We currently exploit in simplifyAssumedContext the knowledge
+  ///          that assumptions do not change the set of statement instances
+  ///          executed.
+  ///
+  /// @param Set A set describing relations between parameters that are assumed
+  ///            to hold.
+  void addAssumption(__isl_take isl_set *Set);
+
+  /// @brief Build all alias groups for this SCoP.
+  ///
+  /// @returns True if __no__ error occurred, false otherwise.
+  bool buildAliasGroups(AliasAnalysis &AA);
+
+  //// @brief Drop all constant dimensions from statment schedules.
+  ///
+  ///  Schedule dimensions that are constant accross the scop do not carry
+  ///  any information, but would cost compile time due to the increased number
+  ///  of scheduling dimensions. To not pay this cost, we remove them.
+  void dropConstantScheduleDims();
+
+  /// @brief Return all alias groups for this SCoP.
+  const MinMaxVectorVectorTy &getAliasGroups() const {
+    return MinMaxAliasGroups;
+  }
+
   /// @brief Get an isl string representing the context.
   std::string getContextStr() const;
+
+  /// @brief Get an isl string representing the assumed context.
+  std::string getAssumedContextStr() const;
+
+  /// @brief Return the stmt for the given @p BB or nullptr if none.
+  ScopStmt *getStmtForBasicBlock(BasicBlock *BB) const;
 
   /// @name Statements Iterators
   ///
@@ -591,6 +857,14 @@ public:
   const_reverse_iterator rend() const { return Stmts.rend(); }
   //@}
 
+  /// @brief Return the (possibly new) ScopArrayInfo object for @p Access.
+  const ScopArrayInfo *
+  getOrCreateScopArrayInfo(Value *BasePtr, Type *AccessType,
+                           const SmallVector<const SCEV *, 4> &Sizes);
+
+  /// @brief Return the cached ScopArrayInfo object for @p BasePtr.
+  const ScopArrayInfo *getScopArrayInfo(Value *BasePtr);
+
   void setContext(isl_set *NewContext);
 
   /// @brief Align the parameters in the statement to the scop context
@@ -611,6 +885,12 @@ public:
 
   /// @brief Get a union set containing the iteration domains of all statements.
   __isl_give isl_union_set *getDomains();
+
+  /// @brief Get a union map of all may-writes performed in the SCoP.
+  __isl_give isl_union_map *getMayWrites();
+
+  /// @brief Get a union map of all must-writes performed in the SCoP.
+  __isl_give isl_union_map *getMustWrites();
 
   /// @brief Get a union map of all writes performed in the SCoP.
   __isl_give isl_union_map *getWrites();
@@ -633,7 +913,7 @@ static inline raw_ostream &operator<<(raw_ostream &O, const Scop &scop) {
   return O;
 }
 
-//===---------------------------------------------------------------------===//
+///===---------------------------------------------------------------------===//
 /// @brief Build the Polly IR (Scop and ScopStmt) on a Region.
 ///
 class ScopInfo : public RegionPass {

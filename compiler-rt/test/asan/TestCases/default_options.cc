@@ -1,5 +1,8 @@
 // RUN: %clangxx_asan -O2 %s -o %t
-// RUN: %t 2>&1 | FileCheck %s
+// RUN: %run %t 2>&1 | FileCheck %s
+
+// __asan_default_options() are not supported on Windows.
+// XFAIL: win32
 
 const char *kAsanDefaultOptions="verbosity=1 foo=bar";
 

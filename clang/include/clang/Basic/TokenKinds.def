@@ -116,7 +116,6 @@ TOK(eof)                 // End of file.
 TOK(eod)                 // End of preprocessing directive (end of line inside a
                          // directive).
 TOK(code_completion)     // Code completion marker
-TOK(cxx_defaultarg_end)  // C++ default argument end marker
 
 // C99 6.4.9: Comments.
 TOK(comment)             // Comment (only in -E -C[C] mode)
@@ -132,6 +131,9 @@ TOK(numeric_constant)    // 0x123
 // C99 6.4.4: Character Constants
 TOK(char_constant)       // 'a'
 TOK(wide_char_constant)  // L'b'
+
+// C++1z Character Constants
+TOK(utf8_char_constant)  // u8'a'
 
 // C++11 Character Constants
 TOK(utf16_char_constant) // u'a'
@@ -365,6 +367,7 @@ KEYWORD(typeof                      , KEYGNU)
 
 // MS Extensions
 KEYWORD(__FUNCDNAME__               , KEYMS)
+KEYWORD(__FUNCSIG__                 , KEYMS)
 KEYWORD(L__FUNCTION__               , KEYMS)
 TYPE_TRAIT_1(__is_interface_class, IsInterfaceClass, KEYMS)
 TYPE_TRAIT_1(__is_sealed, IsSealed, KEYMS)
@@ -456,18 +459,22 @@ KEYWORD(__cdecl                     , KEYALL)
 KEYWORD(__stdcall                   , KEYALL)
 KEYWORD(__fastcall                  , KEYALL)
 KEYWORD(__thiscall                  , KEYALL)
+KEYWORD(__vectorcall                , KEYALL)
 KEYWORD(__forceinline               , KEYMS)
 KEYWORD(__unaligned                 , KEYMS)
+KEYWORD(__super                     , KEYMS)
 
 // OpenCL address space qualifiers
 KEYWORD(__global                    , KEYOPENCL)
 KEYWORD(__local                     , KEYOPENCL)
 KEYWORD(__constant                  , KEYOPENCL)
 KEYWORD(__private                   , KEYOPENCL)
+KEYWORD(__generic                   , KEYOPENCL)
 ALIAS("global", __global            , KEYOPENCL)
 ALIAS("local", __local              , KEYOPENCL)
 ALIAS("constant", __constant        , KEYOPENCL)
 ALIAS("private", __private          , KEYOPENCL)
+ALIAS("generic", __generic          , KEYOPENCL)
 // OpenCL function qualifiers
 KEYWORD(__kernel                    , KEYOPENCL)
 ALIAS("kernel", __kernel            , KEYOPENCL)
@@ -488,6 +495,7 @@ KEYWORD(__pascal                    , KEYALL)
 // Altivec Extension.
 KEYWORD(__vector                    , KEYALTIVEC)
 KEYWORD(__pixel                     , KEYALTIVEC)
+KEYWORD(__bool                      , KEYALTIVEC)
 
 // ARM NEON extensions.
 ALIAS("__fp16", half                , KEYALL)
@@ -544,8 +552,12 @@ KEYWORD(__multiple_inheritance        , KEYMS)
 KEYWORD(__virtual_inheritance         , KEYMS)
 KEYWORD(__interface                   , KEYMS)
 ALIAS("__int8"           , char       , KEYMS)
+ALIAS("_int8"            , char       , KEYMS)
 ALIAS("__int16"          , short      , KEYMS)
+ALIAS("_int16"           , short      , KEYMS)
 ALIAS("__int32"          , int        , KEYMS)
+ALIAS("_int32"           , int        , KEYMS)
+ALIAS("_int64"           , __int64    , KEYMS)
 ALIAS("__wchar_t"        , wchar_t    , KEYMS)
 ALIAS("_asm"             , asm        , KEYMS)
 ALIAS("_alignof"         , __alignof  , KEYMS)
@@ -554,6 +566,7 @@ ALIAS("_cdecl"           , __cdecl    , KEYMS | KEYBORLAND)
 ALIAS("_fastcall"        , __fastcall , KEYMS | KEYBORLAND)
 ALIAS("_stdcall"         , __stdcall  , KEYMS | KEYBORLAND)
 ALIAS("_thiscall"        , __thiscall , KEYMS)
+ALIAS("_vectorcall"      , __vectorcall, KEYMS)
 ALIAS("_uuidof"          , __uuidof   , KEYMS | KEYBORLAND)
 ALIAS("_inline"          , inline     , KEYMS)
 ALIAS("_declspec"        , __declspec , KEYMS)
@@ -684,6 +697,11 @@ ANNOTATION(pragma_ms_pointers_to_members)
 // handles them.
 ANNOTATION(pragma_ms_vtordisp)
 
+// Annotation for all microsoft #pragmas...
+// The lexer produces these so that they only take effect when the parser
+// handles them.
+ANNOTATION(pragma_ms_pragma)
+
 // Annotation for #pragma OPENCL EXTENSION...
 // The lexer produces these so that they only take effect when the parser
 // handles them.
@@ -694,6 +712,11 @@ ANNOTATION(pragma_opencl_extension)
 // handles #pragma omp ... directives.
 ANNOTATION(pragma_openmp)
 ANNOTATION(pragma_openmp_end)
+
+// Annotations for loop pragma directives #pragma clang loop ...
+// The lexer produces these so that they only take effect when the parser
+// handles #pragma loop ... directives.
+ANNOTATION(pragma_loop_hint)
 
 // Annotations for module import translated from #include etc.
 ANNOTATION(module_include)

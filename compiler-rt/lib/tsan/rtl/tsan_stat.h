@@ -26,6 +26,7 @@ enum StatType {
   StatMop4,
   StatMop8,
   StatMopSame,
+  StatMopIgnored,
   StatMopRange,
   StatMopRodata,
   StatMopRangeRodata,
@@ -68,6 +69,32 @@ enum StatType {
   StatSyncDestroyed,
   StatSyncAcquire,
   StatSyncRelease,
+
+  // Clocks - acquire.
+  StatClockAcquire,
+  StatClockAcquireEmpty,
+  StatClockAcquireFastRelease,
+  StatClockAcquireLarge,
+  StatClockAcquireRepeat,
+  StatClockAcquireFull,
+  StatClockAcquiredSomething,
+  // Clocks - release.
+  StatClockRelease,
+  StatClockReleaseResize,
+  StatClockReleaseFast1,
+  StatClockReleaseFast2,
+  StatClockReleaseSlow,
+  StatClockReleaseFull,
+  StatClockReleaseAcquired,
+  StatClockReleaseClearTail,
+  // Clocks - release store.
+  StatClockStore,
+  StatClockStoreResize,
+  StatClockStoreFast,
+  StatClockStoreFull,
+  StatClockStoreTail,
+  // Clocks - acquire-release.
+  StatClockAcquireRelease,
 
   // Atomics.
   StatAtomic,

@@ -784,8 +784,23 @@ buffer uses this idiom and is subsequently ``#include``'d, the preprocessor can
 simply check to see whether the guarding condition is defined or not.  If so,
 the preprocessor can completely ignore the include of the header.
 
+.. _Parser:
+
 The Parser Library
 ==================
+
+This library contains a recursive-descent parser that polls tokens from the
+preprocessor and notifies a client of the parsing progress.
+
+Historically, the parser used to talk to an abstract ``Action`` interface that
+had virtual methods for parse events, for example ``ActOnBinOp()``.  When Clang
+grew C++ support, the parser stopped supporting general ``Action`` clients --
+it now always talks to the :ref:`Sema libray <Sema>`.  However, the Parser
+still accesses AST objects only through opaque types like ``ExprResult`` and
+``StmtResult``.  Only :ref:`Sema <Sema>` looks at the AST node contents of these
+wrappers.
+
+.. _AST:
 
 The AST Library
 ===============
@@ -1396,10 +1411,7 @@ body by single call to a static class method:
 .. code-block:: c++
 
   Stmt *FooBody = ...
-  CFG *FooCFG = CFG::buildCFG(FooBody);
-
-It is the responsibility of the caller of ``CFG::buildCFG`` to ``delete`` the
-returned ``CFG*`` when the CFG is no longer needed.
+  std::unique_ptr<CFG> FooCFG = CFG::buildCFG(FooBody);
 
 Along with providing an interface to iterate over its ``CFGBlocks``, the
 ``CFG`` class also provides methods that are useful for debugging and
@@ -1584,6 +1596,23 @@ interacts with constant evaluation:
   constant expressions.
 * ``__builtin_strlen`` and ``strlen``: These are constant folded as integer
   constant expressions if the argument is a string literal.
+
+.. _Sema:
+
+The Sema Library
+================
+
+This library is called by the :ref:`Parser library <Parser>` during parsing to
+do semantic analysis of the input.  For valid programs, Sema builds an AST for
+parsed constructs.
+
+.. _CodeGen:
+
+The CodeGen Library
+===================
+
+CodeGen takes an :ref:`AST <AST>` as input and produces `LLVM IR code
+<//llvm.org/docs/LangRef.html>`_ from it.
 
 How to change Clang
 ===================
@@ -1852,13 +1881,14 @@ are similar.
    * Make sure that ``children()`` visits all of the subexpressions.  This is
      important for a number of features (e.g., IDE support, C++ variadic
      templates).  If you have sub-types, you'll also need to visit those
-     sub-types in the ``RecursiveASTVisitor``.
-   * Add printing support (``StmtPrinter.cpp``) and dumping support
-     (``StmtDumper.cpp``) for your expression.
+     sub-types in ``RecursiveASTVisitor`` and ``DataRecursiveASTVisitor``.
+   * Add printing support (``StmtPrinter.cpp``) for your expression.
    * Add profiling support (``StmtProfile.cpp``) for your AST node, noting the
      distinguishing (non-source location) characteristics of an instance of
      your expression.  Omitting this step will lead to hard-to-diagnose
      failures regarding matching of template declarations.
+   * Add serialization support (``ASTReaderStmt.cpp``, ``ASTWriterStmt.cpp``)
+     for your AST node.
 
 #. Teach semantic analysis to build your AST node.  At this point, you can wire
    up your ``Sema::BuildXXX`` function to actually create your AST.  A few

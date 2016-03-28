@@ -11,15 +11,14 @@
 #define HEXAGON_TARGET_HANDLER_H
 
 #include "DefaultTargetHandler.h"
+#include "HexagonELFReader.h"
 #include "HexagonExecutableAtoms.h"
 #include "HexagonRelocationHandler.h"
 #include "HexagonSectionChunks.h"
 #include "TargetLayout.h"
-#include "HexagonELFReader.h"
 
 namespace lld {
 namespace elf {
-typedef llvm::object::ELFType<llvm::support::little, 2, false> HexagonELFType;
 class HexagonLinkingContext;
 
 /// \brief TargetLayout for Hexagon
@@ -47,8 +46,8 @@ public:
                                                           contentPermissions);
   }
 
-  /// \brief This maps the input sections to the output section names
-  virtual StringRef getSectionName(const DefinedAtom *da) const {
+  /// \brief Return the appropriate input section name.
+  virtual StringRef getInputSectionName(const DefinedAtom *da) const {
     switch (da->contentType()) {
     case DefinedAtom::typeDataFast:
     case DefinedAtom::typeZeroFillFast:
@@ -56,7 +55,7 @@ public:
     default:
       break;
     }
-    return DefaultLayout<HexagonELFType>::getSectionName(da);
+    return DefaultLayout<HexagonELFType>::getInputSectionName(da);
   }
 
   /// \brief Gets or creates a section.
@@ -108,25 +107,25 @@ class HexagonTargetHandler final :
 public:
   HexagonTargetHandler(HexagonLinkingContext &targetInfo);
 
-  virtual void registerRelocationNames(Registry &registry);
+  void registerRelocationNames(Registry &registry) override;
 
-  virtual const HexagonTargetRelocationHandler &getRelocationHandler() const {
+  const HexagonTargetRelocationHandler &getRelocationHandler() const override {
     return *(_hexagonRelocationHandler.get());
   }
 
-  virtual HexagonTargetLayout<HexagonELFType> &getTargetLayout() {
+  HexagonTargetLayout<HexagonELFType> &getTargetLayout() override {
     return *(_hexagonTargetLayout.get());
   }
 
-  virtual std::unique_ptr<Reader> getObjReader(bool atomizeStrings) {
+  std::unique_ptr<Reader> getObjReader(bool atomizeStrings) override {
     return std::unique_ptr<Reader>(new HexagonELFObjectReader(atomizeStrings));
   }
 
-  virtual std::unique_ptr<Reader> getDSOReader(bool useShlibUndefines) {
+  std::unique_ptr<Reader> getDSOReader(bool useShlibUndefines) override {
     return std::unique_ptr<Reader>(new HexagonELFDSOReader(useShlibUndefines));
   }
 
-  virtual std::unique_ptr<Writer> getWriter();
+  std::unique_ptr<Writer> getWriter() override;
 
 private:
   llvm::BumpPtrAllocator _alloc;

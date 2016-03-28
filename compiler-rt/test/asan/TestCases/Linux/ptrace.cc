@@ -1,5 +1,9 @@
-// RUN: %clangxx_asan -O0 %s -o %t && %t
-// RUN: %clangxx_asan -DPOSITIVE -O0 %s -o %t && not %t 2>&1 | FileCheck %s
+// FIXME: https://code.google.com/p/address-sanitizer/issues/detail?id=316
+// XFAIL: android
+//
+// RUN: %clangxx_asan -O0 %s -o %t && %run %t
+// RUN: %clangxx_asan -DPOSITIVE -O0 %s -o %t && not %run %t 2>&1 | FileCheck %s
+// REQUIRES: x86_64-supported-target,i386-supported-target
 
 #include <assert.h>
 #include <stdio.h>

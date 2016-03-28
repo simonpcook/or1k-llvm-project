@@ -107,6 +107,22 @@ ThreadGDBRemote::GetQueueID ()
     return LLDB_INVALID_QUEUE_ID;
 }
 
+QueueSP
+ThreadGDBRemote::GetQueue ()
+{
+    queue_id_t queue_id = GetQueueID();
+    QueueSP queue;
+    if (queue_id != LLDB_INVALID_QUEUE_ID)
+    {
+        ProcessSP process_sp (GetProcess());
+        if (process_sp)
+        {
+            queue = process_sp->GetQueueList().FindQueueByID (queue_id);
+        }
+    }
+    return queue;
+}
+
 addr_t
 ThreadGDBRemote::GetQueueLibdispatchQueueAddress ()
 {
@@ -124,6 +140,23 @@ ThreadGDBRemote::GetQueueLibdispatchQueueAddress ()
         }
     }
     return dispatch_queue_t_addr;
+}
+
+StructuredData::ObjectSP
+ThreadGDBRemote::FetchThreadExtendedInfo ()
+{
+    StructuredData::ObjectSP object_sp;
+    const lldb::user_id_t tid = GetProtocolID();
+    Log *log(lldb_private::GetLogIfAnyCategoriesSet (GDBR_LOG_THREAD));
+    if (log)
+        log->Printf ("Fetching extended information for thread %4.4" PRIx64, tid);
+    ProcessSP process_sp (GetProcess());
+    if (process_sp)
+    {
+        ProcessGDBRemote *gdb_process = static_cast<ProcessGDBRemote *>(process_sp.get());
+        object_sp = gdb_process->GetExtendedInfoForThread (tid);
+    }
+    return object_sp;
 }
 
 void

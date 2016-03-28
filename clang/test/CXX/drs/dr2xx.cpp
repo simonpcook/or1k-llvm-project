@@ -1,6 +1,7 @@
 // RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++14 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++1z %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 
 // PR13819 -- __SIZE_TYPE__ is incompatible.
 typedef __SIZE_TYPE__ size_t; // expected-error 0-1 {{extension}}
@@ -195,8 +196,8 @@ namespace dr218 { // dr218: yes
 // dr220: na
 
 namespace dr221 { // dr221: yes
-  struct A {
-    A &operator=(int&);
+  struct A { // expected-note 2-4{{candidate}}
+    A &operator=(int&); // expected-note 2{{candidate}}
     A &operator+=(int&);
     static A &operator=(A&, double&); // expected-error {{cannot be a static member}}
     static A &operator+=(A&, double&); // expected-error {{cannot be a static member}}
@@ -209,9 +210,9 @@ namespace dr221 { // dr221: yes
   void test(A a, int n, char c, float f) {
     a = n;
     a += n;
-    a = c;
+    a = c; // expected-error {{no viable}}
     a += c;
-    a = f;
+    a = f; // expected-error {{no viable}}
     a += f;
   }
 }
@@ -466,7 +467,7 @@ namespace dr243 { // dr243: yes
   A a2 = b; // expected-error {{ambiguous}}
 }
 
-namespace dr244 { // dr244: no
+namespace dr244 { // dr244: partial
   struct B {}; struct D : B {}; // expected-note {{here}}
 
   D D_object;
@@ -480,9 +481,31 @@ namespace dr244 { // dr244: no
     B_ptr->~B_alias();
     B_ptr->B_alias::~B();
     // This is valid under DR244.
-    B_ptr->B_alias::~B_alias(); // FIXME: expected-error {{expected the class name after '~' to name a destructor}}
+    B_ptr->B_alias::~B_alias();
     B_ptr->dr244::~B(); // expected-error {{refers to a member in namespace}}
     B_ptr->dr244::~B_alias(); // expected-error {{refers to a member in namespace}}
+  }
+
+  namespace N {
+    template<typename T> struct E {};
+    typedef E<int> F;
+  }
+  void g(N::F f) {
+    typedef N::F G;
+    f.~G();
+    f.G::~E();
+    f.G::~F(); // expected-error {{expected the class name after '~' to name a destructor}}
+    f.G::~G();
+    // This is technically ill-formed; E is looked up in 'N::' and names the
+    // class template, not the injected-class-name of the class. But that's
+    // probably a bug in the standard.
+    f.N::F::~E();
+    // This is valid; we look up the second F in the same scope in which we
+    // found the first one, that is, 'N::'.
+    f.N::F::~F(); // FIXME: expected-error {{expected the class name after '~' to name a destructor}}
+    // This is technically ill-formed; G is looked up in 'N::' and is not found;
+    // as above, this is probably a bug in the standard.
+    f.N::F::~G();
   }
 }
 
@@ -499,7 +522,7 @@ namespace dr246 { // dr246: yes
       throw 0;
 X: ;
     } catch (int) {
-      goto X; // expected-error {{protected scope}}
+      goto X; // expected-error {{cannot jump}}
     }
   };
 }
@@ -685,6 +708,8 @@ namespace dr259 { // dr259: yes c++11
   // expected-error@-2 {{extension}} expected-note@-3 {{here}}
 #endif
 }
+
+// FIXME: When dr260 is resolved, also add tests for DR507.
 
 namespace dr261 { // dr261: no
 #pragma clang diagnostic push
@@ -966,12 +991,11 @@ namespace dr289 { // dr289: yes
 namespace dr294 { // dr294: no
   void f() throw(int);
   int main() {
-    // FIXME: we reject this for the wrong reason, because we don't implement
-    // dr87 yet.
-    (void)static_cast<void (*)() throw()>(f); // expected-error {{not superset}}
-    void (*p)() throw() = f; // expected-error {{not superset}}
-
+    (void)static_cast<void (*)() throw()>(f); // FIXME: ill-formed
     (void)static_cast<void (*)() throw(int)>(f); // FIXME: ill-formed
+
+    void (*p)() throw() = f; // expected-error {{not superset}}
+    void (*q)() throw(int) = f;
   }
 }
 
@@ -1011,11 +1035,16 @@ namespace dr298 { // dr298: yes
 
   B::B() {} // expected-error {{requires a type specifier}}
   B::A() {} // ok
-  C::~C() {} // expected-error {{expected the class name}}
-  C::~A() {} // ok
+  C::~C() {} // expected-error {{destructor cannot be declared using a typedef 'C' (aka 'const dr298::A') of the class name}}
 
   typedef struct D E; // expected-note {{here}}
   struct E {}; // expected-error {{conflicts with typedef}}
+
+  struct F {
+    ~F();
+  };
+  typedef const F G;
+  G::~F() {} // ok
 }
 
 namespace dr299 { // dr299: yes c++11

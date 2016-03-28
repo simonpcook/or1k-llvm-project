@@ -1,8 +1,8 @@
 // Test that out-of-scope local variables are ignored by LSan.
 // RUN: LSAN_BASE="report_objects=1:use_registers=0:use_stacks=1"
 // RUN: %clangxx_lsan %s -o %t
-// RUN: LSAN_OPTIONS=$LSAN_BASE not %t 2>&1 | FileCheck %s
-// RUN: LSAN_OPTIONS=$LSAN_BASE":exitcode=0" %t 2>&1 | FileCheck --check-prefix=CHECK-sanity %s
+// RUN: LSAN_OPTIONS=$LSAN_BASE not %run %t 2>&1 | FileCheck %s
+// RUN: LSAN_OPTIONS=$LSAN_BASE":exitcode=0" %run %t 2>&1 | FileCheck --check-prefix=CHECK-sanity %s
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +31,7 @@ int main() {
 // it had a chance to see it. If LSan is invoked with atexit(), this works.
 // Otherwise, we need a different method.
 __attribute__((destructor))
+__attribute__((no_sanitize_address))
 void ConfirmPointerHasSurvived() {
   fprintf(stderr, "Value after LSan: %p.\n", *pp);
 }

@@ -32,6 +32,10 @@ namespace {
 class JumpScopeChecker {
   Sema &S;
 
+  /// Permissive - True when recovering from errors, in which case precautions
+  /// are taken to handle incomplete scope information.
+  const bool Permissive;
+
   /// GotoScope - This is a record that we use to keep track of all of the
   /// scopes that are introduced by VLAs and other things that scope jumps like
   /// gotos.  This scope tree has nothing to do with the source scope tree,
@@ -80,13 +84,16 @@ private:
   void CheckJump(Stmt *From, Stmt *To, SourceLocation DiagLoc,
                  unsigned JumpDiag, unsigned JumpDiagWarning,
                  unsigned JumpDiagCXX98Compat);
+  void CheckGotoStmt(GotoStmt *GS);
 
   unsigned GetDeepestCommonScope(unsigned A, unsigned B);
 };
 } // end anonymous namespace
 
+#define CHECK_PERMISSIVE(x) (assert(Permissive || !(x)), (Permissive && (x)))
 
-JumpScopeChecker::JumpScopeChecker(Stmt *Body, Sema &s) : S(s) {
+JumpScopeChecker::JumpScopeChecker(Stmt *Body, Sema &s)
+    : S(s), Permissive(s.hasAnyUnrecoverableErrorsInThisFunction()) {
   // Add a scope entry for function scope.
   Scopes.push_back(GotoScope(~0U, ~0U, ~0U, SourceLocation()));
 
@@ -342,7 +349,7 @@ void JumpScopeChecker::BuildScopeInformation(Stmt *S, unsigned &origParentScope)
     }
     
     Stmt *SubStmt = *CI;
-    if (SubStmt == 0) continue;
+    if (!SubStmt) continue;
 
     // Cases, labels, and defaults aren't "scope parents".  It's also
     // important to handle these iteratively instead of recursively in
@@ -483,10 +490,14 @@ void JumpScopeChecker::VerifyJumps() {
 
     // With a goto,
     if (GotoStmt *GS = dyn_cast<GotoStmt>(Jump)) {
-      CheckJump(GS, GS->getLabel()->getStmt(), GS->getGotoLoc(),
-                diag::err_goto_into_protected_scope,
-                diag::warn_goto_into_protected_scope,
-                diag::warn_cxx98_compat_goto_into_protected_scope);
+      // The label may not have a statement if it's coming from inline MS ASM.
+      if (GS->getLabel()->getStmt()) {
+        CheckJump(GS, GS->getLabel()->getStmt(), GS->getGotoLoc(),
+                  diag::err_goto_into_protected_scope,
+                  diag::ext_goto_into_protected_scope,
+                  diag::warn_cxx98_compat_goto_into_protected_scope);
+      }
+      CheckGotoStmt(GS);
       continue;
     }
 
@@ -495,7 +506,7 @@ void JumpScopeChecker::VerifyJumps() {
       LabelDecl *Target = IGS->getConstantTarget();
       CheckJump(IGS, Target->getStmt(), IGS->getGotoLoc(),
                 diag::err_goto_into_protected_scope,
-                diag::warn_goto_into_protected_scope,
+                diag::ext_goto_into_protected_scope,
                 diag::warn_cxx98_compat_goto_into_protected_scope);
       continue;
     }
@@ -503,7 +514,8 @@ void JumpScopeChecker::VerifyJumps() {
     SwitchStmt *SS = cast<SwitchStmt>(Jump);
     for (SwitchCase *SC = SS->getSwitchCaseList(); SC;
          SC = SC->getNextSwitchCase()) {
-      assert(LabelAndGotoScopes.count(SC) && "Case not visited?");
+      if (CHECK_PERMISSIVE(!LabelAndGotoScopes.count(SC)))
+        continue;
       SourceLocation Loc;
       if (CaseStmt *CS = dyn_cast<CaseStmt>(SC))
         Loc = CS->getLocStart();
@@ -557,8 +569,8 @@ void JumpScopeChecker::VerifyIndirectJumps() {
     for (SmallVectorImpl<IndirectGotoStmt*>::iterator
            I = IndirectJumps.begin(), E = IndirectJumps.end(); I != E; ++I) {
       IndirectGotoStmt *IG = *I;
-      assert(LabelAndGotoScopes.count(IG) &&
-             "indirect jump didn't get added to scopes?");
+      if (CHECK_PERMISSIVE(!LabelAndGotoScopes.count(IG)))
+        continue;
       unsigned IGScope = LabelAndGotoScopes[IG];
       IndirectGotoStmt *&Entry = JumpScopesMap[IGScope];
       if (!Entry) Entry = IG;
@@ -577,8 +589,8 @@ void JumpScopeChecker::VerifyIndirectJumps() {
          I = IndirectJumpTargets.begin(), E = IndirectJumpTargets.end();
        I != E; ++I) {
     LabelDecl *TheLabel = *I;
-    assert(LabelAndGotoScopes.count(TheLabel->getStmt()) &&
-           "Referenced label didn't get added to scopes?");
+    if (CHECK_PERMISSIVE(!LabelAndGotoScopes.count(TheLabel->getStmt())))
+      continue;
     unsigned LabelScope = LabelAndGotoScopes[TheLabel->getStmt()];
     LabelDecl *&Target = TargetScopes[LabelScope];
     if (!Target) Target = TheLabel;
@@ -683,7 +695,8 @@ static void DiagnoseIndirectJumpStmt(Sema &S, IndirectGotoStmt *Jump,
 
 /// Produce note diagnostics for a jump into a protected scope.
 void JumpScopeChecker::NoteJumpIntoScopes(ArrayRef<unsigned> ToScopes) {
-  assert(!ToScopes.empty());
+  if (CHECK_PERMISSIVE(ToScopes.empty()))
+    return;
   for (unsigned I = 0, E = ToScopes.size(); I != E; ++I)
     if (Scopes[ToScopes[I]].InDiag)
       S.Diag(Scopes[ToScopes[I]].Loc, Scopes[ToScopes[I]].InDiag);
@@ -694,7 +707,8 @@ void JumpScopeChecker::DiagnoseIndirectJump(IndirectGotoStmt *Jump,
                                             unsigned JumpScope,
                                             LabelDecl *Target,
                                             unsigned TargetScope) {
-  assert(JumpScope != TargetScope);
+  if (CHECK_PERMISSIVE(JumpScope == TargetScope))
+    return;
 
   unsigned Common = GetDeepestCommonScope(JumpScope, TargetScope);
   bool Diagnosed = false;
@@ -731,10 +745,12 @@ void JumpScopeChecker::DiagnoseIndirectJump(IndirectGotoStmt *Jump,
 void JumpScopeChecker::CheckJump(Stmt *From, Stmt *To, SourceLocation DiagLoc,
                                unsigned JumpDiagError, unsigned JumpDiagWarning,
                                  unsigned JumpDiagCXX98Compat) {
-  assert(LabelAndGotoScopes.count(From) && "Jump didn't get added to scopes?");
-  unsigned FromScope = LabelAndGotoScopes[From];
+  if (CHECK_PERMISSIVE(!LabelAndGotoScopes.count(From)))
+    return;
+  if (CHECK_PERMISSIVE(!LabelAndGotoScopes.count(To)))
+    return;
 
-  assert(LabelAndGotoScopes.count(To) && "Jump didn't get added to scopes?");
+  unsigned FromScope = LabelAndGotoScopes[From];
   unsigned ToScope = LabelAndGotoScopes[To];
 
   // Common case: exactly the same scope, which is fine.
@@ -775,6 +791,15 @@ void JumpScopeChecker::CheckJump(Stmt *From, Stmt *To, SourceLocation DiagLoc,
   if (ToScopesError.empty() && !ToScopesCXX98Compat.empty()) {
     S.Diag(DiagLoc, JumpDiagCXX98Compat);
     NoteJumpIntoScopes(ToScopesCXX98Compat);
+  }
+}
+
+void JumpScopeChecker::CheckGotoStmt(GotoStmt *GS) {
+  if (GS->getLabel()->isMSAsmLabel()) {
+    S.Diag(GS->getGotoLoc(), diag::err_goto_ms_asm_label)
+        << GS->getLabel()->getIdentifier();
+    S.Diag(GS->getLabel()->getLocation(), diag::note_goto_ms_asm_label)
+        << GS->getLabel()->getIdentifier();
   }
 }
 

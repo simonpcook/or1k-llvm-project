@@ -11,10 +11,9 @@
 #define LLD_READER_WRITER_PE_COFF_ATOMS_H
 
 #include "lld/Core/File.h"
-#include "lld/ReaderWriter/Simple.h"
+#include "lld/Core/Simple.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Object/COFF.h"
-
 #include <vector>
 
 namespace lld {
@@ -28,8 +27,8 @@ class COFFDefinedAtom;
 class COFFReference final : public Reference {
 public:
   COFFReference(const Atom *target, uint32_t offsetInAtom, uint16_t relocType,
-                Reference::KindNamespace ns = Reference::KindNamespace::COFF,
-                Reference::KindArch arch = Reference::KindArch::x86)
+                Reference::KindArch arch,
+                Reference::KindNamespace ns = Reference::KindNamespace::COFF)
       : Reference(ns, arch, relocType), _target(target),
         _offsetInAtom(offsetInAtom) {}
 
@@ -99,13 +98,11 @@ public:
   Interposable interposable() const override { return interposeNo; }
   Merge merge() const override { return mergeNo; }
   Alignment alignment() const override { return Alignment(0); }
-  SectionChoice sectionChoice() const = 0;
   StringRef customSectionName() const override { return ""; }
   SectionPosition sectionPosition() const override {
     return sectionPositionAny;
   }
   DeadStripKind deadStrip() const override { return deadStripNormal; }
-  bool isAlias() const override { return false; }
 
   Kind getKind() const { return _kind; }
 
@@ -159,7 +156,6 @@ public:
   }
 
   void setAlignment(Alignment val) { _alignment = val; }
-
   SectionChoice sectionChoice() const override { return sectionCustomRequired; }
   StringRef customSectionName() const override { return _sectionName; }
   Scope scope() const override { return _scope; }
@@ -167,6 +163,13 @@ public:
   ContentPermissions permissions() const override { return _permissions; }
   uint64_t ordinal() const override { return _ordinal; }
   Alignment alignment() const override { return _alignment; }
+
+  void addAssociate(const DefinedAtom *other) {
+    auto *ref = new COFFReference(other, 0, lld::Reference::kindAssociate,
+                                  Reference::KindArch::all,
+                                  Reference::KindNamespace::all);
+    addReference(std::unique_ptr<COFFReference>(ref));
+  }
 
 private:
   StringRef _sectionName;
@@ -342,8 +345,8 @@ private:
 
 template <typename T, typename U>
 void addLayoutEdge(T *a, U *b, uint32_t which) {
-  auto ref = new COFFReference(nullptr, 0, which, Reference::KindNamespace::all,
-                               Reference::KindArch::all);
+  auto ref = new COFFReference(nullptr, 0, which, Reference::KindArch::all,
+                               Reference::KindNamespace::all);
   ref->setTarget(b);
   a->addReference(std::unique_ptr<COFFReference>(ref));
 }

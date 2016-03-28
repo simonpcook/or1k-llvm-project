@@ -96,8 +96,8 @@ This can be integrated by adding the following to your `.vimrc`:
 
 .. code-block:: vim
 
-  map <C-K> :pyf <path-to-this-file>/clang-format.py<CR>
-  imap <C-K> <ESC>:pyf <path-to-this-file>/clang-format.py<CR>i
+  map <C-K> :pyf <path-to-this-file>/clang-format.py<cr>
+  imap <C-K> <c-o>:pyf <path-to-this-file>/clang-format.py<cr>
 
 The first line enables :program:`clang-format` for NORMAL and VISUAL mode, the
 second line adds support for INSERT mode. Change "C-K" to another binding if
@@ -176,6 +176,12 @@ So to reformat all the lines in the latest :program:`git` commit, just do:
 .. code-block:: console
 
   git diff -U0 HEAD^ | clang-format-diff.py -i -p1
+
+In an SVN client, you can do:
+
+.. code-block:: console
+
+  svn diff --diff-cmd=diff -x-U0 | clang-format-diff.py -i
 
 The :option:`-U0` will create a diff without context lines (the script would format
 those as well).

@@ -208,6 +208,8 @@ int main (int argc, char *const *argv, char *const *envp, const char **apple)
                     cpu_type = CPU_TYPE_I386;
 				else if (streq (optarg, "x86_64"))
                     cpu_type = CPU_TYPE_X86_64;
+                else if (streq (optarg, "x86_64h"))
+                    cpu_type = 0; // Don't set CPU type when we have x86_64h
                 else if (strstr (optarg, "arm") == optarg)
                     cpu_type = CPU_TYPE_ARM;
                 else
@@ -229,7 +231,7 @@ int main (int argc, char *const *argv, char *const *envp, const char **apple)
         case 'E':
             {
                 // Since we will exec this program into our new program, we can just set environment
-                // varaibles in this process and they will make it into the child process.
+                // variables in this process and they will make it into the child process.
                 std::string name;
                 std::string value;
                 const char *equal_pos = strchr (optarg, '=');

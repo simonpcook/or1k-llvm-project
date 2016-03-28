@@ -581,8 +581,7 @@ void TransformActionsImpl::applyRewrites(
 /// "alive". Since the vast majority of text will be the same, we also unique
 /// the strings using a StringMap.
 StringRef TransformActionsImpl::getUniqueText(StringRef text) {
-  llvm::StringMapEntry<bool> &entry = UniqueText.GetOrCreateValue(text);
-  return entry.getKey();
+  return UniqueText.insert(std::make_pair(text, false)).first->first();
 }
 
 /// \brief Computes the source location just past the end of the token at
@@ -601,7 +600,7 @@ TransformActions::RewriteReceiver::~RewriteReceiver() { }
 TransformActions::TransformActions(DiagnosticsEngine &diag,
                                    CapturedDiagList &capturedDiags,
                                    ASTContext &ctx, Preprocessor &PP)
-  : Diags(diag), CapturedDiags(capturedDiags), ReportedErrors(false) {
+    : Diags(diag), CapturedDiags(capturedDiags) {
   Impl = new TransformActionsImpl(capturedDiags, ctx, PP);
 }
 
@@ -677,17 +676,6 @@ DiagnosticBuilder TransformActions::report(SourceLocation loc, unsigned diagId,
                                            SourceRange range) {
   assert(!static_cast<TransformActionsImpl *>(Impl)->isInTransaction() &&
          "Errors should be emitted out of a transaction");
-
-  SourceManager &SM = static_cast<TransformActionsImpl *>(Impl)
-                          ->getASTContext()
-                          .getSourceManager();
-  DiagnosticsEngine::Level L = Diags.getDiagnosticLevel(diagId, loc);
-  // TODO: Move this check to the caller to ensure consistent note attachments.
-  if (L == DiagnosticsEngine::Ignored ||
-      SM.isInSystemHeader(SM.getExpansionLoc(loc)))
-    return DiagnosticBuilder::getEmpty();
-  if (L >= DiagnosticsEngine::Error)
-    ReportedErrors = true;
   return Diags.Report(loc, diagId) << range;
 }
 

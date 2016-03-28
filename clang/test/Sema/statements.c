@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -fsyntax-only -verify
+// RUN: %clang_cc1 %s -fsyntax-only -verify  -triple x86_64-pc-linux-gnu
 
 typedef unsigned __uint32_t;
 
@@ -36,7 +36,7 @@ bar:
 
 // PR6034
 void test11(int bit) {
-  switch (bit) // expected-warning {{switch statement has empty body}} expected-note {{put the semicolon on a separate line to silence this warning}}
+  switch (bit)
   switch (env->fpscr)  // expected-error {{use of undeclared identifier 'env'}}
   {
   }

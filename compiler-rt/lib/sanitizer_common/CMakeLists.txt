@@ -4,7 +4,6 @@
 set(SANITIZER_SOURCES
   sanitizer_allocator.cc
   sanitizer_common.cc
-  sanitizer_coverage.cc
   sanitizer_deadlock_detector1.cc
   sanitizer_deadlock_detector2.cc
   sanitizer_flags.cc
@@ -12,14 +11,18 @@ set(SANITIZER_SOURCES
   sanitizer_libignore.cc
   sanitizer_linux.cc
   sanitizer_mac.cc
+  sanitizer_persistent_allocator.cc
   sanitizer_platform_limits_linux.cc
   sanitizer_platform_limits_posix.cc
   sanitizer_posix.cc
   sanitizer_printf.cc
+  sanitizer_procmaps_common.cc
+  sanitizer_procmaps_freebsd.cc
   sanitizer_procmaps_linux.cc
   sanitizer_procmaps_mac.cc
   sanitizer_stackdepot.cc
   sanitizer_stacktrace.cc
+  sanitizer_stacktrace_printer.cc
   sanitizer_suppressions.cc
   sanitizer_symbolizer.cc
   sanitizer_symbolizer_libbacktrace.cc
@@ -30,12 +33,15 @@ set(SANITIZER_SOURCES
 
 set(SANITIZER_LIBCDEP_SOURCES
   sanitizer_common_libcdep.cc
+  sanitizer_coverage_libcdep.cc
+  sanitizer_coverage_mapping_libcdep.cc
   sanitizer_linux_libcdep.cc
   sanitizer_posix_libcdep.cc
   sanitizer_stacktrace_libcdep.cc
   sanitizer_stoptheworld_linux_libcdep.cc
   sanitizer_symbolizer_libcdep.cc
-  sanitizer_symbolizer_posix_libcdep.cc)
+  sanitizer_symbolizer_posix_libcdep.cc
+  sanitizer_unwind_posix_libcdep.cc)
 
 # Explicitly list all sanitizer_common headers. Not all of these are
 # included in sanitizer_common source files, but we need to depend on
@@ -43,6 +49,7 @@ set(SANITIZER_LIBCDEP_SOURCES
 set(SANITIZER_HEADERS
   sanitizer_addrhashmap.h
   sanitizer_allocator.h
+  sanitizer_allocator_interface.h
   sanitizer_allocator_internal.h
   sanitizer_atomic.h
   sanitizer_atomic_clang.h
@@ -57,6 +64,7 @@ set(SANITIZER_HEADERS
   sanitizer_deadlock_detector.h
   sanitizer_deadlock_detector_interface.h
   sanitizer_flags.h
+  sanitizer_flags.inc
   sanitizer_internal_defs.h
   sanitizer_lfstack.h
   sanitizer_libc.h
@@ -65,6 +73,7 @@ set(SANITIZER_HEADERS
   sanitizer_list.h
   sanitizer_mac.h
   sanitizer_mutex.h
+  sanitizer_persistent_allocator.h
   sanitizer_placement_new.h
   sanitizer_platform.h
   sanitizer_platform_interceptors.h
@@ -73,7 +82,9 @@ set(SANITIZER_HEADERS
   sanitizer_quarantine.h
   sanitizer_report_decorator.h
   sanitizer_stackdepot.h
+  sanitizer_stackdepotbase.h
   sanitizer_stacktrace.h
+  sanitizer_stacktrace_printer.h
   sanitizer_stoptheworld.h
   sanitizer_suppressions.h
   sanitizer_symbolizer.h
@@ -95,8 +106,10 @@ endif()
 set(SANITIZER_CFLAGS ${SANITIZER_COMMON_CFLAGS})
 append_no_rtti_flag(SANITIZER_CFLAGS)
 
-append_if(COMPILER_RT_HAS_WFRAME_LARGER_THAN_FLAG -Wframe-larger-than=512 SANITIZER_CFLAGS)
-append_if(COMPILER_RT_HAS_WGLOBAL_CONSTRUCTORS_FLAG -Wglobal-constructors SANITIZER_CFLAGS)
+append_list_if(SANITIZER_LIMIT_FRAME_SIZE -Wframe-larger-than=512
+               SANITIZER_CFLAGS)
+append_list_if(COMPILER_RT_HAS_WGLOBAL_CONSTRUCTORS_FLAG -Wglobal-constructors
+               SANITIZER_CFLAGS)
 
 add_custom_target(sanitizer_common)
 set(SANITIZER_RUNTIME_LIBRARIES)
@@ -110,14 +123,6 @@ if(APPLE)
       DEFS ${SANITIZER_COMMON_DEFINITIONS})
     list(APPEND SANITIZER_RUNTIME_LIBRARIES RTSanitizerCommon.${os})
   endforeach()
-elseif(ANDROID)
-  add_library(RTSanitizerCommon.arm.android OBJECT
-    ${SANITIZER_SOURCES} ${SANITIZER_LIBCDEP_SOURCES})
-  set_target_compile_flags(RTSanitizerCommon.arm.android
-    ${SANITIZER_CFLAGS})
-  set_property(TARGET RTSanitizerCommon.arm.android APPEND PROPERTY
-    COMPILE_DEFINITIONS ${SANITIZER_COMMON_DEFINITIONS})
-  list(APPEND SANITIZER_RUNTIME_LIBRARIES RTSanitizerCommon.arm.android)
 else()
   # Otherwise, build separate libraries for each target.
   foreach(arch ${SANITIZER_COMMON_SUPPORTED_ARCH})
@@ -129,7 +134,7 @@ else()
       DEFS ${SANITIZER_COMMON_DEFINITIONS})
     list(APPEND SANITIZER_RUNTIME_LIBRARIES RTSanitizerCommon.${arch}
                                             RTSanitizerCommonLibc.${arch})
-    add_compiler_rt_static_runtime(clang_rt.san-${arch} ${arch}
+    add_compiler_rt_runtime(clang_rt.san-${arch} ${arch} STATIC
       SOURCES $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
               $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
       CFLAGS ${SANITIZER_CFLAGS}

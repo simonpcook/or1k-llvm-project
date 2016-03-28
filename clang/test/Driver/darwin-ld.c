@@ -17,6 +17,8 @@
 // RUN: FileCheck -check-prefix=LINK_IPHONE_3_0 %s < %t.log
 
 // LINK_IPHONE_3_0: {{ld(.exe)?"}}
+// LINK_IPHONE_3_0: -iphoneos_version_min
+// LINK_IPHONE_3_0: 3.0.0
 // LINK_IPHONE_3_0-NOT: -lcrt1.3.1.o
 // LINK_IPHONE_3_0: -lcrt1.o
 // LINK_IPHONE_3_0: -lSystem
@@ -34,6 +36,8 @@
 // RUN: FileCheck -check-prefix=LINK_IPHONE_3_1 %s < %t.log
 
 // LINK_IPHONE_3_1: {{ld(.exe)?"}}
+// LINK_IPHONE_3_1: -iphoneos_version_min
+// LINK_IPHONE_3_1: 3.1.0
 // LINK_IPHONE_3_1-NOT: -lcrt1.o
 // LINK_IPHONE_3_1: -lcrt1.3.1.o
 // LINK_IPHONE_3_1: -lSystem
@@ -51,6 +55,8 @@
 // RUN: FileCheck -check-prefix=LINK_IOSSIM_3_0 %s < %t.log
 
 // LINK_IOSSIM_3_0: {{ld(.exe)?"}}
+// LINK_IOSSIM_3_0: -ios_simulator_version_min
+// LINK_IOSSIM_3_0: 3.0.0
 // LINK_IOSSIM_3_0-NOT: -lcrt1.o
 // LINK_IOSSIM_3_0: -lSystem
 // LINK_IOSSIM_3_0: {{ld(.exe)?"}}
@@ -142,10 +148,23 @@
 // RUN: FileCheck -check-prefix=LINK_NO_IOS_CRT1 %s < %t.log
 // LINK_NO_IOS_CRT1-NOT: crt
 
+// RUN: %clang -target arm64-apple-ios5.0 -miphoneos-version-min=5.0 -### %t.o 2> %t.log
+// RUN: FileCheck -check-prefix=LINK_NO_IOS_ARM64_CRT1 %s < %t.log
+// LINK_NO_IOS_ARM64_CRT1-NOT: crt
+
 // RUN: %clang -target i386-apple-darwin12 -pg -### %t.o 2> %t.log
 // RUN: FileCheck -check-prefix=LINK_PG %s < %t.log
 // LINK_PG: -lgcrt1.o
 // LINK_PG: -no_new_main
+
+// Check that clang links with libgcc_s.1 for iOS 4 and earlier, but not arm64.
+// RUN: %clang -target armv7-apple-ios4.0 -miphoneos-version-min=4.0 -### %t.o 2> %t.log
+// RUN: FileCheck -check-prefix=LINK_IOS_LIBGCC_S %s < %t.log
+// LINK_IOS_LIBGCC_S: lgcc_s.1
+
+// RUN: %clang -target arm64-apple-ios4.0 -miphoneos-version-min=4.0 -### %t.o 2> %t.log
+// RUN: FileCheck -check-prefix=LINK_NO_IOS_ARM64_LIBGCC_S %s < %t.log
+// LINK_NO_IOS_ARM64_LIBGCC_S-NOT: lgcc_s.1
 
 // RUN: %clang -target x86_64-apple-darwin12 -rdynamic -### %t.o \
 // RUN:   -mlinker-version=100 2> %t.log
@@ -174,10 +193,14 @@
 // LINK_X86_64H_MULTIARCH: {{ld(.exe)?"}}
 // LINK_X86_64H_MULTIARCH: "x86_64h"
 
-// Check that clang passes -iphoneos_version_min to the linker when building
-// for the iOS simulator but when -mios-simulator-version-min is not
-// explicitly specified (<rdar://problem/15959009>).
+// Check for the linker options to specify the iOS version when the
+// IPHONEOS_DEPLOYMENT_TARGET variable is used instead of the command-line
+// deployment target options.
+// RUN: env IPHONEOS_DEPLOYMENT_TARGET=7.0 \
+// RUN:   %clang -target arm64-apple-darwin -### %t.o 2> %t.log
+// RUN: FileCheck -check-prefix=LINK_IPHONEOS_VERSION_MIN %s < %t.log
 // RUN: env IPHONEOS_DEPLOYMENT_TARGET=7.0 \
 // RUN:   %clang -target i386-apple-darwin -### %t.o 2> %t.log
-// RUN: FileCheck -check-prefix=LINK_IPHONEOS_VERSION_MIN %s < %t.log
+// RUN: FileCheck -check-prefix=LINK_IOS_SIMULATOR_VERSION_MIN %s < %t.log
 // LINK_IPHONEOS_VERSION_MIN: -iphoneos_version_min
+// LINK_IOS_SIMULATOR_VERSION_MIN: -ios_simulator_version_min

@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/TempScopInfo.h"
+#include "polly/ScopDetection.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/CodeGen/BlockGenerators.h"
 #include "polly/Support/GICHelper.h"
@@ -22,16 +23,17 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/RegionIterator.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/IR/DataLayout.h"
-
-#define DEBUG_TYPE "polly-analyze-ir"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
 using namespace polly;
+
+#define DEBUG_TYPE "polly-analyze-ir"
 
 //===----------------------------------------------------------------------===//
 /// Helper Classes
@@ -39,9 +41,11 @@ using namespace polly;
 void IRAccess::print(raw_ostream &OS) const {
   if (isRead())
     OS << "Read ";
-  else
+  else {
+    if (isMayWrite())
+      OS << "May";
     OS << "Write ";
-
+  }
   OS << BaseAddress->getName() << '[' << *Offset << "]\n";
 }
 
@@ -69,8 +73,7 @@ inline raw_ostream &operator<<(raw_ostream &OS, const BBCond &Cond) {
 TempScop::~TempScop() {}
 
 void TempScop::print(raw_ostream &OS, ScalarEvolution *SE, LoopInfo *LI) const {
-  OS << "Scop: " << R.getNameStr() << ", Max Loop Depth: " << MaxLoopDepth
-     << "\n";
+  OS << "Scop: " << R.getNameStr() << "\n";
 
   printDetail(OS, SE, LI, &R, 0);
 }
@@ -131,26 +134,34 @@ bool TempScopInfo::buildScalarDependences(Instruction *Inst, Region *R) {
 
     assert(!isa<PHINode>(UI) && "Non synthesizable PHINode found in a SCoP!");
 
+    SmallVector<const SCEV *, 4> Subscripts, Sizes;
+
     // Use the def instruction as base address of the IRAccess, so that it will
     // become the name of the scalar access in the polyhedral form.
-    IRAccess ScalarAccess(IRAccess::SCALARREAD, Inst, ZeroOffset, 1, true);
+    IRAccess ScalarAccess(IRAccess::READ, Inst, ZeroOffset, 1, true, Subscripts,
+                          Sizes);
     AccFuncMap[UseParent].push_back(std::make_pair(ScalarAccess, UI));
   }
 
   return AnyCrossStmtUse;
 }
 
+extern MapInsnToMemAcc InsnToMemAcc;
+
 IRAccess TempScopInfo::buildIRAccess(Instruction *Inst, Loop *L, Region *R) {
   unsigned Size;
+  Type *SizeType;
   enum IRAccess::TypeKind Type;
 
   if (LoadInst *Load = dyn_cast<LoadInst>(Inst)) {
-    Size = TD->getTypeStoreSize(Load->getType());
+    SizeType = Load->getType();
+    Size = TD->getTypeStoreSize(SizeType);
     Type = IRAccess::READ;
   } else {
     StoreInst *Store = cast<StoreInst>(Inst);
-    Size = TD->getTypeStoreSize(Store->getValueOperand()->getType());
-    Type = IRAccess::WRITE;
+    SizeType = Store->getValueOperand()->getType();
+    Size = TD->getTypeStoreSize(SizeType);
+    Type = IRAccess::MUST_WRITE;
   }
 
   const SCEV *AccessFunction = SE->getSCEVAtScope(getPointerOperand(*Inst), L);
@@ -159,11 +170,21 @@ IRAccess TempScopInfo::buildIRAccess(Instruction *Inst, Loop *L, Region *R) {
 
   assert(BasePointer && "Could not find base pointer");
   AccessFunction = SE->getMinusSCEV(AccessFunction, BasePointer);
+  SmallVector<const SCEV *, 4> Subscripts, Sizes;
+
+  MemAcc *Acc = InsnToMemAcc[Inst];
+  if (PollyDelinearize && Acc)
+    return IRAccess(Type, BasePointer->getValue(), AccessFunction, Size, true,
+                    Acc->DelinearizedSubscripts, Acc->Shape->DelinearizedSizes);
 
   bool IsAffine = isAffineExpr(R, AccessFunction, *SE, BasePointer->getValue());
+  Subscripts.push_back(AccessFunction);
+  if (!IsAffine && Type == IRAccess::MUST_WRITE)
+    Type = IRAccess::MAY_WRITE;
 
-  return IRAccess(Type, BasePointer->getValue(), AccessFunction, Size,
-                  IsAffine);
+  Sizes.push_back(SE->getConstant(ZeroOffset->getType(), Size));
+  return IRAccess(Type, BasePointer->getValue(), AccessFunction, Size, IsAffine,
+                  Subscripts, Sizes);
 }
 
 void TempScopInfo::buildAccessFunctions(Region &R, BasicBlock &BB) {
@@ -178,7 +199,9 @@ void TempScopInfo::buildAccessFunctions(Region &R, BasicBlock &BB) {
     if (!isa<StoreInst>(Inst) && buildScalarDependences(Inst, &R)) {
       // If the Instruction is used outside the statement, we need to build the
       // write access.
-      IRAccess ScalarAccess(IRAccess::SCALARWRITE, Inst, ZeroOffset, 1, true);
+      SmallVector<const SCEV *, 4> Subscripts, Sizes;
+      IRAccess ScalarAccess(IRAccess::MUST_WRITE, Inst, ZeroOffset, 1, true,
+                            Subscripts, Sizes);
       Functions.push_back(std::make_pair(ScalarAccess, Inst));
     }
   }
@@ -188,32 +211,6 @@ void TempScopInfo::buildAccessFunctions(Region &R, BasicBlock &BB) {
 
   AccFuncSetType &Accs = AccFuncMap[&BB];
   Accs.insert(Accs.end(), Functions.begin(), Functions.end());
-}
-
-void TempScopInfo::buildLoopBounds(TempScop &Scop) {
-  Region &R = Scop.getMaxRegion();
-  unsigned MaxLoopDepth = 0;
-
-  for (auto const &BB : R.blocks()) {
-    Loop *L = LI->getLoopFor(BB);
-
-    if (!L || !R.contains(L))
-      continue;
-
-    if (LoopBounds.find(L) != LoopBounds.end())
-      continue;
-
-    const SCEV *BackedgeTakenCount = SE->getBackedgeTakenCount(L);
-    LoopBounds[L] = BackedgeTakenCount;
-
-    Loop *OL = R.outermostLoopInRegion(L);
-    unsigned LoopDepth = L->getLoopDepth() - OL->getLoopDepth() + 1;
-
-    if (LoopDepth > MaxLoopDepth)
-      MaxLoopDepth = LoopDepth;
-  }
-
-  Scop.MaxLoopDepth = MaxLoopDepth;
 }
 
 void TempScopInfo::buildAffineCondition(Value &V, bool inverted,
@@ -285,8 +282,23 @@ void TempScopInfo::buildCondition(BasicBlock *BB, BasicBlock *RegionEntry) {
     if (Br->isUnconditional())
       continue;
 
+    BasicBlock *TrueBB = Br->getSuccessor(0), *FalseBB = Br->getSuccessor(1);
+
     // Is BB on the ELSE side of the branch?
-    bool inverted = DT->dominates(Br->getSuccessor(1), BB);
+    bool inverted = DT->dominates(FalseBB, BB);
+
+    // If both TrueBB and FalseBB dominate BB, one of them must be the target of
+    // a back-edge, i.e. a loop header.
+    if (inverted && DT->dominates(TrueBB, BB)) {
+      assert(
+          (DT->dominates(TrueBB, FalseBB) || DT->dominates(FalseBB, TrueBB)) &&
+          "One of the successors should be the loop header and dominate the"
+          "other!");
+
+      // It is not an invert if the FalseBB is the header.
+      if (DT->dominates(FalseBB, TrueBB))
+        inverted = false;
+    }
 
     Comparison *Cmp;
     buildAffineCondition(*(Br->getCondition()), inverted, &Cmp);
@@ -298,14 +310,12 @@ void TempScopInfo::buildCondition(BasicBlock *BB, BasicBlock *RegionEntry) {
 }
 
 TempScop *TempScopInfo::buildTempScop(Region &R) {
-  TempScop *TScop = new TempScop(R, LoopBounds, BBConds, AccFuncMap);
+  TempScop *TScop = new TempScop(R, BBConds, AccFuncMap);
 
   for (const auto &BB : R.blocks()) {
     buildAccessFunctions(R, *BB);
     buildCondition(BB, R.getEntry());
   }
-
-  buildLoopBounds(*TScop);
 
   return TScop;
 }
@@ -358,7 +368,6 @@ TempScopInfo::~TempScopInfo() { clear(); }
 
 void TempScopInfo::clear() {
   BBConds.clear();
-  LoopBounds.clear();
   AccFuncMap.clear();
   DeleteContainerSeconds(TempScops);
   TempScops.clear();
@@ -377,7 +386,7 @@ INITIALIZE_AG_DEPENDENCY(AliasAnalysis);
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass);
 INITIALIZE_PASS_DEPENDENCY(LoopInfo);
 INITIALIZE_PASS_DEPENDENCY(PostDominatorTree);
-INITIALIZE_PASS_DEPENDENCY(RegionInfo);
+INITIALIZE_PASS_DEPENDENCY(RegionInfoPass);
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution);
 INITIALIZE_PASS_DEPENDENCY(DataLayoutPass);
 INITIALIZE_PASS_END(TempScopInfo, "polly-analyze-ir",

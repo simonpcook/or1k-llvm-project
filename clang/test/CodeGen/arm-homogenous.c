@@ -1,6 +1,11 @@
 // REQUIRES: arm-registered-target
 // RUN: %clang_cc1 -triple armv7---eabi -target-abi aapcs -mfloat-abi hard -emit-llvm %s -o - | FileCheck %s
 
+// RUN: %clang_cc1 -triple arm64-apple-darwin9 -target-abi darwinpcs \
+// RUN:  -ffreestanding -emit-llvm -w -o - %s | FileCheck -check-prefix=CHECK64 %s
+
+// RUN: %clang_cc1 -triple arm64-linux-gnu -ffreestanding -emit-llvm -w -o - %s \
+// RUN:   | FileCheck --check-prefix=CHECK64 %s
 typedef long long int64_t;
 typedef unsigned int uint32_t;
 
@@ -103,9 +108,9 @@ extern struct_with_fundamental_elems returns_struct_with_fundamental_elems(void)
 
 void test_struct_with_fundamental_elems(void) {
   takes_struct_with_fundamental_elems(g_s);
-// CHECK:  call arm_aapcs_vfpcc  void @takes_struct_with_fundamental_elems(float {{.*}}, float {{.*}}, float{{.*}}, float {{.*}})
+// CHECK:  call arm_aapcs_vfpcc  void @takes_struct_with_fundamental_elems(%struct.struct_with_fundamental_elems {{.*}})
 }
-// CHECK: declare arm_aapcs_vfpcc void @takes_struct_with_fundamental_elems(float, float, float, float)
+// CHECK: declare arm_aapcs_vfpcc void @takes_struct_with_fundamental_elems(%struct.struct_with_fundamental_elems)
 
 void test_return_struct_with_fundamental_elems(void) {
   g_s = returns_struct_with_fundamental_elems();
@@ -124,9 +129,9 @@ extern struct_with_array returns_struct_with_array(void);
 
 void test_struct_with_array(void) {
   takes_struct_with_array(g_s_a);
-// CHECK:   call arm_aapcs_vfpcc  void @takes_struct_with_array(float {{.*}}, float {{.*}}, float {{.*}}, float {{.*}})
+// CHECK:   call arm_aapcs_vfpcc  void @takes_struct_with_array(%struct.struct_with_array {{.*}})
 }
-// CHECK: declare arm_aapcs_vfpcc void @takes_struct_with_array(float, float, float, float)
+// CHECK: declare arm_aapcs_vfpcc void @takes_struct_with_array(%struct.struct_with_array)
 
 void test_return_struct_with_array(void) {
   g_s_a = returns_struct_with_array();
@@ -146,9 +151,9 @@ extern union_with_struct_with_fundamental_elems returns_union_with_struct_with_f
 
 void test_union_with_struct_with_fundamental_elems(void) {
   takes_union_with_struct_with_fundamental_elems(g_u_s_fe);
-// CHECK: call arm_aapcs_vfpcc  void @takes_union_with_struct_with_fundamental_elems(float {{.*}}, float {{.*}}, float {{.*}}, float {{.*}})
+// CHECK: call arm_aapcs_vfpcc  void @takes_union_with_struct_with_fundamental_elems(%union.union_with_struct_with_fundamental_elems {{.*}})
 }
-// CHECK: declare arm_aapcs_vfpcc void @takes_union_with_struct_with_fundamental_elems(float, float, float, float)
+// CHECK: declare arm_aapcs_vfpcc void @takes_union_with_struct_with_fundamental_elems(%union.union_with_struct_with_fundamental_elems)
 
 void test_return_union_with_struct_with_fundamental_elems(void) {
   g_u_s_fe = returns_union_with_struct_with_fundamental_elems();
@@ -169,7 +174,9 @@ struct_of_four_doubles g_s4d;
 
 void test_struct_of_four_doubles(void) {
 // CHECK: test_struct_of_four_doubles
-// CHECK: call arm_aapcs_vfpcc void @takes_struct_of_four_doubles(double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}}, [6 x float] undef, double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}})
+// CHECK: call arm_aapcs_vfpcc void @takes_struct_of_four_doubles(double {{.*}}, %struct.struct_of_four_doubles {{.*}}, %struct.struct_of_four_doubles {{.*}}, double {{.*}})
+// CHECK64: test_struct_of_four_doubles
+// CHECK64: call void @takes_struct_of_four_doubles(double {{.*}}, [4 x double] {{.*}}, [4 x double] {{.*}}, double {{.*}})
   takes_struct_of_four_doubles(3.0, g_s4d, g_s4d, 4.0);
 }
 
@@ -184,7 +191,7 @@ void test_struct_of_four_doubles_variadic(void) {
 extern void takes_struct_with_backfill(float f1, double a, float f2, struct_of_four_doubles b, struct_of_four_doubles c, double d);
 void test_struct_with_backfill(void) {
 // CHECK: test_struct_with_backfill
-// CHECK: call arm_aapcs_vfpcc void @takes_struct_with_backfill(float {{.*}}, double {{.*}}, float {{.*}}, double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}}, [4 x float] undef, double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}}, double {{.*}})
+// CHECK: call arm_aapcs_vfpcc void @takes_struct_with_backfill(float {{.*}}, double {{.*}}, float {{.*}}, %struct.struct_of_four_doubles {{.*}}, %struct.struct_of_four_doubles {{.*}}, double {{.*}})
   takes_struct_with_backfill(3.0, 3.1, 3.2, g_s4d, g_s4d, 4.0);
 }
 
@@ -201,7 +208,9 @@ struct_of_vecs g_vec;
 
 void test_struct_of_vecs(void) {
 // CHECK: test_struct_of_vecs
-// CHECK: call arm_aapcs_vfpcc void @takes_struct_of_vecs(double {{.*}}, <8 x i8> {{.*}}, <4 x i16> {{.*}}, <8 x i8> {{.*}}, <4 x i16> {{.*}}, [6 x float] undef, <8 x i8> {{.*}}, <4 x i16> {{.*}}, <8 x i8> {{.*}}, <4 x i16> {{.*}}, double {{.*}})
+// CHECK: call arm_aapcs_vfpcc void @takes_struct_of_vecs(double {{.*}}, %struct.struct_of_vecs {{.*}}, %struct.struct_of_vecs {{.*}}, double {{.*}})
+// CHECK64: test_struct_of_vecs
+// CHECK64: call void @takes_struct_of_vecs(double {{.*}}, [4 x <8 x i8>] {{.*}}, [4 x <8 x i8>] {{.*}}, double {{.*}})
   takes_struct_of_vecs(3.0, g_vec, g_vec, 4.0);
 }
 

@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.NonNilReturnValue,osx.cocoa.NilArg,osx.cocoa.Loops,debug.ExprInspection -verify -Wno-objc-root-class %s
+// RUN: %clang_cc1  -Wno-objc-literal-conversion -analyze -analyzer-checker=core,osx.cocoa.NonNilReturnValue,osx.cocoa.NilArg,osx.cocoa.Loops,debug.ExprInspection -verify -Wno-objc-root-class %s
 
 void clang_analyzer_eval(int);
 
@@ -282,5 +282,13 @@ void testCountAwareNSOrderedSet(NSOrderedSet *containers, int *validptr) {
 void testLiteralsNonNil() {
   clang_analyzer_eval(!!@[]); // expected-warning{{TRUE}}
   clang_analyzer_eval(!!@{}); // expected-warning{{TRUE}}
+}
+
+@interface NSMutableArray (MySafeAdd)
+- (void)addObject:(id)obj safe:(BOOL)safe;
+@end
+
+void testArrayCategory(NSMutableArray *arr) {
+  [arr addObject:0 safe:1]; // no-warning
 }
 

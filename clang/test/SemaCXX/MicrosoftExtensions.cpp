@@ -79,6 +79,7 @@ struct M {
 
 // __unaligned handling
 typedef char __unaligned *aligned_type;
+typedef struct UnalignedTag { int f; } __unaligned *aligned_type2;
 
 
 template<typename T> void h1(T (__stdcall M::* const )()) { }
@@ -119,10 +120,11 @@ enum : long long {  // expected-warning{{enumeration types with a fixed underlyi
 
 class AAA {
 __declspec(dllimport) void f(void) { }
-void f2(void);
+void f2(void); // expected-note{{previous declaration is here}}
 };
 
-__declspec(dllimport) void AAA::f2(void) { // expected-error {{'dllimport' attribute can be applied only to symbol}}
+__declspec(dllimport) void AAA::f2(void) { // expected-error{{dllimport cannot be applied to non-inline function definition}}
+                                           // expected-error@-1{{redeclaration of 'AAA::f2' cannot add 'dllimport' attribute}}
 
 }
 
@@ -143,10 +145,13 @@ extern void static_func();
 void static_func(); // expected-note {{previous declaration is here}}
 
 
-static void static_func() // expected-warning {{static declaration of 'static_func' follows non-static declaration}}
+static void static_func() // expected-warning {{redeclaring non-static 'static_func' as static is a Microsoft extension}}
 {
 
 }
+
+extern const int static_var; // expected-note {{previous declaration is here}}
+static const int static_var = 3; // expected-warning {{redeclaring non-static 'static_var' as static is a Microsoft extension}}
 
 long function_prototype(int a);
 long (*function_ptr)(int a);
@@ -170,29 +175,6 @@ void pointer_to_integral_type_conv(char* ptr) {
 
    // This is bad.
    b = reinterpret_cast<bool>(ptr); // expected-error {{cast from pointer to smaller type 'bool' loses information}}
-}
-
-namespace friend_as_a_forward_decl {
-
-class A {
-  class Nested {
-    friend class B;
-    B* b;
-  };
-  B* b;
-};
-B* global_b;
-
-
-void f()
-{
-  class Local {
-    friend class Z;
-    Z* b;
-  };
-  Z* b;
-}
-
 }
 
 struct PR11150 {
@@ -391,14 +373,15 @@ struct SomeBase {
 
   // expected-note@+2 {{overridden virtual function is here}}
   // expected-warning@+1 {{'sealed' keyword is a Microsoft extension}}
-  virtual void SealedFunction() sealed;
+  virtual void SealedFunction() sealed; // expected-note {{overridden virtual function is here}}
 };
 
 // expected-note@+2 {{'SealedType' declared here}}
 // expected-warning@+1 {{'sealed' keyword is a Microsoft extension}}
 struct SealedType sealed : SomeBase {
-  // expected-error@+1 {{declaration of 'SealedFunction' overrides a 'sealed' function}}
-  virtual void SealedFunction();
+  // expected-error@+2 {{declaration of 'SealedFunction' overrides a 'sealed' function}}
+  // FIXME. warning can be suppressed if we're also issuing error for overriding a 'final' function.
+  virtual void SealedFunction(); // expected-warning {{'SealedFunction' overrides a member function but is not marked 'override'}}
 
   // expected-warning@+1 {{'override' keyword is a C++11 extension}}
   virtual void OverrideMe() override;

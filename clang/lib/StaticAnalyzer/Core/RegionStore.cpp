@@ -262,7 +262,7 @@ RegionBindingsRef RegionBindingsRef::addBinding(const MemRegion *R,
 const SVal *RegionBindingsRef::lookup(BindingKey K) const {
   const ClusterBindings *Cluster = lookup(K.getBaseRegion());
   if (!Cluster)
-    return 0;
+    return nullptr;
   return Cluster->lookup(K);
 }
 
@@ -609,16 +609,17 @@ public: // Part of public interface to class.
 // RegionStore creation.
 //===----------------------------------------------------------------------===//
 
-StoreManager *ento::CreateRegionStoreManager(ProgramStateManager& StMgr) {
+std::unique_ptr<StoreManager>
+ento::CreateRegionStoreManager(ProgramStateManager &StMgr) {
   RegionStoreFeatures F = maximal_features_tag();
-  return new RegionStoreManager(StMgr, F);
+  return llvm::make_unique<RegionStoreManager>(StMgr, F);
 }
 
-StoreManager *
+std::unique_ptr<StoreManager>
 ento::CreateFieldsOnlyRegionStoreManager(ProgramStateManager &StMgr) {
   RegionStoreFeatures F = minimal_features_tag();
   F.enableFields(true);
-  return new RegionStoreManager(StMgr, F);
+  return llvm::make_unique<RegionStoreManager>(StMgr, F);
 }
 
 
@@ -708,7 +709,7 @@ public:
   }
 
   bool AddToWorkList(WorkListElement E, const ClusterBindings *C) {
-    if (C && !Visited.insert(C))
+    if (C && !Visited.insert(C).second)
       return false;
     WL.push_back(E);
     return true;
@@ -1625,8 +1626,8 @@ RegionStoreManager::getBindingForFieldOrElementCommon(RegionBindingsConstRef B,
   // getBindingForField if 'R' has a direct binding.
 
   // Lazy binding?
-  Store lazyBindingStore = NULL;
-  const SubRegion *lazyBindingRegion = NULL;
+  Store lazyBindingStore = nullptr;
+  const SubRegion *lazyBindingRegion = nullptr;
   std::tie(lazyBindingStore, lazyBindingRegion) = findLazyBinding(B, R, R);
   if (lazyBindingRegion)
     return getLazyBinding(lazyBindingRegion,
@@ -2291,7 +2292,7 @@ bool removeDeadBindingsWorker::UpdatePostponed() {
     if (const SymbolicRegion *SR = *I) {
       if (SymReaper.isLive(SR->getSymbol())) {
         changed |= AddToWorkList(SR);
-        *I = NULL;
+        *I = nullptr;
       }
     }
   }

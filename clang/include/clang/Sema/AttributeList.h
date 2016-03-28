@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_SEMA_ATTRLIST_H
-#define LLVM_CLANG_SEMA_ATTRLIST_H
+#ifndef LLVM_CLANG_SEMA_ATTRIBUTELIST_H
+#define LLVM_CLANG_SEMA_ATTRIBUTELIST_H
 
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/VersionTuple.h"
@@ -80,7 +80,9 @@ public:
     /// __declspec(...)
     AS_Declspec,
     /// __ptr16, alignas(...), etc.
-    AS_Keyword
+    AS_Keyword,
+    /// #pragma ...
+    AS_Pragma
   };
 
 private:
@@ -92,10 +94,10 @@ private:
 
   /// The number of expression arguments this attribute has.
   /// The expressions themselves are stored after the object.
-  unsigned NumArgs : 16;
+  unsigned NumArgs : 15;
 
   /// Corresponds to the Syntax enum.
-  unsigned SyntaxUsed : 2;
+  unsigned SyntaxUsed : 3;
 
   /// True if already diagnosed as invalid.
   mutable unsigned Invalid : 1;
@@ -218,7 +220,7 @@ private:
       ScopeLoc(scopeLoc), EllipsisLoc(ellipsisLoc), NumArgs(numArgs),
       SyntaxUsed(syntaxUsed), Invalid(false), UsedAsTypeAttr(false),
       IsAvailability(false), IsTypeTagForDatatype(false), IsProperty(false),
-      HasParsedType(false), NextInPosition(0), NextInPool(0) {
+      HasParsedType(false), NextInPosition(nullptr), NextInPool(nullptr) {
     if (numArgs) memcpy(getArgsBuffer(), args, numArgs * sizeof(ArgsUnion));
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
@@ -237,7 +239,7 @@ private:
       Invalid(false), UsedAsTypeAttr(false), IsAvailability(true),
       IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(false),
       UnavailableLoc(unavailable), MessageExpr(messageExpr),
-      NextInPosition(0), NextInPool(0) {
+      NextInPosition(nullptr), NextInPool(nullptr) {
     ArgsUnion PVal(Parm);
     memcpy(getArgsBuffer(), &PVal, sizeof(ArgsUnion));
     new (&getAvailabilitySlot(IntroducedSlot)) AvailabilityChange(introduced);
@@ -257,7 +259,7 @@ private:
     ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(3), SyntaxUsed(syntaxUsed),
     Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
     IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(false),
-    NextInPosition(0), NextInPool(0) {
+    NextInPosition(nullptr), NextInPool(nullptr) {
     ArgsVector Args;
     Args.push_back(Parm1);
     Args.push_back(Parm2);
@@ -275,7 +277,7 @@ private:
       ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(1), SyntaxUsed(syntaxUsed),
       Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
       IsTypeTagForDatatype(true), IsProperty(false), HasParsedType(false),
-      NextInPosition(NULL), NextInPool(NULL) {
+      NextInPosition(nullptr), NextInPool(nullptr) {
     ArgsUnion PVal(ArgKind);
     memcpy(getArgsBuffer(), &PVal, sizeof(ArgsUnion));
     TypeTagForDatatypeData &ExtraData = getTypeTagForDatatypeDataSlot();
@@ -293,7 +295,7 @@ private:
         ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(0), SyntaxUsed(syntaxUsed),
         Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
         IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(true),
-        NextInPosition(0), NextInPool(0) {
+        NextInPosition(nullptr), NextInPool(nullptr) {
     new (&getTypeBuffer()) ParsedType(typeArg);
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
@@ -307,7 +309,7 @@ private:
       ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(0), SyntaxUsed(syntaxUsed),
       Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
       IsTypeTagForDatatype(false), IsProperty(true), HasParsedType(false),
-      NextInPosition(0), NextInPool(0) {
+      NextInPosition(nullptr), NextInPool(nullptr) {
     new (&getPropertyDataBuffer()) PropertyData(getterId, setterId);
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
@@ -453,6 +455,7 @@ public:
   bool hasCustomParsing() const;
   unsigned getMinArgs() const;
   unsigned getMaxArgs() const;
+  bool hasVariadicArg() const;
   bool diagnoseAppertainsTo(class Sema &S, const Decl *D) const;
   bool diagnoseLangOpts(class Sema &S) const;
   bool existsInTarget(const llvm::Triple &T) const;
@@ -546,11 +549,11 @@ class AttributePool {
 
 public:
   /// Create a new pool for a factory.
-  AttributePool(AttributeFactory &factory) : Factory(factory), Head(0) {}
+  AttributePool(AttributeFactory &factory) : Factory(factory), Head(nullptr) {}
 
   /// Move the given pool's allocations to this pool.
   AttributePool(AttributePool &pool) : Factory(pool.Factory), Head(pool.Head) {
-    pool.Head = 0;
+    pool.Head = nullptr;
   }
 
   AttributeFactory &getFactory() const { return Factory; }
@@ -558,7 +561,7 @@ public:
   void clear() {
     if (Head) {
       Factory.reclaimPool(Head);
-      Head = 0;
+      Head = nullptr;
     }
   }
 
@@ -566,7 +569,7 @@ public:
   void takeAllFrom(AttributePool &pool) {
     if (pool.Head) {
       takePool(pool.Head);
-      pool.Head = 0;
+      pool.Head = nullptr;
     }
   }
 
@@ -664,18 +667,18 @@ public:
 class ParsedAttributes {
 public:
   ParsedAttributes(AttributeFactory &factory)
-    : pool(factory), list(0) {
+    : pool(factory), list(nullptr) {
   }
 
   ParsedAttributes(const ParsedAttributes &) LLVM_DELETED_FUNCTION;
 
   AttributePool &getPool() const { return pool; }
 
-  bool empty() const { return list == 0; }
+  bool empty() const { return list == nullptr; }
 
   void add(AttributeList *newAttr) {
     assert(newAttr);
-    assert(newAttr->getNext() == 0);
+    assert(newAttr->getNext() == nullptr);
     newAttr->setNext(list);
     list = newAttr;
   }
@@ -697,11 +700,11 @@ public:
 
   void takeAllFrom(ParsedAttributes &attrs) {
     addAll(attrs.list);
-    attrs.list = 0;
+    attrs.list = nullptr;
     pool.takeAllFrom(attrs.pool);
   }
 
-  void clear() { list = 0; pool.clear(); }
+  void clear() { list = nullptr; pool.clear(); }
   AttributeList *getList() const { return list; }
 
   /// Returns a reference to the attribute list.  Try not to introduce
@@ -824,7 +827,7 @@ enum AttributeDeclKind {
   ExpectedVariableFunctionOrLabel,
   ExpectedFieldOrGlobalVar,
   ExpectedStruct,
-  ExpectedVariableFunctionOrTag,
+  ExpectedVariableOrTypedef,
   ExpectedTLSVar,
   ExpectedVariableOrField,
   ExpectedVariableFieldOrTag,
@@ -838,7 +841,10 @@ enum AttributeDeclKind {
   ExpectedObjCInterfaceDeclInitMethod,
   ExpectedFunctionVariableOrClass,
   ExpectedObjectiveCProtocol,
-  ExpectedFunctionGlobalVarMethodOrProperty
+  ExpectedFunctionGlobalVarMethodOrProperty,
+  ExpectedStructOrTypedef,
+  ExpectedObjectiveCInterfaceOrProtocol,
+  ExpectedKernelFunction
 };
 
 }  // end namespace clang

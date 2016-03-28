@@ -34,8 +34,16 @@ enum
     gcc_ecx_i386,
     gcc_edx_i386,
     gcc_ebx_i386,
-    gcc_ebp_i386, // Warning: these are switched from dwarf values
-    gcc_esp_i386, //
+
+    // on Darwin esp & ebp are reversed in the eh_frame section for i386 (versus dwarf's reg numbering).
+    // To be specific:
+    //    i386+darwin eh_frame:        4 is ebp, 5 is esp
+    //    i386+everyone else eh_frame: 4 is esp, 5 is ebp
+    //    i386 dwarf:                  4 is esp, 5 is ebp
+    // lldb will get the darwin-specific eh_frame reg numberings from debugserver instead of here so we
+    // only encode the 4 == esp, 5 == ebp numbers in this generic header.
+    gcc_esp_i386,
+    gcc_ebp_i386,  
     gcc_esi_i386,
     gcc_edi_i386,
     gcc_eip_i386,
@@ -411,7 +419,7 @@ struct FXSAVE
             uint32_t fiseg;   // FPU IP Selector (fcs)
             uint32_t fooff;   // FPU Operand Pointer Offset (foo)
             uint32_t foseg;   // FPU Operand Pointer Selector (fos)
-        } i386;
+        } i386_;// Added _ in the end to avoid error with gcc defining i386 in some cases
     } ptr;
     uint32_t mxcsr;         // MXCSR Register State
     uint32_t mxcsrmask;     // MXCSR Mask 

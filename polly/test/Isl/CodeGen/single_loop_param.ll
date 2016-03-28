@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly %defaultOpts -polly-ast -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-ast -analyze < %s | FileCheck %s
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
 target triple = "x86_64-pc-linux-gnu"
 
@@ -66,6 +66,6 @@ bb9:                                              ; preds = %bb8, %bb5
 
 declare void @llvm.memset.p0i8.i64(i8* nocapture, i8, i64, i32, i1) nounwind
 
-; CHECK: for (int c1 = 0; c1 < n; c1 += 1)
-; CHECK:   Stmt_bb2(c1);
+; CHECK: for (int c0 = 0; c0 < n; c0 += 1)
+; CHECK:   Stmt_bb2(c0);
 

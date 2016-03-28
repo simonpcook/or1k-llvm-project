@@ -61,7 +61,8 @@ class PropertiesRewriter {
     ObjCIvarDecl *IvarD;
     ObjCPropertyImplDecl *ImplD;
 
-    PropData(ObjCPropertyDecl *propD) : PropD(propD), IvarD(0), ImplD(0) { }
+    PropData(ObjCPropertyDecl *propD)
+      : PropD(propD), IvarD(nullptr), ImplD(nullptr) {}
   };
 
   typedef SmallVector<PropData, 2> PropsTy;
@@ -74,7 +75,7 @@ public:
     : MigrateCtx(MigrateCtx), Pass(MigrateCtx.Pass) { }
 
   static void collectProperties(ObjCContainerDecl *D, AtPropDeclsTy &AtProps,
-                                AtPropDeclsTy *PrevAtProps = 0) {
+                                AtPropDeclsTy *PrevAtProps = nullptr) {
     for (auto *Prop : D->properties()) {
       if (Prop->getAtLoc().isInvalid())
         continue;
@@ -345,14 +346,6 @@ private:
     }
 
     return false;    
-  }
-
-  bool hasAllIvarsBacked(PropsTy &props) const {
-    for (PropsTy::iterator I = props.begin(), E = props.end(); I != E; ++I)
-      if (!isUserDeclared(I->IvarD))
-        return false;
-
-    return true;
   }
 
   // \brief Returns true if all declarations in the @property have GC __weak.

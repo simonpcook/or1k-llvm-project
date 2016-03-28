@@ -507,3 +507,27 @@ namespace PR14995 {
   // expected-note@-12 {{candidate template ignored: substitution failure}}
 } // namespace PR14995
 
+namespace ConversionVersusTemplateOrdering {
+  struct A {
+    operator short() = delete;
+    template <typename T> operator T();
+  } a;
+  struct B {
+    template <typename T> operator T();
+    operator short() = delete;
+  } b;
+  int x = a;
+  int y = b;
+}
+
+namespace NoADLForMemberOnlyOperators {
+  template<typename T> struct A { typename T::error e; }; // expected-error {{type 'char' cannot be used prior to '::'}}
+  template<typename T> struct B { int n; };
+
+  void f(B<A<void> > b1, B<A<int> > b2, B<A<char> > b3) {
+    b1 = b1; // ok, does not instantiate A<void>.
+    (void)b1->n; // expected-error {{is not a pointer}}
+    b2[3]; // expected-error {{does not provide a subscript}}
+    b3 / 0; // expected-note {{in instantiation of}} expected-error {{invalid operands to}}
+  }
+}

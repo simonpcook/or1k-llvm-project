@@ -120,7 +120,8 @@ CXType cxtype::MakeCXType(QualType T, CXTranslationUnit TU) {
   if (TK == CXType_Invalid)
     TK = GetTypeKind(T);
 
-  CXType CT = { TK, { TK == CXType_Invalid ? 0 : T.getAsOpaquePtr(), TU }};
+  CXType CT = { TK, { TK == CXType_Invalid ? nullptr
+                                           : T.getAsOpaquePtr(), TU } };
   return CT;
 }
 
@@ -386,7 +387,7 @@ CXCursor clang_getTypeDeclaration(CXType CT) {
   if (!TP)
     return cxcursor::MakeCXCursorInvalid(CXCursor_NoDeclFound);
 
-  Decl *D = 0;
+  Decl *D = nullptr;
 
 try_again:
   switch (TP->getTypeClass()) {
@@ -432,7 +433,7 @@ try_again:
 }
 
 CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
-  const char *s = 0;
+  const char *s = nullptr;
 #define TKIND(X) case CXType_##X: s = ""  #X  ""; break
   switch (K) {
     TKIND(Invalid);
@@ -519,6 +520,7 @@ CXCallingConv clang_getFunctionTypeCallingConv(CXType X) {
       TCALLINGCONV(X86FastCall);
       TCALLINGCONV(X86ThisCall);
       TCALLINGCONV(X86Pascal);
+      TCALLINGCONV(X86VectorCall);
       TCALLINGCONV(X86_64Win64);
       TCALLINGCONV(X86_64SysV);
       TCALLINGCONV(AAPCS);
@@ -854,7 +856,7 @@ CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
     if (Ctx.getObjCEncodingForMethodDecl(OMD, encoding))
       return cxstring::createRef("?");
   } else if (const ObjCPropertyDecl *OPD = dyn_cast<ObjCPropertyDecl>(D))
-    Ctx.getObjCEncodingForPropertyDecl(OPD, NULL, encoding);
+    Ctx.getObjCEncodingForPropertyDecl(OPD, nullptr, encoding);
   else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
     Ctx.getObjCEncodingForFunctionDecl(FD, encoding);
   else {

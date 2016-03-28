@@ -18,17 +18,18 @@ This test serves two purposes:
 
 The list of warnings below should NEVER grow.  It should gradually shrink to 0.
 
-CHECK: Warnings without flags (106):
-CHECK-NEXT:   ext_delete_void_ptr_operand
+CHECK: Warnings without flags (96):
+CHECK-NEXT:   ext_excess_initializers
+CHECK-NEXT:   ext_excess_initializers_in_char_array_initializer
 CHECK-NEXT:   ext_expected_semi_decl_list
 CHECK-NEXT:   ext_explicit_specialization_storage_class
 CHECK-NEXT:   ext_implicit_lib_function_decl
+CHECK-NEXT:   ext_initializer_string_for_char_array_too_long
 CHECK-NEXT:   ext_many_braces_around_scalar_init
 CHECK-NEXT:   ext_missing_declspec
 CHECK-NEXT:   ext_missing_whitespace_after_macro_name
 CHECK-NEXT:   ext_new_paren_array_nonconst
 CHECK-NEXT:   ext_plain_complex
-CHECK-NEXT:   ext_pp_macro_redef
 CHECK-NEXT:   ext_template_arg_extra_parens
 CHECK-NEXT:   ext_typecheck_comparison_of_pointer_integer
 CHECK-NEXT:   ext_typecheck_cond_incompatible_operands
@@ -46,6 +47,7 @@ CHECK-NEXT:   pp_pragma_sysheader_in_main_file
 CHECK-NEXT:   w_asm_qualifier_ignored
 CHECK-NEXT:   warn_accessor_property_type_mismatch
 CHECK-NEXT:   warn_anon_bitfield_width_exceeds_type_size
+CHECK-NEXT:   warn_arcmt_nsalloc_realloc
 CHECK-NEXT:   warn_asm_label_on_auto_decl
 CHECK-NEXT:   warn_bitfield_width_exceeds_type_size
 CHECK-NEXT:   warn_braces_around_scalar_init
@@ -69,8 +71,6 @@ CHECK-NEXT:   warn_dup_category_def
 CHECK-NEXT:   warn_duplicate_protocol_def
 CHECK-NEXT:   warn_enum_value_overflow
 CHECK-NEXT:   warn_exception_caught_by_earlier_handler
-CHECK-NEXT:   warn_excess_initializers
-CHECK-NEXT:   warn_excess_initializers_in_char_array_initializer
 CHECK-NEXT:   warn_expected_qualified_after_typename
 CHECK-NEXT:   warn_extraneous_char_constant
 CHECK-NEXT:   warn_fe_cc_log_diagnostics_failure
@@ -80,24 +80,20 @@ CHECK-NEXT:   warn_file_asm_volatile
 CHECK-NEXT:   warn_ignoring_ftabstop_value
 CHECK-NEXT:   warn_implements_nscopying
 CHECK-NEXT:   warn_incompatible_qualified_id
-CHECK-NEXT:   warn_initializer_string_for_char_array_too_long
 CHECK-NEXT:   warn_inline_namespace_reopened_noninline
 CHECK-NEXT:   warn_invalid_asm_cast_lvalue
 CHECK-NEXT:   warn_maynot_respond
 CHECK-NEXT:   warn_method_param_redefinition
-CHECK-NEXT:   warn_mismatched_exception_spec
 CHECK-NEXT:   warn_missing_case_for_condition
 CHECK-NEXT:   warn_missing_dependent_template_keyword
 CHECK-NEXT:   warn_missing_exception_specification
 CHECK-NEXT:   warn_missing_whitespace_after_macro_name
 CHECK-NEXT:   warn_mt_message
-CHECK-NEXT:   warn_multiple_method_decl
 CHECK-NEXT:   warn_no_constructor_for_refconst
 CHECK-NEXT:   warn_not_compound_assign
 CHECK-NEXT:   warn_objc_property_copy_missing_on_block
 CHECK-NEXT:   warn_objc_protocol_qualifier_missing_id
 CHECK-NEXT:   warn_on_superclass_use
-CHECK-NEXT:   warn_param_default_argument_redefinition
 CHECK-NEXT:   warn_partial_specs_not_deducible
 CHECK-NEXT:   warn_pp_convert_lhs_to_positive
 CHECK-NEXT:   warn_pp_convert_rhs_to_positive
@@ -105,16 +101,10 @@ CHECK-NEXT:   warn_pp_expr_overflow
 CHECK-NEXT:   warn_pp_line_decimal
 CHECK-NEXT:   warn_pragma_pack_pop_identifer_and_alignment
 CHECK-NEXT:   warn_pragma_pack_show
-CHECK-NEXT:   warn_property_attr_mismatch
-CHECK-NEXT:   warn_property_attribute
 CHECK-NEXT:   warn_property_getter_owning_mismatch
-CHECK-NEXT:   warn_property_types_are_incompatible
-CHECK-NEXT:   warn_readonly_property
-CHECK-NEXT:   warn_redeclaration_without_attribute_prev_attribute_ignored
 CHECK-NEXT:   warn_register_objc_catch_parm
 CHECK-NEXT:   warn_related_result_type_compatibility_class
 CHECK-NEXT:   warn_related_result_type_compatibility_protocol
-CHECK-NEXT:   warn_static_non_static
 CHECK-NEXT:   warn_template_export_unsupported
 CHECK-NEXT:   warn_template_spec_extra_headers
 CHECK-NEXT:   warn_tentative_incomplete_array

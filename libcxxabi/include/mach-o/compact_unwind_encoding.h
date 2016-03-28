@@ -133,6 +133,10 @@ enum {
 //    linker in final linked images which have only dwarf unwind info for a
 //    function.
 //
+// The permutation encoding is a Lehmer code sequence encoded into a
+// single variable-base number so we can encode the ordering of up to
+// six registers in a 10-bit space.
+//
 // The following is the algorithm used to create the permutation encoding used
 // with frameless stacks.  It is passed the number of registers to be saved and
 // an array of the register numbers saved.
@@ -234,7 +238,7 @@ enum {
 //    EPB value, then RBP is restored by popping off the stack, and the return 
 //    is done by popping the stack once more into the pc.
 //    All non-volatile registers that need to be restored must have been saved
-//    in a small range in the stack that starts RBP-8 to RBP-1020.  The offset/4 
+//    in a small range in the stack that starts RBP-8 to RBP-2040.  The offset/8 
 //    is encoded in the UNWIND_X86_64_RBP_FRAME_OFFSET bits.  The registers saved
 //    are encoded in the UNWIND_X86_64_RBP_FRAME_REGISTERS bits as five 3-bit entries.
 //    Each entry contains which register to restore.  
@@ -244,8 +248,8 @@ enum {
 //    unwind encoding) is added to the RSP. Then the return is done by 
 //    popping the stack into the pc.
 //    All non-volatile registers that need to be restored must have been saved
-//    on the stack immediately after the return address.  The stack_size/4 is
-//    encoded in the UNWIND_X86_64_FRAMELESS_STACK_SIZE (max stack size is 1024).
+//    on the stack immediately after the return address.  The stack_size/8 is
+//    encoded in the UNWIND_X86_64_FRAMELESS_STACK_SIZE (max stack size is 2048).
 //    The number of registers saved is encoded in UNWIND_X86_64_FRAMELESS_STACK_REG_COUNT.
 //    UNWIND_X86_64_FRAMELESS_STACK_REG_PERMUTATION constains which registers were
 //    saved and their order.  
@@ -271,7 +275,7 @@ enum {
 // 1-bit: has lsda
 // 2-bit: personality index
 //
-// 4-bits: 4=frame-based, 2=frameless, 3=dwarf
+// 4-bits: 4=frame-based, 3=dwarf, 2=frameless
 //  frameless:
 //        12-bits of stack size
 //  frame-based:
@@ -295,15 +299,6 @@ enum {
     UNWIND_ARM64_FRAME_D10_D11_PAIR            = 0x00000200,
     UNWIND_ARM64_FRAME_D12_D13_PAIR            = 0x00000400,
     UNWIND_ARM64_FRAME_D14_D15_PAIR            = 0x00000800,
-
-    UNWIND_ARM64_FRAME_X21_X22_PAIR_OLD        = 0x00000001,
-    UNWIND_ARM64_FRAME_X23_X24_PAIR_OLD        = 0x00000002,
-    UNWIND_ARM64_FRAME_X25_X26_PAIR_OLD        = 0x00000004,
-    UNWIND_ARM64_FRAME_X27_X28_PAIR_OLD        = 0x00000008,
-    UNWIND_ARM64_FRAME_D8_D9_PAIR_OLD          = 0x00000010,
-    UNWIND_ARM64_FRAME_D10_D11_PAIR_OLD        = 0x00000020,
-    UNWIND_ARM64_FRAME_D12_D13_PAIR_OLD        = 0x00000040,
-    UNWIND_ARM64_FRAME_D14_D15_PAIR_OLD        = 0x00000080,
 
     UNWIND_ARM64_FRAMELESS_STACK_SIZE_MASK     = 0x00FFF000,
     UNWIND_ARM64_DWARF_SECTION_OFFSET          = 0x00FFFFFF,
@@ -422,7 +417,7 @@ struct unwind_info_section_header
     uint32_t    indexSectionOffset;
     uint32_t    indexCount;
     // compact_unwind_encoding_t[]
-    // uintptr_t personalities[]
+    // uint32_t personalities[]
     // unwind_info_section_header_index_entry[]
     // unwind_info_section_header_lsda_index_entry[]
 };

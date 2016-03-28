@@ -118,12 +118,15 @@
 // Make sure -pie is passed to along to ld and that the right *crt* files
 // are linked in.
 // RUN: %clang %s -target i386-unknown-freebsd -fPIE -pie -### \
+// RUN: --gcc-toolchain="" \
 // RUN: --sysroot=%S/Inputs/basic_freebsd_tree 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE-LD
 // RUN: %clang %s -target i386-linux-gnu -fPIE -pie -### \
+// RUN: --gcc-toolchain="" \
 // RUN: --sysroot=%S/Inputs/basic_linux_tree 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE-LD
 // RUN: %clang %s -target i386-linux-gnu -fPIC -pie -### \
+// RUN: --gcc-toolchain="" \
 // RUN: --sysroot=%S/Inputs/basic_linux_tree 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE-LD
 //
@@ -195,13 +198,25 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target armv7-apple-ios -mkernel -miphoneos-version-min=6.0.0 -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN: %clang -c %s -target arm64-apple-ios -mkernel -miphoneos-version-min=7.0.0 -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target armv7-apple-ios -fapple-kext -miphoneos-version-min=5.0.0 -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
 // RUN: %clang -c %s -target armv7-apple-ios -fapple-kext -miphoneos-version-min=6.0.0 -static -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
 //
 // On OpenBSD, PIE is enabled by default, but can be disabled.
+// RUN: %clang -c %s -target amd64-pc-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
 // RUN: %clang -c %s -target i386-pc-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
+// RUN: %clang -c %s -target mips64-unknown-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
+// RUN: %clang -c %s -target mips64el-unknown-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
+// RUN: %clang -c %s -target powerpc-unknown-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE2
+// RUN: %clang -c %s -target sparc64-unknown-openbsd -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE2
 // RUN: %clang -c %s -target i386-pc-openbsd -fno-pie -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
@@ -216,4 +231,8 @@
 // RUN: %clang -c %s -target arm-linux-androideabi -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
 // RUN: %clang -c %s -target mipsel-linux-android -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
+// RUN: %clang -c %s -target aarch64-linux-android -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
+// RUN: %clang -c %s -target arm64-linux-android -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC1

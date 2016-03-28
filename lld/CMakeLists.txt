@@ -17,69 +17,52 @@ else()
   endif()
 endif()
 
-if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(lld)
-
-  set(LLD_PATH_TO_LLVM_SOURCE "" CACHE PATH
-    "Path to LLVM source code. Not necessary if using an installed LLVM.")
-  set(LLD_PATH_TO_LLVM_BUILD "" CACHE PATH
-    "Path to the directory where LLVM was built or installed.")
-
-  if (LLD_PATH_TO_LLVM_SOURCE)
-    if (NOT EXISTS "${LLD_PATH_TO_LLVM_SOURCE}/cmake/config-ix.cmake")
-      message(FATAL_ERROR "Please set LLD_PATH_TO_LLVM_SOURCE to the root "
-              "directory of LLVM source code.")
-    else()
-      get_filename_component(LLVM_MAIN_SRC_DIR ${LLD_PATH_TO_LLVM_SOURCE}
-                             ABSOLUTE)
-      list(APPEND CMAKE_MODULE_PATH "${LLVM_MAIN_SRC_DIR}/cmake/modules")
-    endif()
-  endif()
-
-  list(APPEND CMAKE_MODULE_PATH "${LLD_PATH_TO_LLVM_BUILD}/share/llvm/cmake")
-
-  get_filename_component(PATH_TO_LLVM_BUILD ${LLD_PATH_TO_LLVM_BUILD}
-                         ABSOLUTE)
-
-  option(LLVM_INSTALL_TOOLCHAIN_ONLY
-    "Only include toolchain files in the 'install' target." OFF)
-
-  include(AddLLVM)
-  include(TableGen)
-  include("${LLD_PATH_TO_LLVM_BUILD}/share/llvm/cmake/LLVMConfig.cmake")
-  include(HandleLLVMOptions)
-
-  set(PACKAGE_VERSION "${LLVM_PACKAGE_VERSION}")
-
-  set(LLVM_MAIN_INCLUDE_DIR "${LLVM_MAIN_SRC_DIR}/include")
-  set(LLVM_BINARY_DIR ${CMAKE_BINARY_DIR})
-
-  set(CMAKE_INCLUDE_CURRENT_DIR ON)
-  include_directories("${PATH_TO_LLVM_BUILD}/include"
-                      "${LLVM_MAIN_INCLUDE_DIR}")
-  link_directories("${PATH_TO_LLVM_BUILD}/lib")
-
-  if (EXISTS "${LLD_PATH_TO_LLVM_BUILD}/bin/llvm-config${CMAKE_EXECUTABLE_SUFFIX}")
-    set (PATH_TO_LLVM_CONFIG "${LLD_PATH_TO_LLVM_BUILD}/bin/llvm-config${CMAKE_EXECUTABLE_SUFFIX}")
-  elseif (EXISTS "${LLD_PATH_TO_LLVM_BUILD}/bin/Debug/llvm-config${CMAKE_EXECUTABLE_SUFFIX}")
-    # FIXME: This is an utter hack.
-    set (PATH_TO_LLVM_CONFIG "${LLD_PATH_TO_LLVM_BUILD}/bin/Debug/llvm-config${CMAKE_EXECUTABLE_SUFFIX}")
-  else()
-    message(FATAL_ERROR "Please set LLD_PATH_TO_LLVM_BUILD to a directory containing a LLVM build.")
-  endif()
-
-  exec_program("${PATH_TO_LLVM_CONFIG} --bindir" OUTPUT_VARIABLE LLVM_BINARY_DIR)
-  set(LLVM_TABLEGEN_EXE "${LLVM_BINARY_DIR}/llvm-tblgen${CMAKE_EXECUTABLE_SUFFIX}")
-
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-
-  set(LLD_BUILT_STANDALONE 1)
-endif()
 
 set(LLD_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(LLD_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+
+# Compute the LLD version from the LLVM version.
+string(REGEX MATCH "[0-9]+\\.[0-9]+(\\.[0-9]+)?" LLD_VERSION
+  ${PACKAGE_VERSION})
+message(STATUS "LLD version: ${LLD_VERSION}")
+
+string(REGEX REPLACE "([0-9]+)\\.[0-9]+(\\.[0-9]+)?" "\\1" LLD_VERSION_MAJOR
+  ${LLD_VERSION})
+string(REGEX REPLACE "[0-9]+\\.([0-9]+)(\\.[0-9]+)?" "\\1" LLD_VERSION_MINOR
+  ${LLD_VERSION})
+
+# Determine LLD revision and repository.
+# TODO: Figure out a way to get the revision and the repository on windows.
+if ( NOT CMAKE_SYSTEM_NAME MATCHES "Windows" )
+  execute_process(COMMAND ${CMAKE_SOURCE_DIR}/utils/GetSourceVersion ${LLD_SOURCE_DIR}
+                  OUTPUT_VARIABLE LLD_REVISION)
+
+  execute_process(COMMAND ${CMAKE_SOURCE_DIR}/utils/GetRepositoryPath ${LLD_SOURCE_DIR}
+                  OUTPUT_VARIABLE LLD_REPOSITORY)
+  if ( LLD_REPOSITORY )
+    # Replace newline characters with spaces
+    string(REGEX REPLACE "(\r?\n)+" " " LLD_REPOSITORY ${LLD_REPOSITORY})
+    # Remove leading spaces
+    STRING(REGEX REPLACE "^[ \t\r\n]+" "" LLD_REPOSITORY "${LLD_REPOSITORY}" )
+    # Remove trailing spaces
+    string(REGEX REPLACE "(\ )+$" "" LLD_REPOSITORY ${LLD_REPOSITORY})
+  endif()
+
+  if ( LLD_REVISION )
+    # Replace newline characters with spaces
+    string(REGEX REPLACE "(\r?\n)+" " " LLD_REVISION ${LLD_REVISION})
+    # Remove leading spaces
+    STRING(REGEX REPLACE "^[ \t\r\n]+" "" LLD_REVISION "${LLD_REVISION}" )
+    # Remove trailing spaces
+    string(REGEX REPLACE "(\ )+$" "" LLD_REVISION ${LLD_REVISION})
+  endif()
+endif ()
+
+# Configure the Version.inc file.
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/lld/Config/Version.inc.in
+  ${CMAKE_CURRENT_BINARY_DIR}/include/lld/Config/Version.inc)
+
 
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
   message(FATAL_ERROR "In-source builds are not allowed. CMake would overwrite "
@@ -116,6 +99,10 @@ if (NOT MSVC)
 elseif (MSVC_VERSION LESS 1700)
   message(FATAL_ERROR "The selected compiler does not support c++11 which is "
           "required to build lld.")
+endif()
+
+if (MSVC)
+  add_definitions(-wd4530) # Suppress 'warning C4530: C++ exception handler used, but unwind semantics are not enabled.'
 endif()
 
 macro(add_lld_library name)
@@ -177,6 +164,8 @@ add_subdirectory(utils)
 
 add_subdirectory(test)
 
-if (LLVM_INCLUDE_TESTS AND NOT LLD_BUILT_STANDALONE)
+if (LLVM_INCLUDE_TESTS)
   add_subdirectory(unittests)
 endif()
+
+add_subdirectory(docs)

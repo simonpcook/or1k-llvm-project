@@ -106,7 +106,7 @@ struct HeaderFileInfo {
       External(false), isModuleHeader(false), isCompilingModuleHeader(false),
       HeaderRole(ModuleMap::NormalHeader),
       Resolved(false), IndexHeaderMapHeader(false), IsValid(0),
-      NumIncludes(0), ControllingMacroID(0), ControllingMacro(0)  {}
+      NumIncludes(0), ControllingMacroID(0), ControllingMacro(nullptr)  {}
 
   /// \brief Retrieve the controlling macro for this header file, if
   /// any.
@@ -203,6 +203,11 @@ class HeaderSearch {
 
     /// Default constructor -- Initialize all members with zero.
     LookupFileCacheInfo(): StartIdx(0), HitIdx(0), MappedName(nullptr) {}
+
+    void reset(unsigned StartIdx) {
+      this->StartIdx = StartIdx;
+      this->MappedName = nullptr;
+    }
   };
   llvm::StringMap<LookupFileCacheInfo, llvm::BumpPtrAllocator> LookupFileCache;
 
@@ -226,7 +231,11 @@ class HeaderSearch {
   
   /// \brief Describes whether a given directory has a module map in it.
   llvm::DenseMap<const DirectoryEntry *, bool> DirectoryHasModuleMap;
-  
+
+  /// \brief Set of module map files we've already loaded, and a flag indicating
+  /// whether they were valid or not.
+  llvm::DenseMap<const FileEntry *, bool> LoadedModuleMaps;
+
   /// \brief Uniqued set of framework names, which is used to track which 
   /// headers were included as framework headers.
   llvm::StringSet<llvm::BumpPtrAllocator> FrameworkNames;
@@ -243,7 +252,7 @@ class HeaderSearch {
   unsigned NumMultiIncludeFileOptzn;
   unsigned NumFrameworkLookups, NumSubFrameworkLookups;
 
-  bool EnabledModules;
+  const LangOptions &LangOpts;
 
   // HeaderSearch doesn't support default or copy construction.
   HeaderSearch(const HeaderSearch&) LLVM_DELETED_FUNCTION;
@@ -379,14 +388,12 @@ public:
   /// \param SuggestedModule If non-null, and the file found is semantically
   /// part of a known module, this will be set to the module that should
   /// be imported instead of preprocessing/parsing the file found.
-  const FileEntry *LookupFile(StringRef Filename, SourceLocation IncludeLoc,
-                              bool isAngled, const DirectoryLookup *FromDir,
-                              const DirectoryLookup *&CurDir,
-                              ArrayRef<const FileEntry *> Includers,
-                              SmallVectorImpl<char> *SearchPath,
-                              SmallVectorImpl<char> *RelativePath,
-                              ModuleMap::KnownHeader *SuggestedModule,
-                              bool SkipCache = false);
+  const FileEntry *LookupFile(
+      StringRef Filename, SourceLocation IncludeLoc, bool isAngled,
+      const DirectoryLookup *FromDir, const DirectoryLookup *&CurDir,
+      ArrayRef<std::pair<const FileEntry *, const DirectoryEntry *>> Includers,
+      SmallVectorImpl<char> *SearchPath, SmallVectorImpl<char> *RelativePath,
+      ModuleMap::KnownHeader *SuggestedModule, bool SkipCache = false);
 
   /// \brief Look up a subframework for the specified \#include file.
   ///
@@ -404,7 +411,7 @@ public:
   /// \brief Look up the specified framework name in our framework cache.
   /// \returns The DirectoryEntry it is in if we know, null otherwise.
   FrameworkCacheEntry &LookupFrameworkCache(StringRef FWName) {
-    return FrameworkMap.GetOrCreateValue(FWName).getValue();
+    return FrameworkMap[FWName];
   }
 
   /// \brief Mark the specified file as a target of of a \#include,
@@ -472,7 +479,7 @@ public:
   const HeaderMap *CreateHeaderMap(const FileEntry *FE);
 
   /// Returns true if modules are enabled.
-  bool enabledModules() const { return EnabledModules; }
+  bool enabledModules() const { return LangOpts.Modules; }
 
   /// \brief Retrieve the name of the module file that should be used to 
   /// load the given module.
@@ -488,9 +495,12 @@ public:
   ///
   /// \param ModuleName The module whose module file name will be returned.
   ///
+  /// \param ModuleMapPath A path that when combined with \c ModuleName
+  /// uniquely identifies this module. See Module::ModuleMap.
+  ///
   /// \returns The name of the module file that corresponds to this module,
   /// or an empty string if this module does not correspond to any module file.
-  std::string getModuleFileName(StringRef ModuleName);
+  std::string getModuleFileName(StringRef ModuleName, StringRef ModuleMapPath);
 
   /// \brief Lookup a module Search for a module with the given name.
   ///
@@ -502,7 +512,6 @@ public:
   ///
   /// \returns The module with the given name.
   Module *lookupModule(StringRef ModuleName, bool AllowSearch = true);
-
 
   /// \brief Try to find a module map file in the given directory, returning
   /// \c nullptr if none is found.
@@ -631,7 +640,8 @@ private:
   };
 
   LoadModuleMapResult loadModuleMapFileImpl(const FileEntry *File,
-                                            bool IsSystem);
+                                            bool IsSystem,
+                                            const DirectoryEntry *Dir);
 
   /// \brief Try to load the module map file in the given directory.
   ///

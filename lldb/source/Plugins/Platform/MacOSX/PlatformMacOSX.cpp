@@ -10,12 +10,6 @@
 #include "PlatformMacOSX.h"
 #include "lldb/Host/Config.h"
 
-// C Includes
-#ifndef LLDB_DISABLE_POSIX
-#include <sys/stat.h>
-#include <sys/sysctl.h>
-#endif
-
 // C++ Includes
 
 #include <sstream>
@@ -31,7 +25,9 @@
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/StreamString.h"
 #include "lldb/Host/FileSpec.h"
+#include "lldb/Host/FileSystem.h"
 #include "lldb/Host/Host.h"
+#include "lldb/Host/HostInfo.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
@@ -48,8 +44,8 @@ PlatformMacOSX::Initialize ()
     {
 #if defined (__APPLE__)
         PlatformSP default_platform_sp (new PlatformMacOSX(true));
-        default_platform_sp->SetSystemArchitecture (Host::GetArchitecture());
-        Platform::SetDefaultPlatform (default_platform_sp);
+        default_platform_sp->SetSystemArchitecture(HostInfo::GetArchitecture());
+        Platform::SetHostPlatform (default_platform_sp);
 #endif        
         PluginManager::RegisterPlugin (PlatformMacOSX::GetPluginNameStatic(false),
                                        PlatformMacOSX::GetDescriptionStatic(false),
@@ -70,7 +66,7 @@ PlatformMacOSX::Terminate ()
     }
 }
 
-Platform* 
+PlatformSP
 PlatformMacOSX::CreateInstance (bool force, const ArchSpec *arch)
 {
     // The only time we create an instance is when we are creating a remote
@@ -89,7 +85,7 @@ PlatformMacOSX::CreateInstance (bool force, const ArchSpec *arch)
                 
 #if defined(__APPLE__)
             // Only accept "unknown" for vendor if the host is Apple and
-            // it "unknown" wasn't specified (it was just returned becasue it
+            // it "unknown" wasn't specified (it was just returned because it
             // was NOT specified)
             case llvm::Triple::UnknownArch:
                 create = !arch->TripleVendorWasSpecified();
@@ -108,7 +104,7 @@ PlatformMacOSX::CreateInstance (bool force, const ArchSpec *arch)
                     break;
 #if defined(__APPLE__)
                 // Only accept "vendor" for vendor if the host is Apple and
-                // it "unknown" wasn't specified (it was just returned becasue it
+                // it "unknown" wasn't specified (it was just returned because it
                 // was NOT specified)
                 case llvm::Triple::UnknownOS:
                     create = !arch->TripleOSWasSpecified();
@@ -121,8 +117,8 @@ PlatformMacOSX::CreateInstance (bool force, const ArchSpec *arch)
         }
     }
     if (create)
-        return new PlatformMacOSX (is_host);
-    return NULL;
+        return PlatformSP(new PlatformMacOSX (is_host));
+    return PlatformSP();
 }
 
 lldb_private::ConstString
@@ -182,7 +178,7 @@ PlatformMacOSX::GetSDKDirectory (lldb_private::Target &target)
             uint32_t versions[2];
             if (objfile->GetSDKVersion(versions, sizeof(versions)))
             {
-                if (Host::GetLLDBPath (ePathTypeLLDBShlibDir, fspec))
+                if (HostInfo::GetLLDBPath(ePathTypeLLDBShlibDir, fspec))
                 {
                     std::string path;
                     xcode_contents_path = fspec.GetPath();
@@ -266,7 +262,9 @@ PlatformMacOSX::GetFileWithUUID (const lldb_private::FileSpec &platform_file,
     if (IsRemote() && m_remote_platform_sp)
     {
         std::string local_os_build;
-        Host::GetOSBuildString(local_os_build);
+#if !defined(__linux__)
+        HostInfo::GetOSBuildString(local_os_build);
+#endif
         std::string remote_os_build;
         m_remote_platform_sp->GetOSBuildString(remote_os_build);
         if (local_os_build.compare(remote_os_build) == 0)
@@ -290,7 +288,8 @@ PlatformMacOSX::GetFileWithUUID (const lldb_private::FileSpec &platform_file,
             // bring in the remote module file
             FileSpec module_cache_folder = module_cache_spec.CopyByRemovingLastPathComponent();
             // try to make the local directory first
-            Error err = Host::MakeDirectory(module_cache_folder.GetPath().c_str(), eFilePermissionsDirectoryDefault);
+            Error err =
+                FileSystem::MakeDirectory(module_cache_folder.GetPath().c_str(), eFilePermissionsDirectoryDefault);
             if (err.Fail())
                 return err;
             err = GetFile(platform_file, module_cache_spec);
@@ -312,7 +311,7 @@ PlatformMacOSX::GetFileWithUUID (const lldb_private::FileSpec &platform_file,
 bool
 PlatformMacOSX::GetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &arch)
 {
-#if defined (__arm__)
+#if defined (__arm__) || defined (__arm64__) || defined (__aarch64__)
     return ARMGetSupportedArchitectureAtIndex (idx, arch);
 #else
     return x86GetSupportedArchitectureAtIndex (idx, arch);

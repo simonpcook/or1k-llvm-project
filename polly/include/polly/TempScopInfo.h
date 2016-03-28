@@ -29,21 +29,21 @@ using namespace llvm;
 
 namespace polly {
 
+extern bool PollyDelinearize;
+
 //===---------------------------------------------------------------------===//
 /// @brief A memory access described by a SCEV expression and the access type.
 class IRAccess {
 public:
-  const Value *BaseAddress;
+  Value *BaseAddress;
 
   const SCEV *Offset;
 
   // The type of the scev affine function
   enum TypeKind {
     READ = 0x1,
-    WRITE = 0x2,
-    SCALAR = 0x4,
-    SCALARREAD = SCALAR | READ,
-    SCALARWRITE = SCALAR | WRITE
+    MUST_WRITE = 0x2,
+    MAY_WRITE = 0x3,
   };
 
 private:
@@ -52,14 +52,18 @@ private:
   bool IsAffine;
 
 public:
-  explicit IRAccess(TypeKind Type, const Value *BaseAddress, const SCEV *Offset,
-                    unsigned elemBytes, bool Affine)
+  SmallVector<const SCEV *, 4> Subscripts, Sizes;
+
+  explicit IRAccess(TypeKind Type, Value *BaseAddress, const SCEV *Offset,
+                    unsigned elemBytes, bool Affine,
+                    SmallVector<const SCEV *, 4> Subscripts,
+                    SmallVector<const SCEV *, 4> Sizes)
       : BaseAddress(BaseAddress), Offset(Offset), ElemBytes(elemBytes),
-        Type(Type), IsAffine(Affine) {}
+        Type(Type), IsAffine(Affine), Subscripts(Subscripts), Sizes(Sizes) {}
 
   enum TypeKind getType() const { return Type; }
 
-  const Value *getBase() const { return BaseAddress; }
+  Value *getBase() const { return BaseAddress; }
 
   const SCEV *getOffset() const { return Offset; }
 
@@ -67,11 +71,13 @@ public:
 
   bool isAffine() const { return IsAffine; }
 
-  bool isRead() const { return Type & READ; }
+  bool isRead() const { return Type == READ; }
 
-  bool isWrite() const { return Type & WRITE; }
+  bool isWrite() const { return Type == MUST_WRITE; }
 
-  bool isScalar() const { return Type & SCALAR; }
+  bool isMayWrite() const { return Type == MAY_WRITE; }
+
+  bool isScalar() const { return Subscripts.size() == 0; }
 
   void print(raw_ostream &OS) const;
 };
@@ -121,11 +127,7 @@ class TempScop {
   // The Region.
   Region &R;
 
-  // The max loop depth of this Scop
-  unsigned MaxLoopDepth;
-
   // Remember the bounds of loops, to help us build iteration domain of BBs.
-  const LoopBoundMapType &LoopBounds;
   const BBCondMapType &BBConds;
 
   // Access function of bbs.
@@ -133,10 +135,9 @@ class TempScop {
 
   friend class TempScopInfo;
 
-  explicit TempScop(Region &r, LoopBoundMapType &loopBounds,
-                    BBCondMapType &BBCmps, AccFuncMapType &accFuncMap)
-      : R(r), MaxLoopDepth(0), LoopBounds(loopBounds), BBConds(BBCmps),
-        AccFuncMap(accFuncMap) {}
+  explicit TempScop(Region &r, BBCondMapType &BBCmps,
+                    AccFuncMapType &accFuncMap)
+      : R(r), BBConds(BBCmps), AccFuncMap(accFuncMap) {}
 
 public:
   ~TempScop();
@@ -145,23 +146,6 @@ public:
   ///
   /// @return The maximum Region contained by this Scop.
   Region &getMaxRegion() const { return R; }
-
-  /// @brief Get the maximum loop depth of Region R.
-  ///
-  /// @return The maximum loop depth of Region R.
-  unsigned getMaxLoopDepth() const { return MaxLoopDepth; }
-
-  /// @brief Get the loop bounds of the given loop.
-  ///
-  /// @param L The loop to get the bounds.
-  ///
-  /// @return The bounds of the loop L in { Lower bound, Upper bound } form.
-  ///
-  const SCEV *getLoopBound(const Loop *L) const {
-    LoopBoundMapType::const_iterator at = LoopBounds.find(L);
-    assert(at != LoopBounds.end() && "Bound for loop not available!");
-    return at->second;
-  }
 
   /// @brief Get the condition from entry block of the Scop to a BasicBlock
   ///
@@ -232,9 +216,6 @@ class TempScopInfo : public FunctionPass {
   // Target data for element size computing.
   const DataLayout *TD;
 
-  // Remember the bounds of loops, to help us build iteration domain of BBs.
-  LoopBoundMapType LoopBounds;
-
   // And also Remember the constrains for BBs
   BBCondMapType BBConds;
 
@@ -290,8 +271,6 @@ class TempScopInfo : public FunctionPass {
   bool buildScalarDependences(Instruction *Inst, Region *R);
 
   void buildAccessFunctions(Region &RefRegion, BasicBlock &BB);
-
-  void buildLoopBounds(TempScop &Scop);
 
 public:
   static char ID;

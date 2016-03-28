@@ -154,7 +154,6 @@
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
-#include "llvm/Config/config.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/OptTable.h"
@@ -216,9 +215,10 @@ std::string CommandLine;
 
 // Read the header list file and collect the header file names and
 // optional dependencies.
-error_code getHeaderFileNames(SmallVectorImpl<std::string> &HeaderFileNames,
-                              DependencyMap &Dependencies,
-                              StringRef ListFileName, StringRef HeaderPrefix) {
+std::error_code
+getHeaderFileNames(SmallVectorImpl<std::string> &HeaderFileNames,
+                   DependencyMap &Dependencies, StringRef ListFileName,
+                   StringRef HeaderPrefix) {
   // By default, use the path component of the list file name.
   SmallString<256> HeaderDirectory(ListFileName);
   sys::path::remove_filename(HeaderDirectory);
@@ -230,14 +230,14 @@ error_code getHeaderFileNames(SmallVectorImpl<std::string> &HeaderFileNames,
     HeaderDirectory = HeaderPrefix;
 
   // Read the header list file into a buffer.
-  std::unique_ptr<MemoryBuffer> listBuffer;
-  if (error_code ec = MemoryBuffer::getFile(ListFileName, listBuffer)) {
-    return ec;
-  }
+  ErrorOr<std::unique_ptr<MemoryBuffer>> listBuffer =
+      MemoryBuffer::getFile(ListFileName);
+  if (std::error_code EC = listBuffer.getError())
+    return EC;
 
   // Parse the header list into strings.
   SmallVector<StringRef, 32> Strings;
-  listBuffer->getBuffer().split(Strings, "\n", -1, false);
+  listBuffer.get()->getBuffer().split(Strings, "\n", -1, false);
 
   // Collect the header file names from the string list.
   for (SmallVectorImpl<StringRef>::iterator I = Strings.begin(),
@@ -284,7 +284,7 @@ error_code getHeaderFileNames(SmallVectorImpl<std::string> &HeaderFileNames,
     Dependencies[HeaderFileName.str()] = Dependents;
   }
 
-  return error_code::success();
+  return std::error_code();
 }
 
 // Helper function for finding the input file in an arguments list.
@@ -304,32 +304,24 @@ std::string findInputFile(const CommandLineArguments &CLArgs) {
   return Inputs.back();
 }
 
-// We provide this derivation to add in "-include (file)" arguments for header
+// This arguments adjuster inserts "-include (file)" arguments for header
 // dependencies.
-class AddDependenciesAdjuster : public ArgumentsAdjuster {
-public:
-  AddDependenciesAdjuster(DependencyMap &Dependencies)
-      : Dependencies(Dependencies) {}
-
-private:
-  // Callback for adjusting commandline arguments.
-  CommandLineArguments Adjust(const CommandLineArguments &Args) {
+ArgumentsAdjuster getAddDependenciesAdjuster(DependencyMap &Dependencies) {
+  return [&Dependencies](const CommandLineArguments &Args) {
     std::string InputFile = findInputFile(Args);
     DependentsVector &FileDependents = Dependencies[InputFile];
-    int Count = FileDependents.size();
-    if (Count == 0)
-      return Args;
     CommandLineArguments NewArgs(Args);
-    for (int Index = 0; Index < Count; ++Index) {
-      NewArgs.push_back("-include");
-      std::string File(std::string("\"") + FileDependents[Index] +
-                       std::string("\""));
-      NewArgs.push_back(FileDependents[Index]);
+    if (int Count = FileDependents.size()) {
+      for (int Index = 0; Index < Count; ++Index) {
+        NewArgs.push_back("-include");
+        std::string File(std::string("\"") + FileDependents[Index] +
+                         std::string("\""));
+        NewArgs.push_back(FileDependents[Index]);
+      }
     }
     return NewArgs;
-  }
-  DependencyMap &Dependencies;
-};
+  };
+}
 
 // FIXME: The Location class seems to be something that we might
 // want to design to be applicable to a wider range of tools, and stick it
@@ -354,7 +346,7 @@ struct Location {
     Column = SM.getColumnNumber(Decomposed.first, Decomposed.second);
   }
 
-  operator bool() const { return File != 0; }
+  operator bool() const { return File != nullptr; }
 
   friend bool operator==(const Location &X, const Location &Y) {
     return X.File == Y.File && X.Line == Y.Line && X.Column == Y.Column;
@@ -522,7 +514,7 @@ public:
     return true;
   }
   bool TraverseConstructorInitializer(CXXCtorInitializer *Init) { return true; }
-  bool TraverseLambdaCapture(LambdaExpr::Capture C) { return true; }
+  bool TraverseLambdaCapture(LambdaCapture C) { return true; }
 
   // Check 'extern "*" {}' block for #include directives.
   bool VisitLinkageSpecDecl(LinkageSpecDecl *D) {
@@ -652,10 +644,10 @@ public:
         HadErrors(HadErrors) {}
 
 protected:
-  virtual clang::ASTConsumer *CreateASTConsumer(CompilerInstance &CI,
-                                                StringRef InFile) {
-    return new CollectEntitiesConsumer(Entities, PPTracker,
-                                       CI.getPreprocessor(), InFile, HadErrors);
+  std::unique_ptr<clang::ASTConsumer>
+  CreateASTConsumer(CompilerInstance &CI, StringRef InFile) override {
+    return llvm::make_unique<CollectEntitiesConsumer>(
+        Entities, PPTracker, CI.getPreprocessor(), InFile, HadErrors);
   }
 
 private:
@@ -706,8 +698,8 @@ int main(int Argc, const char **Argv) {
   // Get header file names and dependencies.
   SmallVector<std::string, 32> Headers;
   DependencyMap Dependencies;
-  if (error_code EC = getHeaderFileNames(Headers, Dependencies, ListFileName,
-                                         HeaderPrefix)) {
+  if (std::error_code EC = getHeaderFileNames(Headers, Dependencies,
+                                              ListFileName, HeaderPrefix)) {
     errs() << Argv[0] << ": error: Unable to get header list '" << ListFileName
            << "': " << EC.message() << '\n';
     return 1;
@@ -734,10 +726,10 @@ int main(int Argc, const char **Argv) {
   // Parse all of the headers, detecting duplicates.
   EntityMap Entities;
   ClangTool Tool(*Compilations, Headers);
-  Tool.appendArgumentsAdjuster(new AddDependenciesAdjuster(Dependencies));
+  Tool.appendArgumentsAdjuster(getAddDependenciesAdjuster(Dependencies));
   int HadErrors = 0;
-  HadErrors |= Tool.run(
-      new ModularizeFrontendActionFactory(Entities, *PPTracker, HadErrors));
+  ModularizeFrontendActionFactory Factory(Entities, *PPTracker, HadErrors);
+  HadErrors |= Tool.run(&Factory);
 
   // Create a place to save duplicate entity locations, separate bins per kind.
   typedef SmallVector<Location, 8> LocationArray;

@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_AST_PRETTY_PRINTER_H
-#define LLVM_CLANG_AST_PRETTY_PRINTER_H
+#ifndef LLVM_CLANG_AST_PRETTYPRINTER_H
+#define LLVM_CLANG_AST_PRETTYPRINTER_H
 
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
@@ -126,7 +126,7 @@ struct PrintingPolicy {
   
   /// \brief When printing an anonymous tag name, also print the location of
   /// that entity (e.g., "enum <anonymous at t.h:10:5>"). Otherwise, just 
-  /// prints "<anonymous>" for the name.
+  /// prints "(anonymous)" for the name.
   bool AnonymousTagLocations : 1;
   
   /// \brief When true, suppress printing of the __strong lifetime qualifier in

@@ -49,14 +49,27 @@ void NonNullParamChecker::checkPreCall(const CallEvent &Call,
   if (!FD)
     return;
 
-  const NonNullAttr *Att = FD->getAttr<NonNullAttr>();
+  // Merge all non-null attributes
+  unsigned NumArgs = Call.getNumArgs();
+  llvm::SmallBitVector AttrNonNull(NumArgs);
+  for (const auto *NonNull : FD->specific_attrs<NonNullAttr>()) {
+    if (!NonNull->args_size()) {
+      AttrNonNull.set(0, NumArgs);
+      break;
+    }
+    for (unsigned Val : NonNull->args()) {
+      if (Val >= NumArgs)
+        continue;
+      AttrNonNull.set(Val);
+    }
+  }
 
   ProgramStateRef state = C.getState();
 
   CallEvent::param_type_iterator TyI = Call.param_type_begin(),
                                  TyE = Call.param_type_end();
 
-  for (unsigned idx = 0, count = Call.getNumArgs(); idx != count; ++idx){
+  for (unsigned idx = 0; idx < NumArgs; ++idx) {
 
     // Check if the parameter is a reference. We want to report when reference
     // to a null pointer is passed as a paramter.
@@ -66,7 +79,7 @@ void NonNullParamChecker::checkPreCall(const CallEvent &Call,
       TyI++;
     }
 
-    bool haveAttrNonNull = Att && Att->isNonNull(idx);
+    bool haveAttrNonNull = AttrNonNull[idx];
     if (!haveAttrNonNull) {
       // Check if the parameter is also marked 'nonnull'.
       ArrayRef<ParmVarDecl*> parms = Call.parameters();
@@ -130,7 +143,7 @@ void NonNullParamChecker::checkPreCall(const CallEvent &Call,
       // we cache out.
       if (ExplodedNode *errorNode = C.generateSink(stateNull)) {
 
-        BugReport *R = 0;
+        BugReport *R = nullptr;
         if (haveAttrNonNull)
           R = genReportNullAttrNonNull(errorNode, ArgE);
         else if (haveRefTypeParam)
@@ -186,7 +199,7 @@ BugReport *NonNullParamChecker::genReportReferenceToNullPointer(
                                ErrorNode);
   if (ArgE) {
     const Expr *ArgEDeref = bugreporter::getDerefExpr(ArgE);
-    if (ArgEDeref == 0)
+    if (!ArgEDeref)
       ArgEDeref = ArgE;
     bugreporter::trackNullOrUndefValue(ErrorNode,
                                        ArgEDeref,

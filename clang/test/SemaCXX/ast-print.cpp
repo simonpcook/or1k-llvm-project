@@ -196,3 +196,20 @@ void foo() {
     return;
 }
 };
+
+namespace {
+void test(int i) {
+  switch (i) {
+    case 1:
+      // CHECK: {{\[\[clang::fallthrough\]\]}}
+      [[clang::fallthrough]];
+    case 2:
+      break;
+  }
+}
+}
+
+namespace {
+// CHECK: struct {{\[\[gnu::visibility\(\"hidden\"\)\]\]}} S;
+struct [[gnu::visibility("hidden")]] S;
+}

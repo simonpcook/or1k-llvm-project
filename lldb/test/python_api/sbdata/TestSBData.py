@@ -3,7 +3,6 @@
 import os
 import unittest2
 import lldb
-import pexpect
 from lldbtest import *
 from math import fabs
 import lldbutil
@@ -206,10 +205,6 @@ class SBDataAPICase(TestBase):
         if self.TraceOn():
             print new_object
         
-        self.assertTrue(new_object.GetLoadAddress() == 0xFFFFFFFFFFFFFFFF, 'GetLoadAddress() == invalid')
-        self.assertTrue(new_object.AddressOf().IsValid() == False, 'AddressOf() == invalid')
-        self.assertTrue(new_object.GetAddress().IsValid() == False, 'GetAddress() == invalid')
-
         self.assertTrue(new_object.GetValue() == "1", 'new_object == 1')
 
         data.SetData(error, 'A\0\0\0', data.GetByteOrder(), data.GetAddressByteSize())

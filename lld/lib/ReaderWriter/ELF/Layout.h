@@ -12,7 +12,6 @@
 
 #include "lld/Core/DefinedAtom.h"
 #include "lld/ReaderWriter/AtomLayout.h"
-
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/Allocator.h"
@@ -42,14 +41,12 @@ public:
   /// \returns A reference to the atom layout or an error. The atom layout will
   /// be updated as linking progresses.
   virtual ErrorOr<const lld::AtomLayout &> addAtom(const Atom *atom) = 0;
-  /// find the Atom Address in the current layout
-  virtual bool findAtomAddrByName(StringRef name, uint64_t &addr) = 0;
+  /// find the Atom in the current layout
+  virtual const AtomLayout *findAtomLayoutByName(StringRef name) const = 0;
   /// associates a section to a segment
   virtual void assignSectionsToSegments() = 0;
   /// associates a virtual address to the segment, section, and the atom
   virtual void assignVirtualAddress() = 0;
-  /// associates a file offset to the segment, section and the atom
-  virtual void assignFileOffsets() = 0;
 
 public:
   Layout() {}

@@ -124,10 +124,11 @@ static Cl::Kinds ClassifyInternal(ASTContext &Ctx, const Expr *E) {
   case Expr::ObjCPropertyRefExprClass:
     // C++ [expr.typeid]p1: The result of a typeid expression is an lvalue of...
   case Expr::CXXTypeidExprClass:
-    // Unresolved lookups get classified as lvalues.
+    // Unresolved lookups and uncorrected typos get classified as lvalues.
     // FIXME: Is this wise? Should they get their own kind?
   case Expr::UnresolvedLookupExprClass:
   case Expr::UnresolvedMemberExprClass:
+  case Expr::TypoExprClass:
   case Expr::CXXDependentScopeMemberExprClass:
   case Expr::DependentScopeDeclRefExprClass:
     // ObjC instance variables are lvalues
@@ -181,6 +182,7 @@ static Cl::Kinds ClassifyInternal(ASTContext &Ctx, const Expr *E) {
   case Expr::AsTypeExprClass:
   case Expr::ObjCIndirectCopyRestoreExprClass:
   case Expr::AtomicExprClass:
+  case Expr::CXXFoldExprClass:
     return Cl::CL_PRValue;
 
     // Next come the complicated cases.
@@ -549,8 +551,8 @@ static Cl::Kinds ClassifyConditional(ASTContext &Ctx, const Expr *True,
     // category of the other.
     bool TrueIsThrow = isa<CXXThrowExpr>(True->IgnoreParenImpCasts());
     bool FalseIsThrow = isa<CXXThrowExpr>(False->IgnoreParenImpCasts());
-    if (const Expr *NonThrow = TrueIsThrow ? (FalseIsThrow ? 0    : False)
-                                           : (FalseIsThrow ? True : 0))
+    if (const Expr *NonThrow = TrueIsThrow ? (FalseIsThrow ? nullptr : False)
+                                           : (FalseIsThrow ? True : nullptr))
       return ClassifyInternal(Ctx, NonThrow);
 
     //   [Otherwise] the result [...] is a prvalue.
@@ -593,7 +595,8 @@ static Cl::ModifiableType IsModifiable(ASTContext &Ctx, const Expr *E,
   // Assignment to a property in ObjC is an implicit setter access. But a
   // setter might not exist.
   if (const ObjCPropertyRefExpr *Expr = dyn_cast<ObjCPropertyRefExpr>(E)) {
-    if (Expr->isImplicitProperty() && Expr->getImplicitPropertySetter() == 0)
+    if (Expr->isImplicitProperty() &&
+        Expr->getImplicitPropertySetter() == nullptr)
       return Cl::CM_NoSetterProperty;
   }
 
@@ -612,14 +615,9 @@ static Cl::ModifiableType IsModifiable(ASTContext &Ctx, const Expr *E,
     return Cl::CM_IncompleteType;
 
   // Records with any const fields (recursively) are not modifiable.
-  if (const RecordType *R = CT->getAs<RecordType>()) {
-    assert((E->getObjectKind() == OK_ObjCProperty ||
-            !Ctx.getLangOpts().CPlusPlus) &&
-           "C++ struct assignment should be resolved by the "
-           "copy assignment operator.");
+  if (const RecordType *R = CT->getAs<RecordType>())
     if (R->hasConstFields())
       return Cl::CM_ConstQualified;
-  }
 
   return Cl::CM_Modifiable;
 }

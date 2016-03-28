@@ -72,14 +72,14 @@ PlatformDarwinKernel::Terminate ()
     }
 }
 
-Platform*
+PlatformSP
 PlatformDarwinKernel::CreateInstance (bool force, const ArchSpec *arch)
 {
     // This is a special plugin that we don't want to activate just based on an ArchSpec for normal
     // userlnad debugging.  It is only useful in kernel debug sessions and the DynamicLoaderDarwinPlugin
     // (or a user doing 'platform select') will force the creation of this Platform plugin.
     if (force == false)
-        return NULL;
+        return PlatformSP();
 
     bool create = force;
     LazyBool is_ios_debug_session = eLazyBoolCalculate;
@@ -94,7 +94,7 @@ PlatformDarwinKernel::CreateInstance (bool force, const ArchSpec *arch)
                 break;
                 
             // Only accept "unknown" for vendor if the host is Apple and
-            // it "unknown" wasn't specified (it was just returned becasue it
+            // it "unknown" wasn't specified (it was just returned because it
             // was NOT specified)
             case llvm::Triple::UnknownArch:
                 create = !arch->TripleVendorWasSpecified();
@@ -111,7 +111,7 @@ PlatformDarwinKernel::CreateInstance (bool force, const ArchSpec *arch)
                 case llvm::Triple::MacOSX:
                     break;
                 // Only accept "vendor" for vendor if the host is Apple and
-                // it "unknown" wasn't specified (it was just returned becasue it
+                // it "unknown" wasn't specified (it was just returned because it
                 // was NOT specified)
                 case llvm::Triple::UnknownOS:
                     create = !arch->TripleOSWasSpecified();
@@ -133,6 +133,7 @@ PlatformDarwinKernel::CreateInstance (bool force, const ArchSpec *arch)
             is_ios_debug_session = eLazyBoolNo;
             break;
         case llvm::Triple::arm:
+        case llvm::Triple::aarch64:
         case llvm::Triple::thumb:
             is_ios_debug_session = eLazyBoolYes;
             break;
@@ -142,8 +143,8 @@ PlatformDarwinKernel::CreateInstance (bool force, const ArchSpec *arch)
         }
     }
     if (create)
-        return new PlatformDarwinKernel (is_ios_debug_session);
-    return NULL;
+        return PlatformSP(new PlatformDarwinKernel (is_ios_debug_session));
+    return PlatformSP();
 }
 
 
@@ -369,6 +370,16 @@ PlatformDarwinKernel::GetGenericSDKDirectoriesToSearch (std::vector<lldb_private
     {
         directories.push_back (generic_sdk);
     }
+
+    // The KDKs distributed from Apple installed on external
+    // developer systems may be in directories like
+    // /Library/Developer/KDKs/KDK_10.10_14A298i.kdk
+    FileSpec installed_kdks("/Library/Developer/KDKs", true);
+    if (installed_kdks.Exists() && installed_kdks.IsDirectory())
+    {
+        directories.push_back (installed_kdks);
+    }
+
 }
 
 void
@@ -486,12 +497,32 @@ PlatformDarwinKernel::GetKextDirectoriesInSDK (void *baton,
             || file_spec.GetFileNameExtension() == ConstString("kdk")))
     {
         std::string kext_directory_path = file_spec.GetPath();
-        kext_directory_path.append ("/System/Library/Extensions");
-        FileSpec kext_directory (kext_directory_path.c_str(), true);
-        if (kext_directory.Exists() && kext_directory.IsDirectory())
+
+        // Append the raw directory path, e.g. /Library/Developer/KDKs/KDK_10.10_14A298i.kdk
+        // to the directory search list -- there may be kexts sitting directly
+        // in that directory instead of being in a System/Library/Extensions subdir.
+        ((std::vector<lldb_private::FileSpec> *)baton)->push_back(file_spec);
+
+        // Check to see if there is a System/Library/Extensions subdir & add it if it exists
+
+        std::string sle_kext_directory_path (kext_directory_path);
+        sle_kext_directory_path.append ("/System/Library/Extensions");
+        FileSpec sle_kext_directory (sle_kext_directory_path.c_str(), true);
+        if (sle_kext_directory.Exists() && sle_kext_directory.IsDirectory())
         {
-            ((std::vector<lldb_private::FileSpec> *)baton)->push_back(kext_directory);
+            ((std::vector<lldb_private::FileSpec> *)baton)->push_back(sle_kext_directory);
         }
+
+        // Check to see if there is a Library/Extensions subdir & add it if it exists
+
+        std::string le_kext_directory_path (kext_directory_path);
+        le_kext_directory_path.append ("/Library/Extensions");
+        FileSpec le_kext_directory (le_kext_directory_path.c_str(), true);
+        if (le_kext_directory.Exists() && le_kext_directory.IsDirectory())
+        {
+            ((std::vector<lldb_private::FileSpec> *)baton)->push_back(le_kext_directory);
+        }
+
     }
     return FileSpec::eEnumerateDirectoryResultNext;
 }
@@ -627,12 +658,15 @@ PlatformDarwinKernel::ExamineKextForMatchingUUID (const FileSpec &kext_bundle_pa
     {
         ModuleSpec exe_spec (exe_file);
         exe_spec.GetUUID() = uuid;
-        exe_spec.GetArchitecture() = arch;
+        if (!uuid.IsValid())
+        {
+            exe_spec.GetArchitecture() = arch;
+        }
 
         // First try to create a ModuleSP with the file / arch and see if the UUID matches.
         // If that fails (this exec file doesn't have the correct uuid), don't call GetSharedModule
         // (which may call in to the DebugSymbols framework and therefore can be slow.)
-        ModuleSP module_sp (new Module (exe_file, arch));
+        ModuleSP module_sp (new Module (exe_spec));
         if (module_sp && module_sp->GetObjectFile() && module_sp->MatchesModuleSpec (exe_spec))
         {
             error = ModuleList::GetSharedModule (exe_spec, exe_module_sp, NULL, NULL, NULL);
@@ -649,7 +683,7 @@ PlatformDarwinKernel::ExamineKextForMatchingUUID (const FileSpec &kext_bundle_pa
 bool
 PlatformDarwinKernel::GetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &arch)
 {
-#if defined (__arm__)
+#if defined (__arm__) || defined (__arm64__) || defined (__aarch64__)
     return ARMGetSupportedArchitectureAtIndex (idx, arch);
 #else
     return x86GetSupportedArchitectureAtIndex (idx, arch);
@@ -660,10 +694,21 @@ void
 PlatformDarwinKernel::CalculateTrapHandlerSymbolNames ()
 {   
     m_trap_handlers.push_back(ConstString ("trap_from_kernel"));
+    m_trap_handlers.push_back(ConstString ("hndl_machine_check"));
     m_trap_handlers.push_back(ConstString ("hndl_double_fault"));
     m_trap_handlers.push_back(ConstString ("hndl_allintrs"));
     m_trap_handlers.push_back(ConstString ("hndl_alltraps"));
     m_trap_handlers.push_back(ConstString ("interrupt"));
+    m_trap_handlers.push_back(ConstString ("fleh_prefabt"));
+    m_trap_handlers.push_back(ConstString ("ExceptionVectorsBase"));
+    m_trap_handlers.push_back(ConstString ("ExceptionVectorsTable"));
+    m_trap_handlers.push_back(ConstString ("fleh_undef"));
+    m_trap_handlers.push_back(ConstString ("fleh_dataabt"));
+    m_trap_handlers.push_back(ConstString ("fleh_irq"));
+    m_trap_handlers.push_back(ConstString ("fleh_decirq"));
+    m_trap_handlers.push_back(ConstString ("fleh_fiq_generic"));
+    m_trap_handlers.push_back(ConstString ("fleh_dec"));
+
 }
 
 #else  // __APPLE__

@@ -8,7 +8,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/ErrorHandling.h"
-
 #include "lld/Core/DefinedAtom.h"
 
 
@@ -29,6 +28,7 @@ DefinedAtom::ContentPermissions DefinedAtom::permissions(ContentType type) {
   case typeBranchShim:
   case typeStub:
   case typeStubHelper:
+  case typeMachHeader:
     return permR_X;
 
   case typeConstant:
@@ -41,6 +41,7 @@ DefinedAtom::ContentPermissions DefinedAtom::permissions(ContentType type) {
   case typeLiteral16:
   case typeDTraceDOF:
   case typeCompactUnwindInfo:
+  case typeProcessedUnwindInfo:
   case typeRONote:
   case typeNoAlloc:
     return permR__;
@@ -64,6 +65,7 @@ DefinedAtom::ContentPermissions DefinedAtom::permissions(ContentType type) {
   case typeCStringPtr:
   case typeObjCClassPtr:
   case typeObjC2CategoryList:
+  case typeInterposingTuples:
   case typeTLVInitialData:
   case typeTLVInitialZeroFill:
   case typeTLVInitializerPtr:
@@ -71,6 +73,8 @@ DefinedAtom::ContentPermissions DefinedAtom::permissions(ContentType type) {
   case typeThreadZeroFill:
     return permRW_L;
 
+  case typeGroupComdat:
+  case typeGnuLinkOnce:
   case typeUnknown:
   case typeTempLTO:
     return permUnknown;

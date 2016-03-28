@@ -9,9 +9,8 @@
 
 #include "HexagonTargetHandler.h"
 #include "HexagonLinkingContext.h"
-#include "HexagonRelocationHandler.h"
 #include "HexagonRelocationFunctions.h"
-
+#include "HexagonRelocationHandler.h"
 
 using namespace lld;
 using namespace elf;
@@ -211,7 +210,7 @@ static int relocHexGOTREL_32(uint8_t *location, uint64_t P, uint64_t S,
   return 0;
 }
 
-error_code HexagonTargetRelocationHandler::applyRelocation(
+std::error_code HexagonTargetRelocationHandler::applyRelocation(
     ELFWriter &writer, llvm::FileOutputBuffer &buf, const lld::AtomLayout &atom,
     const Reference &ref) const {
   uint8_t *atomContent = buf.getBufferStart() + atom._fileOffset;
@@ -220,7 +219,7 @@ error_code HexagonTargetRelocationHandler::applyRelocation(
   uint64_t relocVAddress = atom._virtualAddr + ref.offsetInAtom();
 
   if (ref.kindNamespace() != Reference::KindNamespace::ELF)
-    return error_code::success();
+    return std::error_code();
   assert(ref.kindArch() == Reference::KindArch::Hexagon);
   switch (ref.kindValue()) {
   case R_HEX_B22_PCREL:
@@ -344,16 +343,11 @@ error_code HexagonTargetRelocationHandler::applyRelocation(
                            ref.addend(), _hexagonTargetLayout.getGOTSymAddr());
     break;
 
-  default : {
-    std::string str;
-    llvm::raw_string_ostream s(str);
-    s << "Unhandled Hexagon relocation: #" << ref.kindValue();
-    s.flush();
-    llvm_unreachable(str.c_str());
-  }
+  default:
+    unhandledReferenceType(*atom._atom, ref);
   }
 
-  return error_code::success();
+  return std::error_code();
 }
 
 

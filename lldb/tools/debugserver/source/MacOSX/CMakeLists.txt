@@ -1,5 +1,6 @@
 set(LLVM_NO_RTTI 1)
 
+#add_subdirectory(arm64)
 #add_subdirectory(arm)
 add_subdirectory(i386)
 #add_subdirectory(ppc)
@@ -30,9 +31,10 @@ add_lldb_executable(debugserver
   CFBundle.cpp
   CFData.cpp
   CFString.cpp
+  Genealogy.cpp
   MachException.cpp
-  MachProcess.cpp
-  MachTask.cpp
+  MachProcess.mm
+  MachTask.mm
   MachThread.cpp
   MachThreadList.cpp
   MachVMMemory.cpp
@@ -51,10 +53,16 @@ target_link_libraries(debugserver ${DEBUGSERVER_USED_LIBS})
 
 # Sign the debugserver binary
 set (CODESIGN_IDENTITY lldb_codesign)
-set (CODESIGN_ALLOCATE /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/codesign_allocate)
+execute_process(
+  COMMAND xcrun -f codesign_allocate
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  OUTPUT_VARIABLE CODESIGN_ALLOCATE
+  )
 add_custom_command(TARGET debugserver
   POST_BUILD
-  COMMAND CODESIGN_ALLOCATE=${CODESIGN_ALLOCATE} codesign --entitlements ${CMAKE_CURRENT_SOURCE_DIR}/../debugserver-entitlements.plist --force --sign ${CODESIGN_IDENTITY} debugserver
+  # --entitlements option removed, as it causes errors when debugging.
+  #was: COMMAND CODESIGN_ALLOCATE=${CODESIGN_ALLOCATE} codesign --entitlements ${CMAKE_CURRENT_SOURCE_DIR}/../debugserver-entitlements.plist --force --sign ${CODESIGN_IDENTITY} debugserver
+  COMMAND CODESIGN_ALLOCATE=${CODESIGN_ALLOCATE} codesign --force --sign ${CODESIGN_IDENTITY} debugserver
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
 

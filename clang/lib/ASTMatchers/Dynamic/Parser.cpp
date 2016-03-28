@@ -17,6 +17,7 @@
 #include "clang/Basic/CharInfo.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/ManagedStatic.h"
 #include <string>
 #include <vector>
 
@@ -58,7 +59,7 @@ class Parser::CodeTokenizer {
 public:
   explicit CodeTokenizer(StringRef MatcherCode, Diagnostics *Error)
       : Code(MatcherCode), StartOfLine(MatcherCode), Line(1), Error(Error),
-        CodeCompletionLocation(0) {
+        CodeCompletionLocation(nullptr) {
     NextToken = getNextToken();
   }
 
@@ -90,7 +91,7 @@ private:
     if (CodeCompletionLocation && CodeCompletionLocation <= Code.data()) {
       Result.Kind = TokenInfo::TK_CodeCompletion;
       Result.Text = StringRef(CodeCompletionLocation, 0);
-      CodeCompletionLocation = 0;
+      CodeCompletionLocation = nullptr;
       return Result;
     }
 
@@ -143,7 +144,7 @@ private:
           // cause the portion of the identifier before the code completion
           // location to become a code completion token.
           if (CodeCompletionLocation == Code.data() + TokenLength) {
-            CodeCompletionLocation = 0;
+            CodeCompletionLocation = nullptr;
             Result.Kind = TokenInfo::TK_CodeCompletion;
             Result.Text = Code.substr(0, TokenLength);
             Code = Code.drop_front(TokenLength);
@@ -258,6 +259,16 @@ private:
 
 Parser::Sema::~Sema() {}
 
+std::vector<ArgKind> Parser::Sema::getAcceptedCompletionTypes(
+    llvm::ArrayRef<std::pair<MatcherCtor, unsigned>> Context) {
+  return std::vector<ArgKind>();
+}
+
+std::vector<MatcherCompletion>
+Parser::Sema::getMatcherCompletions(llvm::ArrayRef<ArgKind> AcceptedTypes) {
+  return std::vector<MatcherCompletion>();
+}
+
 struct Parser::ScopedContextEntry {
   Parser *P;
 
@@ -274,12 +285,45 @@ struct Parser::ScopedContextEntry {
   }
 };
 
+/// \brief Parse expressions that start with an identifier.
+///
+/// This function can parse named values and matchers.
+/// In case of failure it will try to determine the user's intent to give
+/// an appropriate error message.
+bool Parser::parseIdentifierPrefixImpl(VariantValue *Value) {
+  const TokenInfo NameToken = Tokenizer->consumeNextToken();
+
+  if (Tokenizer->nextTokenKind() != TokenInfo::TK_OpenParen) {
+    // Parse as a named value.
+    if (const VariantValue NamedValue =
+            NamedValues ? NamedValues->lookup(NameToken.Text)
+                        : VariantValue()) {
+      *Value = NamedValue;
+      return true;
+    }
+    // If the syntax is correct and the name is not a matcher either, report
+    // unknown named value.
+    if ((Tokenizer->nextTokenKind() == TokenInfo::TK_Comma ||
+         Tokenizer->nextTokenKind() == TokenInfo::TK_CloseParen ||
+         Tokenizer->nextTokenKind() == TokenInfo::TK_Eof) &&
+        !S->lookupMatcherCtor(NameToken.Text)) {
+      Error->addError(NameToken.Range, Error->ET_RegistryValueNotFound)
+          << NameToken.Text;
+      return false;
+    }
+    // Otherwise, fallback to the matcher parser.
+  }
+
+  // Parse as a matcher expression.
+  return parseMatcherExpressionImpl(NameToken, Value);
+}
+
 /// \brief Parse and validate a matcher expression.
 /// \return \c true on success, in which case \c Value has the matcher parsed.
 ///   If the input is malformed, or some argument has an error, it
 ///   returns \c false.
-bool Parser::parseMatcherExpressionImpl(VariantValue *Value) {
-  const TokenInfo NameToken = Tokenizer->consumeNextToken();
+bool Parser::parseMatcherExpressionImpl(const TokenInfo &NameToken,
+                                        VariantValue *Value) {
   assert(NameToken.Kind == TokenInfo::TK_Ident);
   const TokenInfo OpenToken = Tokenizer->consumeNextToken();
   if (OpenToken.Kind != TokenInfo::TK_OpenParen) {
@@ -288,13 +332,19 @@ bool Parser::parseMatcherExpressionImpl(VariantValue *Value) {
     return false;
   }
 
-  llvm::Optional<MatcherCtor> Ctor =
-      S->lookupMatcherCtor(NameToken.Text, NameToken.Range, Error);
+  llvm::Optional<MatcherCtor> Ctor = S->lookupMatcherCtor(NameToken.Text);
+
+  if (!Ctor) {
+    Error->addError(NameToken.Range, Error->ET_RegistryMatcherNotFound)
+        << NameToken.Text;
+    // Do not return here. We need to continue to give completion suggestions.
+  }
+
   std::vector<ParserValue> Args;
   TokenInfo EndToken;
 
   {
-    ScopedContextEntry SCE(this, Ctor ? *Ctor : 0);
+    ScopedContextEntry SCE(this, Ctor ? *Ctor : nullptr);
 
     while (Tokenizer->nextTokenKind() != TokenInfo::TK_Eof) {
       if (Tokenizer->nextTokenKind() == TokenInfo::TK_CloseParen) {
@@ -338,7 +388,7 @@ bool Parser::parseMatcherExpressionImpl(VariantValue *Value) {
     Tokenizer->consumeNextToken();  // consume the period.
     const TokenInfo BindToken = Tokenizer->consumeNextToken();
     if (BindToken.Kind == TokenInfo::TK_CodeCompletion) {
-      addCompletion(BindToken, "bind(\"", "bind");
+      addCompletion(BindToken, MatcherCompletion("bind(\"", "bind", 1));
       return false;
     }
 
@@ -386,13 +436,28 @@ bool Parser::parseMatcherExpressionImpl(VariantValue *Value) {
 
 // If the prefix of this completion matches the completion token, add it to
 // Completions minus the prefix.
-void Parser::addCompletion(const TokenInfo &CompToken, StringRef TypedText,
-                           StringRef Decl) {
-  if (TypedText.size() >= CompToken.Text.size() &&
-      TypedText.substr(0, CompToken.Text.size()) == CompToken.Text) {
-    Completions.push_back(
-        MatcherCompletion(TypedText.substr(CompToken.Text.size()), Decl));
+void Parser::addCompletion(const TokenInfo &CompToken,
+                           const MatcherCompletion& Completion) {
+  if (StringRef(Completion.TypedText).startswith(CompToken.Text) &&
+      Completion.Specificity > 0) {
+    Completions.emplace_back(Completion.TypedText.substr(CompToken.Text.size()),
+                             Completion.MatcherDecl, Completion.Specificity);
   }
+}
+
+std::vector<MatcherCompletion> Parser::getNamedValueCompletions(
+    ArrayRef<ArgKind> AcceptedTypes) {
+  if (!NamedValues) return std::vector<MatcherCompletion>();
+  std::vector<MatcherCompletion> Result;
+  for (const auto &Entry : *NamedValues) {
+    unsigned Specificity;
+    if (Entry.getValue().isConvertibleTo(AcceptedTypes, &Specificity)) {
+      std::string Decl =
+          (Entry.getValue().getTypeAsString() + " " + Entry.getKey()).str();
+      Result.emplace_back(Entry.getKey(), Decl, Specificity);
+    }
+  }
+  return Result;
 }
 
 void Parser::addExpressionCompletions() {
@@ -408,12 +473,13 @@ void Parser::addExpressionCompletions() {
       return;
   }
 
-  std::vector<MatcherCompletion> RegCompletions =
-      Registry::getCompletions(ContextStack);
-  for (std::vector<MatcherCompletion>::iterator I = RegCompletions.begin(),
-                                                E = RegCompletions.end();
-       I != E; ++I) {
-    addCompletion(CompToken, I->TypedText, I->MatcherDecl);
+  auto AcceptedTypes = S->getAcceptedCompletionTypes(ContextStack);
+  for (const auto &Completion : S->getMatcherCompletions(AcceptedTypes)) {
+    addCompletion(CompToken, Completion);
+  }
+
+  for (const auto &Completion : getNamedValueCompletions(AcceptedTypes)) {
+    addCompletion(CompToken, Completion);
   }
 }
 
@@ -425,7 +491,7 @@ bool Parser::parseExpressionImpl(VariantValue *Value) {
     return true;
 
   case TokenInfo::TK_Ident:
-    return parseMatcherExpressionImpl(Value);
+    return parseIdentifierPrefixImpl(Value);
 
   case TokenInfo::TK_CodeCompletion:
     addExpressionCompletions();
@@ -453,42 +519,47 @@ bool Parser::parseExpressionImpl(VariantValue *Value) {
   llvm_unreachable("Unknown token kind.");
 }
 
+static llvm::ManagedStatic<Parser::RegistrySema> DefaultRegistrySema;
+
 Parser::Parser(CodeTokenizer *Tokenizer, Sema *S,
-               Diagnostics *Error)
-    : Tokenizer(Tokenizer), S(S), Error(Error) {}
+               const NamedValueMap *NamedValues, Diagnostics *Error)
+    : Tokenizer(Tokenizer), S(S ? S : &*DefaultRegistrySema),
+      NamedValues(NamedValues), Error(Error) {}
 
-class RegistrySema : public Parser::Sema {
-public:
-  virtual ~RegistrySema() {}
-  llvm::Optional<MatcherCtor> lookupMatcherCtor(StringRef MatcherName,
-                                                const SourceRange &NameRange,
-                                                Diagnostics *Error) {
-    return Registry::lookupMatcherCtor(MatcherName, NameRange, Error);
-  }
-  VariantMatcher actOnMatcherExpression(MatcherCtor Ctor,
-                                        const SourceRange &NameRange,
-                                        StringRef BindID,
-                                        ArrayRef<ParserValue> Args,
-                                        Diagnostics *Error) {
-    if (BindID.empty()) {
-      return Registry::constructMatcher(Ctor, NameRange, Args, Error);
-    } else {
-      return Registry::constructBoundMatcher(Ctor, NameRange, BindID, Args,
-                                             Error);
-    }
-  }
-};
+Parser::RegistrySema::~RegistrySema() {}
 
-bool Parser::parseExpression(StringRef Code, VariantValue *Value,
-                             Diagnostics *Error) {
-  RegistrySema S;
-  return parseExpression(Code, &S, Value, Error);
+llvm::Optional<MatcherCtor>
+Parser::RegistrySema::lookupMatcherCtor(StringRef MatcherName) {
+  return Registry::lookupMatcherCtor(MatcherName);
+}
+
+VariantMatcher Parser::RegistrySema::actOnMatcherExpression(
+    MatcherCtor Ctor, const SourceRange &NameRange, StringRef BindID,
+    ArrayRef<ParserValue> Args, Diagnostics *Error) {
+  if (BindID.empty()) {
+    return Registry::constructMatcher(Ctor, NameRange, Args, Error);
+  } else {
+    return Registry::constructBoundMatcher(Ctor, NameRange, BindID, Args,
+                                           Error);
+  }
+}
+
+std::vector<ArgKind> Parser::RegistrySema::getAcceptedCompletionTypes(
+    ArrayRef<std::pair<MatcherCtor, unsigned>> Context) {
+  return Registry::getAcceptedCompletionTypes(Context);
+}
+
+std::vector<MatcherCompletion> Parser::RegistrySema::getMatcherCompletions(
+    ArrayRef<ArgKind> AcceptedTypes) {
+  return Registry::getMatcherCompletions(AcceptedTypes);
 }
 
 bool Parser::parseExpression(StringRef Code, Sema *S,
+                             const NamedValueMap *NamedValues,
                              VariantValue *Value, Diagnostics *Error) {
   CodeTokenizer Tokenizer(Code, Error);
-  if (!Parser(&Tokenizer, S, Error).parseExpressionImpl(Value)) return false;
+  if (!Parser(&Tokenizer, S, NamedValues, Error).parseExpressionImpl(Value))
+    return false;
   if (Tokenizer.peekNextToken().Kind != TokenInfo::TK_Eof) {
     Error->addError(Tokenizer.peekNextToken().Range,
                     Error->ET_ParserTrailingCode);
@@ -498,28 +569,31 @@ bool Parser::parseExpression(StringRef Code, Sema *S,
 }
 
 std::vector<MatcherCompletion>
-Parser::completeExpression(StringRef Code, unsigned CompletionOffset) {
+Parser::completeExpression(StringRef Code, unsigned CompletionOffset, Sema *S,
+                           const NamedValueMap *NamedValues) {
   Diagnostics Error;
   CodeTokenizer Tokenizer(Code, &Error, CompletionOffset);
-  RegistrySema S;
-  Parser P(&Tokenizer, &S, &Error);
+  Parser P(&Tokenizer, S, NamedValues, &Error);
   VariantValue Dummy;
   P.parseExpressionImpl(&Dummy);
+
+  // Sort by specificity, then by name.
+  std::sort(P.Completions.begin(), P.Completions.end(),
+            [](const MatcherCompletion &A, const MatcherCompletion &B) {
+    if (A.Specificity != B.Specificity)
+      return A.Specificity > B.Specificity;
+    return A.TypedText < B.TypedText;
+  });
 
   return P.Completions;
 }
 
 llvm::Optional<DynTypedMatcher>
-Parser::parseMatcherExpression(StringRef Code, Diagnostics *Error) {
-  RegistrySema S;
-  return parseMatcherExpression(Code, &S, Error);
-}
-
-llvm::Optional<DynTypedMatcher>
-Parser::parseMatcherExpression(StringRef Code, Parser::Sema *S,
+Parser::parseMatcherExpression(StringRef Code, Sema *S,
+                               const NamedValueMap *NamedValues,
                                Diagnostics *Error) {
   VariantValue Value;
-  if (!parseExpression(Code, S, &Value, Error))
+  if (!parseExpression(Code, S, NamedValues, &Value, Error))
     return llvm::Optional<DynTypedMatcher>();
   if (!Value.isMatcher()) {
     Error->addError(SourceRange(), Error->ET_ParserNotAMatcher);

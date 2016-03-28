@@ -214,8 +214,7 @@ public:
 
   /// \brief Callback invoked when a \#pragma gcc dianostic directive is read.
   virtual void PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
-                                diag::Mapping mapping, StringRef Str) {
-  }
+                                diag::Severity mapping, StringRef Str) {}
 
   /// \brief Called when an OpenCL extension is either disabled or
   /// enabled with a pragma.
@@ -323,15 +322,12 @@ public:
 /// \brief Simple wrapper class for chaining callbacks.
 class PPChainedCallbacks : public PPCallbacks {
   virtual void anchor();
-  PPCallbacks *First, *Second;
+  std::unique_ptr<PPCallbacks> First, Second;
 
 public:
-  PPChainedCallbacks(PPCallbacks *_First, PPCallbacks *_Second)
-    : First(_First), Second(_Second) {}
-  ~PPChainedCallbacks() {
-    delete Second;
-    delete First;
-  }
+  PPChainedCallbacks(std::unique_ptr<PPCallbacks> _First,
+                     std::unique_ptr<PPCallbacks> _Second)
+    : First(std::move(_First)), Second(std::move(_Second)) {}
 
   void FileChanged(SourceLocation Loc, FileChangeReason Reason,
                    SrcMgr::CharacteristicKind FileType,
@@ -411,7 +407,7 @@ public:
   }
 
   void PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
-                        diag::Mapping mapping, StringRef Str) override {
+                        diag::Severity mapping, StringRef Str) override {
     First->PragmaDiagnostic(Loc, Namespace, mapping, Str);
     Second->PragmaDiagnostic(Loc, Namespace, mapping, Str);
   }

@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -std=c++11 -fsyntax-only -Wno-unused-value -Wmicrosoft -verify -fms-extensions -fms-compatibility -fdelayed-template-parsing
+// RUN: %clang_cc1 %s -triple i386-mingw32 -std=c++11 -fsyntax-only -Wno-unused-getter-return-value -Wno-unused-value -Wmicrosoft -verify -fms-extensions -fms-compatibility -fdelayed-template-parsing
 
 /* Microsoft attribute tests */
 [repeatable][source_annotation_attribute( Parameter|ReturnValue )]
@@ -208,12 +208,12 @@ extern TypenameWrongPlace<AAAA> PR16925;
 
 __interface MicrosoftInterface;
 __interface MicrosoftInterface {
-   void foo1() = 0;
+   void foo1() = 0; // expected-note {{overridden virtual function is here}}
    virtual void foo2() = 0;
 };
 
 __interface MicrosoftDerivedInterface : public MicrosoftInterface {
-  void foo1();
+  void foo1(); // expected-warning {{'foo1' overrides a member function but is not marked 'override'}}
   void foo2() override;
   void foo3();
 };
@@ -226,103 +226,11 @@ void interface_test() {
 }
 
 __int64 x7 = __int64(0);
-
-
-namespace If_exists_test {
-
-class IF_EXISTS {
-private:
-    typedef int Type;
-};
-
-int __if_exists_test() {
-  int b=0;
-  __if_exists(IF_EXISTS::Type) {
-     b++;
-     b++;
-  }
-  __if_exists(IF_EXISTS::Type_not) {
-     this will not compile.
-  }
-  __if_not_exists(IF_EXISTS::Type) {
-     this will not compile.
-  }
-  __if_not_exists(IF_EXISTS::Type_not) {
-     b++;
-     b++;
-  }
-}
-
-
-__if_exists(IF_EXISTS::Type) {
-  int var23;
-}
-
-__if_exists(IF_EXISTS::Type_not) {
- this will not compile.
-}
-
-__if_not_exists(IF_EXISTS::Type) {
- this will not compile.
-}
-
-__if_not_exists(IF_EXISTS::Type_not) {
-  int var244;
-}
-
-int __if_exists_init_list() {
-
-  int array1[] = {
-    0,
-    __if_exists(IF_EXISTS::Type) {2, }
-    3
-  };
-
-  int array2[] = {
-    0,
-    __if_exists(IF_EXISTS::Type_not) { this will not compile }
-    3
-  };
-
-  int array3[] = {
-    0,
-    __if_not_exists(IF_EXISTS::Type_not) {2, }
-    3
-  };
-
-  int array4[] = {
-    0,
-    __if_not_exists(IF_EXISTS::Type) { this will not compile }
-    3
-  };
-
-}
-
-
-class IF_EXISTS_CLASS_TEST {
-  __if_exists(IF_EXISTS::Type) {
-    // __if_exists, __if_not_exists can nest
-    __if_not_exists(IF_EXISTS::Type_not) {
-      int var123;
-    }
-    int var23;
-  }
-
-  __if_exists(IF_EXISTS::Type_not) {
-   this will not compile.
-  }
-
-  __if_not_exists(IF_EXISTS::Type) {
-   this will not compile.
-  }
-
-  __if_not_exists(IF_EXISTS::Type_not) {
-    int var244;
-  }
-};
-
-}
-
+_int64 x8 = _int64(0);
+static_assert(sizeof(_int64) == 8, "");
+static_assert(sizeof(_int32) == 4, "");
+static_assert(sizeof(_int16) == 2, "");
+static_assert(sizeof(_int8) == 1, "");
 
 int __identifier(generic) = 3;
 int __identifier(int) = 4;
@@ -412,6 +320,7 @@ struct StructWithProperty {
   __declspec(property(get=GetV,)) int V10; // expected-error {{expected 'get' or 'put' in property declaration}}
   __declspec(property(get=GetV,put=SetV)) int V11; // no-warning
   __declspec(property(get=GetV,put=SetV,get=GetV)) int V12; // expected-error {{property declaration specifies 'get' accessor twice}}
+  __declspec(property(get=GetV)) int V13 = 3; // expected-error {{property declaration cannot have an in-class initializer}}
 
   int GetV() { return 123; }
   void SetV(int v) {}
@@ -426,3 +335,43 @@ void TestProperty() {
   sp.V11++;
   ++sp.V11;
 }
+
+//expected-warning@+1 {{C++ operator 'and' (aka '&&') used as a macro name}}
+#define and foo
+
+struct __declspec(uuid("00000000-0000-0000-C000-000000000046")) __declspec(novtable) IUnknown {}; // expected-warning{{__declspec attribute 'novtable' is not supported}}
+
+typedef bool (__stdcall __stdcall *blarg)(int);
+
+void local_callconv() {
+  bool (__stdcall *p)(int);
+}
+
+struct S7 {
+	int foo() { return 12; }
+	__declspec(property(get=foo) deprecated) int t; // expected-note {{'t' has been explicitly marked deprecated here}}
+};
+
+// Technically, this is legal (though it does nothing)
+__declspec() void quux( void ) {
+  struct S7 s;
+  int i = s.t;	// expected-warning {{'t' is deprecated}}
+}
+
+void *_alloca(int);
+
+void foo(void) {
+  __declspec(align(16)) int *buffer = (int *)_alloca(9);
+}
+
+template <int *>
+struct NullptrArg {};
+NullptrArg<nullptr> a;
+
+// Ignored type qualifiers after comma in declarator lists
+typedef int ignored_quals_dummy1, const volatile __ptr32 __ptr64 __w64 __unaligned __sptr __uptr ignored_quals1; // expected-warning {{qualifiers after comma in declarator list are ignored}}
+typedef void(*ignored_quals_dummy2)(), __fastcall ignored_quals2; // expected-warning {{qualifiers after comma in declarator list are ignored}}
+typedef void(*ignored_quals_dummy3)(), __stdcall ignored_quals3; // expected-warning {{qualifiers after comma in declarator list are ignored}}
+typedef void(*ignored_quals_dummy4)(), __thiscall ignored_quals4; // expected-warning {{qualifiers after comma in declarator list are ignored}}
+typedef void(*ignored_quals_dummy5)(), __cdecl ignored_quals5; // expected-warning {{qualifiers after comma in declarator list are ignored}}
+typedef void(*ignored_quals_dummy6)(), __vectorcall ignored_quals6; // expected-warning {{qualifiers after comma in declarator list are ignored}}

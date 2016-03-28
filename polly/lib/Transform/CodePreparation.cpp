@@ -9,20 +9,9 @@
 //
 // The Polly code preparation pass is executed before SCoP detection. Its only
 // use is to translate all PHI nodes that can not be expressed by the code
-// generator into explicit memory dependences. Depending of the code generation
-// strategy different PHI nodes are translated:
+// generator into explicit memory dependences.
 //
-// - indvars based code generation:
-//
-// The indvars based code generation requires explicit canonical induction
-// variables. Such variables are generated before scop detection and
-// also before the code preparation pass. All PHI nodes that are not canonical
-// induction variables are not supported by the indvars based code generation
-// and are consequently translated into explict memory accesses.
-//
-// - scev based code generation:
-//
-// The scev based code generation can code generate all PHI nodes that do not
+// Polly's code generation can code generate all PHI nodes that do not
 // reference parameters within the scop. As the code preparation pass is run
 // before scop detection, we can not check this condition, because without
 // a detected scop, we do not know SCEVUnknowns that appear in the SCEV of
@@ -40,6 +29,7 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/CodeGen/BlockGenerators.h"
 #include "polly/Support/ScopHelper.h"
+#include "llvm/Analysis/DominanceFrontier.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -49,6 +39,28 @@ using namespace llvm;
 using namespace polly;
 
 namespace {
+
+// Helper function which (for a given PHI node):
+//
+// 1) Remembers all incoming values and the associated basic blocks
+// 2) Demotes the phi node to the stack
+// 3) Remembers the correlation between the PHI node and the new alloca
+//
+// When we combine the information from 1) and 3) we know the values stored
+// in this alloca at the end of the predecessor basic blocks of the PHI.
+static void DemotePHI(
+    PHINode *PN, DenseMap<PHINode *, AllocaInst *> &PNallocMap,
+    DenseMap<std::pair<Value *, BasicBlock *>, PHINode *> &ValueLocToPhiMap) {
+
+  for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
+    auto *InVal = PN->getIncomingValue(i);
+    auto *InBB = PN->getIncomingBlock(i);
+    ValueLocToPhiMap[std::make_pair(InVal, InBB)] = PN;
+  }
+
+  PNallocMap[PN] = DemotePHIToStack(PN);
+}
+
 /// @brief Prepare the IR for the scop detection.
 ///
 class CodePreparation : public FunctionPass {
@@ -84,56 +96,89 @@ void CodePreparation::clear() {}
 CodePreparation::~CodePreparation() { clear(); }
 
 bool CodePreparation::eliminatePHINodes(Function &F) {
-  // The PHINodes that will be deleted.
+  // The PHINodes that will be demoted.
+  std::vector<PHINode *> PNtoDemote;
+  // The PHINodes that will be deleted (stack slot sharing).
   std::vector<PHINode *> PNtoDelete;
   // The PHINodes that will be preserved.
-  std::vector<PHINode *> PreservedPNs;
+  std::vector<PHINode *> PNtoPreserve;
+  // Map to remember values stored in PHINodes at the end of basic blocks.
+  DenseMap<std::pair<Value *, BasicBlock *>, PHINode *> ValueLocToPhiMap;
+  // Map from PHINodes to their alloca (after demotion) counterpart.
+  DenseMap<PHINode *, AllocaInst *> PNallocMap;
 
-  // Scan the PHINodes in this function.
+  // Scan the PHINodes in this function and categorize them to be either:
+  // o Preserved, if they are (canonical) induction variables or can be
+  //              synthesized during code generation ('SCEVable')
+  // o Deleted, if they are trivial PHI nodes (one incoming value) and the
+  //            incoming value is a PHI node we will demote
+  // o Demoted, if they do not fit any of the previous categories
   for (Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI)
     for (BasicBlock::iterator II = BI->begin(), IE = BI->getFirstNonPHI();
          II != IE; ++II) {
       PHINode *PN = cast<PHINode>(II);
-      if (SCEVCodegen) {
-        if (SE->isSCEVable(PN->getType())) {
-          const SCEV *S = SE->getSCEV(PN);
-          if (!isa<SCEVUnknown>(S) && !isa<SCEVCouldNotCompute>(S)) {
-            PreservedPNs.push_back(PN);
-            continue;
-          }
-        }
-      } else {
-        if (Loop *L = LI->getLoopFor(BI)) {
-          // Induction variables will be preserved.
-          if (L->getCanonicalInductionVariable() == PN) {
-            PreservedPNs.push_back(PN);
-            continue;
-          }
+      if (SE->isSCEVable(PN->getType())) {
+        const SCEV *S = SE->getSCEV(PN);
+        if (!isa<SCEVUnknown>(S) && !isa<SCEVCouldNotCompute>(S)) {
+          PNtoPreserve.push_back(PN);
+          continue;
         }
       }
 
       // As DemotePHIToStack does not support invoke edges, we preserve
       // PHINodes that have invoke edges.
-      if (hasInvokeEdge(PN))
-        PreservedPNs.push_back(PN);
-      else
-        PNtoDelete.push_back(PN);
+      if (hasInvokeEdge(PN)) {
+        PNtoPreserve.push_back(PN);
+      } else {
+        if (PN->getNumIncomingValues() == 1)
+          PNtoDelete.push_back(PN);
+        else
+          PNtoDemote.push_back(PN);
+      }
     }
 
-  if (PNtoDelete.empty())
+  if (PNtoDemote.empty() && PNtoDelete.empty())
     return false;
 
-  while (!PNtoDelete.empty()) {
-    PHINode *PN = PNtoDelete.back();
-    PNtoDelete.pop_back();
+  while (!PNtoDemote.empty()) {
+    PHINode *PN = PNtoDemote.back();
+    PNtoDemote.pop_back();
+    DemotePHI(PN, PNallocMap, ValueLocToPhiMap);
+  }
 
-    DemotePHIToStack(PN);
+  // For each trivial PHI we encountered (and we want to delete) we try to find
+  // the value it will hold in a alloca we already created by PHI demotion. If
+  // we succeed (the incoming value is stored in an alloca at the predecessor
+  // block), we can replace the trivial PHI by the value stored in the alloca.
+  // If not, we will demote this trivial PHI as any other one.
+  for (auto PNIt = PNtoDelete.rbegin(), PNEnd = PNtoDelete.rend();
+       PNIt != PNEnd; ++PNIt) {
+    PHINode *TrivPN = *PNIt;
+    assert(TrivPN->getNumIncomingValues() == 1 && "Assumed trivial PHI");
+
+    auto *InVal = TrivPN->getIncomingValue(0);
+    auto *InBB = TrivPN->getIncomingBlock(0);
+    const auto &ValLocIt = ValueLocToPhiMap.find(std::make_pair(InVal, InBB));
+    if (ValLocIt != ValueLocToPhiMap.end()) {
+      PHINode *InPHI = ValLocIt->second;
+      assert(PNallocMap.count(InPHI) &&
+             "Inconsitent state, PN was not demoted!");
+      auto *InPHIAlloca = PNallocMap[InPHI];
+      PNallocMap[TrivPN] = InPHIAlloca;
+      LoadInst *LI = new LoadInst(InPHIAlloca, "",
+                                  TrivPN->getParent()->getFirstInsertionPt());
+      TrivPN->replaceAllUsesWith(LI);
+      TrivPN->eraseFromParent();
+      continue;
+    }
+
+    DemotePHI(TrivPN, PNallocMap, ValueLocToPhiMap);
   }
 
   // Move preserved PHINodes to the beginning of the BasicBlock.
-  while (!PreservedPNs.empty()) {
-    PHINode *PN = PreservedPNs.back();
-    PreservedPNs.pop_back();
+  while (!PNtoPreserve.empty()) {
+    PHINode *PN = PNtoPreserve.back();
+    PNtoPreserve.pop_back();
 
     BasicBlock *BB = PN->getParent();
     if (PN == BB->begin())
@@ -150,7 +195,7 @@ void CodePreparation::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<ScalarEvolution>();
 
   AU.addPreserved<LoopInfo>();
-  AU.addPreserved<RegionInfo>();
+  AU.addPreserved<RegionInfoPass>();
   AU.addPreserved<DominatorTreeWrapperPass>();
   AU.addPreserved<DominanceFrontier>();
 }

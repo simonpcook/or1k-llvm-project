@@ -36,6 +36,7 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopInfo.h"
 #include "llvm/Support/CommandLine.h"
+#include "isl/flow.h"
 #include "isl/set.h"
 #include "isl/map.h"
 #include "isl/union_map.h"
@@ -63,17 +64,33 @@ public:
   void getAnalysisUsage(AnalysisUsage &AU) const;
 
 private:
-  isl_union_set *getLastWrites(isl_union_map *Writes, isl_union_map *Schedule);
+  /// @brief Return the set of live iterations.
+  ///
+  /// The set of live iterations are all iterations that write to memory and for
+  /// which we can not prove that there will be a later write that _must_
+  /// overwrite the same memory location and is consequently the only one that
+  /// is visible after the execution of the SCoP.
+  ///
+  isl_union_set *getLiveOut(Scop &S);
   bool eliminateDeadCode(Scop &S, int PreciseSteps);
 };
 }
 
 char DeadCodeElim::ID = 0;
 
-/// Return the set of iterations that contains the last write for each location.
-isl_union_set *DeadCodeElim::getLastWrites(__isl_take isl_union_map *Writes,
-                                           __isl_take isl_union_map *Schedule) {
-  isl_union_map *WriteIterations = isl_union_map_reverse(Writes);
+// To compute the live outs, we compute for the data-locations that are
+// must-written to the last statement that touches these locations. On top of
+// this we add all statements that perform may-write accesses.
+//
+// We could be more precise by removing may-write accesses for which we know
+// that they are overwritten by a must-write after. However, at the moment the
+// only may-writes we introduce access the full (unbounded) array, such that
+// bounded write accesses can not overwrite all of the data-locations. As
+// this means may-writes are in the current situation always live, there is
+// no point in trying to remove them from the live-out set.
+isl_union_set *DeadCodeElim::getLiveOut(Scop &S) {
+  isl_union_map *Schedule = S.getSchedule();
+  isl_union_map *WriteIterations = isl_union_map_reverse(S.getMustWrites());
   isl_union_map *WriteTimes =
       isl_union_map_apply_range(WriteIterations, isl_union_map_copy(Schedule));
 
@@ -82,6 +99,7 @@ isl_union_set *DeadCodeElim::getLastWrites(__isl_take isl_union_map *Writes,
       LastWriteTimes, isl_union_map_reverse(Schedule));
 
   isl_union_set *Live = isl_union_map_range(LastWriteIterations);
+  Live = isl_union_set_union(Live, isl_union_map_domain(S.getMayWrites()));
   return isl_union_set_coalesce(Live);
 }
 
@@ -99,8 +117,9 @@ bool DeadCodeElim::eliminateDeadCode(Scop &S, int PreciseSteps) {
   if (!D->hasValidDependences())
     return false;
 
-  isl_union_set *Live = this->getLastWrites(S.getWrites(), S.getSchedule());
-  isl_union_map *Dep = D->getDependences(Dependences::TYPE_RAW);
+  isl_union_set *Live = getLiveOut(S);
+  isl_union_map *Dep =
+      D->getDependences(Dependences::TYPE_RAW | Dependences::TYPE_RED);
   Dep = isl_union_map_reverse(Dep);
 
   if (PreciseSteps == -1)
@@ -132,7 +151,13 @@ bool DeadCodeElim::eliminateDeadCode(Scop &S, int PreciseSteps) {
   isl_union_map_free(Dep);
   isl_union_set_free(OriginalDomain);
 
-  return S.restrictDomains(isl_union_set_coalesce(Live));
+  bool Changed = S.restrictDomains(isl_union_set_coalesce(Live));
+
+  // FIXME: We can probably avoid the recomputation of all dependences by
+  // updating them explicitly.
+  if (Changed)
+    D->recomputeDependences();
+  return Changed;
 }
 
 bool DeadCodeElim::runOnScop(Scop &S) {

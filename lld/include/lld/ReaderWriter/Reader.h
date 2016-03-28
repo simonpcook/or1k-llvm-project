@@ -14,7 +14,6 @@
 #include "lld/Core/Reference.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/YAMLTraits.h"
-
 #include <functional>
 #include <memory>
 #include <vector>
@@ -22,9 +21,9 @@
 using llvm::sys::fs::file_magic;
 
 namespace llvm {
-  namespace yaml {
-    class IO;
-  }
+namespace yaml {
+class IO;
+}
 }
 
 namespace lld {
@@ -33,6 +32,7 @@ class File;
 class LinkingContext;
 class PECOFFLinkingContext;
 class TargetHandlerBase;
+class MachOLinkingContext;
 
 /// \brief An abstract class for reading object files, library files, and
 /// executable files.
@@ -41,7 +41,7 @@ class TargetHandlerBase;
 /// subclass of Reader.
 class Reader {
 public:
-  virtual ~Reader();
+  virtual ~Reader() {}
 
   /// Sniffs the file to determine if this Reader can parse it.
   /// The method is called with:
@@ -53,10 +53,9 @@ public:
 
   /// \brief Parse a supplied buffer (already filled with the contents of a
   /// file) and create a File object.
-  ///
-  /// The resulting File object may take ownership of the MemoryBuffer.
-  virtual error_code
-  parseFile(std::unique_ptr<MemoryBuffer> &mb, const class Registry &,
+  /// The resulting File object takes ownership of the MemoryBuffer.
+  virtual std::error_code
+  parseFile(std::unique_ptr<MemoryBuffer> mb, const class Registry &,
             std::vector<std::unique_ptr<File>> &result) const = 0;
 };
 
@@ -94,8 +93,8 @@ public:
 
   /// Walk the list of registered Readers and find one that can parse the
   /// supplied file and parse it.
-  error_code parseFile(std::unique_ptr<MemoryBuffer> &mb,
-                       std::vector<std::unique_ptr<File>> &result) const;
+  std::error_code parseFile(std::unique_ptr<MemoryBuffer> mb,
+                            std::vector<std::unique_ptr<File>> &result) const;
 
   /// Walk the list of registered kind tables to convert a Reference Kind
   /// name to a value.
@@ -121,9 +120,8 @@ public:
   void addSupportYamlFiles();
   void addSupportNativeObjects();
   void addSupportCOFFObjects(PECOFFLinkingContext &);
-  void addSupportCOFFImportLibraries();
-  void addSupportWindowsResourceFiles();
-  void addSupportMachOObjects(StringRef archName);
+  void addSupportCOFFImportLibraries(PECOFFLinkingContext &);
+  void addSupportMachOObjects(MachOLinkingContext &);
   void addSupportELFObjects(bool atomizeStrings, TargetHandlerBase *handler);
   void addSupportELFDynamicSharedObjects(bool useShlibUndefines,
                                          TargetHandlerBase *handler);

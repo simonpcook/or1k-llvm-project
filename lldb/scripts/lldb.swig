@@ -66,6 +66,7 @@ import os
 #include "lldb/API/SBDeclaration.h"
 #include "lldb/API/SBError.h"
 #include "lldb/API/SBEvent.h"
+#include "lldb/API/SBExecutionContext.h"
 #include "lldb/API/SBExpressionOptions.h"
 #include "lldb/API/SBFileSpec.h"
 #include "lldb/API/SBFileSpecList.h"
@@ -91,8 +92,11 @@ import os
 #include "lldb/API/SBSymbolContextList.h"
 #include "lldb/API/SBTarget.h"
 #include "lldb/API/SBThread.h"
+#include "lldb/API/SBThreadCollection.h"
+#include "lldb/API/SBThreadPlan.h"
 #include "lldb/API/SBType.h"
 #include "lldb/API/SBTypeCategory.h"
+#include "lldb/API/SBTypeEnumMember.h"
 #include "lldb/API/SBTypeFilter.h"
 #include "lldb/API/SBTypeFormat.h"
 #include "lldb/API/SBTypeNameSpecifier.h"
@@ -101,6 +105,7 @@ import os
 #include "lldb/API/SBValue.h"
 #include "lldb/API/SBValueList.h"
 #include "lldb/API/SBWatchpoint.h"
+#include "lldb/API/SBUnixSignals.h"
 
 #include "../scripts/Python/python-swigsafecast.swig"
 
@@ -108,6 +113,9 @@ import os
 
 /* Various liblldb typedefs that SWIG needs to know about.  */
 #define __extension__ /* Undefine GCC keyword to make Swig happy when processing glibc's stdint.h. */
+/* The ISO C99 standard specifies that in C++ implementations limit macros such
+   as INT32_MAX should only be defined if __STDC_LIMIT_MACROS is. */
+#define __STDC_LIMIT_MACROS
 %include "stdint.i"
 %include "lldb/lldb-defines.h"
 %include "lldb/lldb-enumerations.h"
@@ -132,6 +140,7 @@ import os
 %include "./Python/interface/SBDeclaration.i"
 %include "./Python/interface/SBError.i"
 %include "./Python/interface/SBEvent.i"
+%include "./Python/interface/SBExecutionContext.i"
 %include "./Python/interface/SBExpressionOptions.i"
 %include "./Python/interface/SBFileSpec.i"
 %include "./Python/interface/SBFileSpecList.i"
@@ -157,8 +166,11 @@ import os
 %include "./Python/interface/SBSymbolContextList.i"
 %include "./Python/interface/SBTarget.i"
 %include "./Python/interface/SBThread.i"
+%include "./Python/interface/SBThreadCollection.i"
+%include "./Python/interface/SBThreadPlan.i"
 %include "./Python/interface/SBType.i"
 %include "./Python/interface/SBTypeCategory.i"
+%include "./Python/interface/SBTypeEnumMember.i"
 %include "./Python/interface/SBTypeFilter.i"
 %include "./Python/interface/SBTypeFormat.i"
 %include "./Python/interface/SBTypeNameSpecifier.i"
@@ -167,6 +179,7 @@ import os
 %include "./Python/interface/SBValue.i"
 %include "./Python/interface/SBValueList.i"
 %include "./Python/interface/SBWatchpoint.i"
+%include "./Python/interface/SBUnixSignals.i"
 
 %include "./Python/python-extensions.swig"
 

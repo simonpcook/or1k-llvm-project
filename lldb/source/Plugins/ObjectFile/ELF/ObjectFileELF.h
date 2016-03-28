@@ -17,6 +17,7 @@
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Core/UUID.h"
+#include "lldb/Core/ArchSpec.h"
 
 #include "ELFHeader.h"
 
@@ -132,6 +133,9 @@ public:
     virtual uint32_t
     GetAddressByteSize() const;
 
+    virtual lldb::AddressClass
+    GetAddressClass (lldb::addr_t file_addr);
+
     virtual lldb_private::Symtab *
     GetSymtab();
 
@@ -214,6 +218,7 @@ private:
 
     /// Version of this reader common to all plugins based on this class.
     static const uint32_t m_plugin_version = 1;
+    static const uint32_t g_core_uuid_magic;
 
     /// ELF file header.
     elf::ELFHeader m_header;
@@ -241,6 +246,9 @@ private:
     /// Cached value of the entry point for this module.
     lldb_private::Address  m_entry_point_address;
 
+    /// The architecture detected from parsing elf file contents.
+    lldb_private::ArchSpec m_arch_spec;
+
     /// Returns a 1 based index of the given section header.
     size_t
     SectionIndex(const SectionHeaderCollIter &I);
@@ -248,6 +256,17 @@ private:
     /// Returns a 1 based index of the given section header.
     size_t
     SectionIndex(const SectionHeaderCollConstIter &I) const;
+
+    // Parses the ELF program headers.
+    static size_t
+    GetProgramHeaderInfo(ProgramHeaderColl &program_headers,
+                         lldb_private::DataExtractor &data,
+                         const elf::ELFHeader &header);
+
+    // Finds PT_NOTE segments and calculates their crc sum.
+    static uint32_t
+    CalculateELFNotesSegmentsCRC32(const ProgramHeaderColl& program_headers,
+                                   lldb_private::DataExtractor &data);
 
     /// Parses all section headers present in this object file and populates
     /// m_program_headers.  This method will compute the header list only once.
@@ -261,14 +280,15 @@ private:
     size_t
     ParseSectionHeaders();
 
-    /// Parses the elf section headers and returns the uuid, debug link name, crc.
+    /// Parses the elf section headers and returns the uuid, debug link name, crc, archspec.
     static size_t
     GetSectionHeaderInfo(SectionHeaderColl &section_headers,
                          lldb_private::DataExtractor &data,
                          const elf::ELFHeader &header,
                          lldb_private::UUID &uuid,
                          std::string &gnu_debuglink_file,
-                         uint32_t &gnu_debuglink_crc);
+                         uint32_t &gnu_debuglink_crc,
+                         lldb_private::ArchSpec &arch_spec);
 
     /// Scans the dynamic section and locates all dependent modules (shared
     /// libraries) populating m_filespec_ap.  This method will compute the
@@ -395,6 +415,9 @@ private:
         
     unsigned
     PLTRelocationType();
+
+    static lldb_private::Error
+    RefineModuleDetailsFromNote (lldb_private::DataExtractor &data, lldb_private::ArchSpec &arch_spec, lldb_private::UUID &uuid);
 };
 
 #endif // #ifndef liblldb_ObjectFileELF_h_

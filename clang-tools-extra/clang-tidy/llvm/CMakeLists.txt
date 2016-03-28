@@ -1,7 +1,10 @@
 set(LLVM_LINK_COMPONENTS support)
 
 add_clang_library(clangTidyLLVMModule
+  HeaderGuardCheck.cpp
+  IncludeOrderCheck.cpp
   LLVMTidyModule.cpp
+  TwineLocalCheck.cpp
 
   LINK_LIBS
   clangAST
@@ -9,4 +12,7 @@ add_clang_library(clangTidyLLVMModule
   clangBasic
   clangLex
   clangTidy
+  clangTidyReadabilityModule
+  clangTidyUtils
+  clangTooling
   )

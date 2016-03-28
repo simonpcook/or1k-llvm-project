@@ -135,17 +135,22 @@ public:
     typeObjCClassPtr,       // pointer to ObjC class [Darwin]
     typeObjC2CategoryList,  // pointers to ObjC category [Darwin]
     typeDTraceDOF,          // runtime data for Dtrace [Darwin]
+    typeInterposingTuples,  // tuples of interposing info for dyld [Darwin]
     typeTempLTO,            // temporary atom for bitcode reader
     typeCompactUnwindInfo,  // runtime data for unwinder [Darwin]
+    typeProcessedUnwindInfo,// compressed compact unwind info [Darwin]
     typeThunkTLV,           // thunk used to access a TLV [Darwin]
     typeTLVInitialData,     // initial data for a TLV [Darwin]
     typeTLVInitialZeroFill, // TLV initial zero fill data [Darwin]
     typeTLVInitializerPtr,  // pointer to thread local initializer [Darwin]
+    typeMachHeader,         // atom representing mach_header [Darwin]
     typeThreadZeroFill,     // Uninitialized thread local data(TBSS) [ELF]
     typeThreadData,         // Initialized thread local data(TDATA) [ELF]
     typeRONote,             // Identifies readonly note sections [ELF]
     typeRWNote,             // Identifies readwrite note sections [ELF]
     typeNoAlloc,            // Identifies non allocatable sections [ELF]
+    typeGroupComdat,        // Identifies a section group [ELF, COFF]
+    typeGnuLinkOnce,        // Identifies a gnu.linkonce section [ELF]
   };
 
   // Permission bits for atoms and segments. The order of these values are
@@ -187,6 +192,15 @@ public:
     dynamicExportNormal,
     /// \brief The linker will always export this atom dynamically.
     dynamicExportAlways,
+  };
+
+  // Attributes describe a code model used by the atom.
+  enum CodeModel {
+    codeNA,           // no specific code model
+    codeMipsPIC,      // PIC function in a PIC / non-PIC mixed file
+    codeMipsMicro,    // microMIPS instruction encoding
+    codeMipsMicroPIC, // microMIPS instruction encoding + PIC
+    codeMips16,       // MIPS-16 instruction encoding
   };
 
   struct Alignment {
@@ -261,18 +275,15 @@ public:
     return dynamicExportNormal;
   }
 
+  /// \brief Code model used by the atom.
+  virtual CodeModel codeModel() const { return codeNA; }
+
   /// \brief Returns the OS memory protections required for this atom's content
   /// at runtime.
   ///
   /// A function atom is R_X, a global variable is RW_, and a read-only constant
   /// is R__.
   virtual ContentPermissions permissions() const;
-
-  /// \brief means this is a zero size atom that exists to provide an alternate
-  /// name for another atom.  Alias atoms must have a special Reference to the
-  /// atom they alias which the layout engine recognizes and forces the alias
-  /// atom to layout right before the target atom.
-  virtual bool isAlias() const = 0;
 
   /// \brief returns a reference to the raw (unrelocated) bytes of this Atom's
   /// content.
@@ -321,12 +332,20 @@ public:
   static ContentPermissions permissions(ContentType type);
 
   /// Utility function to check if the atom occupies file space
-  virtual bool occupiesDiskSpace() const {
+  bool occupiesDiskSpace() const {
     ContentType atomContentType = contentType();
     return !(atomContentType == DefinedAtom::typeZeroFill ||
              atomContentType == DefinedAtom::typeZeroFillFast ||
              atomContentType == DefinedAtom::typeTLVInitialZeroFill ||
              atomContentType == DefinedAtom::typeThreadZeroFill);
+  }
+
+  /// Utility function to check if the atom belongs to a group section
+  /// that represents section groups or .gnu.linkonce sections.
+  bool isGroupParent() const {
+    ContentType atomContentType = contentType();
+    return (atomContentType == DefinedAtom::typeGroupComdat ||
+            atomContentType == DefinedAtom::typeGnuLinkOnce);
   }
 
 protected:

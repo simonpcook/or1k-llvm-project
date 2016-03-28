@@ -53,7 +53,7 @@ struct FPR_i386
             uint32_t fiseg;   // FPU IP Selector (fcs)
             uint32_t fooff;   // FPU Operand Pointer Offset (foo)
             uint32_t foseg;   // FPU Operand Pointer Selector (fos)
-        } i386;
+        } i386_;// Added _ in the end to avoid error with gcc defining i386 in some cases
     } ptr;
     uint32_t mxcsr;         // MXCSR Register State
     uint32_t mxcsrmask;     // MXCSR Mask
@@ -100,18 +100,14 @@ RegisterContextLinux_i386::RegisterContextLinux_i386(const ArchSpec &target_arch
 {
 }
 
-RegisterContextLinux_i386::~RegisterContextLinux_i386()
-{
-}
-
 size_t
-RegisterContextLinux_i386::GetGPRSize()
+RegisterContextLinux_i386::GetGPRSize() const
 {
     return sizeof(GPR);
 }
 
 const RegisterInfo *
-RegisterContextLinux_i386::GetRegisterInfo()
+RegisterContextLinux_i386::GetRegisterInfo() const
 {
     switch (m_target_arch.GetMachine())
     {
@@ -122,3 +118,10 @@ RegisterContextLinux_i386::GetRegisterInfo()
             return NULL;
     }
 }
+
+uint32_t
+RegisterContextLinux_i386::GetRegisterCount () const
+{
+    return static_cast<uint32_t> (sizeof (g_register_infos_i386) / sizeof (g_register_infos_i386 [0]));
+}
+

@@ -13,8 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_CODEGEN_FUNCTION_INFO_H
-#define LLVM_CLANG_CODEGEN_FUNCTION_INFO_H
+#ifndef LLVM_CLANG_CODEGEN_CGFUNCTIONINFO_H
+#define LLVM_CLANG_CODEGEN_CGFUNCTIONINFO_H
 
 #include "clang/AST/CanonicalType.h"
 #include "clang/AST/Type.h"
@@ -35,7 +35,7 @@ namespace CodeGen {
 /// specific C type should be passed to or returned from a function.
 class ABIArgInfo {
 public:
-  enum Kind {
+  enum Kind : uint8_t {
     /// Direct - Pass the argument directly using the normal converted LLVM
     /// type, or by coercing to another specified type stored in
     /// 'CoerceToType').  If an offset is specified (in UIntData), then the
@@ -68,65 +68,95 @@ public:
     /// type, it means the value is returned indirectly via an implicit sret
     /// parameter stored in the argument struct.
     InAlloca,
-
     KindFirst = Direct,
     KindLast = InAlloca
   };
 
 private:
-  Kind TheKind;
-  llvm::Type *TypeData;
+  llvm::Type *TypeData; // isDirect() || isExtend()
   llvm::Type *PaddingType;
-  unsigned UIntData;
-  bool BoolData0;
-  bool BoolData1;
-  bool InReg;
-  bool PaddingInReg;
+  union {
+    unsigned DirectOffset;     // isDirect() || isExtend()
+    unsigned IndirectAlign;    // isIndirect()
+    unsigned AllocaFieldIndex; // isInAlloca()
+  };
+  Kind TheKind;
+  bool PaddingInReg : 1;
+  bool InAllocaSRet : 1;    // isInAlloca()
+  bool IndirectByVal : 1;   // isIndirect()
+  bool IndirectRealign : 1; // isIndirect()
+  bool SRetAfterThis : 1;   // isIndirect()
+  bool InReg : 1;           // isDirect() || isExtend() || isIndirect()
+  bool CanBeFlattened: 1;   // isDirect()
 
-  ABIArgInfo(Kind K, llvm::Type *TD, unsigned UI, bool B0, bool B1, bool IR,
-             bool PIR, llvm::Type* P)
-    : TheKind(K), TypeData(TD), PaddingType(P), UIntData(UI), BoolData0(B0),
-      BoolData1(B1), InReg(IR), PaddingInReg(PIR) {}
+  ABIArgInfo(Kind K)
+      : PaddingType(nullptr), TheKind(K), PaddingInReg(false), InReg(false) {}
 
 public:
-  ABIArgInfo() : TheKind(Direct), TypeData(0), UIntData(0) {}
+  ABIArgInfo()
+      : TypeData(nullptr), PaddingType(nullptr), DirectOffset(0),
+        TheKind(Direct), PaddingInReg(false), InReg(false) {}
 
-  static ABIArgInfo getDirect(llvm::Type *T = 0, unsigned Offset = 0,
-                              llvm::Type *Padding = 0) {
-    return ABIArgInfo(Direct, T, Offset, false, false, false, false, Padding);
+  static ABIArgInfo getDirect(llvm::Type *T = nullptr, unsigned Offset = 0,
+                              llvm::Type *Padding = nullptr,
+                              bool CanBeFlattened = true) {
+    auto AI = ABIArgInfo(Direct);
+    AI.setCoerceToType(T);
+    AI.setDirectOffset(Offset);
+    AI.setPaddingType(Padding);
+    AI.setCanBeFlattened(CanBeFlattened);
+    return AI;
   }
-  static ABIArgInfo getDirectInReg(llvm::Type *T = 0) {
-    return ABIArgInfo(Direct, T, 0, false, false, true, false, 0);
+  static ABIArgInfo getDirectInReg(llvm::Type *T = nullptr) {
+    auto AI = getDirect(T);
+    AI.setInReg(true);
+    return AI;
   }
-  static ABIArgInfo getExtend(llvm::Type *T = 0) {
-    return ABIArgInfo(Extend, T, 0, false, false, false, false, 0);
+  static ABIArgInfo getExtend(llvm::Type *T = nullptr) {
+    auto AI = ABIArgInfo(Extend);
+    AI.setCoerceToType(T);
+    AI.setDirectOffset(0);
+    return AI;
   }
-  static ABIArgInfo getExtendInReg(llvm::Type *T = 0) {
-    return ABIArgInfo(Extend, T, 0, false, false, true, false, 0);
+  static ABIArgInfo getExtendInReg(llvm::Type *T = nullptr) {
+    auto AI = getExtend(T);
+    AI.setInReg(true);
+    return AI;
   }
   static ABIArgInfo getIgnore() {
-    return ABIArgInfo(Ignore, 0, 0, false, false, false, false, 0);
+    return ABIArgInfo(Ignore);
   }
-  static ABIArgInfo getIndirect(unsigned Alignment, bool ByVal = true
-                                , bool Realign = false
-                                , llvm::Type *Padding = 0) {
-    return ABIArgInfo(Indirect, 0, Alignment, ByVal, Realign, false, false,
-                      Padding);
+  static ABIArgInfo getIndirect(unsigned Alignment, bool ByVal = true,
+                                bool Realign = false,
+                                llvm::Type *Padding = nullptr) {
+    auto AI = ABIArgInfo(Indirect);
+    AI.setIndirectAlign(Alignment);
+    AI.setIndirectByVal(ByVal);
+    AI.setIndirectRealign(Realign);
+    AI.setSRetAfterThis(false);
+    AI.setPaddingType(Padding);
+    return AI;
+  }
+  static ABIArgInfo getIndirectInReg(unsigned Alignment, bool ByVal = true,
+                                     bool Realign = false) {
+    auto AI = getIndirect(Alignment, ByVal, Realign);
+    AI.setInReg(true);
+    return AI;
   }
   static ABIArgInfo getInAlloca(unsigned FieldIndex) {
-    return ABIArgInfo(InAlloca, 0, FieldIndex, false, false, false, false, 0);
-  }
-  static ABIArgInfo getIndirectInReg(unsigned Alignment, bool ByVal = true
-                                , bool Realign = false) {
-    return ABIArgInfo(Indirect, 0, Alignment, ByVal, Realign, true, false, 0);
+    auto AI = ABIArgInfo(InAlloca);
+    AI.setInAllocaFieldIndex(FieldIndex);
+    return AI;
   }
   static ABIArgInfo getExpand() {
-    return ABIArgInfo(Expand, 0, 0, false, false, false, false, 0);
+    return ABIArgInfo(Expand);
   }
   static ABIArgInfo getExpandWithPadding(bool PaddingInReg,
                                          llvm::Type *Padding) {
-   return ABIArgInfo(Expand, 0, 0, false, false, false, PaddingInReg,
-                     Padding);
+    auto AI = getExpand();
+    AI.setPaddingInReg(PaddingInReg);
+    AI.setPaddingType(Padding);
+    return AI;
   }
 
   Kind getKind() const { return TheKind; }
@@ -137,22 +167,27 @@ public:
   bool isIndirect() const { return TheKind == Indirect; }
   bool isExpand() const { return TheKind == Expand; }
 
-  bool canHaveCoerceToType() const {
-    return TheKind == Direct || TheKind == Extend;
-  }
+  bool canHaveCoerceToType() const { return isDirect() || isExtend(); }
 
   // Direct/Extend accessors
   unsigned getDirectOffset() const {
     assert((isDirect() || isExtend()) && "Not a direct or extend kind");
-    return UIntData;
+    return DirectOffset;
+  }
+  void setDirectOffset(unsigned Offset) {
+    assert((isDirect() || isExtend()) && "Not a direct or extend kind");
+    DirectOffset = Offset;
   }
 
-  llvm::Type *getPaddingType() const {
-    return PaddingType;
-  }
+  llvm::Type *getPaddingType() const { return PaddingType; }
+
+  void setPaddingType(llvm::Type *T) { PaddingType = T; }
 
   bool getPaddingInReg() const {
     return PaddingInReg;
+  }
+  void setPaddingInReg(bool PIR) {
+    PaddingInReg = PIR;
   }
 
   llvm::Type *getCoerceToType() const {
@@ -170,37 +205,77 @@ public:
     return InReg;
   }
 
+  void setInReg(bool IR) {
+    assert((isDirect() || isExtend() || isIndirect()) && "Invalid kind!");
+    InReg = IR;
+  }
+
   // Indirect accessors
   unsigned getIndirectAlign() const {
-    assert(TheKind == Indirect && "Invalid kind!");
-    return UIntData;
+    assert(isIndirect() && "Invalid kind!");
+    return IndirectAlign;
+  }
+  void setIndirectAlign(unsigned IA) {
+    assert(isIndirect() && "Invalid kind!");
+    IndirectAlign = IA;
   }
 
   bool getIndirectByVal() const {
-    assert(TheKind == Indirect && "Invalid kind!");
-    return BoolData0;
+    assert(isIndirect() && "Invalid kind!");
+    return IndirectByVal;
+  }
+  void setIndirectByVal(unsigned IBV) {
+    assert(isIndirect() && "Invalid kind!");
+    IndirectByVal = IBV;
   }
 
   bool getIndirectRealign() const {
-    assert(TheKind == Indirect && "Invalid kind!");
-    return BoolData1;
+    assert(isIndirect() && "Invalid kind!");
+    return IndirectRealign;
+  }
+  void setIndirectRealign(bool IR) {
+    assert(isIndirect() && "Invalid kind!");
+    IndirectRealign = IR;
+  }
+
+  bool isSRetAfterThis() const {
+    assert(isIndirect() && "Invalid kind!");
+    return SRetAfterThis;
+  }
+  void setSRetAfterThis(bool AfterThis) {
+    assert(isIndirect() && "Invalid kind!");
+    SRetAfterThis = AfterThis;
   }
 
   unsigned getInAllocaFieldIndex() const {
-    assert(TheKind == InAlloca && "Invalid kind!");
-    return UIntData;
+    assert(isInAlloca() && "Invalid kind!");
+    return AllocaFieldIndex;
+  }
+  void setInAllocaFieldIndex(unsigned FieldIndex) {
+    assert(isInAlloca() && "Invalid kind!");
+    AllocaFieldIndex = FieldIndex;
   }
 
   /// \brief Return true if this field of an inalloca struct should be returned
   /// to implement a struct return calling convention.
   bool getInAllocaSRet() const {
-    assert(TheKind == InAlloca && "Invalid kind!");
-    return BoolData0;
+    assert(isInAlloca() && "Invalid kind!");
+    return InAllocaSRet;
   }
 
   void setInAllocaSRet(bool SRet) {
-    assert(TheKind == InAlloca && "Invalid kind!");
-    BoolData0 = SRet;
+    assert(isInAlloca() && "Invalid kind!");
+    InAllocaSRet = SRet;
+  }
+
+  bool getCanBeFlattened() const {
+    assert(isDirect() && "Invalid kind!");
+    return CanBeFlattened;
+  }
+
+  void setCanBeFlattened(bool Flatten) {
+    assert(isDirect() && "Invalid kind!");
+    CanBeFlattened = Flatten;
   }
 
   void dump() const;
@@ -277,6 +352,9 @@ class CGFunctionInfo : public llvm::FoldingSetNode {
   /// Whether this is an instance method.
   unsigned InstanceMethod : 1;
 
+  /// Whether this is a chain call.
+  unsigned ChainCall : 1;
+
   /// Whether this function is noreturn.
   unsigned NoReturn : 1;
 
@@ -285,7 +363,7 @@ class CGFunctionInfo : public llvm::FoldingSetNode {
 
   /// How many arguments to pass inreg.
   unsigned HasRegParm : 1;
-  unsigned RegParm : 4;
+  unsigned RegParm : 3;
 
   RequiredArgs Required;
 
@@ -305,7 +383,8 @@ class CGFunctionInfo : public llvm::FoldingSetNode {
 
 public:
   static CGFunctionInfo *create(unsigned llvmCC,
-                                bool InstanceMethod,
+                                bool instanceMethod,
+                                bool chainCall,
                                 const FunctionType::ExtInfo &extInfo,
                                 CanQualType resultType,
                                 ArrayRef<CanQualType> argTypes,
@@ -331,8 +410,13 @@ public:
 
   bool isVariadic() const { return Required.allowsOptionalArgs(); }
   RequiredArgs getRequiredArgs() const { return Required; }
+  unsigned getNumRequiredArgs() const {
+    return isVariadic() ? getRequiredArgs().getNumRequiredArgs() : arg_size();
+  }
 
   bool isInstanceMethod() const { return InstanceMethod; }
+
+  bool isChainCall() const { return ChainCall; }
 
   bool isNoReturn() const { return NoReturn; }
 
@@ -384,6 +468,7 @@ public:
   void Profile(llvm::FoldingSetNodeID &ID) {
     ID.AddInteger(getASTCallingConvention());
     ID.AddBoolean(InstanceMethod);
+    ID.AddBoolean(ChainCall);
     ID.AddBoolean(NoReturn);
     ID.AddBoolean(ReturnsRetained);
     ID.AddBoolean(HasRegParm);
@@ -395,12 +480,14 @@ public:
   }
   static void Profile(llvm::FoldingSetNodeID &ID,
                       bool InstanceMethod,
+                      bool ChainCall,
                       const FunctionType::ExtInfo &info,
                       RequiredArgs required,
                       CanQualType resultType,
                       ArrayRef<CanQualType> argTypes) {
     ID.AddInteger(info.getCC());
     ID.AddBoolean(InstanceMethod);
+    ID.AddBoolean(ChainCall);
     ID.AddBoolean(info.getNoReturn());
     ID.AddBoolean(info.getProducesResult());
     ID.AddBoolean(info.getHasRegParm());

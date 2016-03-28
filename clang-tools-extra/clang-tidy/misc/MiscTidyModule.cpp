@@ -11,6 +11,12 @@
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
 #include "ArgumentCommentCheck.h"
+#include "BoolPointerImplicitConversion.h"
+#include "SwappedArgumentsCheck.h"
+#include "UndelegatedConstructor.h"
+#include "UniqueptrResetRelease.h"
+#include "UnusedRAII.h"
+#include "UseOverride.h"
 
 namespace clang {
 namespace tidy {
@@ -18,9 +24,17 @@ namespace tidy {
 class MiscModule : public ClangTidyModule {
 public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
-     CheckFactories.addCheckFactory(
-       "misc-argument-comment",
-       new ClangTidyCheckFactory<ArgumentCommentCheck>());
+    CheckFactories.registerCheck<ArgumentCommentCheck>("misc-argument-comment");
+    CheckFactories.registerCheck<BoolPointerImplicitConversion>(
+        "misc-bool-pointer-implicit-conversion");
+    CheckFactories.registerCheck<SwappedArgumentsCheck>(
+        "misc-swapped-arguments");
+    CheckFactories.registerCheck<UndelegatedConstructorCheck>(
+        "misc-undelegated-constructor");
+    CheckFactories.registerCheck<UniqueptrResetRelease>(
+        "misc-uniqueptr-reset-release");
+    CheckFactories.registerCheck<UnusedRAIICheck>("misc-unused-raii");
+    CheckFactories.registerCheck<UseOverride>("misc-use-override");
   }
 };
 

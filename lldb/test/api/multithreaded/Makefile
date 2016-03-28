@@ -1,7 +1,9 @@
 LEVEL = ../../make
 
+ENABLE_STD_THREADS := YES
 CXX_SOURCES := main.cpp
 
-clean: OBJECTS+=*.d.* *.d *.o *.pyc *.dSYM
-
 include $(LEVEL)/Makefile.rules
+
+clean::
+	rm -rf *.o *.d *.dSYM

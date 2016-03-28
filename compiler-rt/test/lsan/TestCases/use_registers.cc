@@ -1,12 +1,13 @@
 // Test that registers of running threads are included in the root set.
 // RUN: LSAN_BASE="report_objects=1:use_stacks=0"
 // RUN: %clangxx_lsan -pthread %s -o %t
-// RUN: LSAN_OPTIONS=$LSAN_BASE:"use_registers=0" not %t 2>&1 | FileCheck %s
-// RUN: LSAN_OPTIONS=$LSAN_BASE:"use_registers=1" %t 2>&1
-// RUN: LSAN_OPTIONS="" %t 2>&1
+// RUN: LSAN_OPTIONS=$LSAN_BASE:"use_registers=0" not %run %t 2>&1 | FileCheck %s
+// RUN: LSAN_OPTIONS=$LSAN_BASE:"use_registers=1" %run %t 2>&1
+// RUN: LSAN_OPTIONS="" %run %t 2>&1
 
 #include <assert.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -33,7 +34,7 @@ void *registers_thread_func(void *arg) {
   fflush(stderr);
   __sync_fetch_and_xor(sync, 1);
   while (true)
-    pthread_yield();
+    sched_yield();
 }
 
 int main() {
@@ -42,7 +43,7 @@ int main() {
   int res = pthread_create(&thread_id, 0, registers_thread_func, &sync);
   assert(res == 0);
   while (!__sync_fetch_and_xor(&sync, 0))
-    pthread_yield();
+    sched_yield();
   return 0;
 }
 // CHECK: Test alloc: [[ADDR:.*]].

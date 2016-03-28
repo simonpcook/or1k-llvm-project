@@ -9,9 +9,9 @@
 #ifndef HEXAGON_DYNAMIC_LIBRARY_WRITER_H
 #define HEXAGON_DYNAMIC_LIBRARY_WRITER_H
 
+#include "DynamicLibraryWriter.h"
 #include "HexagonExecutableAtoms.h"
 #include "HexagonLinkingContext.h"
-#include "DynamicLibraryWriter.h"
 
 namespace lld {
 namespace elf {
@@ -31,10 +31,10 @@ protected:
 
   virtual void finalizeDefaultAtomValues();
 
-  virtual error_code setELFHeader() {
+  virtual std::error_code setELFHeader() {
     DynamicLibraryWriter<ELFT>::setELFHeader();
     HexagonELFWriter<ELFT>::setELFHeader(*this->_elfHeader);
-    return error_code::success();
+    return std::error_code();
   }
 
 private:

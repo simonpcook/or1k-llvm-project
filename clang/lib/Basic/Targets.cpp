@@ -1769,6 +1769,9 @@ public:
     case 'f': // Floating point register
       Info.setAllowsRegister();
       return true;
+    case 'K': // 16-bit immediate
+      Info.setRequiresImmediate(0, 0xffff);
+      return true;
     }
   }
   virtual const char *getClobbers() const {

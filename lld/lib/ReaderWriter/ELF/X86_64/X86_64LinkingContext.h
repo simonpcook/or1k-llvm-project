@@ -10,7 +10,6 @@
 #ifndef LLD_READER_WRITER_ELF_X86_64_X86_64_LINKING_CONTEXT_H
 #define LLD_READER_WRITER_ELF_X86_64_X86_64_LINKING_CONTEXT_H
 
-#include "X86_64TargetHandler.h"
 #include "lld/ReaderWriter/ELFLinkingContext.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/ELF.h"
@@ -25,13 +24,17 @@ enum {
   LLD_R_X86_64_GOTRELINDEX = 1024,
 };
 
-class X86_64LinkingContext final : public ELFLinkingContext {
+class X86_64LinkingContext : public ELFLinkingContext {
+protected:
+  X86_64LinkingContext(llvm::Triple, std::unique_ptr<TargetHandler>);
+
 public:
-  X86_64LinkingContext(llvm::Triple triple)
-      : ELFLinkingContext(triple, std::unique_ptr<TargetHandlerBase>(
-                                      new X86_64TargetHandler(*this))) {}
+  static std::unique_ptr<ELFLinkingContext> create(llvm::Triple);
+  int getMachineType() const override { return llvm::ELF::EM_X86_64; }
+  X86_64LinkingContext(llvm::Triple);
 
   void addPasses(PassManager &) override;
+  void registerRelocationNames(Registry &r) override;
 
   uint64_t getBaseAddress() const override {
     if (_baseAddress == 0)
@@ -39,8 +42,7 @@ public:
     return _baseAddress;
   }
 
-  bool isDynamicRelocation(const DefinedAtom &,
-                           const Reference &r) const override {
+  bool isDynamicRelocation(const Reference &r) const override {
     if (r.kindNamespace() != Reference::KindNamespace::ELF)
       return false;
     assert(r.kindArch() == Reference::KindArch::x86_64);
@@ -50,6 +52,7 @@ public:
     case llvm::ELF::R_X86_64_COPY:
     case llvm::ELF::R_X86_64_DTPMOD64:
     case llvm::ELF::R_X86_64_DTPOFF64:
+    case llvm::ELF::R_X86_64_TPOFF64:
       return true;
     default:
       return false;
@@ -65,8 +68,7 @@ public:
     return false;
   }
 
-  virtual bool isPLTRelocation(const DefinedAtom &,
-                               const Reference &r) const override {
+  bool isPLTRelocation(const Reference &r) const override {
     if (r.kindNamespace() != Reference::KindNamespace::ELF)
       return false;
     assert(r.kindArch() == Reference::KindArch::x86_64);

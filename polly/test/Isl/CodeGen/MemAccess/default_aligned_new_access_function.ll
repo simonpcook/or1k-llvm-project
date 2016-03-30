@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -basicaa -polly-import-jscop -polly-import-jscop-dir=%S -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-import-jscop -polly-import-jscop-dir=%S -analyze < %s | FileCheck %s
 ;
 ; Check that we allow the new access functions even though they access
 ; different locations than the original ones (but the alignment is the
@@ -25,10 +25,10 @@ for.cond:                                         ; preds = %for.inc, %entry
 
 for.body:                                         ; preds = %for.cond
   %tmp = shl nsw i64 %indvars.iv, 1
-  %arrayidx = getelementptr inbounds i32* %B, i64 %tmp
-  %tmp4 = load i32* %arrayidx, align 4
+  %arrayidx = getelementptr inbounds i32, i32* %B, i64 %tmp
+  %tmp4 = load i32, i32* %arrayidx, align 4
   %tmp5 = shl nsw i64 %indvars.iv, 1
-  %arrayidx3 = getelementptr inbounds i32* %A, i64 %tmp5
+  %arrayidx3 = getelementptr inbounds i32, i32* %A, i64 %tmp5
   store i32 %tmp4, i32* %arrayidx3, align 4
   br label %for.inc
 

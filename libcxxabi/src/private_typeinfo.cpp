@@ -34,7 +34,7 @@
 // 
 // _LIBCXX_DYNAMIC_FALLBACK is currently off by default.
 
-#if _LIBCXX_DYNAMIC_FALLBACK
+#ifdef _LIBCXX_DYNAMIC_FALLBACK
 #include "abort_message.h"
 #include <string.h>
 #include <sys/syslog.h>
@@ -57,7 +57,7 @@ namespace __cxxabiv1
 
 #pragma GCC visibility push(hidden)
 
-#if _LIBCXX_DYNAMIC_FALLBACK
+#ifdef _LIBCXX_DYNAMIC_FALLBACK
 
 inline
 bool
@@ -219,8 +219,10 @@ __enum_type_info::can_catch(const __shim_type_info* thrown_type,
     return is_equal(this, thrown_type, false);
 }
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#endif
 
 // Handles bullets 1 and 2
 bool
@@ -246,7 +248,9 @@ __class_type_info::can_catch(const __shim_type_info* thrown_type,
     return false;
 }
 
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 
 void
 __class_type_info::process_found_base_class(__dynamic_cast_info* info,
@@ -351,8 +355,10 @@ __pbase_type_info::can_catch(const __shim_type_info* thrown_type,
            is_equal(thrown_type, &typeid(std::nullptr_t), false);
 }
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#endif
 
 // Handles bullets 1, 3 and 4
 // NOTE: It might not be safe to adjust the pointer if it is not not a pointer
@@ -500,13 +506,17 @@ bool __pointer_to_member_type_info::can_catch_nested(
     return true;
 }
 
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 
 #pragma GCC visibility pop
 #pragma GCC visibility push(default)
 
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#endif
 
 // __dynamic_cast
 
@@ -593,7 +603,7 @@ __dynamic_cast(const void* static_ptr,
     // Currently clang always sets src2dst_offset to -1 (no hint).
 
     // Get (dynamic_ptr, dynamic_type) from static_ptr
-    void** vtable = *(void***)static_ptr;
+    void **vtable = *static_cast<void ** const *>(static_ptr);
     ptrdiff_t offset_to_derived = reinterpret_cast<ptrdiff_t>(vtable[-2]);
     const void* dynamic_ptr = static_cast<const char*>(static_ptr) + offset_to_derived;
     const __class_type_info* dynamic_type = static_cast<const __class_type_info*>(vtable[-1]);
@@ -612,7 +622,7 @@ __dynamic_cast(const void* static_ptr,
         info.number_of_dst_type = 1;
         // Do the  search
         dynamic_type->search_above_dst(&info, dynamic_ptr, dynamic_ptr, public_path, false);
-#if _LIBCXX_DYNAMIC_FALLBACK
+#ifdef _LIBCXX_DYNAMIC_FALLBACK
         // The following if should always be false because we should definitely
         //   find (static_ptr, static_type), either on a public or private path
         if (info.path_dst_ptr_to_static_ptr == unknown)
@@ -636,7 +646,7 @@ __dynamic_cast(const void* static_ptr,
     {
         // Not using giant short cut.  Do the search
         dynamic_type->search_below_dst(&info, dynamic_ptr, public_path, false);
- #if _LIBCXX_DYNAMIC_FALLBACK
+ #ifdef _LIBCXX_DYNAMIC_FALLBACK
         // The following if should always be false because we should definitely
         //   find (static_ptr, static_type), either on a public or private path
         if (info.path_dst_ptr_to_static_ptr == unknown &&
@@ -675,7 +685,9 @@ __dynamic_cast(const void* static_ptr,
     return const_cast<void*>(dst_ptr);
 }
 
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
 
 #pragma GCC visibility pop
 #pragma GCC visibility push(hidden)

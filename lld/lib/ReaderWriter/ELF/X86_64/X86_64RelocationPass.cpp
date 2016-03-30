@@ -24,27 +24,27 @@
 #include "X86_64LinkingContext.h"
 #include "lld/Core/Simple.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 
 using namespace lld;
 using namespace lld::elf;
 using namespace llvm::ELF;
 
-namespace {
 // .got values
-const uint8_t x86_64GotAtomContent[8] = { 0 };
+static const uint8_t x86_64GotAtomContent[8] = {0};
 
 // .plt value (entry 0)
-const uint8_t x86_64Plt0AtomContent[16] = {
-  0xff, 0x35, 0x00, 0x00, 0x00, 0x00, // pushq GOT+8(%rip)
-  0xff, 0x25, 0x00, 0x00, 0x00, 0x00, // jmp *GOT+16(%rip)
-  0x90, 0x90, 0x90, 0x90              // nopnopnop
+static const uint8_t x86_64Plt0AtomContent[16] = {
+    0xff, 0x35, 0x00, 0x00, 0x00, 0x00, // pushq GOT+8(%rip)
+    0xff, 0x25, 0x00, 0x00, 0x00, 0x00, // jmp *GOT+16(%rip)
+    0x90, 0x90, 0x90, 0x90              // nopnopnop
 };
 
 // .plt values (other entries)
-const uint8_t x86_64PltAtomContent[16] = {
-  0xff, 0x25, 0x00, 0x00, 0x00, 0x00, // jmpq *gotatom(%rip)
-  0x68, 0x00, 0x00, 0x00, 0x00,       // pushq reloc-index
-  0xe9, 0x00, 0x00, 0x00, 0x00        // jmpq plt[-1]
+static const uint8_t x86_64PltAtomContent[16] = {
+    0xff, 0x25, 0x00, 0x00, 0x00, 0x00, // jmpq *gotatom(%rip)
+    0x68, 0x00, 0x00, 0x00, 0x00,       // pushq reloc-index
+    0xe9, 0x00, 0x00, 0x00, 0x00        // jmpq plt[-1]
 };
 
 // TLS GD Entry
@@ -53,6 +53,7 @@ static const uint8_t x86_64GotTlsGdAtomContent[] = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+namespace {
 /// \brief Atoms that are used by X86_64 dynamic linking
 class X86_64GOTAtom : public GOTAtom {
 public:
@@ -75,11 +76,7 @@ public:
 
 class X86_64PLT0Atom : public PLT0Atom {
 public:
-  X86_64PLT0Atom(const File &f) : PLT0Atom(f) {
-#ifndef NDEBUG
-    _name = ".PLT0";
-#endif
-  }
+  X86_64PLT0Atom(const File &f) : PLT0Atom(f) {}
   ArrayRef<uint8_t> rawContent() const override {
     return ArrayRef<uint8_t>(x86_64Plt0AtomContent, 16);
   }
@@ -111,9 +108,11 @@ template <class Derived> class RelocationPass : public Pass {
       return;
     assert(ref.kindArch() == Reference::KindArch::x86_64);
     switch (ref.kindValue()) {
+    case R_X86_64_16:
     case R_X86_64_32:
     case R_X86_64_32S:
     case R_X86_64_64:
+    case R_X86_64_PC16:
     case R_X86_64_PC32:
     case R_X86_64_PC64:
       static_cast<Derived *>(this)->handlePlain(ref);
@@ -189,11 +188,12 @@ protected:
     return got->second;
   }
 
-  /// \brief Create a TPOFF64 GOT entry and change the relocation to a PC32 to
-  /// the GOT.
-  void handleGOTTPOFF(const Reference &ref) {
-    const_cast<Reference &>(ref).setTarget(getGOTTPOFF(ref.target()));
-    const_cast<Reference &>(ref).setKindValue(R_X86_64_PC32);
+  /// \brief Create a TPOFF64 GOT entry.
+  std::error_code handleGOTTPOFF(const Reference &ref) {
+    if (isa<DefinedAtom>(ref.target())) {
+      const_cast<Reference &>(ref).setTarget(getGOTTPOFF(ref.target()));
+    }
+    return std::error_code();
   }
 
   /// \brief Create a TLS GOT entry with DTPMOD64/DTPOFF64 dynamic relocations.
@@ -244,9 +244,7 @@ protected:
   }
 
 public:
-  RelocationPass(const ELFLinkingContext &ctx)
-      : _file(ctx), _ctx(ctx), _null(nullptr), _PLT0(nullptr), _got0(nullptr),
-        _got1(nullptr) {}
+  RelocationPass(const ELFLinkingContext &ctx) : _file(ctx), _ctx(ctx) {}
 
   /// \brief Do the pass.
   ///
@@ -256,45 +254,46 @@ public:
   ///
   /// After all references are handled, the atoms created during that are all
   /// added to mf.
-  void perform(std::unique_ptr<MutableFile> &mf) override {
+  std::error_code perform(SimpleFile &mf) override {
     ScopedTask task(getDefaultDomain(), "X86-64 GOT/PLT Pass");
     // Process all references.
-    for (const auto &atom : mf->defined())
+    for (const auto &atom : mf.defined())
       for (const auto &ref : *atom)
         handleReference(*atom, *ref);
 
     // Add all created atoms to the link.
     uint64_t ordinal = 0;
-    if (_PLT0) {
-      _PLT0->setOrdinal(ordinal++);
-      mf->addAtom(*_PLT0);
+    if (_plt0) {
+      _plt0->setOrdinal(ordinal++);
+      mf.addAtom(*_plt0);
     }
     for (auto &plt : _pltVector) {
       plt->setOrdinal(ordinal++);
-      mf->addAtom(*plt);
+      mf.addAtom(*plt);
     }
     if (_null) {
       _null->setOrdinal(ordinal++);
-      mf->addAtom(*_null);
+      mf.addAtom(*_null);
     }
-    if (_PLT0) {
+    if (_plt0) {
       _got0->setOrdinal(ordinal++);
       _got1->setOrdinal(ordinal++);
-      mf->addAtom(*_got0);
-      mf->addAtom(*_got1);
+      mf.addAtom(*_got0);
+      mf.addAtom(*_got1);
     }
     for (auto &got : _gotVector) {
       got->setOrdinal(ordinal++);
-      mf->addAtom(*got);
+      mf.addAtom(*got);
     }
     for (auto &got : _tlsGotVector) {
       got->setOrdinal(ordinal++);
-      mf->addAtom(*got);
+      mf.addAtom(*got);
     }
     for (auto obj : _objectVector) {
       obj->setOrdinal(ordinal++);
-      mf->addAtom(*obj);
+      mf.addAtom(*obj);
     }
+    return std::error_code();
   }
 
 protected:
@@ -323,14 +322,14 @@ protected:
   std::vector<GOTAtom *> _tlsGotVector;
 
   /// \brief GOT entry that is always 0. Used for undefined weaks.
-  GOTAtom *_null;
+  GOTAtom *_null = nullptr;
 
   /// \brief The got and plt entries for .PLT0. This is used to call into the
   /// dynamic linker for symbol resolution.
   /// @{
-  PLT0Atom *_PLT0;
-  GOTAtom *_got0;
-  GOTAtom *_got1;
+  PLT0Atom *_plt0 = nullptr;
+  GOTAtom *_got0 = nullptr;
+  GOTAtom *_got1 = nullptr;
   /// @}
 };
 
@@ -380,20 +379,20 @@ public:
       : RelocationPass(ctx) {}
 
   const PLT0Atom *getPLT0() {
-    if (_PLT0)
-      return _PLT0;
+    if (_plt0)
+      return _plt0;
     // Fill in the null entry.
     getNullGOT();
-    _PLT0 = new (_file._alloc) X86_64PLT0Atom(_file);
+    _plt0 = new (_file._alloc) X86_64PLT0Atom(_file);
     _got0 = new (_file._alloc) X86_64GOTAtom(_file, ".got.plt");
     _got1 = new (_file._alloc) X86_64GOTAtom(_file, ".got.plt");
-    _PLT0->addReferenceELF_x86_64(R_X86_64_PC32, 2, _got0, -4);
-    _PLT0->addReferenceELF_x86_64(R_X86_64_PC32, 8, _got1, -4);
+    _plt0->addReferenceELF_x86_64(R_X86_64_PC32, 2, _got0, -4);
+    _plt0->addReferenceELF_x86_64(R_X86_64_PC32, 8, _got1, -4);
 #ifndef NDEBUG
     _got0->_name = "__got0";
     _got1->_name = "__got1";
 #endif
-    return _PLT0;
+    return _plt0;
   }
 
   const PLTAtom *getPLTEntry(const Atom *a) {
@@ -471,7 +470,7 @@ public:
   const GOTAtom *getSharedGOT(const Atom *a) {
     auto got = _gotMap.find(a);
     if (got == _gotMap.end()) {
-      auto g = new (_file._alloc) X86_64GOTAtom(_file, ".got.dyn");
+      auto g = new (_file._alloc) X86_64GOTAtom(_file, ".got");
       g->addReferenceELF_x86_64(R_X86_64_GLOB_DAT, 0, a, 0);
 #ifndef NDEBUG
       g->_name = "__got_";
@@ -502,13 +501,12 @@ lld::elf::createX86_64RelocationPass(const X86_64LinkingContext &ctx) {
   switch (ctx.getOutputELFType()) {
   case llvm::ELF::ET_EXEC:
     if (ctx.isDynamic())
-      return std::unique_ptr<Pass>(new DynamicRelocationPass(ctx));
-    else
-      return std::unique_ptr<Pass>(new StaticRelocationPass(ctx));
+      return llvm::make_unique<DynamicRelocationPass>(ctx);
+    return llvm::make_unique<StaticRelocationPass>(ctx);
   case llvm::ELF::ET_DYN:
-    return std::unique_ptr<Pass>(new DynamicRelocationPass(ctx));
+    return llvm::make_unique<DynamicRelocationPass>(ctx);
   case llvm::ELF::ET_REL:
-    return std::unique_ptr<Pass>();
+    return nullptr;
   default:
     llvm_unreachable("Unhandled output file type");
   }

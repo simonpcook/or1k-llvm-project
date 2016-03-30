@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-import-jscop -polly-import-jscop-dir=%S -analyze 2>&1 < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-import-jscop -polly-import-jscop-dir=%S -analyze 2>&1 < %s | FileCheck %s
 ;
 ; Check that we do not allow to access elements not accessed before because the
 ; alignment information would become invalid.
@@ -22,7 +22,7 @@ for.cond:                                         ; preds = %for.inc, %entry
   br i1 %cmp, label %for.body, label %for.end
 
 for.body:                                         ; preds = %for.cond
-  %arrayidx = getelementptr inbounds i32* %A, i64 %indvars.iv
+  %arrayidx = getelementptr inbounds i32, i32* %A, i64 %indvars.iv
   %tmp = trunc i64 %indvars.iv to i32
   store i32 %tmp, i32* %arrayidx, align 8
   br label %for.inc

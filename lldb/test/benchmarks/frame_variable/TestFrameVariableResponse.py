@@ -14,7 +14,7 @@ class FrameVariableResponseBench(BenchBase):
         if lldb.bmExecutable:
             self.exe = lldb.bmExecutable
         else:
-            self.exe = self.lldbHere
+            self.exe = lldbtest_config.lldbExec
         if lldb.bmBreakpointSpec:
             self.break_spec = lldb.bmBreakpointSpec
         else:
@@ -25,6 +25,7 @@ class FrameVariableResponseBench(BenchBase):
             self.count = 20
 
     @benchmarks_test
+    @expectedFailureWindows("llvm.org/pr22274: need a pexpect replacement for windows")
     def test_startup_delay(self):
         """Test response time for the 'frame variable' command."""
         print
@@ -41,7 +42,7 @@ class FrameVariableResponseBench(BenchBase):
         self.stopwatch.reset()
         for i in range(count):
             # So that the child gets torn down after the test.
-            self.child = pexpect.spawn('%s %s %s' % (self.lldbHere, self.lldbOption, exe))
+            self.child = pexpect.spawn('%s %s %s' % (lldbtest_config.lldbExec, self.lldbOption, exe))
             child = self.child
 
             # Turn on logging for what the child sends back.

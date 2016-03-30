@@ -1,7 +1,5 @@
 /*
  * z_Windows_NT_util.c -- platform specific routines.
- * $Revision: 43389 $
- * $Date: 2014-08-11 10:54:01 -0500 (Mon, 11 Aug 2014) $
  */
 
 
@@ -134,9 +132,9 @@ HMODULE ntdll = NULL;
 
 /* End of NtQuerySystemInformation()-related code */
 
-#if KMP_ARCH_X86_64
+#if KMP_GROUP_AFFINITY
 static HMODULE kernel32 = NULL;
-#endif /* KMP_ARCH_X86_64 */
+#endif /* KMP_GROUP_AFFINITY */
 
 /* ----------------------------------------------------------------------------------- */
 /* ----------------------------------------------------------------------------------- */
@@ -547,7 +545,7 @@ __kmp_gtid_get_specific()
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
 
-#if KMP_ARCH_X86_64
+#if KMP_GROUP_AFFINITY
 
 //
 // Only 1 DWORD in the mask should have any procs set.
@@ -570,13 +568,13 @@ __kmp_get_proc_group( kmp_affin_mask_t const *mask )
     return group;
 }
 
-#endif /* KMP_ARCH_X86_64 */
+#endif /* KMP_GROUP_AFFINITY */
 
 int
 __kmp_set_system_affinity( kmp_affin_mask_t const *mask, int abort_on_error )
 {
 
-#if KMP_ARCH_X86_64
+#if KMP_GROUP_AFFINITY
 
     if (__kmp_num_proc_groups > 1) {
         //
@@ -615,7 +613,7 @@ __kmp_set_system_affinity( kmp_affin_mask_t const *mask, int abort_on_error )
     }
     else
 
-#endif /* KMP_ARCH_X86_64 */
+#endif /* KMP_GROUP_AFFINITY */
 
     {
         if (!SetThreadAffinityMask( GetCurrentThread(), *mask )) {
@@ -638,7 +636,7 @@ int
 __kmp_get_system_affinity( kmp_affin_mask_t *mask, int abort_on_error )
 {
 
-#if KMP_ARCH_X86_64
+#if KMP_GROUP_AFFINITY
 
     if (__kmp_num_proc_groups > 1) {
         KMP_CPU_ZERO(mask);
@@ -667,7 +665,7 @@ __kmp_get_system_affinity( kmp_affin_mask_t *mask, int abort_on_error )
     }
     else
 
-#endif /* KMP_ARCH_X86_64 */
+#endif /* KMP_GROUP_AFFINITY */
 
     {
         kmp_affin_mask_t newMask, sysMask, retval;
@@ -718,7 +716,7 @@ void
 __kmp_affinity_bind_thread( int proc )
 {
 
-#if KMP_ARCH_X86_64
+#if KMP_GROUP_AFFINITY
 
     if (__kmp_num_proc_groups > 1) {
         //
@@ -747,7 +745,7 @@ __kmp_affinity_bind_thread( int proc )
     }
     else
 
-#endif /* KMP_ARCH_X86_64 */
+#endif /* KMP_GROUP_AFFINITY */
 
     {
         kmp_affin_mask_t mask;
@@ -764,10 +762,10 @@ __kmp_affinity_determine_capable( const char *env_var )
     // All versions of Windows* OS (since Win '95) support SetThreadAffinityMask().
     //
 
-#if KMP_ARCH_X86_64
-    __kmp_affin_mask_size = __kmp_num_proc_groups * sizeof(kmp_affin_mask_t);
+#if KMP_GROUP_AFFINITY
+    KMP_AFFINITY_ENABLE(__kmp_num_proc_groups*sizeof(kmp_affin_mask_t));
 #else
-    __kmp_affin_mask_size = sizeof(kmp_affin_mask_t);
+    KMP_AFFINITY_ENABLE(sizeof(kmp_affin_mask_t));
 #endif
 
     KA_TRACE( 10, (
@@ -801,7 +799,7 @@ __kmp_read_cpu_time( void )
         sec += KernelTime.dwLowDateTime;
         sec += UserTime.dwLowDateTime;
 
-        cpu_time += (sec * 100.0) / NSEC_PER_SEC;
+        cpu_time += (sec * 100.0) / KMP_NSEC_PER_SEC;
     }
 
     return cpu_time;
@@ -837,6 +835,21 @@ __kmp_runtime_initialize( void )
         return;
     };
 
+#if KMP_DYNAMIC_LIB
+    /* Pin dynamic library for the lifetime of application */
+    {
+        // First, turn off error message boxes
+        UINT err_mode = SetErrorMode (SEM_FAILCRITICALERRORS);
+        HMODULE h;
+        BOOL ret = GetModuleHandleEx( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                     |GET_MODULE_HANDLE_EX_FLAG_PIN,
+                                     (LPCTSTR)&__kmp_serial_initialize, &h);
+        KMP_DEBUG_ASSERT2(h && ret, "OpenMP RTL cannot find itself loaded");
+        SetErrorMode (err_mode);   // Restore error mode
+        KA_TRACE( 10, ("__kmp_runtime_initialize: dynamic library pinned\n") );
+    }
+#endif
+
     InitializeCriticalSection( & __kmp_win32_section );
 #if USE_ITT_BUILD
     __kmp_itt_system_object_created( & __kmp_win32_section, "Critical Section" );
@@ -850,7 +863,7 @@ __kmp_runtime_initialize( void )
     #endif /* KMP_ARCH_X86 || KMP_ARCH_X86_64 */
 
     /* Set up minimum number of threads to switch to TLS gtid */
-    #if KMP_OS_WINDOWS && ! defined GUIDEDLL_EXPORTS
+    #if KMP_OS_WINDOWS && ! defined KMP_DYNAMIC_LIB
         // Windows* OS, static library.
         /*
             New thread may use stack space previously used by another thread, currently terminated.
@@ -861,7 +874,7 @@ __kmp_runtime_initialize( void )
             foreign tread.
 
             Setting __kmp_tls_gtid_min to 0 workarounds this problem: __kmp_get_global_thread_id()
-            does not search through stacks, but get gtid from TLS immediatelly.
+            does not search through stacks, but get gtid from TLS immediately.
 
             --ln
         */
@@ -920,7 +933,7 @@ __kmp_runtime_initialize( void )
     }
     KMP_DEBUG_ASSERT( NtQuerySystemInformation != NULL );
 
-#if KMP_ARCH_X86_64
+#if KMP_GROUP_AFFINITY
     //
     // Load kernel32.dll.
     // Same caveat - must use full system path name.
@@ -937,6 +950,7 @@ __kmp_runtime_initialize( void )
         // Load kernel32.dll using full path.
         //
         kernel32 = GetModuleHandle( path.str );
+        KA_TRACE( 10, ("__kmp_runtime_initialize: kernel32.dll = %s\n", path.str ) );
 
         //
         // Load the function pointers to kernel32.dll routines
@@ -947,6 +961,12 @@ __kmp_runtime_initialize( void )
             __kmp_GetActiveProcessorGroupCount = (kmp_GetActiveProcessorGroupCount_t) GetProcAddress( kernel32, "GetActiveProcessorGroupCount" );
             __kmp_GetThreadGroupAffinity = (kmp_GetThreadGroupAffinity_t) GetProcAddress( kernel32, "GetThreadGroupAffinity" );
             __kmp_SetThreadGroupAffinity = (kmp_SetThreadGroupAffinity_t) GetProcAddress( kernel32, "SetThreadGroupAffinity" );
+
+            KA_TRACE( 10, ("__kmp_runtime_initialize: __kmp_GetActiveProcessorCount = %p\n", __kmp_GetActiveProcessorCount ) );
+            KA_TRACE( 10, ("__kmp_runtime_initialize: __kmp_GetActiveProcessorGroupCount = %p\n", __kmp_GetActiveProcessorGroupCount ) );
+            KA_TRACE( 10, ("__kmp_runtime_initialize:__kmp_GetThreadGroupAffinity = %p\n", __kmp_GetThreadGroupAffinity ) );
+            KA_TRACE( 10, ("__kmp_runtime_initialize: __kmp_SetThreadGroupAffinity = %p\n", __kmp_SetThreadGroupAffinity ) );
+            KA_TRACE( 10, ("__kmp_runtime_initialize: sizeof(kmp_affin_mask_t) = %d\n", sizeof(kmp_affin_mask_t) ) );
 
             //
             // See if group affinity is supported on this system.
@@ -973,8 +993,11 @@ __kmp_runtime_initialize( void )
                 for ( i = 0; i < __kmp_num_proc_groups; i++ ) {
                     DWORD size = __kmp_GetActiveProcessorCount( i );
                     __kmp_xproc += size;
-                    KA_TRACE( 20, ("__kmp_runtime_initialize: proc group %d size = %d\n", i, size ) );
+                    KA_TRACE( 10, ("__kmp_runtime_initialize: proc group %d size = %d\n", i, size ) );
                 }
+                }
+            else {
+                KA_TRACE( 10, ("__kmp_runtime_initialize: %d processor groups detected\n", __kmp_num_proc_groups ) );
             }
         }
     }
@@ -985,7 +1008,7 @@ __kmp_runtime_initialize( void )
 #else
     GetSystemInfo( & info );
     __kmp_xproc = info.dwNumberOfProcessors;
-#endif // KMP_ARCH_X86_64
+#endif /* KMP_GROUP_AFFINITY */
 
     //
     // If the OS said there were 0 procs, take a guess and use a value of 2.
@@ -1132,46 +1155,6 @@ __kmp_read_system_time( double *delta )
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
 
-/*
- * Change thread to the affinity mask pointed to by affin_mask argument
- * and return a pointer to the old value in the old_mask argument, if argument
- * is non-NULL.
- */
-
-void
-__kmp_change_thread_affinity_mask( int gtid, kmp_affin_mask_t *new_mask,
-                                   kmp_affin_mask_t *old_mask )
-{
-    kmp_info_t  *th = __kmp_threads[ gtid ];
-
-    KMP_DEBUG_ASSERT( *new_mask != 0 );
-
-    if ( old_mask != NULL ) {
-        *old_mask = SetThreadAffinityMask( th -> th.th_info.ds.ds_thread, *new_mask );
-
-        if (! *old_mask ) {
-            DWORD error = GetLastError();
-            __kmp_msg(
-                kmp_ms_fatal,
-                KMP_MSG( CantSetThreadAffMask ),
-                KMP_ERR( error ),
-                __kmp_msg_null
-            );
-        }
-    }
-    if (__kmp_affinity_verbose)
-            KMP_INFORM( ChangeAffMask, "KMP_AFFINITY (Bind)", gtid, *old_mask, *new_mask );
-
-    /* Make sure old value is correct in thread data structures */
-    KMP_DEBUG_ASSERT( old_mask != NULL && *old_mask == *(th -> th.th_affin_mask ));
-
-    KMP_CPU_COPY(th -> th.th_affin_mask, new_mask);
-}
-
-
-/* ------------------------------------------------------------------------ */
-/* ------------------------------------------------------------------------ */
-
 void * __stdcall
 __kmp_launch_worker( void *arg )
 {
@@ -1207,7 +1190,7 @@ __kmp_launch_worker( void *arg )
 #endif /* KMP_ARCH_X86 || KMP_ARCH_X86_64 */
 
     if ( __kmp_stkoffset > 0 && gtid > 0 ) {
-        padding = _alloca( gtid * __kmp_stkoffset );
+        padding = KMP_ALLOCA( gtid * __kmp_stkoffset );
     }
 
     KMP_FSYNC_RELEASING( &this_thr -> th.th_info.ds.ds_alive );

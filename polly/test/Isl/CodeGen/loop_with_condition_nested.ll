@@ -1,5 +1,5 @@
-; RUN: opt %loadPolly -basicaa -polly-ast -analyze < %s | FileCheck %s
-; RUN: opt %loadPolly -basicaa -polly-codegen-isl -loops -analyze < %s | FileCheck %s -check-prefix=LOOPS
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -basicaa -polly-ast -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -basicaa -polly-codegen -loops -analyze < %s | FileCheck %s -check-prefix=LOOPS
 
 
 ;#include <string.h>
@@ -48,7 +48,6 @@
 ;}
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-pc-linux-gnu"
 
 @A = common global [1024 x i32] zeroinitializer, align 16 ; <[1024 x i32]*> [#uses=4]
 @B = common global [1024 x i32] zeroinitializer, align 16 ; <[1024 x i32]*> [#uses=4]
@@ -60,8 +59,8 @@ define void @loop_with_condition() nounwind {
 
 ; <label>:1                                       ; preds = %10, %0
   %indvar = phi i64 [ %indvar.next, %10 ], [ 0, %0 ] ; <i64> [#uses=5]
-  %scevgep = getelementptr [1024 x i32]* @A, i64 0, i64 %indvar ; <i32*> [#uses=2]
-  %scevgep1 = getelementptr [1024 x i32]* @B, i64 0, i64 %indvar ; <i32*> [#uses=1]
+  %scevgep = getelementptr [1024 x i32], [1024 x i32]* @A, i64 0, i64 %indvar ; <i32*> [#uses=2]
+  %scevgep1 = getelementptr [1024 x i32], [1024 x i32]* @B, i64 0, i64 %indvar ; <i32*> [#uses=1]
   %i.0 = trunc i64 %indvar to i32                 ; <i32> [#uses=2]
   %exitcond = icmp ne i64 %indvar, 1024           ; <i1> [#uses=1]
   br i1 %exitcond, label %2, label %11
@@ -107,13 +106,13 @@ define i32 @main() nounwind {
 
 ; <label>:1                                       ; preds = %8, %0
   %indvar1 = phi i64 [ %indvar.next2, %8 ], [ 0, %0 ] ; <i64> [#uses=3]
-  %scevgep3 = getelementptr [1024 x i32]* @B, i64 0, i64 %indvar1 ; <i32*> [#uses=1]
+  %scevgep3 = getelementptr [1024 x i32], [1024 x i32]* @B, i64 0, i64 %indvar1 ; <i32*> [#uses=1]
   %i.0 = trunc i64 %indvar1 to i32                ; <i32> [#uses=1]
   %2 = icmp slt i32 %i.0, 1024                    ; <i1> [#uses=1]
   br i1 %2, label %3, label %9
 
 ; <label>:3                                       ; preds = %1
-  %4 = load i32* %scevgep3                        ; <i32> [#uses=1]
+  %4 = load i32, i32* %scevgep3                        ; <i32> [#uses=1]
   %5 = icmp ne i32 %4, 3                          ; <i1> [#uses=1]
   br i1 %5, label %6, label %7
 
@@ -132,7 +131,7 @@ define i32 @main() nounwind {
 
 ; <label>:10                                      ; preds = %37, %9
   %indvar = phi i64 [ %indvar.next, %37 ], [ 0, %9 ] ; <i64> [#uses=3]
-  %scevgep = getelementptr [1024 x i32]* @A, i64 0, i64 %indvar ; <i32*> [#uses=3]
+  %scevgep = getelementptr [1024 x i32], [1024 x i32]* @A, i64 0, i64 %indvar ; <i32*> [#uses=3]
   %i.1 = trunc i64 %indvar to i32                 ; <i32> [#uses=6]
   %11 = icmp slt i32 %i.1, 1024                   ; <i1> [#uses=1]
   br i1 %11, label %12, label %38
@@ -146,7 +145,7 @@ define i32 @main() nounwind {
   br i1 %15, label %16, label %20
 
 ; <label>:16                                      ; preds = %14
-  %17 = load i32* %scevgep                        ; <i32> [#uses=1]
+  %17 = load i32, i32* %scevgep                        ; <i32> [#uses=1]
   %18 = icmp ne i32 %17, 1                        ; <i1> [#uses=1]
   br i1 %18, label %19, label %20
 
@@ -162,7 +161,7 @@ define i32 @main() nounwind {
   br i1 %23, label %24, label %28
 
 ; <label>:24                                      ; preds = %22
-  %25 = load i32* %scevgep                        ; <i32> [#uses=1]
+  %25 = load i32, i32* %scevgep                        ; <i32> [#uses=1]
   %26 = icmp ne i32 %25, 2                        ; <i1> [#uses=1]
   br i1 %26, label %27, label %28
 
@@ -174,7 +173,7 @@ define i32 @main() nounwind {
   br i1 %29, label %30, label %34
 
 ; <label>:30                                      ; preds = %28
-  %31 = load i32* %scevgep                        ; <i32> [#uses=1]
+  %31 = load i32, i32* %scevgep                        ; <i32> [#uses=1]
   %32 = icmp ne i32 %31, 0                        ; <i1> [#uses=1]
   br i1 %32, label %33, label %34
 
@@ -205,10 +204,10 @@ define i32 @main() nounwind {
 declare void @llvm.memset.p0i8.i64(i8* nocapture, i8, i64, i32, i1) nounwind
 
 ; CHECK: for (int c0 = 0; c0 <= 1023; c0 += 1) {
-; CHECK:   if (c0 <= 20) {
-; CHECK:     Stmt_7(c0);
-; CHECK:   } else if (c0 <= 512)
+; CHECK:   if (c0 >= 21 && c0 <= 512) {
 ; CHECK:     Stmt_6(c0);
+; CHECK:   } else if (c0 <= 20)
+; CHECK:     Stmt_7(c0);
 ; CHECK:   Stmt_9(c0);
 ; CHECK: }
 

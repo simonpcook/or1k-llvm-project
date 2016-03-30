@@ -39,11 +39,23 @@ using namespace lldb_private;
 
 #define PO_FUNCTION_TIMEOUT_USEC 15*1000*1000
 
+AppleObjCRuntime::AppleObjCRuntime(Process *process) :
+    ObjCLanguageRuntime (process),
+    m_read_objc_library (false),
+    m_objc_trampoline_handler_ap (),
+    m_Foundation_major()
+{
+    ReadObjCLibraryIfNeeded (process->GetTarget().GetImages());
+}
+
 bool
 AppleObjCRuntime::GetObjectDescription (Stream &str, ValueObject &valobj)
 {
-    // ObjC objects can only be pointers
-    if (!valobj.IsPointerType())
+    ClangASTType clang_type(valobj.GetClangType());
+    bool is_signed;
+    // ObjC objects can only be pointers (or numbers that actually represents pointers
+    // but haven't been typecast, because reasons..)
+    if (!clang_type.IsIntegerType (is_signed) && !clang_type.IsPointerType ())
         return false;
     
     // Make the argument list: we pass one arg, the address of our pointer, to the print function.
@@ -438,5 +450,31 @@ AppleObjCRuntime::CreateExceptionSearchFilter ()
     {
         return LanguageRuntime::CreateExceptionSearchFilter();
     }
+}
+
+void
+AppleObjCRuntime::ReadObjCLibraryIfNeeded (const ModuleList &module_list)
+{
+    if (!HasReadObjCLibrary ())
+    {
+        Mutex::Locker locker (module_list.GetMutex ());
+
+        size_t num_modules = module_list.GetSize();
+        for (size_t i = 0; i < num_modules; i++)
+        {
+            auto mod = module_list.GetModuleAtIndex (i);
+            if (IsModuleObjCLibrary (mod))
+            {
+                ReadObjCLibrary (mod);
+                break;
+            }
+        }
+    }
+}
+
+void
+AppleObjCRuntime::ModulesDidLoad (const ModuleList &module_list)
+{
+    ReadObjCLibraryIfNeeded (module_list);
 }
 

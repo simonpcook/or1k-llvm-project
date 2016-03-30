@@ -12,12 +12,12 @@
 #include "File.h"
 #include "MachONormalizedFile.h"
 #include "MachOPasses.h"
+#include "lld/Core/ArchiveLibraryFile.h"
 #include "lld/Core/PassManager.h"
-#include "lld/Driver/DarwinInputGraph.h"
-#include "lld/Passes/LayoutPass.h"
-#include "lld/Passes/RoundTripYAMLPass.h"
-#include "lld/ReaderWriter/Reader.h"
-#include "lld/ReaderWriter/Writer.h"
+#include "lld/Core/Reader.h"
+#include "lld/Core/Writer.h"
+#include "lld/Driver/Driver.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Config/config.h"
@@ -133,8 +133,7 @@ bool MachOLinkingContext::isThinObjectFile(StringRef path, Arch &arch) {
   return mach_o::normalized::isThinObjectFile(path, arch);
 }
 
-bool MachOLinkingContext::sliceFromFatFile(const MemoryBuffer &mb,
-                                           uint32_t &offset,
+bool MachOLinkingContext::sliceFromFatFile(MemoryBufferRef mb, uint32_t &offset,
                                            uint32_t &size) {
   return mach_o::normalized::sliceFromFatFile(mb, _arch, offset, size);
 }
@@ -143,9 +142,9 @@ MachOLinkingContext::MachOLinkingContext()
     : _outputMachOType(MH_EXECUTE), _outputMachOTypeStatic(false),
       _doNothing(false), _pie(false), _arch(arch_unknown), _os(OS::macOSX),
       _osMinVersion(0), _pageZeroSize(0), _pageSize(4096), _baseAddress(0),
-      _compatibilityVersion(0), _currentVersion(0), _deadStrippableDylib(false),
-      _printAtoms(false), _testingFileUsage(false), _keepPrivateExterns(false),
-      _demangle(false), _archHandler(nullptr),
+      _stackSize(0), _compatibilityVersion(0), _currentVersion(0),
+      _deadStrippableDylib(false), _printAtoms(false), _testingFileUsage(false),
+      _keepPrivateExterns(false), _demangle(false), _archHandler(nullptr),
       _exportMode(ExportMode::globals),
       _debugInfoMode(DebugInfoMode::addDebugMap), _orderFileEntries(0) {}
 
@@ -214,7 +213,7 @@ void MachOLinkingContext::configure(HeaderFileType type, Arch arch, OS os,
     }
     break;
   case llvm::MachO::MH_DYLIB:
-    _globalsAreDeadStripRoots = true;
+    setGlobalsAreDeadStripRoots(true);
     break;
   case llvm::MachO::MH_BUNDLE:
     break;
@@ -331,6 +330,17 @@ bool MachOLinkingContext::needsShimPass() const {
   case arch_armv6:
   case arch_armv7:
   case arch_armv7s:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool MachOLinkingContext::needsTLVPass() const {
+  switch (_outputMachOType) {
+  case MH_BUNDLE:
+  case MH_EXECUTE:
+  case MH_DYLIB:
     return true;
   default:
     return false;
@@ -570,7 +580,7 @@ bool MachOLinkingContext::validateImpl(raw_ostream &diagnostics) {
       addDeadStripRoot(binderSymbolName());
     // If using -exported_symbols_list, make all exported symbols live.
     if (_exportMode == ExportMode::whiteList) {
-      _globalsAreDeadStripRoots = false;
+      setGlobalsAreDeadStripRoots(false);
       for (const auto &symbol : _exportedSymbols)
         addDeadStripRoot(symbol.getKey());
     }
@@ -582,18 +592,15 @@ bool MachOLinkingContext::validateImpl(raw_ostream &diagnostics) {
 }
 
 void MachOLinkingContext::addPasses(PassManager &pm) {
-  pm.add(std::unique_ptr<Pass>(new LayoutPass(
-      registry(), [&](const DefinedAtom * left, const DefinedAtom * right,
-                      bool & leftBeforeRight)
-                      ->bool {
-    return customAtomOrderer(left, right, leftBeforeRight);
-  })));
+  mach_o::addLayoutPass(pm, *this);
   if (needsStubsPass())
     mach_o::addStubsPass(pm, *this);
   if (needsCompactUnwindPass())
     mach_o::addCompactUnwindPass(pm, *this);
   if (needsGOTPass())
     mach_o::addGOTPass(pm, *this);
+  if (needsTLVPass())
+    mach_o::addTLVPass(pm, *this);
   if (needsShimPass())
     mach_o::addShimPass(pm, *this); // Shim pass must run after stubs pass.
 }
@@ -604,21 +611,39 @@ Writer &MachOLinkingContext::writer() const {
   return *_writer;
 }
 
+ErrorOr<std::unique_ptr<MemoryBuffer>>
+MachOLinkingContext::getMemoryBuffer(StringRef path) {
+  addInputFileDependency(path);
+
+  ErrorOr<std::unique_ptr<MemoryBuffer>> mbOrErr =
+    MemoryBuffer::getFileOrSTDIN(path);
+  if (std::error_code ec = mbOrErr.getError())
+    return ec;
+  std::unique_ptr<MemoryBuffer> mb = std::move(mbOrErr.get());
+
+  // If buffer contains a fat file, find required arch in fat buffer
+  // and switch buffer to point to just that required slice.
+  uint32_t offset;
+  uint32_t size;
+  if (sliceFromFatFile(mb->getMemBufferRef(), offset, size))
+    return MemoryBuffer::getFileSlice(path, size, offset);
+  return std::move(mb);
+}
+
 MachODylibFile* MachOLinkingContext::loadIndirectDylib(StringRef path) {
-  std::unique_ptr<MachOFileNode> node(new MachOFileNode(path, *this));
-  std::error_code ec = node->parse(*this, llvm::errs());
-  if (ec)
+  ErrorOr<std::unique_ptr<MemoryBuffer>> mbOrErr = getMemoryBuffer(path);
+  if (mbOrErr.getError())
     return nullptr;
 
-  assert(node->files().size() == 1 && "expected one file in dylib");
-  // lld::File object is owned by MachOFileNode object. This method returns
-  // an unowned pointer to the lld::File object.
-  MachODylibFile* result = reinterpret_cast<MachODylibFile*>(
-                                                   node->files().front().get());
-
+  ErrorOr<std::unique_ptr<File>> fileOrErr =
+      registry().loadFile(std::move(mbOrErr.get()));
+  if (!fileOrErr)
+    return nullptr;
+  std::unique_ptr<File> &file = fileOrErr.get();
+  file->parse();
+  MachODylibFile *result = reinterpret_cast<MachODylibFile *>(file.get());
   // Node object now owned by _indirectDylibs vector.
-  _indirectDylibs.push_back(std::move(node));
-
+  _indirectDylibs.push_back(std::move(file));
   return result;
 }
 
@@ -673,7 +698,7 @@ uint32_t MachOLinkingContext::dylibCompatVersion(StringRef installName) const {
     return 0x1000; // 1.0
 }
 
-bool MachOLinkingContext::createImplicitFiles(
+void MachOLinkingContext::createImplicitFiles(
                             std::vector<std::unique_ptr<File> > &result) {
   // Add indirect dylibs by asking each linked dylib to add its indirects.
   // Iterate until no more dylibs get loaded.
@@ -687,12 +712,13 @@ bool MachOLinkingContext::createImplicitFiles(
   }
 
   // Let writer add output type specific extras.
-  return writer().createImplicitFiles(result);
+  writer().createImplicitFiles(result);
 }
 
 
 void MachOLinkingContext::registerDylib(MachODylibFile *dylib,
                                         bool upward) const {
+  std::lock_guard<std::mutex> lock(_dylibsMutex);
   _allDylibs.insert(dylib);
   _pathToDylibMap[dylib->installName()] = dylib;
   // If path is different than install name, register path too.
@@ -719,19 +745,16 @@ ArchHandler &MachOLinkingContext::archHandler() const {
 
 
 void MachOLinkingContext::addSectionAlignment(StringRef seg, StringRef sect,
-                                                               uint8_t align2) {
-  SectionAlign entry;
-  entry.segmentName = seg;
-  entry.sectionName = sect;
-  entry.align2 = align2;
+                                              uint16_t align) {
+  SectionAlign entry = { seg, sect, align };
   _sectAligns.push_back(entry);
 }
 
 bool MachOLinkingContext::sectionAligned(StringRef seg, StringRef sect,
-                                                        uint8_t &align2) const {
+                                         uint16_t &align) const {
   for (const SectionAlign &entry : _sectAligns) {
     if (seg.equals(entry.segmentName) && sect.equals(entry.sectionName)) {
-      align2 = entry.align2;
+      align = entry.align;
       return true;
     }
   }
@@ -779,7 +802,7 @@ bool MachOLinkingContext::exportSymbolNamed(StringRef sym) const {
 
 std::string MachOLinkingContext::demangle(StringRef symbolName) const {
   // Only try to demangle symbols if -demangle on command line
-  if (!_demangle)
+  if (!demangleSymbols())
     return symbolName;
 
   // Only try to demangle symbols that look like C++ symbols
@@ -890,7 +913,7 @@ MachOLinkingContext::findOrderOrdinal(const std::vector<OrderFileNode> &nodes,
 
 bool MachOLinkingContext::customAtomOrderer(const DefinedAtom *left,
                                             const DefinedAtom *right,
-                                            bool &leftBeforeRight) {
+                                            bool &leftBeforeRight) const {
   // No custom sorting if no order file entries.
   if (!_orderFileEntries)
     return false;
@@ -928,16 +951,12 @@ bool MachOLinkingContext::customAtomOrderer(const DefinedAtom *left,
   return true;
 }
 
-static File *getFirstFile(const std::unique_ptr<InputElement> &elem) {
-  FileNode *e = dyn_cast<FileNode>(const_cast<InputElement *>(elem.get()));
-  if (!e || e->files().empty())
-    return nullptr;
-  return e->files()[0].get();
-}
-
-static bool isLibrary(const std::unique_ptr<InputElement> &elem) {
-  File *f = getFirstFile(elem);
-  return f && (isa<SharedLibraryFile>(f) || isa<ArchiveLibraryFile>(f));
+static bool isLibrary(const std::unique_ptr<Node> &elem) {
+  if (FileNode *node = dyn_cast<FileNode>(const_cast<Node *>(elem.get()))) {
+    File *file = node->getFile();
+    return isa<SharedLibraryFile>(file) || isa<ArchiveLibraryFile>(file);
+  }
+  return false;
 }
 
 // The darwin linker processes input files in two phases.  The first phase
@@ -947,12 +966,11 @@ static bool isLibrary(const std::unique_ptr<InputElement> &elem) {
 // comes before any library file. We also make a group for the library files
 // so that the Resolver will reiterate over the libraries as long as we find
 // new undefines from libraries.
-void MachOLinkingContext::maybeSortInputFiles() {
-  std::vector<std::unique_ptr<InputElement>> &elements
-      = getInputGraph().inputElements();
+void MachOLinkingContext::finalizeInputFiles() {
+  std::vector<std::unique_ptr<Node>> &elements = getNodes();
   std::stable_sort(elements.begin(), elements.end(),
-                   [](const std::unique_ptr<InputElement> &a,
-                      const std::unique_ptr<InputElement> &b) {
+                   [](const std::unique_ptr<Node> &a,
+                      const std::unique_ptr<Node> &b) {
                      return !isLibrary(a) && isLibrary(b);
                    });
   size_t numLibs = std::count_if(elements.begin(), elements.end(), isLibrary);

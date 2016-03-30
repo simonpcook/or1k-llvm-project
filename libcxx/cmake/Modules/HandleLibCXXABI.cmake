@@ -15,9 +15,9 @@
 #   abidirs   : A list of relative paths to create under an include directory
 #               in the libc++ build directory.
 #
-macro(setup_abi_lib abipathvar abidefines abilib abifiles abidirs)
+macro(setup_abi_lib abidefines abilib abifiles abidirs)
   list(APPEND LIBCXX_COMPILE_FLAGS ${abidefines})
-  set(${abipathvar} "${${abipathvar}}"
+  set(LIBCXX_CXX_ABI_INCLUDE_PATHS "${LIBCXX_CXX_ABI_INCLUDE_PATHS}"
     CACHE PATH
     "Paths to C++ ABI header directories separated by ';'." FORCE
     )
@@ -33,7 +33,7 @@ macro(setup_abi_lib abipathvar abidefines abilib abifiles abidirs)
 
   foreach(fpath ${LIBCXX_ABILIB_FILES})
     set(found FALSE)
-    foreach(incpath ${${abipathvar}})
+    foreach(incpath ${LIBCXX_CXX_ABI_INCLUDE_PATHS})
       if (EXISTS "${incpath}/${fpath}")
         set(found TRUE)
         get_filename_component(dstdir ${fpath} PATH)
@@ -49,7 +49,7 @@ macro(setup_abi_lib abipathvar abidefines abilib abifiles abidirs)
       endif()
     endforeach()
     if (NOT found)
-      message(FATAL_ERROR "Failed to find ${fpath}")
+      message(WARNING "Failed to find ${fpath}")
     endif()
   endforeach()
 
@@ -71,23 +71,28 @@ if ("${LIBCXX_CXX_ABI_LIBNAME}" STREQUAL "libstdc++" OR
     set(_LIBSUPCXX_DEFINES "")
     set(_LIBSUPCXX_LIBNAME supc++)
   endif()
-  setup_abi_lib("LIBCXX_LIBSUPCXX_INCLUDE_PATHS"
+  setup_abi_lib(
     "-D__GLIBCXX__ ${_LIBSUPCXX_DEFINES}"
     "${_LIBSUPCXX_LIBNAME}" "${_LIBSUPCXX_INCLUDE_FILES}" "bits"
     )
 elseif ("${LIBCXX_CXX_ABI_LIBNAME}" STREQUAL "libcxxabi")
   if (LIBCXX_CXX_ABI_INTREE)
     # Link against just-built "cxxabi" target.
-    set(CXXABI_LIBNAME cxxabi)
+    if (LIBCXX_ENABLE_STATIC_ABI_LIBRARY)
+        set(CXXABI_LIBNAME cxxabi_static)
+    else()
+        set(CXXABI_LIBNAME cxxabi_shared)
+    endif()
+    set(LIBCXX_LIBCPPABI_VERSION "2" PARENT_SCOPE)
   else()
     # Assume c++abi is installed in the system, rely on -lc++abi link flag.
     set(CXXABI_LIBNAME "c++abi")
   endif()
-  setup_abi_lib("LIBCXX_LIBCXXABI_INCLUDE_PATHS" ""
-    ${CXXABI_LIBNAME} "cxxabi.h" ""
+  setup_abi_lib("-DLIBCXX_BUILDING_LIBCXXABI"
+    ${CXXABI_LIBNAME} "cxxabi.h;__cxxabi_config.h" ""
     )
 elseif ("${LIBCXX_CXX_ABI_LIBNAME}" STREQUAL "libcxxrt")
-  setup_abi_lib("LIBCXX_LIBCXXRT_INCLUDE_PATHS" "-DLIBCXXRT"
+  setup_abi_lib("-DLIBCXXRT"
     "cxxrt" "cxxabi.h;unwind.h;unwind-arm.h;unwind-itanium.h" ""
     )
 elseif (NOT "${LIBCXX_CXX_ABI_LIBNAME}" STREQUAL "none")

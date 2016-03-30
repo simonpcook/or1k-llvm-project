@@ -1,8 +1,6 @@
 #if USE_ITT_BUILD
 /*
  * kmp_itt.inl -- Inline functions of ITT Notify.
- * $Revision: 43457 $
- * $Date: 2014-09-17 03:57:22 -0500 (Wed, 17 Sep 2014) $
  */
 
 
@@ -368,7 +366,7 @@ __kmp_itt_metadata_loop( ident_t * loc, kmp_uint64 sched_type, kmp_uint64 iterat
 // -------------------------------------------------------------------------------------------------
 
 LINKAGE void
-__kmp_itt_metadata_single( ) {
+__kmp_itt_metadata_single( ident_t * loc ) {
 #if USE_ITT_NOTIFY
     if( metadata_domain == NULL) {
         __kmp_acquire_bootstrap_lock( & metadata_lock );
@@ -381,8 +379,14 @@ __kmp_itt_metadata_single( ) {
     }
 
     __itt_string_handle * string_handle = __itt_string_handle_create( "omp_metadata_single");
+    kmp_str_loc_t str_loc = __kmp_str_loc_init( loc->psource, 1 );
+    kmp_uint64 single_data[ 2 ];
+    single_data[ 0 ] = str_loc.line;
+    single_data[ 1 ] = str_loc.col;
 
-    __itt_metadata_add(metadata_domain, __itt_null, string_handle, __itt_metadata_u64, 0, NULL);
+    __kmp_str_loc_free( &str_loc );
+
+    __itt_metadata_add(metadata_domain, __itt_null, string_handle, __itt_metadata_u64, 2, single_data);
 #endif
 } // __kmp_itt_metadata_single
 
@@ -730,6 +734,21 @@ __kmp_itt_task_finished(
 
 // -------------------------------------------------------------------------------------------------
 
+#if KMP_USE_DYNAMIC_LOCK
+// Takes location information directly
+__kmp_inline
+void
+___kmp_itt_lock_init( kmp_user_lock_p lock, char const *type, const ident_t *loc ) {
+#if USE_ITT_NOTIFY
+    if ( __itt_sync_create_ptr ) {
+        char const *    src = ( loc == NULL ? NULL : loc->psource );
+        KMP_ITT_DEBUG_LOCK();
+        __itt_sync_create( lock, type, src, 0 );
+        KMP_ITT_DEBUG_PRINT( "[lck ini] scre( %p, \"%s\", \"%s\", 0 )\n", lock, type, src );
+    }
+#endif
+}
+#else // KMP_USE_DYNAMIC_LOCK
 // Internal guts -- common code for locks and critical sections, do not call directly.
 __kmp_inline
 void
@@ -746,6 +765,7 @@ ___kmp_itt_lock_init( kmp_user_lock_p lock, char const * type ) {
     }; // if
 #endif
 } // ___kmp_itt_lock_init
+#endif // KMP_USE_DYNAMIC_LOCK
 
 // Internal guts -- common code for locks and critical sections, do not call directly.
 __kmp_inline
@@ -761,29 +781,82 @@ ___kmp_itt_lock_fini( kmp_user_lock_p lock, char const * type ) {
 
 // -------------------------------------------------------------------------------------------------
 
+#if KMP_USE_DYNAMIC_LOCK
+void
+__kmp_itt_lock_creating( kmp_user_lock_p lock, const ident_t *loc ) {
+    ___kmp_itt_lock_init( lock, "OMP Lock", loc );
+}
+#else
 void
 __kmp_itt_lock_creating( kmp_user_lock_p lock ) {
     ___kmp_itt_lock_init( lock, "OMP Lock" );
 } // __kmp_itt_lock_creating
+#endif
 
 void
 __kmp_itt_lock_acquiring( kmp_user_lock_p lock ) {
+#if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
+    // postpone lock object access
+    if ( __itt_sync_prepare_ptr ) {
+        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+            __itt_sync_prepare( ilk->lock );
+        } else {
+            __itt_sync_prepare( lock );
+        }
+    }
+#else
     __itt_sync_prepare( lock );
+#endif
 } // __kmp_itt_lock_acquiring
 
 void
 __kmp_itt_lock_acquired( kmp_user_lock_p lock ) {
+#if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
+    // postpone lock object access
+    if ( __itt_sync_acquired_ptr ) {
+        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+            __itt_sync_acquired( ilk->lock );
+        } else {
+            __itt_sync_acquired( lock );
+        }
+    }
+#else
     __itt_sync_acquired( lock );
+#endif
 } // __kmp_itt_lock_acquired
 
 void
 __kmp_itt_lock_releasing( kmp_user_lock_p lock ) {
+#if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
+    if ( __itt_sync_releasing_ptr ) {
+        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+            __itt_sync_releasing( ilk->lock );
+        } else {
+            __itt_sync_releasing( lock );
+        }
+    }
+#else
     __itt_sync_releasing( lock );
+#endif
 } // __kmp_itt_lock_releasing
 
 void
 __kmp_itt_lock_cancelled( kmp_user_lock_p lock ) {
+#if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
+    if ( __itt_sync_cancel_ptr ) {
+        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+            __itt_sync_cancel( ilk->lock );
+        } else {
+            __itt_sync_cancel( lock );
+        }
+    }
+#else
     __itt_sync_cancel( lock );
+#endif
 } // __kmp_itt_lock_cancelled
 
 void
@@ -798,11 +871,17 @@ __kmp_itt_lock_destroyed( kmp_user_lock_p lock ) {
     Critical sections are treated exactly as locks (but have different object type).
     ------------------------------------------------------------------------------------------------
 */
-
+#if KMP_USE_DYNAMIC_LOCK
+void
+__kmp_itt_critical_creating( kmp_user_lock_p lock, const ident_t *loc ) {
+    ___kmp_itt_lock_init( lock, "OMP Critical", loc);
+}
+#else
 void
 __kmp_itt_critical_creating( kmp_user_lock_p lock ) {
     ___kmp_itt_lock_init( lock, "OMP Critical" );
 } // __kmp_itt_critical_creating
+#endif
 
 void
 __kmp_itt_critical_acquiring( kmp_user_lock_p lock ) {

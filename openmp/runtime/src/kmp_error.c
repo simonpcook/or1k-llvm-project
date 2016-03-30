@@ -1,7 +1,5 @@
-/* 
+/*
  * kmp_error.c -- KPTS functions for error checking at runtime
- * $Revision: 42951 $
- * $Date: 2014-01-21 14:41:41 -0600 (Tue, 21 Jan 2014) $
  */
 
 
@@ -25,24 +23,6 @@
 
 #define MIN_STACK       100
 
-static char const * cons_text_fort[] = {
-    "(none)",
-    "PARALLEL",
-    "work-sharing",             /* this is not called DO because of lowering of SECTIONS and WORKSHARE directives */
-    "ORDERED work-sharing",     /* this is not called DO ORDERED because of lowering of SECTIONS directives */
-    "SECTIONS",
-    "work-sharing",             /* this is not called SINGLE because of lowering of SECTIONS and WORKSHARE directives */
-    "TASKQ",
-    "TASKQ",
-    "TASKQ ORDERED",
-    "CRITICAL",
-    "ORDERED",                  /* in PARALLEL */
-    "ORDERED",                  /* in PDO */
-    "ORDERED",                  /* in TASKQ */
-    "MASTER",
-    "REDUCE",
-    "BARRIER"
-};
 
 static char const * cons_text_c[] = {
     "(none)",
@@ -72,7 +52,6 @@ static char const * cons_text_c[] = {
     cons_text_c[ (p)->stack_data[ tos ].type ],       \
     get_src( (p)->stack_data[ tos ].ident )
 
-static int const cons_text_fort_num = sizeof( cons_text_fort ) / sizeof( char const * );
 static int const cons_text_c_num    = sizeof( cons_text_c    ) / sizeof( char const * );
 
 /* ------------------------------------------------------------------------ */
@@ -113,7 +92,7 @@ __kmp_expand_cons_stack( int gtid, struct cons_header *p )
 // NOTE: Function returns allocated memory, caller must free it!
 static char const *
 __kmp_pragma(
-    enum cons_type   ct,
+    int              ct,
     ident_t const *  ident
 ) {
     char const * cons = NULL;  // Construct name.
@@ -123,7 +102,7 @@ __kmp_pragma(
     kmp_str_buf_t buffer;
     kmp_msg_t     prgm;
     __kmp_str_buf_init( & buffer );
-    if ( 0 < ct && ct <= cons_text_c_num ) {;
+    if ( 0 < ct && ct < cons_text_c_num ) {
         cons = cons_text_c[ ct ];
     } else {
         KMP_DEBUG_ASSERT( 0 );
@@ -208,6 +187,7 @@ __kmp_free_cons_stack( void * ptr ) {
 }
 
 
+#if KMP_DEBUG
 static void
 dump_cons_stack( int gtid, struct cons_header * p ) {
     int i;
@@ -226,6 +206,7 @@ dump_cons_stack( int gtid, struct cons_header * p ) {
     __kmp_debug_printf( "%s", buffer.str );
     __kmp_str_buf_free( & buffer );
 }
+#endif
 
 void
 __kmp_push_parallel( int gtid, ident_t const * ident )
@@ -289,7 +270,11 @@ __kmp_push_workshare( int gtid, enum cons_type ct, ident_t const * ident )
 }
 
 void
+#if KMP_USE_DYNAMIC_LOCK
+__kmp_check_sync( int gtid, enum cons_type ct, ident_t const * ident, kmp_user_lock_p lck, kmp_uint32 seq )
+#else
 __kmp_check_sync( int gtid, enum cons_type ct, ident_t const * ident, kmp_user_lock_p lck )
+#endif
 {
     struct cons_header *p = __kmp_threads[ gtid ]->th.th_cons;
 
@@ -347,7 +332,11 @@ __kmp_check_sync( int gtid, enum cons_type ct, ident_t const * ident, kmp_user_l
             }
         }
     } else if ( ct == ct_critical ) {
+#if KMP_USE_DYNAMIC_LOCK
+        if ( lck != NULL && __kmp_get_user_lock_owner( lck, seq ) == gtid ) {    /* this same thread already has lock for this critical section */
+#else
         if ( lck != NULL && __kmp_get_user_lock_owner( lck ) == gtid ) {    /* this same thread already has lock for this critical section */
+#endif
             int index = p->s_top;
             struct cons_data cons = { NULL, ct_critical, 0, NULL };
             /* walk up construct stack and try to find critical with matching name */
@@ -382,14 +371,22 @@ __kmp_check_sync( int gtid, enum cons_type ct, ident_t const * ident, kmp_user_l
 }
 
 void
+#if KMP_USE_DYNAMIC_LOCK
+__kmp_push_sync( int gtid, enum cons_type ct, ident_t const * ident, kmp_user_lock_p lck, kmp_uint32 seq )
+#else
 __kmp_push_sync( int gtid, enum cons_type ct, ident_t const * ident, kmp_user_lock_p lck )
+#endif
 {
     int         tos;
     struct cons_header *p = __kmp_threads[ gtid ]->th.th_cons;
 
     KMP_ASSERT( gtid == __kmp_get_gtid() );
     KE_TRACE( 10, ("__kmp_push_sync (gtid=%d)\n", gtid ) );
+#if KMP_USE_DYNAMIC_LOCK
+    __kmp_check_sync( gtid, ct, ident, lck, seq );
+#else
     __kmp_check_sync( gtid, ct, ident, lck );
+#endif
     KE_TRACE( 100, ( PUSH_MSG( ct, ident ) ) );
     tos = ++ p->stack_top;
     p->stack_data[ tos ].type  = ct;

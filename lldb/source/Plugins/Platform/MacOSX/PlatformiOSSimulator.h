@@ -85,6 +85,7 @@ public:
 
     lldb_private::Error
     GetSharedModule (const lldb_private::ModuleSpec &module_spec,
+                     lldb_private::Process* process,
                      lldb::ModuleSP &module_sp,
                      const lldb_private::FileSpecList *module_search_paths_ptr,
                      lldb::ModuleSP *old_module_sp_ptr,
@@ -99,9 +100,9 @@ public:
                                      lldb_private::ArchSpec &arch) override;
     
     void
-    AddClangModuleCompilationOptions (std::vector<std::string> &options) override
+    AddClangModuleCompilationOptions (lldb_private::Target *target, std::vector<std::string> &options) override
     {
-        return PlatformDarwin::AddClangModuleCompilationOptionsForSDKType(options, PlatformDarwin::SDKType::iPhoneSimulator);
+        return PlatformDarwin::AddClangModuleCompilationOptionsForSDKType(target, options, PlatformDarwin::SDKType::iPhoneSimulator);
     }
 
 protected:

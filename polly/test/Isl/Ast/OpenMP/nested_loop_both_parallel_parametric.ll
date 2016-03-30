@@ -1,6 +1,5 @@
-; RUN: opt %loadPolly -polly-ast -polly-parallel -polly-parallel-force -analyze -polly-delinearize < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-ast -polly-parallel -polly-parallel-force -analyze -polly-delinearize < %s | FileCheck %s
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-pc-linux-gnu"
 ; int A[1024][1024];
 ; void bar(int n) {
 ;   for (i = 0; i < n; i++)
@@ -24,7 +23,7 @@ loop.j:
   br i1 %exitcond.j, label %loop.body, label %loop.i.backedge
 
 loop.body:
-  %scevgep = getelementptr [1024 x [1024 x i32] ]* @A, i64 0, i64 %j, i64 %i
+  %scevgep = getelementptr [1024 x [1024 x i32] ], [1024 x [1024 x i32] ]* @A, i64 0, i64 %j, i64 %i
   store i32 1, i32* %scevgep
   br label %loop.j.backedge
 
@@ -41,7 +40,7 @@ ret:
   ret void
 }
 
-; CHECK: if (n <= 1024 ? 1 : 0)
+; CHECK: if (n <= 1024)
 ; CHECK:   #pragma omp parallel for
 ; CHECK:   for (int c0 = 0; c0 < n; c0 += 1)
 ; CHECK:     #pragma simd

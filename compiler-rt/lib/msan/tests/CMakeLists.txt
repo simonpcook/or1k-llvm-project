@@ -33,6 +33,7 @@ set(MSAN_UNITTEST_COMMON_CFLAGS
   -Wno-deprecated-declarations
   -Wno-unused-variable
   -Wno-zero-length-array
+  -Wno-uninitialized
   -Werror=sign-compare
 )
 set(MSAN_UNITTEST_INSTRUMENTED_CFLAGS
@@ -70,7 +71,7 @@ macro(msan_compile obj_list source arch kind)
 endmacro()
 
 macro(msan_link_shared so_list so_name arch kind)
-  parse_arguments(SOURCE "OBJECTS;LINKFLAGS;DEPS" "" ${ARGN})
+  cmake_parse_arguments(SOURCE "" "" "OBJECTS;LINKFLAGS;DEPS" ${ARGN})
   set(output_so "${CMAKE_CURRENT_BINARY_DIR}/${so_name}.${arch}${kind}.so")
   get_target_flags_for_arch(${arch} TARGET_LINKFLAGS)
   if(NOT COMPILER_RT_STANDALONE_BUILD)
@@ -136,9 +137,9 @@ endmacro()
 
 # We should only build MSan unit tests if we can build instrumented libcxx.
 if(COMPILER_RT_CAN_EXECUTE_TESTS AND COMPILER_RT_HAS_LIBCXX_SOURCES)
-  if(CAN_TARGET_x86_64)
-    add_msan_tests_for_arch(x86_64 "")
-    add_msan_tests_for_arch(x86_64 "-with-call"
+  foreach(arch ${MSAN_SUPPORTED_ARCH})
+    add_msan_tests_for_arch(${arch} "")
+    add_msan_tests_for_arch(${arch} "-with-call"
                             -mllvm -msan-instrumentation-with-call-threshold=0)
-  endif()
+  endforeach()
 endif()

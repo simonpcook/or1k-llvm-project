@@ -1,8 +1,8 @@
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-ast -analyze < %s | FileCheck %s --check-prefix=NOAA
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-ast -analyze -basicaa < %s | FileCheck %s --check-prefix=BASI
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-ast -analyze -tbaa < %s | FileCheck %s --check-prefix=TBAA
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-ast -analyze -scev-aa < %s | FileCheck %s --check-prefix=SCEV
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-ast -analyze -globalsmodref-aa < %s | FileCheck %s --check-prefix=GLOB
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-ast -analyze -polly-no-early-exit < %s | FileCheck %s --check-prefix=NOAA
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-ast -analyze -polly-no-early-exit -basicaa < %s | FileCheck %s --check-prefix=BASI
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-ast -analyze -polly-no-early-exit -tbaa < %s | FileCheck %s --check-prefix=TBAA
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-ast -analyze -polly-no-early-exit -scev-aa < %s | FileCheck %s --check-prefix=SCEV
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-ast -analyze -polly-no-early-exit -globalsmodref-aa < %s | FileCheck %s --check-prefix=GLOB
 ;
 ;    int A[1024];
 ;
@@ -12,11 +12,11 @@
 ;        A[i] = B[i];
 ;    }
 ;
-; NOAA: if ((N <= 1024 ? 1 : 0) && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
-; BASI: if ((N <= 1024 ? 1 : 0) && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
-; TBAA: if (N <= 1024 ? 1 : 0)
-; SCEV: if ((N <= 1024 ? 1 : 0) && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
-; GLOB: if ((N <= 1024 ? 1 : 0) && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
+; NOAA: if (N <= 1024 && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
+; BASI: if (N <= 1024 && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
+; TBAA: if (N <= 1024)
+; SCEV: if (N <= 1024 && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
+; GLOB: if (N <= 1024 && (&MemRef_A[N] <= &MemRef_B[0] || &MemRef_B[N] <= &MemRef_A[0]))
 ;
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
@@ -32,10 +32,10 @@ for.body.preheader:                               ; preds = %entry
 
 for.body:                                         ; preds = %for.body.preheader, %for.body
   %indvars.iv = phi i64 [ %indvars.iv.next, %for.body ], [ 0, %for.body.preheader ]
-  %arrayidx = getelementptr inbounds float* %B, i64 %indvars.iv
-  %tmp = load float* %arrayidx, align 4, !tbaa !1
+  %arrayidx = getelementptr inbounds float, float* %B, i64 %indvars.iv
+  %tmp = load float, float* %arrayidx, align 4, !tbaa !1
   %conv = fptosi float %tmp to i32
-  %arrayidx2 = getelementptr inbounds [1024 x i32]* @A, i64 0, i64 %indvars.iv
+  %arrayidx2 = getelementptr inbounds [1024 x i32], [1024 x i32]* @A, i64 0, i64 %indvars.iv
   store i32 %conv, i32* %arrayidx2, align 4, !tbaa !5
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
   %lftr.wideiv1 = trunc i64 %indvars.iv.next to i32

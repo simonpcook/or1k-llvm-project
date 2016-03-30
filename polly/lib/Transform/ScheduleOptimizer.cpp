@@ -18,20 +18,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/ScheduleOptimizer.h"
-#include "isl/aff.h"
-#include "isl/band.h"
-#include "isl/constraint.h"
-#include "isl/map.h"
-#include "isl/options.h"
-#include "isl/schedule.h"
-#include "isl/space.h"
 #include "polly/CodeGen/CodeGeneration.h"
-#include "polly/Dependences.h"
+#include "polly/DependenceInfo.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/Support/GICHelper.h"
 #include "llvm/Support/Debug.h"
+#include "isl/aff.h"
+#include "isl/band.h"
+#include "isl/constraint.h"
+#include "isl/map.h"
+#include "isl/options.h"
+#include "isl/printer.h"
+#include "isl/schedule.h"
+#include "isl/schedule_node.h"
+#include "isl/space.h"
+#include "isl/union_map.h"
+#include "isl/union_set.h"
 
 using namespace llvm;
 using namespace polly;
@@ -99,51 +103,20 @@ public:
 
   ~IslScheduleOptimizer() { isl_schedule_free(LastSchedule); }
 
-  virtual bool runOnScop(Scop &S);
-  void printScop(llvm::raw_ostream &OS) const;
-  void getAnalysisUsage(AnalysisUsage &AU) const;
+  bool runOnScop(Scop &S) override;
+  void printScop(raw_ostream &OS, Scop &S) const override;
+  void getAnalysisUsage(AnalysisUsage &AU) const override;
 
 private:
   isl_schedule *LastSchedule;
 
-  static void extendScattering(Scop &S, unsigned NewDimensions);
-
-  /// @brief Create a map that describes a n-dimensonal tiling.
+  /// @brief Decide if the @p NewSchedule is profitable for @p S.
   ///
-  /// getTileMap creates a map from a n-dimensional scattering space into an
-  /// 2*n-dimensional scattering space. The map describes a rectangular
-  /// tiling.
+  /// @param S           The SCoP we optimize.
+  /// @param NewSchedule The new schedule we computed.
   ///
-  /// Example:
-  ///   scheduleDimensions = 2, parameterDimensions = 1, TileSizes = <32, 64>
-  ///
-  ///   tileMap := [p0] -> {[s0, s1] -> [t0, t1, s0, s1]:
-  ///                        t0 % 32 = 0 and t0 <= s0 < t0 + 32 and
-  ///                        t1 % 64 = 0 and t1 <= s1 < t1 + 64}
-  ///
-  ///  Before tiling:
-  ///
-  ///  for (i = 0; i < N; i++)
-  ///    for (j = 0; j < M; j++)
-  ///	S(i,j)
-  ///
-  ///  After tiling:
-  ///
-  ///  for (t_i = 0; t_i < N; i+=32)
-  ///    for (t_j = 0; t_j < M; j+=64)
-  ///	for (i = t_i; i < min(t_i + 32, N); i++)  | Unknown that N % 32 = 0
-  ///	  for (j = t_j; j < t_j + 64; j++)        |   Known that M % 64 = 0
-  ///	    S(i,j)
-  ///
-  static isl_basic_map *getTileMap(isl_ctx *ctx, int scheduleDimensions,
-                                   isl_space *SpaceModel);
-
-  /// @brief Get the schedule for this band.
-  ///
-  /// Polly applies transformations like tiling on top of the isl calculated
-  /// value.  This can influence the number of scheduling dimension. The
-  /// number of schedule dimensions is returned in the parameter 'Dimension'.
-  static isl_union_map *getScheduleForBand(isl_band *Band, int *Dimensions);
+  /// @return True, if we believe @p NewSchedule is an improvement for @p S.
+  bool isProfitableSchedule(Scop &S, __isl_keep isl_union_map *NewSchedule);
 
   /// @brief Create a map that pre-vectorizes one scheduling dimension.
   ///
@@ -183,21 +156,44 @@ private:
   /// DimToVectorize can be divided by VectorWidth. The default VectorWidth is
   /// currently constant and not yet target specific. This function does not
   /// reason about parallelism.
-  static isl_map *getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
-                                  int ScheduleDimensions, int VectorWidth = 4);
+  static __isl_give isl_map *getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
+                                             int ScheduleDimensions,
+                                             int VectorWidth = 4);
 
-  /// @brief Get the scheduling map for a list of bands.
+  /// @brief Apply additional optimizations on the bands in the schedule tree.
   ///
-  /// Walk recursively the forest of bands to combine the schedules of the
-  /// individual bands to the overall schedule. In case tiling is requested,
-  /// the individual bands are tiled.
-  static isl_union_map *getScheduleForBandList(isl_band_list *BandList);
+  /// We are looking for an innermost band node and apply the following
+  /// transformations:
+  ///
+  ///  - Tile the band
+  ///      - if the band is tileable
+  ///      - if the band has more than one loop dimension
+  ///
+  ///  - Prevectorize the point loop of the tile
+  ///      - if vectorization is enabled
+  ///
+  /// @param Node The schedule node to (possibly) optimize.
+  /// @param User A pointer to forward some use information (currently unused).
+  static isl_schedule_node *optimizeBand(isl_schedule_node *Node, void *User);
 
-  static isl_union_map *getScheduleMap(isl_schedule *Schedule);
+  /// @brief Apply post-scheduling transformations.
+  ///
+  /// This function applies a set of additional local transformations on the
+  /// schedule tree as it computed by the isl scheduler. Local transformations
+  /// applied include:
+  ///
+  ///   - Tiling
+  ///   - Prevectorization
+  ///
+  /// @param Schedule The schedule object post-transformations will be applied
+  ///                 on.
+  /// @returns        The transformed schedule.
+  static __isl_give isl_schedule *
+  addPostTransforms(__isl_take isl_schedule *Schedule);
 
   using llvm::Pass::doFinalization;
 
-  virtual bool doFinalization() {
+  virtual bool doFinalization() override {
     isl_schedule_free(LastSchedule);
     LastSchedule = nullptr;
     return true;
@@ -207,122 +203,9 @@ private:
 
 char IslScheduleOptimizer::ID = 0;
 
-void IslScheduleOptimizer::extendScattering(Scop &S, unsigned NewDimensions) {
-  for (ScopStmt *Stmt : S) {
-    unsigned OldDimensions = Stmt->getNumScattering();
-    isl_space *Space;
-    isl_map *Map, *New;
-
-    Space = isl_space_alloc(Stmt->getIslCtx(), 0, OldDimensions, NewDimensions);
-    Map = isl_map_universe(Space);
-
-    for (unsigned i = 0; i < OldDimensions; i++)
-      Map = isl_map_equate(Map, isl_dim_in, i, isl_dim_out, i);
-
-    for (unsigned i = OldDimensions; i < NewDimensions; i++)
-      Map = isl_map_fix_si(Map, isl_dim_out, i, 0);
-
-    Map = isl_map_align_params(Map, S.getParamSpace());
-    New = isl_map_apply_range(Stmt->getScattering(), Map);
-    Stmt->setScattering(New);
-  }
-}
-
-isl_basic_map *IslScheduleOptimizer::getTileMap(isl_ctx *ctx,
-                                                int scheduleDimensions,
-                                                isl_space *SpaceModel) {
-  // We construct
-  //
-  // tileMap := [p0] -> {[s0, s1] -> [t0, t1, p0, p1, a0, a1]:
-  //	                  s0 = a0 * 32 and s0 = p0 and t0 <= p0 < t0 + 64 and
-  //	                  s1 = a1 * 64 and s1 = p1 and t1 <= p1 < t1 + 64}
-  //
-  // and project out the auxilary dimensions a0 and a1.
-  isl_space *Space =
-      isl_space_alloc(ctx, 0, scheduleDimensions, scheduleDimensions * 3);
-  isl_basic_map *tileMap = isl_basic_map_universe(isl_space_copy(Space));
-
-  isl_local_space *LocalSpace = isl_local_space_from_space(Space);
-
-  for (int x = 0; x < scheduleDimensions; x++) {
-    int sX = x;
-    int tX = x;
-    int pX = scheduleDimensions + x;
-    int aX = 2 * scheduleDimensions + x;
-    int tileSize = (int)TileSizes.size() > x ? TileSizes[x] : DefaultTileSize;
-    assert(tileSize > 0 && "Invalid tile size");
-
-    isl_constraint *c;
-
-    // sX = aX * tileSize;
-    c = isl_equality_alloc(isl_local_space_copy(LocalSpace));
-    isl_constraint_set_coefficient_si(c, isl_dim_out, sX, 1);
-    isl_constraint_set_coefficient_si(c, isl_dim_out, aX, -tileSize);
-    tileMap = isl_basic_map_add_constraint(tileMap, c);
-
-    // pX = sX;
-    c = isl_equality_alloc(isl_local_space_copy(LocalSpace));
-    isl_constraint_set_coefficient_si(c, isl_dim_out, pX, 1);
-    isl_constraint_set_coefficient_si(c, isl_dim_in, sX, -1);
-    tileMap = isl_basic_map_add_constraint(tileMap, c);
-
-    // tX <= pX
-    c = isl_inequality_alloc(isl_local_space_copy(LocalSpace));
-    isl_constraint_set_coefficient_si(c, isl_dim_out, pX, 1);
-    isl_constraint_set_coefficient_si(c, isl_dim_out, tX, -1);
-    tileMap = isl_basic_map_add_constraint(tileMap, c);
-
-    // pX <= tX + (tileSize - 1)
-    c = isl_inequality_alloc(isl_local_space_copy(LocalSpace));
-    isl_constraint_set_coefficient_si(c, isl_dim_out, tX, 1);
-    isl_constraint_set_coefficient_si(c, isl_dim_out, pX, -1);
-    isl_constraint_set_constant_si(c, tileSize - 1);
-    tileMap = isl_basic_map_add_constraint(tileMap, c);
-  }
-
-  // Project out auxilary dimensions.
-  //
-  // The auxilary dimensions are transformed into existentially quantified ones.
-  // This reduces the number of visible scattering dimensions and allows Cloog
-  // to produces better code.
-  tileMap = isl_basic_map_project_out(
-      tileMap, isl_dim_out, 2 * scheduleDimensions, scheduleDimensions);
-  isl_local_space_free(LocalSpace);
-  return tileMap;
-}
-
-isl_union_map *IslScheduleOptimizer::getScheduleForBand(isl_band *Band,
-                                                        int *Dimensions) {
-  isl_union_map *PartialSchedule;
-  isl_ctx *ctx;
-  isl_space *Space;
-  isl_basic_map *TileMap;
-  isl_union_map *TileUMap;
-
-  PartialSchedule = isl_band_get_partial_schedule(Band);
-  *Dimensions = isl_band_n_member(Band);
-
-  if (DisableTiling)
-    return PartialSchedule;
-
-  // It does not make any sense to tile a band with just one dimension.
-  if (*Dimensions == 1)
-    return PartialSchedule;
-
-  ctx = isl_union_map_get_ctx(PartialSchedule);
-  Space = isl_union_map_get_space(PartialSchedule);
-
-  TileMap = getTileMap(ctx, *Dimensions, Space);
-  TileUMap = isl_union_map_from_map(isl_map_from_basic_map(TileMap));
-  TileUMap = isl_union_map_align_params(TileUMap, Space);
-  *Dimensions = 2 * *Dimensions;
-
-  return isl_union_map_apply_range(PartialSchedule, TileUMap);
-}
-
-isl_map *IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
-                                               int ScheduleDimensions,
-                                               int VectorWidth) {
+__isl_give isl_map *
+IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
+                                      int ScheduleDimensions, int VectorWidth) {
   isl_space *Space;
   isl_local_space *LocalSpace, *LocalSpaceRange;
   isl_set *Modulo;
@@ -343,17 +226,12 @@ isl_map *IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
 
   // Create an identity map for everything except DimToVectorize and map
   // DimToVectorize to the point loop at the innermost dimension.
-  for (int i = 0; i < ScheduleDimensions; i++) {
-    c = isl_equality_alloc(isl_local_space_copy(LocalSpace));
-    c = isl_constraint_set_coefficient_si(c, isl_dim_in, i, -1);
-
+  for (int i = 0; i < ScheduleDimensions; i++)
     if (i == DimToVectorize)
-      c = isl_constraint_set_coefficient_si(c, isl_dim_out, PointDimension, 1);
+      TilingMap =
+          isl_map_equate(TilingMap, isl_dim_in, i, isl_dim_out, PointDimension);
     else
-      c = isl_constraint_set_coefficient_si(c, isl_dim_out, i, 1);
-
-    TilingMap = isl_map_add_constraint(TilingMap, c);
-  }
+      TilingMap = isl_map_equate(TilingMap, isl_dim_in, i, isl_dim_out, i);
 
   // it % 'VectorWidth' = 0
   LocalSpaceRange = isl_local_space_range(isl_local_space_copy(LocalSpace));
@@ -366,10 +244,8 @@ isl_map *IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
   TilingMap = isl_map_intersect_range(TilingMap, Modulo);
 
   // it <= ip
-  c = isl_inequality_alloc(isl_local_space_copy(LocalSpace));
-  isl_constraint_set_coefficient_si(c, isl_dim_out, TileDimension, -1);
-  isl_constraint_set_coefficient_si(c, isl_dim_out, PointDimension, 1);
-  TilingMap = isl_map_add_constraint(TilingMap, c);
+  TilingMap = isl_map_order_le(TilingMap, isl_dim_out, TileDimension,
+                               isl_dim_out, PointDimension);
 
   // ip <= it + ('VectorWidth' - 1)
   c = isl_inequality_alloc(LocalSpace);
@@ -381,78 +257,114 @@ isl_map *IslScheduleOptimizer::getPrevectorMap(isl_ctx *ctx, int DimToVectorize,
   return TilingMap;
 }
 
-isl_union_map *
-IslScheduleOptimizer::getScheduleForBandList(isl_band_list *BandList) {
-  int NumBands;
-  isl_union_map *Schedule;
-  isl_ctx *ctx;
+isl_schedule_node *IslScheduleOptimizer::optimizeBand(isl_schedule_node *Node,
+                                                      void *User) {
+  if (isl_schedule_node_get_type(Node) != isl_schedule_node_band)
+    return Node;
 
-  ctx = isl_band_list_get_ctx(BandList);
-  NumBands = isl_band_list_n_band(BandList);
-  Schedule = isl_union_map_empty(isl_space_params_alloc(ctx, 0));
+  if (isl_schedule_node_n_children(Node) != 1)
+    return Node;
 
-  for (int i = 0; i < NumBands; i++) {
-    isl_band *Band;
-    isl_union_map *PartialSchedule;
-    int ScheduleDimensions;
-    isl_space *Space;
+  if (!isl_schedule_node_band_get_permutable(Node))
+    return Node;
 
-    Band = isl_band_list_get_band(BandList, i);
-    PartialSchedule = getScheduleForBand(Band, &ScheduleDimensions);
-    Space = isl_union_map_get_space(PartialSchedule);
+  auto Space = isl_schedule_node_band_get_space(Node);
+  auto Dims = isl_space_dim(Space, isl_dim_set);
 
-    if (isl_band_has_children(Band)) {
-      isl_band_list *Children;
-      isl_union_map *SuffixSchedule;
-
-      Children = isl_band_get_children(Band);
-      SuffixSchedule = getScheduleForBandList(Children);
-      PartialSchedule =
-          isl_union_map_flat_range_product(PartialSchedule, SuffixSchedule);
-      isl_band_list_free(Children);
-    } else if (PollyVectorizerChoice != VECTORIZER_NONE) {
-      // In case we are at the innermost band, we try to prepare for
-      // vectorization. This means, we look for the innermost parallel loop
-      // and strip mine this loop to the innermost level using a strip-mine
-      // factor corresponding to the number of vector iterations.
-      int NumDims = isl_band_n_member(Band);
-      for (int j = NumDims - 1; j >= 0; j--) {
-        if (isl_band_member_is_coincident(Band, j)) {
-          isl_map *TileMap;
-          isl_union_map *TileUMap;
-
-          TileMap = getPrevectorMap(ctx, ScheduleDimensions - NumDims + j,
-                                    ScheduleDimensions);
-          TileUMap = isl_union_map_from_map(TileMap);
-          TileUMap =
-              isl_union_map_align_params(TileUMap, isl_space_copy(Space));
-          PartialSchedule =
-              isl_union_map_apply_range(PartialSchedule, TileUMap);
-          break;
-        }
-      }
-    }
-
-    Schedule = isl_union_map_union(Schedule, PartialSchedule);
-
-    isl_band_free(Band);
+  if (Dims <= 1) {
     isl_space_free(Space);
+    return Node;
   }
 
-  return Schedule;
+  auto Child = isl_schedule_node_get_child(Node, 0);
+  auto Type = isl_schedule_node_get_type(Child);
+  isl_schedule_node_free(Child);
+
+  if (Type != isl_schedule_node_leaf) {
+    isl_space_free(Space);
+    return Node;
+  }
+
+  auto Sizes = isl_multi_val_zero(Space);
+  auto Ctx = isl_schedule_node_get_ctx(Node);
+
+  for (unsigned i = 0; i < Dims; i++) {
+    auto tileSize = TileSizes.size() > i ? TileSizes[i] : DefaultTileSize;
+    Sizes = isl_multi_val_set_val(Sizes, i, isl_val_int_from_si(Ctx, tileSize));
+  }
+
+  isl_schedule_node *Res;
+
+  if (DisableTiling) {
+    isl_multi_val_free(Sizes);
+    Res = Node;
+  } else {
+    Res = isl_schedule_node_band_tile(Node, Sizes);
+  }
+
+  if (PollyVectorizerChoice == VECTORIZER_NONE)
+    return Res;
+
+  Child = isl_schedule_node_get_child(Res, 0);
+  auto ChildSchedule = isl_schedule_node_band_get_partial_schedule(Child);
+
+  for (int i = Dims - 1; i >= 0; i--) {
+    if (isl_schedule_node_band_member_get_coincident(Child, i)) {
+      auto TileMap = IslScheduleOptimizer::getPrevectorMap(Ctx, i, Dims);
+      auto TileUMap = isl_union_map_from_map(TileMap);
+      auto ChildSchedule2 = isl_union_map_apply_range(
+          isl_union_map_from_multi_union_pw_aff(ChildSchedule), TileUMap);
+      ChildSchedule = isl_multi_union_pw_aff_from_union_map(ChildSchedule2);
+      break;
+    }
+  }
+
+  isl_schedule_node_free(Res);
+  Res = isl_schedule_node_delete(Child);
+  Res = isl_schedule_node_insert_partial_schedule(Res, ChildSchedule);
+  return Res;
 }
 
-isl_union_map *IslScheduleOptimizer::getScheduleMap(isl_schedule *Schedule) {
-  isl_band_list *BandList = isl_schedule_get_band_forest(Schedule);
-  isl_union_map *ScheduleMap = getScheduleForBandList(BandList);
-  isl_band_list_free(BandList);
-  return ScheduleMap;
+__isl_give isl_schedule *
+IslScheduleOptimizer::addPostTransforms(__isl_take isl_schedule *Schedule) {
+  isl_schedule_node *Root = isl_schedule_get_root(Schedule);
+  isl_schedule_free(Schedule);
+  Root = isl_schedule_node_map_descendant_bottom_up(
+      Root, IslScheduleOptimizer::optimizeBand, NULL);
+  auto S = isl_schedule_node_get_schedule(Root);
+  isl_schedule_node_free(Root);
+  return S;
+}
+
+bool IslScheduleOptimizer::isProfitableSchedule(
+    Scop &S, __isl_keep isl_union_map *NewSchedule) {
+  // To understand if the schedule has been optimized we check if the schedule
+  // has changed at all.
+  // TODO: We can improve this by tracking if any necessarily beneficial
+  // transformations have been performed. This can e.g. be tiling, loop
+  // interchange, or ...) We can track this either at the place where the
+  // transformation has been performed or, in case of automatic ILP based
+  // optimizations, by comparing (yet to be defined) performance metrics
+  // before/after the scheduling optimizer
+  // (e.g., #stride-one accesses)
+  isl_union_map *OldSchedule = S.getSchedule();
+  bool changed = !isl_union_map_is_equal(OldSchedule, NewSchedule);
+  isl_union_map_free(OldSchedule);
+  return changed;
 }
 
 bool IslScheduleOptimizer::runOnScop(Scop &S) {
-  Dependences *D = &getAnalysis<Dependences>();
 
-  if (!D->hasValidDependences())
+  // Skip empty SCoPs but still allow code generation as it will delete the
+  // loops present but not needed.
+  if (S.getSize() == 0) {
+    S.markAsOptimized();
+    return false;
+  }
+
+  const Dependences &D = getAnalysis<DependenceInfo>().getDependences();
+
+  if (!D.hasValidDependences())
     return false;
 
   isl_schedule_free(LastSchedule);
@@ -480,8 +392,8 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   if (!Domain)
     return false;
 
-  isl_union_map *Validity = D->getDependences(ValidityKinds);
-  isl_union_map *Proximity = D->getDependences(ProximityKinds);
+  isl_union_map *Validity = D.getDependences(ValidityKinds);
+  isl_union_map *Proximity = D.getDependences(ProximityKinds);
 
   // Simplify the dependences by removing the constraints introduced by the
   // domains. This can speed up the scheduling time significantly, as large
@@ -506,16 +418,16 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   DEBUG(dbgs() << "Proximity := " << stringFromIslObj(Proximity) << ";\n");
   DEBUG(dbgs() << "Validity := " << stringFromIslObj(Validity) << ";\n");
 
-  int IslFusionStrategy;
+  unsigned IslSerializeSCCs;
 
   if (FusionStrategy == "max") {
-    IslFusionStrategy = ISL_SCHEDULE_FUSE_MAX;
+    IslSerializeSCCs = 0;
   } else if (FusionStrategy == "min") {
-    IslFusionStrategy = ISL_SCHEDULE_FUSE_MIN;
+    IslSerializeSCCs = 1;
   } else {
     errs() << "warning: Unknown fusion strategy. Falling back to maximal "
               "fusion.\n";
-    IslFusionStrategy = ISL_SCHEDULE_FUSE_MAX;
+    IslSerializeSCCs = 0;
   }
 
   int IslMaximizeBands;
@@ -530,10 +442,11 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
     IslMaximizeBands = 1;
   }
 
-  isl_options_set_schedule_fuse(S.getIslCtx(), IslFusionStrategy);
+  isl_options_set_schedule_serialize_sccs(S.getIslCtx(), IslSerializeSCCs);
   isl_options_set_schedule_maximize_band_depth(S.getIslCtx(), IslMaximizeBands);
   isl_options_set_schedule_max_constant_term(S.getIslCtx(), MaxConstantTerm);
   isl_options_set_schedule_max_coefficient(S.getIslCtx(), MaxCoefficient);
+  isl_options_set_tile_scale_tile_loops(S.getIslCtx(), 0);
 
   isl_options_set_on_error(S.getIslCtx(), ISL_ON_ERROR_CONTINUE);
 
@@ -554,40 +467,31 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   if (!Schedule)
     return false;
 
-  DEBUG(dbgs() << "Schedule := " << stringFromIslObj(Schedule) << ";\n");
+  DEBUG({
+    auto *P = isl_printer_to_str(S.getIslCtx());
+    P = isl_printer_set_yaml_style(P, ISL_YAML_STYLE_BLOCK);
+    P = isl_printer_print_schedule(P, Schedule);
+    dbgs() << "NewScheduleTree: \n" << isl_printer_get_str(P) << "\n";
+    isl_printer_free(P);
+  });
 
-  isl_union_map *ScheduleMap = getScheduleMap(Schedule);
+  isl_schedule *NewSchedule = addPostTransforms(Schedule);
+  isl_union_map *NewScheduleMap = isl_schedule_get_map(NewSchedule);
 
-  for (ScopStmt *Stmt : S) {
-    isl_map *StmtSchedule;
-    isl_set *Domain = Stmt->getDomain();
-    isl_union_map *StmtBand;
-    StmtBand = isl_union_map_intersect_domain(isl_union_map_copy(ScheduleMap),
-                                              isl_union_set_from_set(Domain));
-    if (isl_union_map_is_empty(StmtBand)) {
-      StmtSchedule = isl_map_from_domain(isl_set_empty(Stmt->getDomainSpace()));
-      isl_union_map_free(StmtBand);
-    } else {
-      assert(isl_union_map_n_map(StmtBand) == 1);
-      StmtSchedule = isl_map_from_union_map(StmtBand);
-    }
-
-    Stmt->setScattering(StmtSchedule);
+  if (!isProfitableSchedule(S, NewScheduleMap)) {
+    isl_union_map_free(NewScheduleMap);
+    isl_schedule_free(NewSchedule);
+    return false;
   }
 
-  isl_union_map_free(ScheduleMap);
-  LastSchedule = Schedule;
+  S.setScheduleTree(NewSchedule);
+  S.markAsOptimized();
 
-  unsigned MaxScatDims = 0;
-
-  for (ScopStmt *Stmt : S)
-    MaxScatDims = std::max(Stmt->getNumScattering(), MaxScatDims);
-
-  extendScattering(S, MaxScatDims);
+  isl_union_map_free(NewScheduleMap);
   return false;
 }
 
-void IslScheduleOptimizer::printScop(raw_ostream &OS) const {
+void IslScheduleOptimizer::printScop(raw_ostream &OS, Scop &) const {
   isl_printer *p;
   char *ScheduleStr;
 
@@ -608,7 +512,7 @@ void IslScheduleOptimizer::printScop(raw_ostream &OS) const {
 
 void IslScheduleOptimizer::getAnalysisUsage(AnalysisUsage &AU) const {
   ScopPass::getAnalysisUsage(AU);
-  AU.addRequired<Dependences>();
+  AU.addRequired<DependenceInfo>();
 }
 
 Pass *polly::createIslScheduleOptimizerPass() {
@@ -617,7 +521,7 @@ Pass *polly::createIslScheduleOptimizerPass() {
 
 INITIALIZE_PASS_BEGIN(IslScheduleOptimizer, "polly-opt-isl",
                       "Polly - Optimize schedule of SCoP", false, false);
-INITIALIZE_PASS_DEPENDENCY(Dependences);
+INITIALIZE_PASS_DEPENDENCY(DependenceInfo);
 INITIALIZE_PASS_DEPENDENCY(ScopInfo);
 INITIALIZE_PASS_END(IslScheduleOptimizer, "polly-opt-isl",
                     "Polly - Optimize schedule of SCoP", false, false)

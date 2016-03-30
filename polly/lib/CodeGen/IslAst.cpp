@@ -21,19 +21,19 @@
 
 #include "polly/CodeGen/CodeGeneration.h"
 #include "polly/CodeGen/IslAst.h"
-#include "polly/Dependences.h"
+#include "polly/DependenceInfo.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/Support/GICHelper.h"
+#include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Support/Debug.h"
-
-#include "isl/union_map.h"
-#include "isl/list.h"
-#include "isl/ast_build.h"
-#include "isl/set.h"
-#include "isl/map.h"
 #include "isl/aff.h"
+#include "isl/ast_build.h"
+#include "isl/list.h"
+#include "isl/map.h"
+#include "isl/set.h"
+#include "isl/union_map.h"
 
 #define DEBUG_TYPE "polly-ast"
 
@@ -63,10 +63,15 @@ static cl::opt<bool> DetectParallel("polly-ast-detect-parallel",
                                     cl::init(false), cl::ZeroOrMore,
                                     cl::cat(PollyCategory));
 
+static cl::opt<bool> NoEarlyExit(
+    "polly-no-early-exit",
+    cl::desc("Do not exit early if no benefit of the Polly version was found."),
+    cl::Hidden, cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+
 namespace polly {
 class IslAst {
 public:
-  IslAst(Scop *Scop, Dependences &D);
+  IslAst(Scop *Scop, const Dependences &D);
 
   ~IslAst();
 
@@ -104,7 +109,7 @@ struct AstBuildUserInfo {
       : Deps(nullptr), InParallelFor(false), LastForNodeId(nullptr) {}
 
   /// @brief The dependence information used for the parallelism check.
-  Dependences *Deps;
+  const Dependences *Deps;
 
   /// @brief Flag to indicate that we are inside a parallel for node.
   bool InParallelFor;
@@ -190,7 +195,7 @@ static isl_printer *cbPrintFor(__isl_take isl_printer *Printer,
 /// we can perform the parallelism check as we are only interested in a zero
 /// (or non-zero) dependence distance on the dimension in question.
 static bool astScheduleDimIsParallel(__isl_keep isl_ast_build *Build,
-                                     Dependences *D,
+                                     const Dependences *D,
                                      IslAstUserPayload *NodeInfo) {
   if (!D->hasValidDependences())
     return false;
@@ -300,31 +305,9 @@ static __isl_give isl_ast_node *AtEachDomain(__isl_take isl_ast_node *Node,
 
 void IslAst::buildRunCondition(__isl_keep isl_ast_build *Build) {
   // The conditions that need to be checked at run-time for this scop are
-  // available as an isl_set in the AssumedContext. We generate code for this
-  // check as follows. First, we generate an isl_pw_aff that is 1, if a certain
-  // combination of parameter values fulfills the conditions in the assumed
-  // context, and that is 0 otherwise. We then translate this isl_pw_aff into
-  // an isl_ast_expr. At run-time this expression can be evaluated and the
-  // optimized scop can be executed conditionally according to the result of the
-  // run-time check.
-
-  isl_aff *Zero =
-      isl_aff_zero_on_domain(isl_local_space_from_space(S->getParamSpace()));
-  isl_aff *One =
-      isl_aff_zero_on_domain(isl_local_space_from_space(S->getParamSpace()));
-
-  One = isl_aff_add_constant_si(One, 1);
-
-  isl_pw_aff *PwZero = isl_pw_aff_from_aff(Zero);
-  isl_pw_aff *PwOne = isl_pw_aff_from_aff(One);
-
-  PwOne = isl_pw_aff_intersect_domain(PwOne, S->getAssumedContext());
-  PwZero = isl_pw_aff_intersect_domain(
-      PwZero, isl_set_complement(S->getAssumedContext()));
-
-  isl_pw_aff *Cond = isl_pw_aff_union_max(PwOne, PwZero);
-
-  RunCondition = isl_ast_build_expr_from_pw_aff(Build, Cond);
+  // available as an isl_set in the AssumedContext from which we can directly
+  // derive a run-time condition.
+  RunCondition = isl_ast_build_expr_from_set(Build, S->getAssumedContext());
 
   // Create the alias checks from the minimal/maximal accesses in each alias
   // group. This operation is by construction quadratic in the number of
@@ -355,7 +338,38 @@ void IslAst::buildRunCondition(__isl_keep isl_ast_build *Build) {
   }
 }
 
-IslAst::IslAst(Scop *Scop, Dependences &D) : S(Scop) {
+/// @brief Simple cost analysis for a given SCoP
+///
+/// TODO: Improve this analysis and extract it to make it usable in other
+///       places too.
+///       In order to improve the cost model we could either keep track of
+///       performed optimizations (e.g., tiling) or compute properties on the
+///       original as well as optimized SCoP (e.g., #stride-one-accesses).
+static bool benefitsFromPolly(Scop *Scop, bool PerformParallelTest) {
+
+  // First check the user choice.
+  if (NoEarlyExit)
+    return true;
+
+  // Check if nothing interesting happened.
+  if (!PerformParallelTest && !Scop->isOptimized() &&
+      Scop->getAliasGroups().empty())
+    return false;
+
+  // The default assumption is that Polly improves the code.
+  return true;
+}
+
+IslAst::IslAst(Scop *Scop, const Dependences &D)
+    : S(Scop), Root(nullptr), RunCondition(nullptr) {
+
+  bool PerformParallelTest = PollyParallel || DetectParallel ||
+                             PollyVectorizerChoice != VECTORIZER_NONE;
+
+  // Skip AST and code generation if there was no benefit achieved.
+  if (!benefitsFromPolly(Scop, PerformParallelTest))
+    return;
+
   isl_ctx *Ctx = S->getIslCtx();
   isl_options_set_ast_build_atomic_upper_bound(Ctx, true);
   isl_ast_build *Build;
@@ -368,11 +382,7 @@ IslAst::IslAst(Scop *Scop, Dependences &D) : S(Scop) {
 
   Build = isl_ast_build_set_at_each_domain(Build, AtEachDomain, nullptr);
 
-  isl_union_map *Schedule =
-      isl_union_map_intersect_domain(S->getSchedule(), S->getDomains());
-
-  if (PollyParallel || DetectParallel ||
-      PollyVectorizerChoice != VECTORIZER_NONE) {
+  if (PerformParallelTest) {
     BuildInfo.Deps = &D;
     BuildInfo.InParallelFor = 0;
 
@@ -384,7 +394,7 @@ IslAst::IslAst(Scop *Scop, Dependences &D) : S(Scop) {
 
   buildRunCondition(Build);
 
-  Root = isl_ast_build_ast_from_schedule(Build, Schedule);
+  Root = isl_ast_build_node_from_schedule(Build, S->getScheduleTree());
 
   isl_ast_build_free(Build);
 }
@@ -412,11 +422,11 @@ bool IslAstInfo::runOnScop(Scop &Scop) {
 
   S = &Scop;
 
-  Dependences &D = getAnalysis<Dependences>();
+  const Dependences &D = getAnalysis<DependenceInfo>().getDependences();
 
   Ast = new IslAst(&Scop, D);
 
-  DEBUG(printScop(dbgs()));
+  DEBUG(printScop(dbgs(), Scop));
   return false;
 }
 
@@ -502,13 +512,22 @@ isl_ast_build *IslAstInfo::getBuild(__isl_keep isl_ast_node *Node) {
   return Payload ? Payload->Build : nullptr;
 }
 
-void IslAstInfo::printScop(raw_ostream &OS) const {
+void IslAstInfo::printScop(raw_ostream &OS, Scop &S) const {
   isl_ast_print_options *Options;
   isl_ast_node *RootNode = getAst();
+  Function *F = S.getRegion().getEntry()->getParent();
+
+  OS << ":: isl ast :: " << F->getName() << " :: " << S.getRegion().getNameStr()
+     << "\n";
+
+  if (!RootNode) {
+    OS << ":: isl ast generation and code generation was skipped!\n\n";
+    return;
+  }
+
   isl_ast_expr *RunCondition = getRunCondition();
   char *RtCStr, *AstStr;
 
-  Scop &S = getCurScop();
   Options = isl_ast_print_options_alloc(S.getIslCtx());
   Options = isl_ast_print_options_set_print_for(Options, cbPrintFor, nullptr);
 
@@ -521,12 +540,9 @@ void IslAstInfo::printScop(raw_ostream &OS) const {
   P = isl_ast_node_print(RootNode, P, Options);
   AstStr = isl_printer_get_str(P);
 
-  Function *F = S.getRegion().getEntry()->getParent();
   isl_union_map *Schedule =
       isl_union_map_intersect_domain(S.getSchedule(), S.getDomains());
 
-  OS << ":: isl ast :: " << F->getName() << " :: " << S.getRegion().getNameStr()
-     << "\n";
   DEBUG({
     dbgs() << S.getContextStr() << "\n";
     dbgs() << stringFromIslObj(Schedule);
@@ -535,6 +551,9 @@ void IslAstInfo::printScop(raw_ostream &OS) const {
   OS << AstStr << "\n";
   OS << "else\n";
   OS << "    {  /* original code */ }\n\n";
+
+  free(RtCStr);
+  free(AstStr);
 
   isl_ast_expr_free(RunCondition);
   isl_union_map_free(Schedule);
@@ -546,7 +565,7 @@ void IslAstInfo::getAnalysisUsage(AnalysisUsage &AU) const {
   // Get the Common analysis usage of ScopPasses.
   ScopPass::getAnalysisUsage(AU);
   AU.addRequired<ScopInfo>();
-  AU.addRequired<Dependences>();
+  AU.addRequired<DependenceInfo>();
 }
 
 char IslAstInfo::ID = 0;
@@ -557,6 +576,6 @@ INITIALIZE_PASS_BEGIN(IslAstInfo, "polly-ast",
                       "Polly - Generate an AST of the SCoP (isl)", false,
                       false);
 INITIALIZE_PASS_DEPENDENCY(ScopInfo);
-INITIALIZE_PASS_DEPENDENCY(Dependences);
+INITIALIZE_PASS_DEPENDENCY(DependenceInfo);
 INITIALIZE_PASS_END(IslAstInfo, "polly-ast",
                     "Polly - Generate an AST from the SCoP (isl)", false, false)

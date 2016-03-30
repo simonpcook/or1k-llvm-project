@@ -10,21 +10,15 @@
 #ifndef X86_X86_RELOCATION_HANDLER_H
 #define X86_X86_RELOCATION_HANDLER_H
 
-#include "X86TargetHandler.h"
+#include "lld/ReaderWriter/ELFLinkingContext.h"
 
 namespace lld {
 namespace elf {
-template <class ELFT> class X86TargetLayout;
-typedef llvm::object::ELFType<llvm::support::little, 2, false> X86ELFType;
 
-class X86TargetRelocationHandler final
-    : public TargetRelocationHandler<X86ELFType> {
+class X86TargetRelocationHandler final : public TargetRelocationHandler {
 public:
-  X86TargetRelocationHandler(ELFLinkingContext &targetInfo)
-      : TargetRelocationHandler<X86ELFType>(targetInfo) {}
-
   std::error_code applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
-                                  const lld::AtomLayout &,
+                                  const AtomLayout &,
                                   const Reference &) const override;
 };
 

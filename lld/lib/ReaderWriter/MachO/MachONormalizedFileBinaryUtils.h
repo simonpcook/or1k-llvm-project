@@ -26,62 +26,49 @@ namespace lld {
 namespace mach_o {
 namespace normalized {
 
+using namespace llvm::support::endian;
 using llvm::sys::getSwappedBytes;
-
- using llvm::support::ubig16_t;
- using llvm::support::ubig32_t;
- using llvm::support::ubig64_t;
-
- using llvm::support::ulittle16_t;
- using llvm::support::ulittle32_t;
- using llvm::support::ulittle64_t;
 
 template<typename T>
 static inline uint16_t read16(const T *loc, bool isBig) {
   assert((uint64_t)loc % llvm::alignOf<T>() == 0 &&
          "invalid pointer alignment");
-  if (isBig)
-    return *(const ubig16_t *)loc;
-  return *(const ulittle16_t *)loc;
+  return isBig ? read16be(loc) : read16le(loc);
 }
 
 template<typename T>
 static inline uint32_t read32(const T *loc, bool isBig) {
   assert((uint64_t)loc % llvm::alignOf<T>() == 0 &&
          "invalid pointer alignment");
-  if (isBig)
-    return *(const ubig32_t *)loc;
-  return *(const ulittle32_t *)loc;
+  return isBig ? read32be(loc) : read32le(loc);
 }
 
 template<typename T>
 static inline uint64_t read64(const T *loc, bool isBig) {
   assert((uint64_t)loc % llvm::alignOf<T>() == 0 &&
          "invalid pointer alignment");
-  if (isBig)
-    return *(const ubig64_t *)loc;
-  return *(const ulittle64_t *)loc;
+  return isBig ? read64be(loc) : read64le(loc);
 }
 
 inline void write16(uint8_t *loc, uint16_t value, bool isBig) {
   if (isBig)
-    *(ubig16_t *)loc = value;
+    write16be(loc, value);
   else
-    *(ulittle16_t *)loc = value;
+    write16le(loc, value);
 }
 
 inline void write32(uint8_t *loc, uint32_t value, bool isBig) {
   if (isBig)
-    *(ubig32_t *)loc = value;
+    write32be(loc, value);
   else
-    *(ulittle32_t *)loc = value;
+    write32le(loc, value);
 }
 
 inline void write64(uint8_t *loc, uint64_t value, bool isBig) {
   if (isBig)
-    *(ubig64_t *)loc = value;
+    write64be(loc, value);
   else
-    *(ulittle64_t *)loc = value;
+    write64le(loc, value);
 }
 
 inline uint32_t

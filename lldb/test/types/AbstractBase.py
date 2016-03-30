@@ -33,10 +33,10 @@ class GenericTester(TestBase):
 
     def tearDown(self):
         """Cleanup the test byproducts."""
-        TestBase.tearDown(self)
         #print "Removing golden-output.txt..."
         if os.path.exists(self.golden_filename):
             os.remove(self.golden_filename)
+        TestBase.tearDown(self)
 
     #==========================================================================#
     # Functions build_and_run() and build_and_run_expr() are generic functions #
@@ -50,7 +50,7 @@ class GenericTester(TestBase):
     #         True: build dSYM file                                            #
     #         False: build DWARF map                                           #
     # bc -> blockCaptured (defaulted to False)                                 #
-    #         True: testing vars of various basic types from isnide a block    #
+    #         True: testing vars of various basic types from inside a block    #
     #         False: testing vars of various basic types from a function       #
     # qd -> quotedDisplay (defaulted to False)                                 #
     #         True: the output from 'frame var' or 'expr var' contains a pair  #
@@ -81,6 +81,19 @@ class GenericTester(TestBase):
         else:
             self.generic_type_tester(self.exe_name, atoms, blockCaptured=bc, quotedDisplay=qd)
 
+    def process_launch_o(self, localPath):
+        # process launch command output redirect always goes to host the process is running on
+        if lldb.remote_platform:
+            # process launch -o requires a path that is valid on the target
+            self.assertIsNotNone(lldb.remote_platform.GetWorkingDirectory())
+            remote_path = lldbutil.append_to_process_working_directory("lldb-stdout-redirect.txt")
+            self.runCmd('process launch -o {remote}'.format(remote=remote_path))
+            # copy remote_path to local host
+            self.runCmd('platform get-file {remote} "{local}"'.format(
+                remote=remote_path, local=self.golden_filename))
+        else:
+            self.runCmd('process launch -o "{local}"'.format(local=self.golden_filename))
+
     def generic_type_tester(self, exe_name, atoms, quotedDisplay=False, blockCaptured=False):
         """Test that variables with basic types are displayed correctly."""
 
@@ -88,7 +101,9 @@ class GenericTester(TestBase):
 
         # First, capture the golden output emitted by the oracle, i.e., the
         # series of printf statements.
-        self.runCmd('process launch -o "%s"'%(self.golden_filename))
+
+        self.process_launch_o(self.golden_filename)
+
         with open(self.golden_filename) as f:
             go = f.read()
 
@@ -110,7 +125,7 @@ class GenericTester(TestBase):
                 gl.append((var, val))
         #print "golden list:", gl
 
-        # This test uses a #include of a the "basic_type.cpp" so we need to enable
+        # This test uses a #include of "basic_type.cpp" so we need to enable
         # always setting inlined breakpoints.
         self.runCmd('settings set target.inline-breakpoint-strategy always')
         # And add hooks to restore the settings during tearDown().
@@ -139,7 +154,7 @@ class GenericTester(TestBase):
             output = self.res.GetOutput()
 
             # The input type is in a canonical form as a set of named atoms.
-            # The display type string must conatin each and every element.
+            # The display type string must contain each and every element.
             #
             # Example:
             #     runCmd: frame variable --show-types a_array_bounded[0]
@@ -161,6 +176,7 @@ class GenericTester(TestBase):
             nv = ("%s = '%s'" if quotedDisplay else "%s = %s") % (var, val)
             self.expect(output, Msg(var, val, True), exe=False,
                 substrs = [nv])
+        pass
 
     def generic_type_expr_tester(self, exe_name, atoms, quotedDisplay=False, blockCaptured=False):
         """Test that variable expressions with basic types are evaluated correctly."""
@@ -169,7 +185,9 @@ class GenericTester(TestBase):
 
         # First, capture the golden output emitted by the oracle, i.e., the
         # series of printf statements.
-        self.runCmd('process launch -o "%s"'%(self.golden_filename))
+
+        self.process_launch_o(self.golden_filename)
+
         with open(self.golden_filename) as f:
             go = f.read()
 
@@ -191,7 +209,7 @@ class GenericTester(TestBase):
                 gl.append((var, val))
         #print "golden list:", gl
 
-        # This test uses a #include of a the "basic_type.cpp" so we need to enable
+        # This test uses a #include of "basic_type.cpp" so we need to enable
         # always setting inlined breakpoints.
         self.runCmd('settings set target.inline-breakpoint-strategy always')
         # And add hooks to restore the settings during tearDown().
@@ -220,7 +238,7 @@ class GenericTester(TestBase):
             output = self.res.GetOutput()
 
             # The input type is in a canonical form as a set of named atoms.
-            # The display type string must conatin each and every element.
+            # The display type string must contain each and every element.
             #
             # Example:
             #     runCmd: expr a
@@ -242,3 +260,4 @@ class GenericTester(TestBase):
             valPart = ("'%s'" if quotedDisplay else "%s") % val
             self.expect(output, Msg(var, val, False), exe=False,
                 substrs = [valPart])
+        pass

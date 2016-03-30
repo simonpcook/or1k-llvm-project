@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -basicaa -polly-scops -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-scops -analyze < %s | FileCheck %s
 ;
 ;    void foo(float A[restrict][20], float B[restrict][20], long n, long m,
 ;             long p) {
@@ -16,7 +16,11 @@
 ; accessed. In this case the value of m does not matter.
 
 ; CHECK: Assumed Context:
-; CHECK-NEXT: [n, m, p] -> { : (n >= 1 and m <= 20 and p <= 20) or (n <= 0 and p <= 20) }
+; CHECK-NEXT: [n, m, p] -> { :
+; CHECK-DAG:                   (n >= 1 and m <= 20 and p <= 20)
+; CHECK-DAG:                    or
+; CHECK-DAG:                   (n <= 0 and p <= 20)
+; CHECK:                   }
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
@@ -40,7 +44,7 @@ for.cond1:                                        ; preds = %for.inc, %for.body
 for.body3:                                        ; preds = %for.cond1
   %add = add nsw i64 %i.0, %j.0
   %conv = sitofp i64 %add to float
-  %arrayidx4 = getelementptr inbounds [20 x float]* %A, i64 %i.0, i64 %j.0
+  %arrayidx4 = getelementptr inbounds [20 x float], [20 x float]* %A, i64 %i.0, i64 %j.0
   store float %conv, float* %arrayidx4, align 4
   br label %for.inc
 
@@ -74,7 +78,7 @@ for.cond14:                                       ; preds = %for.inc22, %for.bod
 for.body17:                                       ; preds = %for.cond14
   %add18 = add nsw i64 %i8.0, %j13.0
   %conv19 = sitofp i64 %add18 to float
-  %arrayidx21 = getelementptr inbounds [20 x float]* %B, i64 %i8.0, i64 %j13.0
+  %arrayidx21 = getelementptr inbounds [20 x float], [20 x float]* %B, i64 %i8.0, i64 %j13.0
   store float %conv19, float* %arrayidx21, align 4
   br label %for.inc22
 

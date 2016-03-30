@@ -9,9 +9,13 @@
 
 #include "lldb/Host/windows/windows.h"
 
+#include <mutex> // std::once
+
 #include "lldb/Host/windows/HostInfoWindows.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Path.h"
 
 using namespace lldb_private;
 
@@ -84,15 +88,12 @@ HostInfoWindows::GetHostname(std::string &s)
 FileSpec
 HostInfoWindows::GetProgramFileSpec()
 {
-    static bool is_initialized = false;
-    if (!is_initialized)
-    {
-        is_initialized = true;
-
-        std::vector<char> buffer(PATH_MAX);
-        ::GetModuleFileName(NULL, &buffer[0], buffer.size());
-        m_program_filespec.SetFile(&buffer[0], false);
-    }
+    static std::once_flag g_once_flag;
+    std::call_once(g_once_flag,  []() {
+        char buffer[PATH_MAX];
+        ::GetModuleFileName(NULL, buffer, sizeof(buffer));
+        m_program_filespec.SetFile(buffer, false);
+    });
     return m_program_filespec;
 }
 
@@ -108,11 +109,10 @@ HostInfoWindows::ComputePythonDirectory(FileSpec &file_spec)
     FileSpec lldb_file_spec;
     if (!GetLLDBPath(lldb::ePathTypeLLDBShlibDir, lldb_file_spec))
         return false;
-
-    char raw_path[PATH_MAX];
-    lldb_file_spec.AppendPathComponent("../lib/site-packages");
-    lldb_file_spec.GetPath(raw_path, sizeof(raw_path));
-
-    file_spec.GetDirectory().SetCString(raw_path);
+    llvm::SmallString<64> path(lldb_file_spec.GetDirectory().AsCString());
+    llvm::sys::path::remove_filename(path);
+    llvm::sys::path::append(path, "lib", "site-packages");
+    std::replace(path.begin(), path.end(), '\\', '/');
+    file_spec.GetDirectory().SetString(path.c_str());
     return true;
 }

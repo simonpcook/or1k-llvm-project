@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-scops -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-scops -analyze < %s | FileCheck %s
 ;
 ; void foo(float *A, float *B, float *C, long N) {
 ; 	for (long i = 0; i < N; i++)
@@ -17,11 +17,11 @@ entry:
 
 for.body:
   %indvar = phi i64 [ 0, %entry ], [ %indvar.next, %for.body ]
-  %arrayidx.A = getelementptr float* %A, i64 %indvar
-  %arrayidx.B = getelementptr float* %B, i64 %indvar
-  %arrayidx.C = getelementptr float* %C, i64 %indvar
-  %val.A = load float* %arrayidx.A
-  %val.B = load float* %arrayidx.B
+  %arrayidx.A = getelementptr float, float* %A, i64 %indvar
+  %arrayidx.B = getelementptr float, float* %B, i64 %indvar
+  %arrayidx.C = getelementptr float, float* %C, i64 %indvar
+  %val.A = load float, float* %arrayidx.A
+  %val.B = load float, float* %arrayidx.B
   %add = fadd float %val.A, %val.B
   store float %add, float* %arrayidx.C
   %indvar.next = add nsw i64 %indvar, 1

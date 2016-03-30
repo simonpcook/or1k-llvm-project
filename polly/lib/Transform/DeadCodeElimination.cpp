@@ -32,14 +32,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "polly/Dependences.h"
+#include "polly/DependenceInfo.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include "isl/flow.h"
-#include "isl/set.h"
 #include "isl/map.h"
+#include "isl/set.h"
 #include "isl/union_map.h"
+#include "isl/union_set.h"
 
 using namespace llvm;
 using namespace polly;
@@ -58,10 +59,10 @@ public:
   static char ID;
   explicit DeadCodeElim() : ScopPass(ID) {}
 
-  virtual bool runOnScop(Scop &S);
+  bool runOnScop(Scop &S) override;
 
-  void printScop(llvm::raw_ostream &OS) const;
-  void getAnalysisUsage(AnalysisUsage &AU) const;
+  void printScop(raw_ostream &OS, Scop &S) const override;
+  void getAnalysisUsage(AnalysisUsage &AU) const override;
 
 private:
   /// @brief Return the set of live iterations.
@@ -112,14 +113,15 @@ isl_union_set *DeadCodeElim::getLiveOut(Scop &S) {
 /// combine a certain number of precise steps with one approximating step that
 /// simplifies the life set with an affine hull.
 bool DeadCodeElim::eliminateDeadCode(Scop &S, int PreciseSteps) {
-  Dependences *D = &getAnalysis<Dependences>();
+  DependenceInfo &DI = getAnalysis<DependenceInfo>();
+  const Dependences &D = DI.getDependences();
 
-  if (!D->hasValidDependences())
+  if (!D.hasValidDependences())
     return false;
 
   isl_union_set *Live = getLiveOut(S);
   isl_union_map *Dep =
-      D->getDependences(Dependences::TYPE_RAW | Dependences::TYPE_RED);
+      D.getDependences(Dependences::TYPE_RAW | Dependences::TYPE_RED);
   Dep = isl_union_map_reverse(Dep);
 
   if (PreciseSteps == -1)
@@ -156,7 +158,7 @@ bool DeadCodeElim::eliminateDeadCode(Scop &S, int PreciseSteps) {
   // FIXME: We can probably avoid the recomputation of all dependences by
   // updating them explicitly.
   if (Changed)
-    D->recomputeDependences();
+    DI.recomputeDependences();
   return Changed;
 }
 
@@ -164,18 +166,18 @@ bool DeadCodeElim::runOnScop(Scop &S) {
   return eliminateDeadCode(S, DCEPreciseSteps);
 }
 
-void DeadCodeElim::printScop(raw_ostream &OS) const {}
+void DeadCodeElim::printScop(raw_ostream &, Scop &) const {}
 
 void DeadCodeElim::getAnalysisUsage(AnalysisUsage &AU) const {
   ScopPass::getAnalysisUsage(AU);
-  AU.addRequired<Dependences>();
+  AU.addRequired<DependenceInfo>();
 }
 
 Pass *polly::createDeadCodeElimPass() { return new DeadCodeElim(); }
 
 INITIALIZE_PASS_BEGIN(DeadCodeElim, "polly-dce",
                       "Polly - Remove dead iterations", false, false)
-INITIALIZE_PASS_DEPENDENCY(Dependences)
+INITIALIZE_PASS_DEPENDENCY(DependenceInfo)
 INITIALIZE_PASS_DEPENDENCY(ScopInfo)
 INITIALIZE_PASS_END(DeadCodeElim, "polly-dce", "Polly - Remove dead iterations",
                     false, false)

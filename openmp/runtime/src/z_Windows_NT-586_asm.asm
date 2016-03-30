@@ -1,7 +1,5 @@
 ;  z_Windows_NT-586_asm.asm:  - microtasking routines specifically
 ;    written for IA-32 architecture and Intel(R) 64 running Windows* OS
-;  $Revision: 43373 $
-;  $Date: 2014-08-07 09:17:32 -0500 (Thu, 07 Aug 2014) $
 
 ;
 ;//===----------------------------------------------------------------------===//
@@ -584,6 +582,9 @@ _gtid$ = 12
 _tid$ = 16
 _argc$ = 20
 _argv$ = 24
+if OMPT_SUPPORT
+_exit_frame$ = 28
+endif
 _i$ = -8
 _stk_adj$ = -16
 _vptr$ = -12
@@ -597,6 +598,10 @@ ___kmp_invoke_microtask PROC NEAR
         push    ebx
         push    esi
         push    edi
+if OMPT_SUPPORT
+        mov     eax, DWORD PTR _exit_frame$[ebp]
+        mov     DWORD PTR [eax], ebp
+endif
 ; Line 114
         mov     eax, DWORD PTR _argc$[ebp]
         mov     DWORD PTR _i$[ebp], eax
@@ -1309,6 +1314,9 @@ $_gtid   = 24
 $_tid    = 32
 $_argc   = 40
 $_p_argv = 48
+if OMPT_SUPPORT
+$_exit_frame = 56
+endif
 
 PUBLIC  __kmp_invoke_microtask
 _TEXT   SEGMENT
@@ -1324,6 +1332,10 @@ __kmp_invoke_microtask PROC FRAME ;NEAR
         lea     rbp, QWORD PTR [rsp]   	; establish the base pointer
         .setframe rbp, 0
         .ENDPROLOG
+if OMPT_SUPPORT
+        mov     rax, QWORD PTR $_exit_frame[rbp]
+        mov     QWORD PTR [rax], rbp
+endif
 	mov	r10, rcx	; save pkfn pointer for later
 
 ;; ------------------------------------------------------------

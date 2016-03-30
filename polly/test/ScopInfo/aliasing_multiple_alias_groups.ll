@@ -1,5 +1,5 @@
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-scops -analyze          < %s | FileCheck %s --check-prefix=NOAA
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-scops -analyze -tbaa    < %s | FileCheck %s --check-prefix=TBAA
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-scops -analyze          < %s | FileCheck %s --check-prefix=NOAA
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-scops -analyze -tbaa    < %s | FileCheck %s --check-prefix=TBAA
 ;
 ;    void jd(int *Int0, int *Int1, float *Float0, float *Float1) {
 ;      for (int i = 0; i < 1024; i++) {
@@ -16,13 +16,13 @@ entry:
 
 for.body:                                         ; preds = %for.body, %entry
   %indvars.iv = phi i64 [ 0, %entry ], [ %indvars.iv.next, %for.body ]
-  %arrayidx = getelementptr inbounds i32* %Int1, i64 %indvars.iv
-  %tmp = load i32* %arrayidx, align 4, !tbaa !0
-  %arrayidx2 = getelementptr inbounds i32* %Int0, i64 %indvars.iv
+  %arrayidx = getelementptr inbounds i32, i32* %Int1, i64 %indvars.iv
+  %tmp = load i32, i32* %arrayidx, align 4, !tbaa !0
+  %arrayidx2 = getelementptr inbounds i32, i32* %Int0, i64 %indvars.iv
   store i32 %tmp, i32* %arrayidx2, align 4, !tbaa !0
-  %arrayidx4 = getelementptr inbounds float* %Float1, i64 %indvars.iv
-  %tmp1 = load float* %arrayidx4, align 4, !tbaa !4
-  %arrayidx6 = getelementptr inbounds float* %Float0, i64 %indvars.iv
+  %arrayidx4 = getelementptr inbounds float, float* %Float1, i64 %indvars.iv
+  %tmp1 = load float, float* %arrayidx4, align 4, !tbaa !4
+  %arrayidx6 = getelementptr inbounds float, float* %Float0, i64 %indvars.iv
   store float %tmp1, float* %arrayidx6, align 4, !tbaa !4
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
   %exitcond = icmp eq i64 %indvars.iv.next, 1024

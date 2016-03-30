@@ -1,4 +1,4 @@
-# Tests that lld doesnot create separate segment if the input sections are part
+# Tests that lld does not create separate segment if the input sections are part
 # of the same output section
 
 # Build executable
@@ -43,7 +43,6 @@ Sections:
     Type:            SHT_NOBITS
     Flags:           [ SHF_WRITE, SHF_ALLOC ]
     AddressAlign:    0x0000000000000004
-    Content:         ''
   - Name:            .text.foo
     Type:            SHT_PROGBITS
     Flags:           [ SHF_ALLOC, SHF_EXECINSTR ]

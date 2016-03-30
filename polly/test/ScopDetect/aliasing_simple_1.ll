@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-detect -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-detect -analyze < %s | FileCheck %s
 ;
 ; CHECK: Valid Region for Scop:
 ;
@@ -19,8 +19,8 @@ for.cond:                                         ; preds = %for.inc, %entry
   br i1 %exitcond, label %for.body, label %for.end
 
 for.body:                                         ; preds = %for.cond
-  %tmp = load i32* %B, align 4
-  %arrayidx2 = getelementptr inbounds i32* %A, i64 %indvars.iv
+  %tmp = load i32, i32* %B, align 4
+  %arrayidx2 = getelementptr inbounds i32, i32* %A, i64 %indvars.iv
   store i32 %tmp, i32* %arrayidx2, align 4
   br label %for.inc
 

@@ -10,11 +10,42 @@
 # RUN: llvm-objdump -t -disassemble -mattr=micromips %t2 \
 # RUN:   | FileCheck -check-prefix RAW %s
 
+# Function glob
+# YAML:      - name:         main
+# YAML:        scope:        global
+# YAML:        content:      [ 5C, FC, 00, 00, 42, 30, 00, 00, 5C, FC, 00, 00,
+# YAML:                        42, 30, 00, 00, 5C, FC, 00, 00, 5C, FC, 00, 00,
+# YAML:                        5C, FC, 00, 00 ]
+# YAML:        alignment:    4 mod 16
+# YAML:        code-model:   mips-micro
+# YAML:        references:
+# YAML-NEXT:     - kind:         R_MICROMIPS_GOT16
+# YAML-NEXT:       offset:       0
+# YAML-NEXT:       target:       L000
+# YAML-NEXT:     - kind:         R_MICROMIPS_LO16
+# YAML-NEXT:       offset:       4
+# YAML-NEXT:       target:       data_1
+# YAML-NEXT:     - kind:         R_MICROMIPS_GOT16
+# YAML-NEXT:       offset:       8
+# YAML-NEXT:       target:       L001
+# YAML-NEXT:     - kind:         R_MICROMIPS_LO16
+# YAML-NEXT:       offset:       12
+# YAML-NEXT:       target:       data_2
+# YAML-NEXT:     - kind:         R_MICROMIPS_GOT16
+# YAML-NEXT:       offset:       16
+# YAML-NEXT:       target:       L002
+# YAML-NEXT:     - kind:         R_MICROMIPS_CALL16
+# YAML-NEXT:       offset:       20
+# YAML-NEXT:       target:       L003
+# YAML-NEXT:     - kind:         R_MICROMIPS_CALL16
+# YAML-NEXT:       offset:       24
+# YAML-NEXT:       target:       L004
+
 # Local GOT entries:
-# YAML:       - ref-name:        L002
+# YAML:       - ref-name:        L000
 # YAML-NEXT:    type:            got
 # YAML-NEXT:    content:         [ 00, 00, 00, 00 ]
-# YAML-NEXT:    alignment:       2^2
+# YAML-NEXT:    alignment:       4
 # YAML-NEXT:    section-choice:  custom-required
 # YAML-NEXT:    section-name:    .got
 # YAML-NEXT:    permissions:     rw-
@@ -22,10 +53,10 @@
 # YAML-NEXT:      - kind:            LLD_R_MIPS_32_HI16
 # YAML-NEXT:        offset:          0
 # YAML-NEXT:        target:          data_1
-# YAML-NEXT:  - ref-name:        L003
+# YAML-NEXT:  - ref-name:        L001
 # YAML-NEXT:    type:            got
 # YAML-NEXT:    content:         [ 00, 00, 00, 00 ]
-# YAML-NEXT:    alignment:       2^2
+# YAML-NEXT:    alignment:       4
 # YAML-NEXT:    section-choice:  custom-required
 # YAML-NEXT:    section-name:    .got
 # YAML-NEXT:    permissions:     rw-
@@ -33,10 +64,10 @@
 # YAML-NEXT:      - kind:            LLD_R_MIPS_32_HI16
 # YAML-NEXT:        offset:          0
 # YAML-NEXT:        target:          data_2
-# YAML-NEXT:  - ref-name:        L004
+# YAML-NEXT:  - ref-name:        L002
 # YAML-NEXT:    type:            got
 # YAML-NEXT:    content:         [ 00, 00, 00, 00 ]
-# YAML-NEXT:    alignment:       2^2
+# YAML-NEXT:    alignment:       4
 # YAML-NEXT:    section-choice:  custom-required
 # YAML-NEXT:    section-name:    .got
 # YAML-NEXT:    permissions:     rw-
@@ -46,10 +77,10 @@
 # YAML-NEXT:        target:          data_h
 
 # Global GOT entries:
-# YAML-NEXT:  - ref-name:        L005
+# YAML-NEXT:  - ref-name:        L003
 # YAML-NEXT:    type:            got
 # YAML-NEXT:    content:         [ 00, 00, 00, 00 ]
-# YAML-NEXT:    alignment:       2^2
+# YAML-NEXT:    alignment:       4
 # YAML-NEXT:    section-choice:  custom-required
 # YAML-NEXT:    section-name:    .got
 # YAML-NEXT:    permissions:     rw-
@@ -60,10 +91,10 @@
 # YAML-NEXT:      - kind:            R_MIPS_32
 # YAML-NEXT:        offset:          0
 # YAML-NEXT:        target:          bar
-# YAML-NEXT:  - ref-name:        L006
+# YAML-NEXT:  - ref-name:        L004
 # YAML-NEXT:    type:            got
 # YAML-NEXT:    content:         [ 00, 00, 00, 00 ]
-# YAML-NEXT:    alignment:       2^2
+# YAML-NEXT:    alignment:       4
 # YAML-NEXT:    section-choice:  custom-required
 # YAML-NEXT:    section-name:    .got
 # YAML-NEXT:    permissions:     rw-
@@ -72,54 +103,23 @@
 # YAML-NEXT:        offset:          0
 # YAML-NEXT:        target:          foo
 
-# Function glob
-# YAML:      - name:         main
-# YAML:        scope:        global
-# YAML:        content:      [ 5C, FC, 00, 00, 42, 30, 00, 00, 5C, FC, 00, 00,
-# YAML:                        42, 30, 00, 00, 5C, FC, 00, 00, 5C, FC, 00, 00,
-# YAML:                        5C, FC, 00, 00 ]
-# YAML:        alignment:    4 mod 2^4
-# YAML:        code-model:   mips-micro
-# YAML:        references:
-# YAML-NEXT:     - kind:         R_MICROMIPS_GOT16
-# YAML-NEXT:       offset:       0
-# YAML-NEXT:       target:       L002
-# YAML-NEXT:     - kind:         R_MICROMIPS_LO16
-# YAML-NEXT:       offset:       4
-# YAML-NEXT:       target:       data_1
-# YAML-NEXT:     - kind:         R_MICROMIPS_GOT16
-# YAML-NEXT:       offset:       8
-# YAML-NEXT:       target:       L003
-# YAML-NEXT:     - kind:         R_MICROMIPS_LO16
-# YAML-NEXT:       offset:       12
-# YAML-NEXT:       target:       data_2
-# YAML-NEXT:     - kind:         R_MICROMIPS_GOT16
-# YAML-NEXT:       offset:       16
-# YAML-NEXT:       target:       L004
-# YAML-NEXT:     - kind:         R_MICROMIPS_CALL16
-# YAML-NEXT:       offset:       20
-# YAML-NEXT:       target:       L005
-# YAML-NEXT:     - kind:         R_MICROMIPS_CALL16
-# YAML-NEXT:       offset:       24
-# YAML-NEXT:       target:       L006
-
 # RAW: Disassembly of section .text:
 # RAW: main:
-# RAW-NEXT:   164:  5c fc 18 80   lw      $2, -32744($gp)
-# RAW-NEXT:   168:  42 30 40 10   addiu   $2, $2, 4160
-# RAW-NEXT:   16c:  5c fc 1c 80   lw      $2, -32740($gp)
-# RAW-NEXT:   170:  42 30 60 20   addiu   $2, $2, 8288
-# RAW-NEXT:   174:  5c fc 20 80   lw      $2, -32736($gp)
-# RAW-NEXT:   178:  5c fc 24 80   lw      $2, -32732($gp)
-# RAW-NEXT:   17c:  5c fc 28 80   lw      $2, -32728($gp)
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  5c fc 18 80   lw      $2, -32744($gp)
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  42 30 40 10   addiu   $2, $2, 4160
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  5c fc 1c 80   lw      $2, -32740($gp)
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  42 30 60 20   addiu   $2, $2, 8288
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  5c fc 20 80   lw      $2, -32736($gp)
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  5c fc 24 80   lw      $2, -32732($gp)
+# RAW-NEXT:   {{[0x0-9a-f]+}}:  5c fc 28 80   lw      $2, -32728($gp)
 
 # RAW: SYMBOL TABLE:
-# RAW: 00000000       *UND*  00000000
-# RAW: 00001040 l     .data  00000000 data_1
-# RAW: 00002060 l     .data  00000001 data_2
-# RAW: 00000160 g   F .text  00000004 bar
-# RAW: 00000164 g   F .text  0000001c main
-# RAW: 00002061 g     .data  00000001 data_h
+# RAW: {{[0x0-9a-f]+}}       *UND*  00000000
+# RAW: {{[0x0-9a-f]+}} l     .data  00001020 data_1
+# RAW: {{[0x0-9a-f]+}} l     .data  00000001 data_2
+# RAW: {{[0x0-9a-f]+}} g   F .text  00000004 bar
+# RAW: {{[0x0-9a-f]+}} g   F .text  0000001c main
+# RAW: {{[0x0-9a-f]+}} g     .data  00000001 data_h
 
         .data
         .type   data_1, @object

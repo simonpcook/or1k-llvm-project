@@ -124,6 +124,7 @@
 #include "lld/Core/SharedLibraryAtom.h"
 #include "lld/ReaderWriter/PECOFFLinkingContext.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/COFF.h"
 #include "llvm/Support/Casting.h"
@@ -141,6 +142,7 @@
 using namespace lld;
 using namespace lld::pecoff;
 using namespace llvm;
+using namespace llvm::support::endian;
 
 #define DEBUG_TYPE "ReaderImportHeader"
 
@@ -162,25 +164,30 @@ const uint8_t FuncAtomContentARMNT[] = {
 
 static void setJumpInstTarget(COFFLinkerInternalAtom *src, const Atom *dst,
                               int off, MachineTypes machine) {
-  COFFReference *ref;
+  SimpleReference *ref;
 
   switch (machine) {
   default: llvm::report_fatal_error("unsupported machine type");
   case llvm::COFF::IMAGE_FILE_MACHINE_I386:
-    ref = new COFFReference(dst, off, llvm::COFF::IMAGE_REL_I386_DIR32,
-                            Reference::KindArch::x86);
+    ref = new SimpleReference(Reference::KindNamespace::COFF,
+                              Reference::KindArch::x86,
+                              llvm::COFF::IMAGE_REL_I386_DIR32,
+                              off, dst, 0);
     break;
   case llvm::COFF::IMAGE_FILE_MACHINE_AMD64:
-    ref = new COFFReference(dst, off, llvm::COFF::IMAGE_REL_AMD64_REL32,
-                            Reference::KindArch::x86_64);
+    ref = new SimpleReference(Reference::KindNamespace::COFF,
+                              Reference::KindArch::x86_64,
+                              llvm::COFF::IMAGE_REL_AMD64_REL32,
+                              off, dst, 0);
     break;
   case llvm::COFF::IMAGE_FILE_MACHINE_ARMNT:
-    ref = new COFFReference(dst, off, llvm::COFF::IMAGE_REL_ARM_MOV32T,
-                            Reference::KindArch::ARM);
+    ref = new SimpleReference(Reference::KindNamespace::COFF,
+                              Reference::KindArch::ARM,
+                              llvm::COFF::IMAGE_REL_ARM_MOV32T,
+                              off, dst, 0);
     break;
   }
-
-  src->addReference(std::unique_ptr<COFFReference>(ref));
+  src->addReference(std::unique_ptr<SimpleReference>(ref));
 }
 
 /// The defined atom for jump table.
@@ -209,7 +216,7 @@ public:
   uint64_t ordinal() const override { return 0; }
   Scope scope() const override { return scopeGlobal; }
   ContentType contentType() const override { return typeCode; }
-  Alignment alignment() const override { return Alignment(1); }
+  Alignment alignment() const override { return 2; }
   ContentPermissions permissions() const override { return permR_X; }
 
 private:
@@ -245,22 +252,20 @@ public:
     const char *end = _mb->getBufferEnd();
 
     // The size of the string that follows the header.
-    uint32_t dataSize = *reinterpret_cast<const support::ulittle32_t *>(
-        buf + offsetof(COFF::ImportHeader, SizeOfData));
+    uint32_t dataSize
+        = read32le(buf + offsetof(COFF::ImportHeader, SizeOfData));
 
     // Check if the total size is valid.
     if (std::size_t(end - buf) != sizeof(COFF::ImportHeader) + dataSize)
-      return make_error_code(NativeReaderError::unknown_file_format);
+      return make_dynamic_error_code("Broken import library");
 
-    uint16_t hint = *reinterpret_cast<const support::ulittle16_t *>(
-        buf + offsetof(COFF::ImportHeader, OrdinalHint));
+    uint16_t hint = read16le(buf + offsetof(COFF::ImportHeader, OrdinalHint));
     StringRef symbolName(buf + sizeof(COFF::ImportHeader));
     StringRef dllName(buf + sizeof(COFF::ImportHeader) + symbolName.size() + 1);
 
     // TypeInfo is a bitfield. The least significant 2 bits are import
     // type, followed by 3 bit import name type.
-    uint16_t typeInfo = *reinterpret_cast<const support::ulittle16_t *>(
-        buf + offsetof(COFF::ImportHeader, TypeInfo));
+    uint16_t typeInfo = read16le(buf + offsetof(COFF::ImportHeader, TypeInfo));
     int type = typeInfo & 0x3;
     int nameType = (typeInfo >> 2) & 0x7;
 
@@ -277,19 +282,19 @@ public:
     return std::error_code();
   }
 
-  const atom_collection<DefinedAtom> &defined() const override {
+  const AtomVector<DefinedAtom> &defined() const override {
     return _definedAtoms;
   }
 
-  const atom_collection<UndefinedAtom> &undefined() const override {
+  const AtomVector<UndefinedAtom> &undefined() const override {
     return _noUndefinedAtoms;
   }
 
-  const atom_collection<SharedLibraryAtom> &sharedLibrary() const override {
+  const AtomVector<SharedLibraryAtom> &sharedLibrary() const override {
     return _sharedLibraryAtoms;
   }
 
-  const atom_collection<AbsoluteAtom> &absolute() const override {
+  const AtomVector<AbsoluteAtom> &absolute() const override {
     return _noAbsoluteAtoms;
   }
 
@@ -300,18 +305,18 @@ private:
                                                     StringRef dllName) {
     auto *atom = new (_alloc)
         COFFSharedLibraryAtom(*this, hint, symbolName, importName, dllName);
-    _sharedLibraryAtoms._atoms.push_back(atom);
+    _sharedLibraryAtoms.push_back(atom);
     return atom;
   }
 
   void addFuncAtom(StringRef symbolName, StringRef dllName,
                    const COFFSharedLibraryAtom *impAtom) {
     auto *atom = new (_alloc) FuncAtom(*this, symbolName, impAtom, _machine);
-    _definedAtoms._atoms.push_back(atom);
+    _definedAtoms.push_back(atom);
   }
 
-  atom_collection_vector<DefinedAtom> _definedAtoms;
-  atom_collection_vector<SharedLibraryAtom> _sharedLibraryAtoms;
+  AtomVector<DefinedAtom> _definedAtoms;
+  AtomVector<SharedLibraryAtom> _sharedLibraryAtoms;
   mutable llvm::BumpPtrAllocator _alloc;
 
   // Does the same thing as StringRef::ltrim() but removes at most one
@@ -354,32 +359,30 @@ private:
 
 class COFFImportLibraryReader : public Reader {
 public:
-  COFFImportLibraryReader(MachineTypes machine) : _machine(machine) {}
+  COFFImportLibraryReader(PECOFFLinkingContext &ctx) : _ctx(ctx) {}
 
-  bool canParse(file_magic magic, StringRef,
-                const MemoryBuffer &mb) const override {
+  bool canParse(file_magic magic, MemoryBufferRef mb) const override {
     if (mb.getBufferSize() < sizeof(COFF::ImportHeader))
       return false;
-    return (magic == llvm::sys::fs::file_magic::coff_import_library);
+    return magic == llvm::sys::fs::file_magic::coff_import_library;
   }
 
-  std::error_code
-  parseFile(std::unique_ptr<MemoryBuffer> mb, const class Registry &,
-            std::vector<std::unique_ptr<File> > &result) const override {
-    auto *file = new FileImportLibrary(std::move(mb), _machine);
-    result.push_back(std::unique_ptr<File>(file));
-    return std::error_code();
+  ErrorOr<std::unique_ptr<File>>
+  loadFile(std::unique_ptr<MemoryBuffer> mb,
+           const class Registry &) const override {
+    std::unique_ptr<File> ret = llvm::make_unique<FileImportLibrary>(
+        std::move(mb), _ctx.getMachineType());
+    return std::move(ret);
   }
 
 private:
-  MachineTypes _machine;
+  PECOFFLinkingContext &_ctx;
 };
 
 } // end anonymous namespace
 
 void Registry::addSupportCOFFImportLibraries(PECOFFLinkingContext &ctx) {
-  MachineTypes machine = ctx.getMachineType();
-  add(llvm::make_unique<COFFImportLibraryReader>(machine));
+  add(llvm::make_unique<COFFImportLibraryReader>(ctx));
 }
 
 } // end namespace lld

@@ -182,6 +182,10 @@
     %endif
 
 
+#if USE_DEBUGGER
+        __kmp_debugging                         DATA
+        __kmp_omp_debug_struct_info             DATA
+#endif /* USE_DEBUGGER */
 
         # Symbols for MS mutual detection:
         _You_must_link_with_exactly_one_OpenMP_library    DATA
@@ -381,6 +385,14 @@ kmpc_set_defaults                           224
     %endif # OMP_40
 %endif
 
+# OpenMP 4.1 entry points
+%ifndef stub
+    %ifdef OMP_41
+	__kmpc_proxy_task_completed	    259
+	__kmpc_proxy_task_completed_ooo	    260
+    %endif
+%endif
+
 # User API entry points that have both lower- and upper- case versions for Fortran.
 # Number for lowercase version is indicated.  Number for uppercase is obtained by adding 1000.
 # User API entry points are entry points that start with 'kmp_' or 'omp_'.
@@ -478,6 +490,7 @@ kmp_set_warnings_off                        780
     omp_get_team_num                        866
     omp_get_cancellation                    867
     kmp_get_cancellation_status             868
+    omp_is_initial_device                   869
 %endif # OMP_40
 
 %ifndef stub

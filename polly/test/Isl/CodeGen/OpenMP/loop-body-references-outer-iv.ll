@@ -1,5 +1,5 @@
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-ast -analyze < %s | FileCheck %s -check-prefix=AST
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-codegen-isl -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-ast -analyze < %s | FileCheck %s -check-prefix=AST
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-codegen -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
 
 ; This code has failed the scev based code generation as the scev in the scop
 ; contains an AddRecExpr of an outer loop. When generating code, we did not
@@ -12,7 +12,6 @@
 ; IR: @single_parallel_loop.polly.subfn
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-unknown-linux-gnu"
 
 @A = common global [1024 x float] zeroinitializer, align 16
 
@@ -27,7 +26,7 @@ for.i:
 for.j:
   %indvar.j = phi i64 [ %indvar.j.next, %for.j], [ 0, %for.i ]
   %sum = add i64 %indvar.j, %indvar.i
-  %scevgep = getelementptr [1024 x float]* @A, i64 0, i64 %sum
+  %scevgep = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %sum
   store float 0.0, float *%scevgep
   %indvar.j.next = add i64 %indvar.j, 1
   %exitcond.j = icmp slt i64 %indvar.j.next, 1024

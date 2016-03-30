@@ -20,9 +20,7 @@ namespace lld {
 ///
 class SharedLibraryFile : public File {
 public:
-  virtual ~SharedLibraryFile() {}
-
-  static inline bool classof(const File *f) {
+  static bool classof(const File *f) {
     return f->kind() == kindSharedLibrary;
   }
 
@@ -31,9 +29,35 @@ public:
   /// symbol.  Otherwise return nullptr.
   virtual const SharedLibraryAtom *exports(StringRef name,
                                            bool dataSymbolOnly) const = 0;
+
+  // Returns DSO name. It's the soname (ELF), the install name (MachO) or
+  // the import name (Windows).
+  virtual StringRef getDSOName() const = 0;
+
+  const AtomVector<DefinedAtom> &defined() const override {
+    return _definedAtoms;
+  }
+
+  const AtomVector<UndefinedAtom> &undefined() const override {
+    return _undefinedAtoms;
+  }
+
+  const AtomVector<SharedLibraryAtom> &sharedLibrary() const override {
+    return _sharedLibraryAtoms;
+  }
+
+  const AtomVector<AbsoluteAtom> &absolute() const override {
+    return _absoluteAtoms;
+  }
+
 protected:
   /// only subclasses of SharedLibraryFile can be instantiated
   explicit SharedLibraryFile(StringRef path) : File(path, kindSharedLibrary) {}
+
+  AtomVector<DefinedAtom> _definedAtoms;
+  AtomVector<UndefinedAtom> _undefinedAtoms;
+  AtomVector<SharedLibraryAtom> _sharedLibraryAtoms;
+  AtomVector<AbsoluteAtom> _absoluteAtoms;
 };
 
 } // namespace lld

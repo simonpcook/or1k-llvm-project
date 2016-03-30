@@ -15,14 +15,14 @@
 using namespace clang::ast_matchers;
 
 namespace clang {
-
-namespace ast_matchers {
+namespace {
 AST_MATCHER(DeclRefExpr, hasExplicitTemplateArgs) {
   return Node.hasExplicitTemplateArgs();
 }
-} // namespace ast_matchers
+} // namespace
 
 namespace tidy {
+namespace google {
 namespace build {
 
 void
@@ -67,5 +67,6 @@ void ExplicitMakePairCheck::check(const MatchFinder::MatchResult &Result) {
 }
 
 } // namespace build
+} // namespace google
 } // namespace tidy
 } // namespace clang

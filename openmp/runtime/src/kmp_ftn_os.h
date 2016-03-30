@@ -1,7 +1,5 @@
 /*
  * kmp_ftn_os.h -- KPTS Fortran defines header file.
- * $Revision: 43354 $
- * $Date: 2014-07-22 17:15:02 -0500 (Tue, 22 Jul 2014) $
  */
 
 
@@ -81,6 +79,10 @@
     #define FTN_GET_TEAM_NUM                     omp_get_team_num
 #endif
     #define FTN_INIT_LOCK                        omp_init_lock
+#if KMP_USE_DYNAMIC_LOCK
+    #define FTN_INIT_LOCK_HINTED                 kmp_init_lock_hinted
+    #define FTN_INIT_NEST_LOCK_HINTED            kmp_init_nest_lock_hinted
+#endif
     #define FTN_DESTROY_LOCK                     omp_destroy_lock
     #define FTN_SET_LOCK                         omp_set_lock
     #define FTN_UNSET_LOCK                       omp_unset_lock
@@ -103,6 +105,7 @@
     #define FTN_SET_DEFAULT_DEVICE               omp_set_default_device
     #define FTN_GET_NUM_DEVICES                  omp_get_num_devices
 #endif
+    #define FTN_IS_INITIAL_DEVICE                omp_is_initial_device
 #endif
 
 #if OMP_40_ENABLED
@@ -172,6 +175,10 @@
     #define FTN_GET_TEAM_NUM                     omp_get_team_num_
 #endif
     #define FTN_INIT_LOCK                        omp_init_lock_
+#if KMP_USE_DYNAMIC_LOCK
+    #define FTN_INIT_LOCK_HINTED                 kmp_init_lock_hinted_
+    #define FTN_INIT_NEST_LOCK_HINTED            kmp_init_nest_lock_hinted_
+#endif
     #define FTN_DESTROY_LOCK                     omp_destroy_lock_
     #define FTN_SET_LOCK                         omp_set_lock_
     #define FTN_UNSET_LOCK                       omp_unset_lock_
@@ -194,6 +201,7 @@
     #define FTN_SET_DEFAULT_DEVICE               omp_set_default_device_
     #define FTN_GET_NUM_DEVICES                  omp_get_num_devices_
 #endif
+    #define FTN_IS_INITIAL_DEVICE                omp_is_initial_device_
 #endif
 
 
@@ -264,6 +272,10 @@
     #define FTN_GET_TEAM_NUM                     OMP_GET_TEAM_NUM
 #endif
     #define FTN_INIT_LOCK                        OMP_INIT_LOCK
+#if KMP_USE_DYNAMIC_LOCK
+    #define FTN_INIT_LOCK_HINTED                 KMP_INIT_LOCK_HINTED
+    #define FTN_INIT_NEST_LOCK_HINTED            KMP_INIT_NEST_LOCK_HINTED
+#endif
     #define FTN_DESTROY_LOCK                     OMP_DESTROY_LOCK
     #define FTN_SET_LOCK                         OMP_SET_LOCK
     #define FTN_UNSET_LOCK                       OMP_UNSET_LOCK
@@ -286,6 +298,7 @@
     #define FTN_SET_DEFAULT_DEVICE               OMP_SET_DEFAULT_DEVICE
     #define FTN_GET_NUM_DEVICES                  OMP_GET_NUM_DEVICES
 #endif
+    #define FTN_IS_INITIAL_DEVICE                OMP_IS_INITIAL_DEVICE
 #endif
 
 
@@ -356,6 +369,10 @@
     #define FTN_GET_TEAM_NUM                     OMP_GET_TEAM_NUM_
 #endif
     #define FTN_INIT_LOCK                        OMP_INIT_LOCK_
+#if KMP_USE_DYNAMIC_LOCK
+    #define FTN_INIT_LOCK_HINTED                 KMP_INIT_LOCK_HINTED_
+    #define FTN_INIT_NEST_LOCK_HINTED            KMP_INIT_NEST_LOCK_HINTED_
+#endif
     #define FTN_DESTROY_LOCK                     OMP_DESTROY_LOCK_
     #define FTN_SET_LOCK                         OMP_SET_LOCK_
     #define FTN_UNSET_LOCK                       OMP_UNSET_LOCK_
@@ -378,6 +395,7 @@
     #define FTN_SET_DEFAULT_DEVICE               OMP_SET_DEFAULT_DEVICE_
     #define FTN_GET_NUM_DEVICES                  OMP_GET_NUM_DEVICES_
 #endif
+    #define FTN_IS_INITIAL_DEVICE                OMP_IS_INITIAL_DEVICE_
 #endif
 
 
@@ -457,7 +475,7 @@
 #define KMP_API_NAME_GOMP_TASKYIELD                      GOMP_taskyield
 
 // All GOMP_4.0 symbols 
-// TODO: As of 2013-10-14, none of the GOMP_4.0 functions are implemented in libiomp5
+// TODO: As of 2013-10-14, none of the GOMP_4.0 functions are implemented in libomp
 #define KMP_API_NAME_GOMP_BARRIER_CANCEL                 GOMP_barrier_cancel
 #define KMP_API_NAME_GOMP_CANCEL                         GOMP_cancel
 #define KMP_API_NAME_GOMP_CANCELLATION_POINT             GOMP_cancellation_point

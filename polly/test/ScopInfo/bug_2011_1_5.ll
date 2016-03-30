@@ -1,10 +1,9 @@
-; RUN: opt %loadPolly -polly-analyze-ir -analyze < %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-analyze-ir -analyze < %s
 
 ; Bug description: Alias Analysis thinks IntToPtrInst aliases with alloca instructions created by IndependentBlocks Pass.
 ;                  This will trigger the assertion when we are verifying the SCoP after IndependentBlocks.
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-unknown-linux-gnu"
 
 %struct.precisionType = type { i16, i16, i16, i8, [1 x i16] }
 
@@ -24,7 +23,7 @@ bb1.i210.i:                                       ; preds = %bb.i209.i, %bb1.i19
   br i1 %0, label %bb1.i216.i, label %bb.i215.i
 
 bb.i215.i:                                        ; preds = %bb1.i210.i
-  %1 = getelementptr inbounds %struct.precisionType* %tmp51.i, i64 0, i32 0
+  %1 = getelementptr inbounds %struct.precisionType, %struct.precisionType* %tmp51.i, i64 0, i32 0
   store i16 undef, i16* %1, align 2
   br label %bb1.i216.i
 

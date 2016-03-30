@@ -77,14 +77,14 @@ sub get_deps_ldd($) {
 # --------------------------------------------------------------------------------------------------
 # Another Linux* OS version of get_deps() parses output of readelf:
 #
-# $ readelf -d exports/lin_32e/lib/libiomp5.so
+# $ readelf -d exports/lin_32e/lib/libomp.so
 #
 # Dynamic segment at offset 0x87008 contains 24 entries:
 #   Tag        Type                         Name/Value
 #  0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
 #  0x0000000000000001 (NEEDED)             Shared library: [libdl.so.2]
 #  0x0000000000000001 (NEEDED)             Shared library: [libpthread.so.0]
-#  0x000000000000000e (SONAME)             Library soname: [libiomp5.so]
+#  0x000000000000000e (SONAME)             Library soname: [libomp.so]
 #  0x000000000000000d (FINI)               0x51caa
 #  0x0000000000000004 (HASH)               0x158
 #  0x0000000000000005 (STRTAB)             0x9350
@@ -95,9 +95,15 @@ sub get_deps_ldd($) {
 sub get_deps_readelf($) {
 
     my $file = shift ( @_ );
-    my $tool = "readelf";
+    my $tool;
     my @bulk;
     my @deps;
+
+    if($target_arch eq "mic") {
+        $tool = "x86_64-k1om-linux-readelf";
+    } else {
+        $tool = "readelf";
+    }
 
     execute( [ $tool, "-d", $file ], -stdout => \@bulk );
     debug( @bulk, "(eof)" );
@@ -143,8 +149,8 @@ sub get_deps_readelf($) {
 # OS X* version of get_deps() parses output of otool:
 #
 # $ otool -L libname.dylib
-# exports/mac_32/lib.thin/libiomp5.dylib:
-#        libiomp5.dylib (compatibility version 5.0.0, current version 5.0.0)
+# exports/mac_32/lib.thin/libomp.dylib:
+#        libomp.dylib (compatibility version 5.0.0, current version 5.0.0)
 #        /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 88.1.3)
 #
 sub get_deps_otool($) {
@@ -201,7 +207,7 @@ sub get_deps_otool($) {
 # > link -dump -dependents libname.dll
 # Microsoft (R) COFF/PE Dumper Version 8.00.40310.39
 # Copyright (C) Microsoft Corporation.  All rights reserved.
-# Dump of file S:\Projects.OMP\users\omalyshe\omp\libomp\exports\win_64\lib\libiomp5md.dll
+# Dump of file S:\Projects.OMP\users\omalyshe\omp\libomp\exports\win_64\lib\libompmd.dll
 # File Type: DLL
 #   Image has the following dependencies:
 #     KERNEL32.dll
@@ -346,7 +352,7 @@ if ( not -e $lib ){
 
 # Select appropriate get_deps implementation.
 if ( 0 ) {
-} elsif ( $target_os eq "lin" or $target_os eq "lrb" ) {
+} elsif ( $target_os eq "lin" ) {
     *get_deps = \*get_deps_readelf;
 } elsif ( $target_os eq "mac" ) {
     *get_deps = \*get_deps_otool;
@@ -464,7 +470,7 @@ A name of library to find or check dependencies.
 
 Just print library dependencies (Windows* OS):
 
-    > check-depends.pl exports/win_32/lib/libiomp5.dll
+    > check-depends.pl exports/win_32/lib/libompmd.dll
     check-depends.pl: (i) Dependencies:
     check-depends.pl: (i)     kernel32.dll
 
@@ -477,7 +483,7 @@ Print library dependencies, use bare output (Linux* OS):
 
 Check the library does not have any dependencies (OS X*):
 
-    $ check-depends.pl --expected=none exports/mac_32/lib/libiomp5.dylib
+    $ check-depends.pl --expected=none exports/mac_32/lib/libomp.dylib
     check-depends.pl: (i) Dependencies:
     check-depends.pl: (i)     /usr/lib/libSystem.B.dylib
     check-depends.pl: (x) Unexpected dependencies:

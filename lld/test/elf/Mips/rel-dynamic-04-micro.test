@@ -19,6 +19,7 @@
 # RUN: yaml2obj -format=elf -docnum 2 %s > %t-o.o
 # RUN: lld -flavor gnu -target mipsel -e T0 -o %t.exe %t-o.o %t.so
 # RUN: llvm-readobj -dt -r -s %t.exe | FileCheck -check-prefix=PLT %s
+# RUN: llvm-readobj -mips-plt-got %t.exe | FileCheck -check-prefix=GOT %s
 
 # PLT:      Section {
 # PLT:        Index: 5
@@ -88,16 +89,7 @@
 # PLT-NEXT:     Section: Undefined (0x0)
 # PLT-NEXT:   }
 # PLT-NEXT:   Symbol {
-# PLT-NEXT:     Name: T3@ (1)
-# PLT-NEXT:     Value: 0x4010E5
-# PLT-NEXT:     Size: 0
-# PLT-NEXT:     Binding: Global (0x1)
-# PLT-NEXT:     Type: Function (0x2)
-# PLT-NEXT:     Other: 8
-# PLT-NEXT:     Section: Undefined (0x0)
-# PLT-NEXT:   }
-# PLT-NEXT:   Symbol {
-# PLT-NEXT:     Name: T2@ (7)
+# PLT-NEXT:     Name: T2@ (4)
 # PLT-NEXT:     Value: 0x4010D9
 # PLT-NEXT:     Size: 0
 # PLT-NEXT:     Binding: Global (0x1)
@@ -106,7 +98,16 @@
 # PLT-NEXT:     Section: Undefined (0x0)
 # PLT-NEXT:   }
 # PLT-NEXT:   Symbol {
-# PLT-NEXT:     Name: T1@ (4)
+# PLT-NEXT:     Name: T3@ (7)
+# PLT-NEXT:     Value: 0x4010E5
+# PLT-NEXT:     Size: 0
+# PLT-NEXT:     Binding: Global (0x1)
+# PLT-NEXT:     Type: Function (0x2)
+# PLT-NEXT:     Other: 8
+# PLT-NEXT:     Section: Undefined (0x0)
+# PLT-NEXT:   }
+# PLT-NEXT:   Symbol {
+# PLT-NEXT:     Name: T1@ (1)
 # PLT-NEXT:     Value: 0x0
 # PLT-NEXT:     Size: 0
 # PLT-NEXT:     Binding: Global (0x1)
@@ -115,6 +116,20 @@
 # PLT-NEXT:     Section: Undefined (0x0)
 # PLT-NEXT:   }
 # PLT-NEXT: ]
+
+# GOT:      Local entries [
+# GOT-NEXT: ]
+# GOT-NEXT: Global entries [
+# GOT-NEXT:   Entry {
+# GOT-NEXT:     Address: 0x402008
+# GOT-NEXT:     Access: -32744
+# GOT-NEXT:     Initial: 0x0
+# GOT-NEXT:     Value: 0x0
+# GOT-NEXT:     Type: Function (0x2)
+# GOT-NEXT:     Section: Undefined (0x0)
+# GOT-NEXT:     Name: T1@ (1)
+# GOT-NEXT:   }
+# GOT-NEXT: ]
 
 # so.o
 ---

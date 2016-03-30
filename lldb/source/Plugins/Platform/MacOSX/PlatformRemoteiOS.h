@@ -87,6 +87,7 @@ public:
 
     lldb_private::Error
     GetSharedModule (const lldb_private::ModuleSpec &module_spec,
+                     lldb_private::Process* process,
                      lldb::ModuleSP &module_sp,
                      const lldb_private::FileSpecList *module_search_paths_ptr,
                      lldb::ModuleSP *old_module_sp_ptr,
@@ -97,9 +98,9 @@ public:
                                      lldb_private::ArchSpec &arch) override;
     
     void
-    AddClangModuleCompilationOptions (std::vector<std::string> &options) override
+    AddClangModuleCompilationOptions (lldb_private::Target *target, std::vector<std::string> &options) override
     {
-        return PlatformDarwin::AddClangModuleCompilationOptionsForSDKType(options, PlatformDarwin::SDKType::iPhoneOS);
+        return PlatformDarwin::AddClangModuleCompilationOptionsForSDKType(target, options, PlatformDarwin::SDKType::iPhoneOS);
     }
 
 protected:
@@ -122,7 +123,7 @@ protected:
     uint32_t m_connected_module_sdk_idx;
 
     bool
-    UpdateSDKDirectoryInfosInNeeded();
+    UpdateSDKDirectoryInfosIfNeeded();
 
     const char *
     GetDeviceSupportDirectory();
@@ -162,6 +163,10 @@ protected:
 
     uint32_t
     GetConnectedSDKIndex ();
+
+    // Get index of SDK in SDKDirectoryInfoCollection by its pointer and return UINT32_MAX if that SDK not found.
+    uint32_t
+    GetSDKIndexBySDKDirectoryInfo (const SDKDirectoryInfo *sdk_info);
 
 private:
     DISALLOW_COPY_AND_ASSIGN (PlatformRemoteiOS);

@@ -173,7 +173,10 @@ public:
     
     virtual uint32_t
     GetSDKVersion (uint32_t *versions, uint32_t num_versions);
-    
+
+    virtual bool
+    GetIsDynamicLinkEditor();
+
     static bool
     ParseHeader (lldb_private::DataExtractor &data,
                  lldb::offset_t *data_offset_ptr,
@@ -208,6 +211,14 @@ protected:
     // should not be used.
     lldb_private::UUID
     GetLLDBSharedCacheUUID ();
+
+    lldb_private::Section *
+    GetMachHeaderSection();
+
+    lldb::addr_t
+    CalculateSectionLoadAddressForMemoryImage(lldb::addr_t mach_header_load_address,
+                                              const lldb_private::Section *mach_header_section,
+                                              const lldb_private::Section *section);
 
     llvm::MachO::mach_header m_header;
     static const lldb_private::ConstString &GetSegmentNameTEXT();

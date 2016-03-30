@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -basicaa -polly-codegen-isl %vector-opt -dce -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-codegen -polly-vectorizer=polly -dce -S < %s | FileCheck %s
 
 ;#define N 1024
 ;float A[N];
@@ -17,7 +17,6 @@
 ;}
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-unknown-linux-gnu"
 
 @A = common global [1024 x float] zeroinitializer, align 16
 @B = common global [1024 x float] zeroinitializer, align 16
@@ -28,14 +27,14 @@ bb:
 
 bb2:                                              ; preds = %bb6, %bb
   %indvar = phi i64 [ %indvar.next, %bb6 ], [ 0, %bb ]
-  %scevgep = getelementptr [1024 x float]* @B, i64 0, i64 %indvar
+  %scevgep = getelementptr [1024 x float], [1024 x float]* @B, i64 0, i64 %indvar
   %i.0 = trunc i64 %indvar to i32
-  %scevgep1 = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
+  %scevgep1 = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
   %exitcond = icmp ne i64 %indvar, 4
   br i1 %exitcond, label %bb3, label %bb7
 
 bb3:                                              ; preds = %bb2
-  %tmp = load float* %scevgep1, align 4
+  %tmp = load float, float* %scevgep1, align 4
   %tmp4 = sitofp i32 %i.0 to float
   %tmp5 = fadd float %tmp, %tmp4
   store float %tmp5, float* %scevgep, align 4
@@ -52,7 +51,7 @@ bb7:                                              ; preds = %bb2
 define i32 @main() nounwind {
 bb:
   call void @simple_vec_const()
-  %tmp = load float* getelementptr inbounds ([1024 x float]* @A, i64 0, i64 42), align 8
+  %tmp = load float, float* getelementptr inbounds ([1024 x float], [1024 x float]* @A, i64 0, i64 42), align 8
   %tmp1 = fptosi float %tmp to i32
   ret i32 %tmp1
 }

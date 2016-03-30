@@ -1,6 +1,6 @@
-; RUN: opt %loadPolly -polly-codegen-isl -polly-parallel -S < %s | FileCheck %s --check-prefix=AUTO
-; RUN: opt %loadPolly -polly-codegen-isl -polly-parallel -polly-num-threads=1 -S < %s | FileCheck %s --check-prefix=ONE
-; RUN: opt %loadPolly -polly-codegen-isl -polly-parallel -polly-num-threads=4 -S < %s | FileCheck %s --check-prefix=FOUR
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-codegen -polly-parallel -S < %s | FileCheck %s --check-prefix=AUTO
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-codegen -polly-parallel -polly-num-threads=1 -S < %s | FileCheck %s --check-prefix=ONE
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-codegen -polly-parallel -polly-num-threads=4 -S < %s | FileCheck %s --check-prefix=FOUR
 ;
 ; AUTO: call void @GOMP_parallel_loop_runtime_start(void (i8*)* @jd.polly.subfn, i8* %polly.par.userContext{{[0-9]*}}, i32 0, i64 0, i64 1024, i64 1)
 ; ONE: call void @GOMP_parallel_loop_runtime_start(void (i8*)* @jd.polly.subfn, i8* %polly.par.userContext{{[0-9]*}}, i32 1, i64 0, i64 1024, i64 1)
@@ -34,7 +34,7 @@ for.cond1:                                        ; preds = %for.inc, %for.body
 for.body3:                                        ; preds = %for.cond1
   %tmp = shl nsw i64 %indvars.iv, 10
   %tmp6 = add nsw i64 %indvars.iv3, %tmp
-  %arrayidx = getelementptr inbounds i32* %A, i64 %tmp6
+  %arrayidx = getelementptr inbounds i32, i32* %A, i64 %tmp6
   store i32 0, i32* %arrayidx, align 4
   br label %for.inc
 

@@ -1,11 +1,10 @@
 
 #include "polly/Support/SCEVValidator.h"
 #include "polly/ScopInfo.h"
+#include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
-#include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Support/Debug.h"
-
 #include <vector>
 
 using namespace llvm;
@@ -82,7 +81,7 @@ public:
   std::vector<const SCEV *> getParameters() { return Parameters; }
 
   /// @brief Add the parameters of Source to this result.
-  void addParamsFrom(class ValidatorResult &Source) {
+  void addParamsFrom(const ValidatorResult &Source) {
     Parameters.insert(Parameters.end(), Source.Parameters.begin(),
                       Source.Parameters.end());
   }
@@ -91,7 +90,7 @@ public:
   ///
   /// This means to merge the parameters and to set the Type to the most
   /// specific Type that matches both.
-  void merge(class ValidatorResult &ToMerge) {
+  void merge(const ValidatorResult &ToMerge) {
     Type = std::max(Type, ToMerge.Type);
     addParamsFrom(ToMerge);
   }
@@ -228,7 +227,7 @@ public:
       Return.merge(Op);
     }
 
-    if (HasMultipleParams)
+    if (HasMultipleParams && Return.isValid())
       return ValidatorResult(SCEVType::PARAM, Expr);
 
     // TODO: Check for NSW and NUW.
@@ -287,7 +286,7 @@ public:
     // if 'start' is not zero.
     const SCEV *ZeroStartExpr = SE.getAddRecExpr(
         SE.getConstant(Expr->getStart()->getType(), 0),
-        Expr->getStepRecurrence(SE), Expr->getLoop(), SCEV::FlagAnyWrap);
+        Expr->getStepRecurrence(SE), Expr->getLoop(), Expr->getNoWrapFlags());
 
     ValidatorResult ZeroStartResult =
         ValidatorResult(SCEVType::PARAM, ZeroStartExpr);
@@ -326,18 +325,49 @@ public:
     return ValidatorResult(SCEVType::PARAM, Expr);
   }
 
+  ValidatorResult visitGenericInst(Instruction *I, const SCEV *S) {
+    if (R->contains(I)) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr references an instruction "
+                      "within the region\n");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    return ValidatorResult(SCEVType::PARAM, S);
+  }
+
+  ValidatorResult visitSDivInstruction(Instruction *SDiv, const SCEV *S) {
+    assert(SDiv->getOpcode() == Instruction::SDiv &&
+           "Assumed SDiv instruction!");
+
+    auto *Divisor = SDiv->getOperand(1);
+    auto *CI = dyn_cast<ConstantInt>(Divisor);
+    if (!CI)
+      return visitGenericInst(SDiv, S);
+
+    auto *Dividend = SDiv->getOperand(0);
+    auto *DividendSCEV = SE.getSCEV(Dividend);
+    return visit(DividendSCEV);
+  }
+
+  ValidatorResult visitSRemInstruction(Instruction *SRem, const SCEV *S) {
+    assert(SRem->getOpcode() == Instruction::SRem &&
+           "Assumed SRem instruction!");
+
+    auto *Divisor = SRem->getOperand(1);
+    auto *CI = dyn_cast<ConstantInt>(Divisor);
+    if (!CI)
+      return visitGenericInst(SRem, S);
+
+    auto *Dividend = SRem->getOperand(0);
+    auto *DividendSCEV = SE.getSCEV(Dividend);
+    return visit(DividendSCEV);
+  }
+
   ValidatorResult visitUnknown(const SCEVUnknown *Expr) {
     Value *V = Expr->getValue();
 
-    // We currently only support integer types. It may be useful to support
-    // pointer types, e.g. to support code like:
-    //
-    //   if (A)
-    //     A[i] = 1;
-    //
-    // See test/CodeGen/20120316-InvalidCast.ll
-    if (!Expr->getType()->isIntegerTy()) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer type");
+    if (!(Expr->getType()->isIntegerTy() || Expr->getType()->isPointerTy())) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer or pointer type");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -346,16 +376,20 @@ public:
       return ValidatorResult(SCEVType::INVALID);
     }
 
-    if (Instruction *I = dyn_cast<Instruction>(Expr->getValue()))
-      if (R->contains(I)) {
-        DEBUG(dbgs() << "INVALID: UnknownExpr references an instruction "
-                        "within the region\n");
-        return ValidatorResult(SCEVType::INVALID);
-      }
-
     if (BaseAddress == V) {
       DEBUG(dbgs() << "INVALID: UnknownExpr references BaseAddress\n");
       return ValidatorResult(SCEVType::INVALID);
+    }
+
+    if (Instruction *I = dyn_cast<Instruction>(Expr->getValue())) {
+      switch (I->getOpcode()) {
+      case Instruction::SDiv:
+        return visitSDivInstruction(I, Expr);
+      case Instruction::SRem:
+        return visitSRemInstruction(I, Expr);
+      default:
+        return visitGenericInst(I, Expr);
+      }
     }
 
     return ValidatorResult(SCEVType::PARAM, Expr);
@@ -540,7 +574,27 @@ std::vector<const SCEV *> getParamsInAffineExpr(const Region *R,
 
   SCEVValidator Validator(R, SE, BaseAddress);
   ValidatorResult Result = Validator.visit(Expr);
+  assert(Result.isValid() && "Requested parameters for an invalid SCEV!");
 
   return Result.getParameters();
+}
+
+std::pair<const SCEV *, const SCEV *>
+extractConstantFactor(const SCEV *S, ScalarEvolution &SE) {
+
+  const SCEV *LeftOver = SE.getConstant(S->getType(), 1);
+  const SCEV *ConstPart = SE.getConstant(S->getType(), 1);
+
+  const SCEVMulExpr *M = dyn_cast<SCEVMulExpr>(S);
+  if (!M)
+    return std::make_pair(ConstPart, S);
+
+  for (const SCEV *Op : M->operands())
+    if (isa<SCEVConstant>(Op))
+      ConstPart = SE.getMulExpr(ConstPart, Op);
+    else
+      LeftOver = SE.getMulExpr(LeftOver, Op);
+
+  return std::make_pair(ConstPart, LeftOver);
 }
 }

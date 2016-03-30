@@ -76,7 +76,7 @@ ObjectFilePECOFF::CreateInstance (const lldb::ModuleSP &module_sp,
 {
     if (!data_sp)
     {
-        data_sp = file->MemoryMapFileContents(file_offset, length);
+        data_sp = file->MemoryMapFileContentsIfLocal(file_offset, length);
         data_offset = 0;
     }
 
@@ -84,7 +84,7 @@ ObjectFilePECOFF::CreateInstance (const lldb::ModuleSP &module_sp,
     {
         // Update the data to contain the entire file if it doesn't already
         if (data_sp->GetByteSize() < length)
-            data_sp = file->MemoryMapFileContents(file_offset, length);
+            data_sp = file->MemoryMapFileContentsIfLocal(file_offset, length);
         std::unique_ptr<ObjectFile> objfile_ap(new ObjectFilePECOFF (module_sp, data_sp, data_offset, file, file_offset, length));
         if (objfile_ap.get() && objfile_ap->ParseHeader())
             return objfile_ap.release();
@@ -130,10 +130,17 @@ ObjectFilePECOFF::GetModuleSpecifications (const lldb_private::FileSpec& file,
             {
                 ArchSpec spec;
                 if (coff_header.machine == MachineAmd64)
+                {
                     spec.SetTriple("x86_64-pc-windows");
+                    specs.Append(ModuleSpec(file, spec));
+                }
                 else if (coff_header.machine == MachineX86)
+                {
                     spec.SetTriple("i386-pc-windows");
-                specs.Append(ModuleSpec(file, spec));
+                    specs.Append(ModuleSpec(file, spec));
+                    spec.SetTriple("i686-pc-windows");
+                    specs.Append(ModuleSpec(file, spec));
+                }
             }
         }
     }
@@ -567,7 +574,7 @@ ObjectFilePECOFF::GetSymtab()
                     if ((int16_t)symbol.sect >= 1)
                     {
                         Address symbol_addr(sect_list->GetSectionAtIndex(symbol.sect-1), symbol.value);
-                        symbols[i].GetAddress() = symbol_addr;
+                        symbols[i].GetAddressRef() = symbol_addr;
                     }
 
                     if (symbol.naux > 0)
@@ -626,7 +633,7 @@ ObjectFilePECOFF::GetSymtab()
 
                     Address symbol_addr(m_coff_header_opt.image_base + function_rva, sect_list);
                     symbols[i].GetMangled().SetValue(ConstString(symbol_name.c_str()));
-                    symbols[i].GetAddress() = symbol_addr;
+                    symbols[i].GetAddressRef() = symbol_addr;
                     symbols[i].SetType(lldb::eSymbolTypeCode);
                     symbols[i].SetDebug(true);
                 }

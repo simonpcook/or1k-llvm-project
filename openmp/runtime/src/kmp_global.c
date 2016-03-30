@@ -1,7 +1,5 @@
 /*
  * kmp_global.c -- KPTS global variables for runtime support library
- * $Revision: 43473 $
- * $Date: 2014-09-26 15:02:57 -0500 (Fri, 26 Sep 2014) $
  */
 
 
@@ -146,10 +144,9 @@ int          __kmp_bt_intervals = KMP_INTERVALS_FROM_BLOCKTIME( KMP_DEFAULT_BLOC
 #ifdef KMP_ADJUST_BLOCKTIME
 int               __kmp_zero_bt = FALSE;
 #endif /* KMP_ADJUST_BLOCKTIME */
-int            __kmp_ht_capable = FALSE;
-int            __kmp_ht_enabled = FALSE;
-int        __kmp_ht_log_per_phy = 1;
+#ifdef KMP_DFLT_NTH_CORES
 int                __kmp_ncores = 0;
+#endif
 int                 __kmp_chunk = 0;
 int           __kmp_abort_delay = 0;
 #if KMP_OS_LINUX && defined(KMP_TDATA_GTID)
@@ -215,9 +212,13 @@ enum clock_function_type __kmp_clock_function;
 int __kmp_clock_function_param;
 #endif /* KMP_OS_LINUX */
 
+#if KMP_ARCH_X86_64 && (KMP_OS_LINUX || KMP_OS_WINDOWS)
+enum mic_type __kmp_mic_type = non_mic;
+#endif
+
 #if KMP_AFFINITY_SUPPORTED
 
-# if KMP_OS_WINDOWS && KMP_ARCH_X86_64
+# if KMP_GROUP_AFFINITY
 
 int __kmp_num_proc_groups = 1;
 
@@ -226,7 +227,7 @@ kmp_GetActiveProcessorGroupCount_t __kmp_GetActiveProcessorGroupCount = NULL;
 kmp_GetThreadGroupAffinity_t __kmp_GetThreadGroupAffinity = NULL;
 kmp_SetThreadGroupAffinity_t __kmp_SetThreadGroupAffinity = NULL;
 
-# endif /* KMP_OS_WINDOWS && KMP_ARCH_X86_64 */
+# endif /* KMP_GROUP_AFFINITY */
 
 size_t   __kmp_affin_mask_size = 0;
 enum affinity_type __kmp_affinity_type = affinity_default;
@@ -252,11 +253,9 @@ kmp_nested_proc_bind_t __kmp_nested_proc_bind = { NULL, 0, 0 };
 int __kmp_affinity_num_places = 0;
 #endif
 
-#if KMP_MIC
-unsigned int __kmp_place_num_cores = 0;
-unsigned int __kmp_place_num_threads_per_core = 0;
-unsigned int __kmp_place_core_offset = 0;
-#endif
+int __kmp_place_num_cores = 0;
+int __kmp_place_num_threads_per_core = 0;
+int __kmp_place_core_offset = 0;
 
 kmp_tasking_mode_t __kmp_tasking_mode = tskm_task_teams;
 
@@ -278,7 +277,7 @@ int     __kmp_settings = FALSE;
 int     __kmp_duplicate_library_ok = 0;
 #if USE_ITT_BUILD
 int     __kmp_forkjoin_frames = 1;
-int     __kmp_forkjoin_frames_mode = 0;
+int     __kmp_forkjoin_frames_mode = 3;
 #endif
 PACKED_REDUCTION_METHOD_T __kmp_force_reduction_method = reduction_method_not_defined;
 int     __kmp_determ_red = FALSE;

@@ -23,6 +23,8 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <mach-o/loader.h>
+#include <uuid/uuid.h>
 #include "MacOSX/CFUtils.h"
 #include "SysSignal.h"
 
@@ -40,7 +42,43 @@
 #include "CFData.h"
 #include "CFString.h"
 
-static CFStringRef CopyBundleIDForPath (const char *app_bundle_path, DNBError &err_str);
+#if defined (WITH_SPRINGBOARD) || defined (WITH_BKS)
+// This returns a CFRetained pointer to the Bundle ID for app_bundle_path,
+// or NULL if there was some problem getting the bundle id.
+static CFStringRef
+CopyBundleIDForPath (const char *app_bundle_path, DNBError &err_str)
+{
+    CFBundle bundle(app_bundle_path);
+    CFStringRef bundleIDCFStr = bundle.GetIdentifier();
+    std::string bundleID;
+    if (CFString::UTF8(bundleIDCFStr, bundleID) == NULL)
+    {
+        struct stat app_bundle_stat;
+        char err_msg[PATH_MAX];
+        
+        if (::stat (app_bundle_path, &app_bundle_stat) < 0)
+        {
+            err_str.SetError(errno, DNBError::POSIX);
+            snprintf(err_msg, sizeof(err_msg), "%s: \"%s\"", err_str.AsString(), app_bundle_path);
+            err_str.SetErrorString(err_msg);
+            DNBLogThreadedIf(LOG_PROCESS, "%s() error: %s", __FUNCTION__, err_msg);
+        }
+        else
+        {
+            err_str.SetError(-1, DNBError::Generic);
+            snprintf(err_msg, sizeof(err_msg), "failed to extract CFBundleIdentifier from %s", app_bundle_path);
+            err_str.SetErrorString(err_msg);
+            DNBLogThreadedIf(LOG_PROCESS, "%s() error: failed to extract CFBundleIdentifier from '%s'", __FUNCTION__, app_bundle_path);
+        }
+        return NULL;
+    }
+    
+    DNBLogThreadedIf(LOG_PROCESS, "%s() extracted CFBundleIdentifier: %s", __FUNCTION__, bundleID.c_str());
+    CFRetain (bundleIDCFStr);
+    
+    return bundleIDCFStr;
+}
+#endif // #if defined 9WITH_SPRINGBOARD) || defined (WITH_BKS)
 
 #ifdef WITH_SPRINGBOARD
 
@@ -245,6 +283,271 @@ MachProcess::GetTSDAddressForThread (nub_thread_t tid, uint64_t plo_pthread_tsd_
     return m_thread_list.GetTSDAddressForThread (tid, plo_pthread_tsd_base_address_offset, plo_pthread_tsd_base_offset, plo_pthread_tsd_entry_size);
 }
 
+
+
+JSONGenerator::ObjectSP
+MachProcess::GetLoadedDynamicLibrariesInfos (nub_process_t pid, nub_addr_t image_list_address, nub_addr_t image_count)
+{
+    JSONGenerator::ObjectSP reply_sp;
+
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+    struct kinfo_proc processInfo;
+    size_t bufsize = sizeof(processInfo);
+    if (sysctl(mib, (unsigned)(sizeof(mib)/sizeof(int)), &processInfo, &bufsize, NULL, 0) == 0 && bufsize > 0)
+    {
+        uint32_t pointer_size = 4;
+        if (processInfo.kp_proc.p_flag & P_LP64)
+            pointer_size = 8;
+
+        struct segment
+        {
+            std::string name;
+            uint64_t vmaddr;
+            uint64_t vmsize;
+            uint64_t fileoff;
+            uint64_t filesize;
+            uint64_t maxprot;
+            uint64_t initprot;
+            uint64_t nsects;
+            uint64_t flags;
+        };
+        
+        struct image_info 
+        {
+            uint64_t load_address;
+            std::string pathname;
+            uint64_t mod_date;
+            struct mach_header_64 mach_header;
+            std::vector<struct segment> segments;
+            uuid_t uuid;
+        };
+        std::vector<image_info> image_infos;
+        size_t image_infos_size = image_count * 3 * pointer_size;
+
+        uint8_t *image_info_buf = (uint8_t *) malloc (image_infos_size);
+        if (image_info_buf == NULL)
+        {
+            return reply_sp;
+        }
+        if (ReadMemory (image_list_address, image_infos_size, image_info_buf) != image_infos_size)
+        {
+            return reply_sp;
+        }
+
+
+        ////  First the image_infos array with (load addr, pathname, mod date) tuples
+
+
+        for (size_t i = 0; i <  image_count; i++)
+        {
+            struct image_info info;
+            nub_addr_t pathname_address;
+            if (pointer_size == 4)
+            {
+                uint32_t load_address_32;
+                uint32_t pathname_address_32;
+                uint32_t mod_date_32;
+                ::memcpy (&load_address_32, image_info_buf + (i * 3 * pointer_size), 4);
+                ::memcpy (&pathname_address_32, image_info_buf + (i * 3 * pointer_size) + pointer_size, 4);
+                ::memcpy (&mod_date_32, image_info_buf + (i * 3 * pointer_size) + pointer_size + pointer_size, 4);
+                info.load_address = load_address_32;
+                info.mod_date = mod_date_32;
+                pathname_address = pathname_address_32;
+            }
+            else
+            {
+                uint64_t load_address_64;
+                uint64_t pathname_address_64;
+                uint64_t mod_date_64;
+                ::memcpy (&load_address_64, image_info_buf + (i * 3 * pointer_size), 8);
+                ::memcpy (&pathname_address_64, image_info_buf + (i * 3 * pointer_size) + pointer_size, 8);
+                ::memcpy (&mod_date_64, image_info_buf + (i * 3 * pointer_size) + pointer_size + pointer_size, 8);
+                info.load_address = load_address_64;
+                info.mod_date = mod_date_64;
+                pathname_address = pathname_address_64;
+            }
+            char strbuf[17];
+            info.pathname = "";
+            uint64_t pathname_ptr = pathname_address;
+            bool still_reading = true;
+            while (still_reading && ReadMemory (pathname_ptr, sizeof (strbuf) - 1, strbuf) == sizeof (strbuf) - 1)
+            {
+                strbuf[sizeof(strbuf) - 1] = '\0';
+                info.pathname += strbuf;
+                pathname_ptr += sizeof (strbuf) - 1;
+                // Stop if we found nul byte indicating the end of the string
+                for (int i = 0; i < sizeof(strbuf) - 1; i++)
+                {
+                    if (strbuf[i] == '\0')
+                    {
+                        still_reading = false;
+                        break;
+                    }
+                }
+            }
+            uuid_clear (info.uuid);
+            image_infos.push_back (info);
+        }
+        if (image_infos.size() == 0)
+        {
+            return reply_sp;
+        }
+
+
+        ////  Second, read the mach header / load commands for all the dylibs
+
+
+        for (size_t i = 0; i < image_count; i++)
+        {
+            uint64_t load_cmds_p;
+            if (pointer_size == 4)
+            {
+                struct mach_header header;
+                if (ReadMemory (image_infos[i].load_address, sizeof (struct mach_header), &header) != sizeof (struct mach_header))
+                {
+                    return reply_sp;
+                }
+                load_cmds_p = image_infos[i].load_address + sizeof (struct mach_header);
+                image_infos[i].mach_header.magic = header.magic;
+                image_infos[i].mach_header.cputype = header.cputype;
+                image_infos[i].mach_header.cpusubtype = header.cpusubtype;
+                image_infos[i].mach_header.filetype = header.filetype;
+                image_infos[i].mach_header.ncmds = header.ncmds;
+                image_infos[i].mach_header.sizeofcmds = header.sizeofcmds;
+                image_infos[i].mach_header.flags = header.flags;
+            }
+            else
+            {
+                struct mach_header_64 header;
+                if (ReadMemory (image_infos[i].load_address, sizeof (struct mach_header_64), &header) != sizeof (struct mach_header_64))
+                {
+                    return reply_sp;
+                }
+                load_cmds_p = image_infos[i].load_address + sizeof (struct mach_header_64);
+                image_infos[i].mach_header.magic = header.magic;
+                image_infos[i].mach_header.cputype = header.cputype;
+                image_infos[i].mach_header.cpusubtype = header.cpusubtype;
+                image_infos[i].mach_header.filetype = header.filetype;
+                image_infos[i].mach_header.ncmds = header.ncmds;
+                image_infos[i].mach_header.sizeofcmds = header.sizeofcmds;
+                image_infos[i].mach_header.flags = header.flags;
+            }
+            for (uint32_t j = 0; j < image_infos[i].mach_header.ncmds; j++)
+            {
+                struct load_command lc;
+                if (ReadMemory (load_cmds_p, sizeof (struct load_command), &lc) != sizeof (struct load_command))
+                {
+                    return reply_sp;
+                }
+                if (lc.cmd == LC_SEGMENT)
+                {
+                    struct segment_command seg;
+                    if (ReadMemory (load_cmds_p, sizeof (struct segment_command), &seg) != sizeof (struct segment_command))
+                    {
+                        return reply_sp;
+                    }
+                    struct segment this_seg;
+                    char name[17];
+                    ::memset (name, 0, sizeof (name));
+                    memcpy (name, seg.segname, sizeof (seg.segname));
+                    this_seg.name = name;
+                    this_seg.vmaddr = seg.vmaddr;
+                    this_seg.vmsize = seg.vmsize;
+                    this_seg.fileoff = seg.fileoff;
+                    this_seg.filesize = seg.filesize;
+                    this_seg.maxprot = seg.maxprot;
+                    this_seg.initprot = seg.initprot;
+                    this_seg.nsects = seg.nsects;
+                    this_seg.flags = seg.flags;
+                    image_infos[i].segments.push_back(this_seg);
+                }
+                if (lc.cmd == LC_SEGMENT_64)
+                {
+                    struct segment_command_64 seg;
+                    if (ReadMemory (load_cmds_p, sizeof (struct segment_command_64), &seg) != sizeof (struct segment_command_64))
+                    {
+                        return reply_sp;
+                    }
+                    struct segment this_seg;
+                    char name[17];
+                    ::memset (name, 0, sizeof (name));
+                    memcpy (name, seg.segname, sizeof (seg.segname));
+                    this_seg.name = name;
+                    this_seg.vmaddr = seg.vmaddr;
+                    this_seg.vmsize = seg.vmsize;
+                    this_seg.fileoff = seg.fileoff;
+                    this_seg.filesize = seg.filesize;
+                    this_seg.maxprot = seg.maxprot;
+                    this_seg.initprot = seg.initprot;
+                    this_seg.nsects = seg.nsects;
+                    this_seg.flags = seg.flags;
+                    image_infos[i].segments.push_back(this_seg);
+                }
+                if (lc.cmd == LC_UUID)
+                {
+                    struct uuid_command uuidcmd;
+                    if (ReadMemory (load_cmds_p, sizeof (struct uuid_command), &uuidcmd) == sizeof (struct uuid_command))
+                        uuid_copy (image_infos[i].uuid, uuidcmd.uuid);
+                }
+                load_cmds_p += lc.cmdsize;
+            }
+        }
+
+
+        ////  Thrid, format all of the above in the JSONGenerator object.
+
+
+        JSONGenerator::ObjectSP image_infos_array_sp (new JSONGenerator::Array());
+        for (size_t i = 0; i < image_count; i++)
+        {
+            JSONGenerator::ObjectSP image_info_dict_sp (new JSONGenerator::Dictionary());
+            image_info_dict_sp->GetAsDictionary()->AddIntegerItem ("load_address", image_infos[i].load_address);
+            image_info_dict_sp->GetAsDictionary()->AddIntegerItem ("mod_date", image_infos[i].mod_date);
+            image_info_dict_sp->GetAsDictionary()->AddStringItem ("pathname", image_infos[i].pathname);
+
+            uuid_string_t uuidstr;
+            uuid_unparse_upper (image_infos[i].uuid, uuidstr);
+            image_info_dict_sp->GetAsDictionary()->AddStringItem ("uuid", uuidstr);
+
+            JSONGenerator::ObjectSP mach_header_dict_sp (new JSONGenerator::Dictionary());
+            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("magic", image_infos[i].mach_header.magic);
+            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("cputype", image_infos[i].mach_header.cputype);
+            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("cpusubtype", image_infos[i].mach_header.cpusubtype);
+            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("filetype", image_infos[i].mach_header.filetype);
+
+//          DynamicLoaderMacOSX doesn't currently need these fields, so don't send them.
+//            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("ncmds", image_infos[i].mach_header.ncmds);
+//            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("sizeofcmds", image_infos[i].mach_header.sizeofcmds);
+//            mach_header_dict_sp->GetAsDictionary()->AddIntegerItem ("flags", image_infos[i].mach_header.flags);
+            image_info_dict_sp->GetAsDictionary()->AddItem ("mach_header", mach_header_dict_sp);
+
+            JSONGenerator::ObjectSP segments_sp (new JSONGenerator::Array());
+            for (size_t j = 0; j < image_infos[i].segments.size(); j++)
+            {
+                JSONGenerator::ObjectSP segment_sp (new JSONGenerator::Dictionary());
+                segment_sp->GetAsDictionary()->AddStringItem ("name", image_infos[i].segments[j].name);
+                segment_sp->GetAsDictionary()->AddIntegerItem ("vmaddr", image_infos[i].segments[j].vmaddr);
+                segment_sp->GetAsDictionary()->AddIntegerItem ("vmsize", image_infos[i].segments[j].vmsize);
+                segment_sp->GetAsDictionary()->AddIntegerItem ("fileoff", image_infos[i].segments[j].fileoff);
+                segment_sp->GetAsDictionary()->AddIntegerItem ("filesize", image_infos[i].segments[j].filesize);
+                segment_sp->GetAsDictionary()->AddIntegerItem ("maxprot", image_infos[i].segments[j].maxprot);
+
+//              DynamicLoaderMacOSX doesn't currently need these fields, so don't send them.
+//                segment_sp->GetAsDictionary()->AddIntegerItem ("initprot", image_infos[i].segments[j].initprot);
+//                segment_sp->GetAsDictionary()->AddIntegerItem ("nsects", image_infos[i].segments[j].nsects);
+//                segment_sp->GetAsDictionary()->AddIntegerItem ("flags", image_infos[i].segments[j].flags);
+                segments_sp->GetAsArray()->AddItem (segment_sp);
+            }
+            image_info_dict_sp->GetAsDictionary()->AddItem ("segments", segments_sp);
+
+            image_infos_array_sp->GetAsArray()->AddItem (image_info_dict_sp);
+        }
+        reply_sp.reset (new JSONGenerator::Dictionary());
+        reply_sp->GetAsDictionary()->AddItem ("images", image_infos_array_sp);
+    }
+    return reply_sp;
+}
+
 nub_thread_t
 MachProcess::GetCurrentThread ()
 {
@@ -412,7 +715,7 @@ void
 MachProcess::SetEnableAsyncProfiling(bool enable, uint64_t interval_usec, DNBProfileDataScanType scan_type)
 {
     m_profile_enabled = enable;
-    m_profile_interval_usec = interval_usec;
+    m_profile_interval_usec = static_cast<useconds_t>(interval_usec);
     m_profile_scan_type = scan_type;
     
     if (m_profile_enabled && (m_profile_thread == NULL))
@@ -1515,7 +1818,7 @@ MachProcess::STDIOThread(void *arg)
         {
             char s[1024];
             s[sizeof(s)-1] = '\0';  // Ensure we have NULL termination
-            int bytes_read = 0;
+            ssize_t bytes_read = 0;
             if (stdout_fd >= 0 && FD_ISSET (stdout_fd, &read_fds))
             {
                 do
@@ -1524,12 +1827,12 @@ MachProcess::STDIOThread(void *arg)
                     if (bytes_read < 0)
                     {
                         int read_errno = errno;
-                        DNBLogThreadedIf(LOG_PROCESS, "read (stdout_fd, ) => %d   errno: %d (%s)", bytes_read, read_errno, strerror(read_errno));
+                        DNBLogThreadedIf(LOG_PROCESS, "read (stdout_fd, ) => %zd   errno: %d (%s)", bytes_read, read_errno, strerror(read_errno));
                     }
                     else if (bytes_read == 0)
                     {
                         // EOF...
-                        DNBLogThreadedIf(LOG_PROCESS, "read (stdout_fd, ) => %d  (reached EOF for child STDOUT)", bytes_read);
+                        DNBLogThreadedIf(LOG_PROCESS, "read (stdout_fd, ) => %zd  (reached EOF for child STDOUT)", bytes_read);
                         stdout_fd = -1;
                     }
                     else if (bytes_read > 0)
@@ -1548,12 +1851,12 @@ MachProcess::STDIOThread(void *arg)
                     if (bytes_read < 0)
                     {
                         int read_errno = errno;
-                        DNBLogThreadedIf(LOG_PROCESS, "read (stderr_fd, ) => %d   errno: %d (%s)", bytes_read, read_errno, strerror(read_errno));
+                        DNBLogThreadedIf(LOG_PROCESS, "read (stderr_fd, ) => %zd   errno: %d (%s)", bytes_read, read_errno, strerror(read_errno));
                     }
                     else if (bytes_read == 0)
                     {
                         // EOF...
-                        DNBLogThreadedIf(LOG_PROCESS, "read (stderr_fd, ) => %d  (reached EOF for child STDERR)", bytes_read);
+                        DNBLogThreadedIf(LOG_PROCESS, "read (stderr_fd, ) => %zd  (reached EOF for child STDERR)", bytes_read);
                         stderr_fd = -1;
                     }
                     else if (bytes_read > 0)
@@ -2309,7 +2612,7 @@ MachProcess::GetCPUTypeForLocalProcess (pid_t pid)
             
     cpu_type_t cpu;
     size_t cpu_len = sizeof(cpu);
-    if (::sysctl (mib, len, &cpu, &cpu_len, 0, 0))
+    if (::sysctl (mib, static_cast<u_int>(len), &cpu, &cpu_len, 0, 0))
         cpu = 0;
     return cpu;
 }
@@ -2389,43 +2692,6 @@ MachProcess::ForkChildForPTraceDebugging
     return pid;
 }
 
-#if defined (WITH_SPRINGBOARD) || defined (WITH_BKS)
-// This returns a CFRetained pointer to the Bundle ID for app_bundle_path,
-// or NULL if there was some problem getting the bundle id.
-static CFStringRef
-CopyBundleIDForPath (const char *app_bundle_path, DNBError &err_str)
-{
-    CFBundle bundle(app_bundle_path);
-    CFStringRef bundleIDCFStr = bundle.GetIdentifier();
-    std::string bundleID;
-    if (CFString::UTF8(bundleIDCFStr, bundleID) == NULL)
-    {
-        struct stat app_bundle_stat;
-        char err_msg[PATH_MAX];
-
-        if (::stat (app_bundle_path, &app_bundle_stat) < 0)
-        {
-            err_str.SetError(errno, DNBError::POSIX);
-            snprintf(err_msg, sizeof(err_msg), "%s: \"%s\"", err_str.AsString(), app_bundle_path);
-            err_str.SetErrorString(err_msg);
-            DNBLogThreadedIf(LOG_PROCESS, "%s() error: %s", __FUNCTION__, err_msg);
-        }
-        else
-        {
-            err_str.SetError(-1, DNBError::Generic);
-            snprintf(err_msg, sizeof(err_msg), "failed to extract CFBundleIdentifier from %s", app_bundle_path);
-            err_str.SetErrorString(err_msg);
-            DNBLogThreadedIf(LOG_PROCESS, "%s() error: failed to extract CFBundleIdentifier from '%s'", __FUNCTION__, app_bundle_path);
-        }
-        return NULL;
-    }
-
-    DNBLogThreadedIf(LOG_PROCESS, "%s() extracted CFBundleIdentifier: %s", __FUNCTION__, bundleID.c_str());
-    CFRetain (bundleIDCFStr);
-
-    return bundleIDCFStr;
-}
-#endif // #if defined 9WITH_SPRINGBOARD) || defined (WITH_BKS)
 #ifdef WITH_SPRINGBOARD
 
 pid_t

@@ -1,10 +1,12 @@
 set( LLDB_USED_LIBS
+  lldbBase
   lldbBreakpoint
   lldbCommands
   lldbDataFormatters
   lldbHost
   lldbCore
   lldbExpression
+  lldbInitialization
   lldbInterpreter
   lldbSymbol
   lldbTarget
@@ -17,23 +19,22 @@ set( LLDB_USED_LIBS
   lldbPluginDynamicLoaderStatic
   lldbPluginDynamicLoaderPosixDYLD
   lldbPluginDynamicLoaderHexagonDYLD
+  lldbPluginDynamicLoaderWindowsDYLD
 
-  lldbPluginObjectFileMachO
   lldbPluginObjectFileELF
   lldbPluginObjectFileJIT
   lldbPluginSymbolVendorELF
   lldbPluginObjectContainerBSDArchive
   lldbPluginObjectContainerMachOArchive
   lldbPluginProcessGDBRemote
-  lldbPluginProcessMachCore
   lldbPluginProcessUtility
+  lldbPluginPlatformAndroid
   lldbPluginPlatformGDB
   lldbPluginPlatformFreeBSD
   lldbPluginPlatformKalimba
   lldbPluginPlatformLinux
   lldbPluginPlatformPOSIX
   lldbPluginPlatformWindows
-  lldbPluginObjectFileMachO
   lldbPluginObjectContainerMachOArchive
   lldbPluginObjectContainerBSDArchive
   lldbPluginPlatformMacOSX
@@ -41,29 +42,32 @@ set( LLDB_USED_LIBS
   lldbPluginUnwindAssemblyInstEmulation
   lldbPluginUnwindAssemblyX86
   lldbPluginAppleObjCRuntime
+  lldbPluginRenderScriptRuntime
   lldbPluginCXXItaniumABI
   lldbPluginABIMacOSX_arm
   lldbPluginABIMacOSX_arm64
   lldbPluginABIMacOSX_i386
+  lldbPluginABISysV_arm
+  lldbPluginABISysV_arm64
+  lldbPluginABISysV_i386
   lldbPluginABISysV_x86_64
   lldbPluginABISysV_hexagon
   lldbPluginABISysV_ppc
   lldbPluginABISysV_ppc64
+  lldbPluginABISysV_mips
+  lldbPluginABISysV_mips64
   lldbPluginInstructionARM
   lldbPluginInstructionARM64
+  lldbPluginInstructionMIPS
+  lldbPluginInstructionMIPS64
   lldbPluginObjectFilePECOFF
   lldbPluginOSPython
   lldbPluginMemoryHistoryASan
   lldbPluginInstrumentationRuntimeAddressSanitizer
+  lldbPluginSystemRuntimeMacOSX
+  lldbPluginProcessElfCore
+  lldbPluginJITLoaderGDB
   )
-
-# Need to export the API in the liblldb.dll for Windows
-# The lldbAPI source files are added directly in liblldb
-if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows" )
-  list(APPEND LLDB_USED_LIBS
-    lldbAPI
-    )
-endif ()
 
 # Windows-only libraries
 if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
@@ -72,6 +76,7 @@ if ( CMAKE_SYSTEM_NAME MATCHES "Windows" )
     lldbPluginProcessElfCore
     lldbPluginJITLoaderGDB
     Ws2_32
+    Rpcrt4
     )
 endif ()
 
@@ -106,11 +111,10 @@ if ( CMAKE_SYSTEM_NAME MATCHES "Darwin" )
   set_source_files_properties(${LLDB_VERS_GENERATED_FILE} PROPERTIES GENERATED 1)
   list(APPEND LLDB_USED_LIBS
     lldbPluginDynamicLoaderDarwinKernel
+    lldbPluginObjectFileMachO
+    lldbPluginProcessMachCore
     lldbPluginProcessMacOSXKernel
     lldbPluginSymbolVendorMacOSX
-    lldbPluginSystemRuntimeMacOSX
-    lldbPluginProcessElfCore
-    lldbPluginJITLoaderGDB
     )
 endif()
 
@@ -169,13 +173,18 @@ set( LLVM_LINK_COMPONENTS
   core
   mcdisassembler
   executionengine
+  runtimedyld
   option
+  support
   )
 
 if ( NOT LLDB_DISABLE_PYTHON )
   set(LLDB_WRAP_PYTHON ${LLDB_BINARY_DIR}/scripts/LLDBWrapPython.cpp)
 
   set_source_files_properties(${LLDB_WRAP_PYTHON} PROPERTIES GENERATED 1)
+  if (CLANG_CL)
+    set_source_files_properties(${LLDB_WRAP_PYTHON} PROPERTIES COMPILE_FLAGS -Wno-unused-function)
+  endif()
   if (LLVM_COMPILER_IS_GCC_COMPATIBLE AND
       NOT "${CMAKE_SYSTEM_NAME}" MATCHES "Darwin")
     set_property(SOURCE ${LLDB_WRAP_PYTHON}

@@ -61,9 +61,6 @@ public:
   /// returns vector of tentative definitions
   std::vector<StringRef> tentativeDefinitions();
 
-  /// @brief count of by-name entries in symbol table
-  unsigned int size();
-
   /// @brief add atom to replacement table
   void addReplacement(const Atom *replaced, const Atom *replacement);
 
@@ -85,11 +82,13 @@ private:
 
   struct StringRefMappingInfo {
     static StringRef getEmptyKey() { return StringRef(); }
-    static StringRef getTombstoneKey() { return StringRef(" ", 0); }
+    static StringRef getTombstoneKey() { return StringRef(" ", 1); }
     static unsigned getHashValue(StringRef const val) {
-                                               return llvm::HashString(val); }
-    static bool isEqual(StringRef const lhs,
-                        StringRef const rhs) { return lhs.equals(rhs); }
+      return llvm::HashString(val);
+    }
+    static bool isEqual(StringRef const lhs, StringRef const rhs) {
+      return lhs.equals(rhs);
+    }
   };
   typedef llvm::DenseMap<StringRef, const Atom *,
                                            StringRefMappingInfo> NameToAtom;
@@ -106,7 +105,7 @@ private:
   bool addByName(const Atom &);
   bool addByContent(const DefinedAtom &);
 
-  LinkingContext &_context;
+  LinkingContext &_ctx;
   AtomToAtom _replacedAtoms;
   NameToAtom _nameTable;
   NameToAtom _groupTable;

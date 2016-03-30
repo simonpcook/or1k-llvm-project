@@ -1,7 +1,7 @@
-;RUN: opt %loadPolly -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withconst -polly-codegen-isl < %s -S | FileCheck -check-prefix=WITHCONST %s
-;RUN: opt %loadPolly -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withoutconst -polly-codegen-isl < %s -S | FileCheck -check-prefix=WITHOUTCONST %s
-;RUN: opt %loadPolly -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withconst -polly-codegen-isl < %s -S | FileCheck -check-prefix=WITHCONST %s
-;RUN: opt %loadPolly -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withoutconst -polly-codegen-isl < %s -S | FileCheck -check-prefix=WITHOUTCONST %s
+;RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withconst -polly-codegen < %s -S | FileCheck -check-prefix=WITHCONST %s
+;RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withoutconst -polly-codegen < %s -S | FileCheck -check-prefix=WITHOUTCONST %s
+;RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withconst -polly-codegen < %s -S | FileCheck -check-prefix=WITHCONST %s
+;RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -polly-import-jscop -polly-import-jscop-dir=%S -polly-import-jscop-postfix=transformed+withoutconst -polly-codegen < %s -S | FileCheck -check-prefix=WITHOUTCONST %s
 
 ;int A[1040];
 ;
@@ -14,7 +14,6 @@
 ;}
 
 target datalayout = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f32:32:32-f64:32:64-v64:64:64-v128:128:128-a0:0:64-f80:32:32-n8:16:32-S128"
-target triple = "i386-pc-linux-gnu"
 
 @A = common global [1040 x i32] zeroinitializer, align 4
 
@@ -38,7 +37,7 @@ for.cond1:                                        ; preds = %for.inc, %for.body
 for.body3:                                        ; preds = %for.cond1
   %mul = shl nsw i32 %i.0, 5
   %add = add nsw i32 %mul, %j.0
-  %arrayidx = getelementptr inbounds [1040 x i32]* @A, i32 0, i32 %add
+  %arrayidx = getelementptr inbounds [1040 x i32], [1040 x i32]* @A, i32 0, i32 %add
   store i32 100, i32* %arrayidx, align 4
   br label %for.inc
 
@@ -63,7 +62,7 @@ for.end6:                                         ; preds = %for.cond
 ; WITHCONST:  %[[MUL2:[._a-zA-Z0-9]+]] = mul nsw i64 2, %[[IVIn]]
 ; WITHCONST:  %[[SUM1:[._a-zA-Z0-9]+]] = add nsw i64 %[[MUL1]], %[[MUL2]]
 ; WITHCONST:  %[[SUM2:[._a-zA-Z0-9]+]] = add nsw i64 %[[SUM1]], 5
-; WITHCONST:  %[[ACC:[._a-zA-Z0-9]*]] = getelementptr i32* getelementptr inbounds ([1040 x i32]* @A, i{{(32|64)}} 0, i{{(32|64)}} 0), i64 %[[SUM2]]
+; WITHCONST:  %[[ACC:[._a-zA-Z0-9]*]] = getelementptr i32, i32* getelementptr inbounds ([1040 x i32], [1040 x i32]* @A, i{{(32|64)}} 0, i{{(32|64)}} 0), i64 %[[SUM2]]
 ; WITHCONST:  store i32 100, i32* %[[ACC]]
 
 ; WITHOUTCONST:  %[[IVOut:polly.indvar[0-9]*]] = phi i64 [ 0, %polly.loop_preheader{{[0-9]*}} ], [ %polly.indvar_next{{[0-9]*}}, %polly.{{[._a-zA-Z0-9]*}} ]
@@ -71,5 +70,5 @@ for.end6:                                         ; preds = %for.cond
 ; WITHOUTCONST:  %[[MUL1:[._a-zA-Z0-9]+]] = mul nsw i64 16, %[[IVOut]]
 ; WITHOUTCONST:  %[[MUL2:[._a-zA-Z0-9]+]] = mul nsw i64 2, %[[IVIn]]
 ; WITHOUTCONST:  %[[SUM1:[._a-zA-Z0-9]+]] = add nsw i64 %[[MUL1]], %[[MUL2]]
-; WITHOUTCONST:  %[[ACC:[._a-zA-Z0-9]*]] = getelementptr i32* getelementptr inbounds ([1040 x i32]* @A, i{{(32|64)}} 0, i{{(32|64)}} 0), i64 %[[SUM1]]
+; WITHOUTCONST:  %[[ACC:[._a-zA-Z0-9]*]] = getelementptr i32, i32* getelementptr inbounds ([1040 x i32], [1040 x i32]* @A, i{{(32|64)}} 0, i{{(32|64)}} 0), i64 %[[SUM1]]
 ; WITHOUTCONST:  store i32 100, i32* %[[ACC]]

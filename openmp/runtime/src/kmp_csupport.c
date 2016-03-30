@@ -1,7 +1,5 @@
 /*
  * kmp_csupport.c -- kfront linkage support for OpenMP.
- * $Revision: 43473 $
- * $Date: 2014-09-26 15:02:57 -0500 (Fri, 26 Sep 2014) $
  */
 
 
@@ -21,6 +19,11 @@
 #include "kmp_itt.h"
 #include "kmp_error.h"
 #include "kmp_stats.h"
+
+#if OMPT_SUPPORT
+#include "ompt-internal.h"
+#include "ompt-specific.h"
+#endif
 
 #define MAX_MESSAGE 512
 
@@ -81,7 +84,7 @@ This function can be called in any context.
 
 If the runtime has ony been entered at the outermost level from a
 single (necessarily non-OpenMP<sup>*</sup>) thread, then the thread number is that
-which would be returned by @ref omp_get_thread_num() in the outermost
+which would be returned by omp_get_thread_num() in the outermost
 active parallel construct. (Or zero if there is no active parallel
 construct, since the master thread is necessarily thread zero).
 
@@ -201,7 +204,7 @@ __kmpc_ok_to_fork(ident_t *loc)
             return __kmp_par_range < 0;
         }
     }
-    if (sscanf(semi3 + 1, "%d", &line_no) == 1) {
+    if (KMP_SSCANF(semi3 + 1, "%d", &line_no) == 1) {
         if ((line_no >= __kmp_par_range_lb) && (line_no <= __kmp_par_range_ub)) {
             return __kmp_par_range > 0;
         }
@@ -285,12 +288,23 @@ __kmpc_fork_call(ident_t *loc, kmp_int32 argc, kmpc_micro microtask, ...)
     va_list     ap;
     va_start(   ap, microtask );
 
+#if OMPT_SUPPORT
+    kmp_info_t *master_th = __kmp_threads[ gtid ];
+    kmp_team_t *parent_team = master_th->th.th_team;
+    int tid = __kmp_tid_from_gtid( gtid );
+    parent_team->t.t_implicit_task_taskdata[tid].
+        ompt_task_info.frame.reenter_runtime_frame = __builtin_frame_address(0);
+#endif
+
 #if INCLUDE_SSC_MARKS
     SSC_MARK_FORKING();
 #endif
     __kmp_fork_call( loc, gtid, fork_context_intel,
             argc,
-            VOLATILE_CAST(microtask_t) microtask,
+#if OMPT_SUPPORT
+            VOLATILE_CAST(void *) microtask,      // "unwrapped" task
+#endif
+            VOLATILE_CAST(microtask_t) microtask, // "wrapped" task
             VOLATILE_CAST(launch_t)    __kmp_invoke_task_func,
 /* TODO: revert workaround for Intel(R) 64 tracker #96 */
 #if (KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64) && KMP_OS_LINUX
@@ -305,6 +319,13 @@ __kmpc_fork_call(ident_t *loc, kmp_int32 argc, kmpc_micro microtask, ...)
     __kmp_join_call( loc, gtid );
 
     va_end( ap );
+
+#if OMPT_SUPPORT
+    if (ompt_status & ompt_status_track) {
+        parent_team->t.t_implicit_task_taskdata[tid].
+            ompt_task_info.frame.reenter_runtime_frame = 0;
+    }
+#endif
   }
   KMP_START_EXPLICIT_TIMER(OMP_serial);
 }
@@ -315,6 +336,7 @@ __kmpc_fork_call(ident_t *loc, kmp_int32 argc, kmpc_micro microtask, ...)
 @param loc source location information
 @param global_tid global thread number
 @param num_teams number of teams requested for the teams construct
+@param num_threads number of threads per team requested for the teams construct
 
 Set the number of teams to be used by the teams construct.
 This call is only required if the teams construct has a `num_teams` clause
@@ -360,7 +382,10 @@ __kmpc_fork_teams(ident_t *loc, kmp_int32 argc, kmpc_micro microtask, ...)
 
     __kmp_fork_call( loc, gtid, fork_context_intel,
             argc,
-            VOLATILE_CAST(microtask_t) __kmp_teams_master,
+#if OMPT_SUPPORT
+            VOLATILE_CAST(void *) microtask,               // "unwrapped" task
+#endif
+            VOLATILE_CAST(microtask_t) __kmp_teams_master, // "wrapped" task
             VOLATILE_CAST(launch_t)    __kmp_invoke_teams_master,
 #if (KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64) && KMP_OS_LINUX
             &ap
@@ -437,6 +462,14 @@ __kmpc_end_serialized_parallel(ident_t *loc, kmp_int32 global_tid)
     this_thr    = __kmp_threads[ global_tid ];
     serial_team = this_thr->th.th_serial_team;
 
+   #if OMP_41_ENABLED
+   kmp_task_team_t *   task_team = this_thr->th.th_task_team;
+
+   // we need to wait for the proxy tasks before finishing the thread
+   if ( task_team != NULL && task_team->tt.tt_found_proxy_tasks )
+        __kmp_task_team_wait(this_thr, serial_team, NULL ); // is an ITT object needed here?
+   #endif
+
     KMP_MB();
     KMP_DEBUG_ASSERT( serial_team );
     KMP_ASSERT(       serial_team -> t.t_serialized );
@@ -496,13 +529,8 @@ __kmpc_end_serialized_parallel(ident_t *loc, kmp_int32 global_tid)
         this_thr -> th.th_current_task -> td_flags.executing = 1;
 
         if ( __kmp_tasking_mode != tskm_immediate_exec ) {
-            //
-            // Copy the task team from the new child / old parent team
-            // to the thread.  If non-NULL, copy the state flag also.
-            //
-            if ( ( this_thr -> th.th_task_team = this_thr -> th.th_team -> t.t_task_team ) != NULL ) {
-                this_thr -> th.th_task_state = this_thr -> th.th_task_team -> tt.tt_state;
-            }
+            // Copy the task team from the new child / old parent team to the thread.
+            this_thr->th.th_task_team = this_thr->th.th_team->t.t_task_team[this_thr->th.th_task_state];
             KA_TRACE( 20, ( "__kmpc_end_serialized_parallel: T#%d restoring task_team %p / team %p\n",
                             global_tid, this_thr -> th.th_task_team, this_thr -> th.th_team ) );
         }
@@ -516,27 +544,30 @@ __kmpc_end_serialized_parallel(ident_t *loc, kmp_int32 global_tid)
 #if USE_ITT_BUILD
     kmp_uint64 cur_time = 0;
 #if  USE_ITT_NOTIFY
-    if( __itt_get_timestamp_ptr ) {
+    if ( __itt_get_timestamp_ptr ) {
         cur_time = __itt_get_timestamp();
     }
 #endif /* USE_ITT_NOTIFY */
-    // Report the barrier
-    if( ( __kmp_forkjoin_frames_mode == 1 || __kmp_forkjoin_frames_mode == 3 ) && __itt_frame_submit_v3_ptr ) {
-        if( this_thr->th.th_team->t.t_level == 0 ) {
-            __kmp_itt_frame_submit( global_tid, this_thr->th.th_frame_time_serialized, cur_time, 0, loc, this_thr->th.th_team_nproc, 0 );
-        }
-    }
-    // Mark the end of the "parallel" region for VTune. Only use one of frame notification scheme at the moment.
-    if ( ( __itt_frame_end_v3_ptr && __kmp_forkjoin_frames && ! __kmp_forkjoin_frames_mode ) || KMP_ITT_DEBUG )
-    {
+    if ( this_thr->th.th_team->t.t_level == 0
+#if OMP_40_ENABLED
+        && this_thr->th.th_teams_microtask == NULL
+#endif
+    ) {
+        // Report the barrier
         this_thr->th.th_ident = loc;
-        __kmp_itt_region_joined( global_tid, 1 );
-    }
-    if ( ( __itt_frame_submit_v3_ptr && __kmp_forkjoin_frames_mode == 3 ) || KMP_ITT_DEBUG )
-    {
-        this_thr->th.th_ident = loc;
-        // Since barrier frame for serialized region is equal to the region we use the same begin timestamp as for the barrier.
-        __kmp_itt_frame_submit( global_tid, serial_team->t.t_region_time, cur_time, 0, loc, this_thr->th.th_team_nproc, 2 );
+        if ( ( __itt_frame_submit_v3_ptr || KMP_ITT_DEBUG ) &&
+            ( __kmp_forkjoin_frames_mode == 3 || __kmp_forkjoin_frames_mode == 1 ) )
+        {
+            __kmp_itt_frame_submit( global_tid, this_thr->th.th_frame_time_serialized,
+                                    cur_time, 0, loc, this_thr->th.th_team_nproc, 0 );
+            if ( __kmp_forkjoin_frames_mode == 3 )
+                // Since barrier frame for serialized region is equal to the region we use the same begin timestamp as for the barrier.
+                __kmp_itt_frame_submit( global_tid, serial_team->t.t_region_time,
+                                        cur_time, 0, loc, this_thr->th.th_team_nproc, 2 );
+        } else if ( ( __itt_frame_end_v3_ptr || KMP_ITT_DEBUG ) &&
+            ! __kmp_forkjoin_frames_mode && __kmp_forkjoin_frames )
+            // Mark the end of the "parallel" region for VTune. Only use one of frame notification scheme at the moment.
+            __kmp_itt_region_joined( global_tid, 1 );
     }
 #endif /* USE_ITT_BUILD */
 
@@ -547,17 +578,13 @@ __kmpc_end_serialized_parallel(ident_t *loc, kmp_int32 global_tid)
 /*!
 @ingroup SYNCHRONIZATION
 @param loc  source location information.
-@param ...  pointers to the variables to be synchronized.
 
-Execute <tt>flush</tt>. The pointers to the variables to be flushed
-need not actually be passed, (indeed unless this is a zero terminated
-list they can't be since there's no count here so we don't know how
-many there are!).  This is implemented as a full memory fence. (Though
+Execute <tt>flush</tt>. This is implemented as a full memory fence. (Though
 depending on the memory ordering convention obeyed by the compiler
 even that may not be necessary).
 */
 void
-__kmpc_flush(ident_t *loc, ...)
+__kmpc_flush(ident_t *loc)
 {
     KC_TRACE( 10, ("__kmpc_flush: called\n" ) );
 
@@ -627,7 +654,6 @@ __kmpc_barrier(ident_t *loc, kmp_int32 global_tid)
 {
     KMP_COUNT_BLOCK(OMP_BARRIER);
     KMP_TIME_BLOCK(OMP_barrier);
-    int explicit_barrier_flag;
     KC_TRACE( 10, ("__kmpc_barrier: called T#%d\n", global_tid ) );
 
     if (! TCR_4(__kmp_init_parallel))
@@ -673,11 +699,33 @@ __kmpc_master(ident_t *loc, kmp_int32 global_tid)
     if( KMP_MASTER_GTID( global_tid ))
         status = 1;
 
+#if OMPT_SUPPORT && OMPT_TRACE
+    if (status) {
+        if ((ompt_status == ompt_status_track_callback) &&
+            ompt_callbacks.ompt_callback(ompt_event_master_begin)) {
+            kmp_info_t  *this_thr        = __kmp_threads[ global_tid ];
+            kmp_team_t  *team            = this_thr -> th.th_team;
+
+            int  tid = __kmp_tid_from_gtid( global_tid );
+            ompt_callbacks.ompt_callback(ompt_event_master_begin)(
+                team->t.ompt_team_info.parallel_id,
+                team->t.t_implicit_task_taskdata[tid].ompt_task_info.task_id);
+        }
+    }
+#endif
+
     if ( __kmp_env_consistency_check ) {
+#if KMP_USE_DYNAMIC_LOCK
+        if (status)
+            __kmp_push_sync( global_tid, ct_master, loc, NULL, 0 );
+        else
+            __kmp_check_sync( global_tid, ct_master, loc, NULL, 0 );
+#else
         if (status)
             __kmp_push_sync( global_tid, ct_master, loc, NULL );
         else
             __kmp_check_sync( global_tid, ct_master, loc, NULL );
+#endif
     }
 
     return status;
@@ -697,6 +745,18 @@ __kmpc_end_master(ident_t *loc, kmp_int32 global_tid)
     KC_TRACE( 10, ("__kmpc_end_master: called T#%d\n", global_tid ) );
 
     KMP_DEBUG_ASSERT( KMP_MASTER_GTID( global_tid ));
+
+#if OMPT_SUPPORT && OMPT_TRACE
+    kmp_info_t  *this_thr        = __kmp_threads[ global_tid ];
+    kmp_team_t  *team            = this_thr -> th.th_team;
+    if ((ompt_status == ompt_status_track_callback) &&
+        ompt_callbacks.ompt_callback(ompt_event_master_end)) {
+        int  tid = __kmp_tid_from_gtid( global_tid );
+        ompt_callbacks.ompt_callback(ompt_event_master_end)(
+            team->t.ompt_team_info.parallel_id,
+            team->t.t_implicit_task_taskdata[tid].ompt_task_info.task_id);
+    }
+#endif
 
     if ( __kmp_env_consistency_check ) {
         if( global_tid < 0 )
@@ -733,10 +793,40 @@ __kmpc_ordered( ident_t * loc, kmp_int32 gtid )
 
     th = __kmp_threads[ gtid ];
 
+#if OMPT_SUPPORT && OMPT_TRACE
+    if (ompt_status & ompt_status_track) {
+        /* OMPT state update */
+        th->th.ompt_thread_info.wait_id = (uint64_t) loc;
+        th->th.ompt_thread_info.state = ompt_state_wait_ordered;
+
+        /* OMPT event callback */
+        if ((ompt_status == ompt_status_track_callback) &&
+            ompt_callbacks.ompt_callback(ompt_event_wait_ordered)) {
+            ompt_callbacks.ompt_callback(ompt_event_wait_ordered)(
+                th->th.ompt_thread_info.wait_id);
+        }
+    }
+#endif
+
     if ( th -> th.th_dispatch -> th_deo_fcn != 0 )
         (*th->th.th_dispatch->th_deo_fcn)( & gtid, & cid, loc );
     else
         __kmp_parallel_deo( & gtid, & cid, loc );
+
+#if OMPT_SUPPORT && OMPT_TRACE
+    if (ompt_status & ompt_status_track) {
+        /* OMPT state update */
+        th->th.ompt_thread_info.state = ompt_state_work_parallel;
+        th->th.ompt_thread_info.wait_id = 0;
+
+        /* OMPT event callback */
+        if ((ompt_status == ompt_status_track_callback) &&
+            ompt_callbacks.ompt_callback(ompt_event_acquired_ordered)) {
+            ompt_callbacks.ompt_callback(ompt_event_acquired_ordered)(
+                th->th.ompt_thread_info.wait_id);
+        }
+    }
+#endif
 
 #if USE_ITT_BUILD
     __kmp_itt_ordered_start( gtid );
@@ -769,7 +859,153 @@ __kmpc_end_ordered( ident_t * loc, kmp_int32 gtid )
         (*th->th.th_dispatch->th_dxo_fcn)( & gtid, & cid, loc );
     else
         __kmp_parallel_dxo( & gtid, & cid, loc );
+
+#if OMPT_SUPPORT && OMPT_BLAME
+    if ((ompt_status == ompt_status_track_callback) &&
+        ompt_callbacks.ompt_callback(ompt_event_release_ordered)) {
+        ompt_callbacks.ompt_callback(ompt_event_release_ordered)(
+            th->th.ompt_thread_info.wait_id);
+    }
+#endif
 }
+
+#if KMP_USE_DYNAMIC_LOCK
+
+static __forceinline kmp_indirect_lock_t *
+__kmp_get_indirect_csptr(kmp_critical_name * crit, ident_t const * loc, kmp_int32 gtid, kmp_dyna_lockseq_t seq)
+{
+    // Code from __kmp_get_critical_section_ptr
+    // This function returns an indirect lock object instead of a user lock.
+    kmp_indirect_lock_t **lck, *ret;
+    lck = (kmp_indirect_lock_t **)crit;
+    ret = (kmp_indirect_lock_t *)TCR_PTR(*lck);
+    if (ret == NULL) {
+        void *idx;
+        kmp_indirect_locktag_t tag = DYNA_GET_I_TAG(seq);
+        kmp_indirect_lock_t *ilk = __kmp_allocate_indirect_lock(&idx, gtid, tag);
+        ret = ilk;
+        DYNA_I_LOCK_FUNC(ilk, init)(ilk->lock);
+        DYNA_SET_I_LOCK_LOCATION(ilk, loc);
+        DYNA_SET_I_LOCK_FLAGS(ilk, kmp_lf_critical_section);
+        KA_TRACE(20, ("__kmp_get_indirect_csptr: initialized indirect lock #%d\n", tag));
+#if USE_ITT_BUILD
+        __kmp_itt_critical_creating(ilk->lock, loc);
+#endif
+        int status = KMP_COMPARE_AND_STORE_PTR(lck, 0, ilk);
+        if (status == 0) {
+#if USE_ITT_BUILD
+            __kmp_itt_critical_destroyed(ilk->lock);
+#endif
+            // Postponing destroy, to avoid costly dispatch here.
+            //DYNA_D_LOCK_FUNC(&idx, destroy)((kmp_dyna_lock_t *)&idx);
+            ret = (kmp_indirect_lock_t *)TCR_PTR(*lck);
+            KMP_DEBUG_ASSERT(ret != NULL);
+        }
+    }
+    return ret;
+}
+
+// Fast-path acquire tas lock
+#define DYNA_ACQUIRE_TAS_LOCK(lock, gtid) {                                                                      \
+    kmp_tas_lock_t *l = (kmp_tas_lock_t *)lock;                                                                  \
+    if (l->lk.poll != DYNA_LOCK_FREE(tas) ||                                                                     \
+            ! KMP_COMPARE_AND_STORE_ACQ32(&(l->lk.poll), DYNA_LOCK_FREE(tas), DYNA_LOCK_BUSY(gtid+1, tas))) {    \
+        kmp_uint32 spins;                                                                                        \
+        KMP_FSYNC_PREPARE(l);                                                                                    \
+        KMP_INIT_YIELD(spins);                                                                                   \
+        if (TCR_4(__kmp_nth) > (__kmp_avail_proc ? __kmp_avail_proc : __kmp_xproc)) {                            \
+            KMP_YIELD(TRUE);                                                                                     \
+        } else {                                                                                                 \
+            KMP_YIELD_SPIN(spins);                                                                               \
+        }                                                                                                        \
+        while (l->lk.poll != DYNA_LOCK_FREE(tas) ||                                                              \
+               ! KMP_COMPARE_AND_STORE_ACQ32(&(l->lk.poll), DYNA_LOCK_FREE(tas), DYNA_LOCK_BUSY(gtid+1, tas))) { \
+            if (TCR_4(__kmp_nth) > (__kmp_avail_proc ? __kmp_avail_proc : __kmp_xproc)) {                        \
+                KMP_YIELD(TRUE);                                                                                 \
+            } else {                                                                                             \
+                KMP_YIELD_SPIN(spins);                                                                           \
+            }                                                                                                    \
+        }                                                                                                        \
+    }                                                                                                            \
+    KMP_FSYNC_ACQUIRED(l);                                                                                       \
+}
+
+// Fast-path test tas lock
+#define DYNA_TEST_TAS_LOCK(lock, gtid, rc) {                                                           \
+    kmp_tas_lock_t *l = (kmp_tas_lock_t *)lock;                                                        \
+    rc = l->lk.poll == DYNA_LOCK_FREE(tas) &&                                                          \
+         KMP_COMPARE_AND_STORE_ACQ32(&(l->lk.poll), DYNA_LOCK_FREE(tas), DYNA_LOCK_BUSY(gtid+1, tas)); \
+}
+
+// Fast-path release tas lock
+#define DYNA_RELEASE_TAS_LOCK(lock, gtid) {                         \
+    TCW_4(((kmp_tas_lock_t *)lock)->lk.poll, DYNA_LOCK_FREE(tas));  \
+    KMP_MB();                                                       \
+}
+
+#if DYNA_HAS_FUTEX
+
+# include <unistd.h>
+# include <sys/syscall.h>
+# ifndef FUTEX_WAIT
+#  define FUTEX_WAIT 0
+# endif
+# ifndef FUTEX_WAKE
+#  define FUTEX_WAKE 1
+# endif
+
+// Fast-path acquire futex lock
+#define DYNA_ACQUIRE_FUTEX_LOCK(lock, gtid) {                                                                       \
+    kmp_futex_lock_t *ftx = (kmp_futex_lock_t *)lock;                                                               \
+    kmp_int32 gtid_code = (gtid+1) << 1;                                                                            \
+    KMP_MB();                                                                                                       \
+    KMP_FSYNC_PREPARE(ftx);                                                                                         \
+    kmp_int32 poll_val;                                                                                             \
+    while ((poll_val = KMP_COMPARE_AND_STORE_RET32(&(ftx->lk.poll), DYNA_LOCK_FREE(futex),                          \
+                                                   DYNA_LOCK_BUSY(gtid_code, futex))) != DYNA_LOCK_FREE(futex)) {   \
+        kmp_int32 cond = DYNA_LOCK_STRIP(poll_val) & 1;                                                             \
+        if (!cond) {                                                                                                \
+            if (!KMP_COMPARE_AND_STORE_RET32(&(ftx->lk.poll), poll_val, poll_val | DYNA_LOCK_BUSY(1, futex))) {     \
+                continue;                                                                                           \
+            }                                                                                                       \
+            poll_val |= DYNA_LOCK_BUSY(1, futex);                                                                   \
+        }                                                                                                           \
+        kmp_int32 rc;                                                                                               \
+        if ((rc = syscall(__NR_futex, &(ftx->lk.poll), FUTEX_WAIT, poll_val, NULL, NULL, 0)) != 0) {                \
+            continue;                                                                                               \
+        }                                                                                                           \
+        gtid_code |= 1;                                                                                             \
+    }                                                                                                               \
+    KMP_FSYNC_ACQUIRED(ftx);                                                                                        \
+}
+
+// Fast-path test futex lock
+#define DYNA_TEST_FUTEX_LOCK(lock, gtid, rc) {                                                                      \
+    kmp_futex_lock_t *ftx = (kmp_futex_lock_t *)lock;                                                               \
+    if (KMP_COMPARE_AND_STORE_ACQ32(&(ftx->lk.poll), DYNA_LOCK_FREE(futex), DYNA_LOCK_BUSY(gtid+1, futex) << 1)) {  \
+        KMP_FSYNC_ACQUIRED(ftx);                                                                                    \
+        rc = TRUE;                                                                                                  \
+    } else {                                                                                                        \
+        rc = FALSE;                                                                                                 \
+    }                                                                                                               \
+}
+
+// Fast-path release futex lock
+#define DYNA_RELEASE_FUTEX_LOCK(lock, gtid) {                                                       \
+    kmp_futex_lock_t *ftx = (kmp_futex_lock_t *)lock;                                               \
+    KMP_MB();                                                                                       \
+    KMP_FSYNC_RELEASING(ftx);                                                                       \
+    kmp_int32 poll_val = KMP_XCHG_FIXED32(&(ftx->lk.poll), DYNA_LOCK_FREE(futex));                  \
+    if (DYNA_LOCK_STRIP(poll_val) & 1) {                                                            \
+        syscall(__NR_futex, &(ftx->lk.poll), FUTEX_WAKE, DYNA_LOCK_BUSY(1, futex), NULL, NULL, 0);  \
+    }                                                                                               \
+    KMP_MB();                                                                                       \
+    KMP_YIELD(TCR_4(__kmp_nth) > (__kmp_avail_proc ? __kmp_avail_proc : __kmp_xproc));              \
+}
+
+#endif // DYNA_HAS_FUTEX
+
+#else // KMP_USE_DYNAMIC_LOCK
 
 static kmp_user_lock_p
 __kmp_get_critical_section_ptr( kmp_critical_name * crit, ident_t const * loc, kmp_int32 gtid )
@@ -822,6 +1058,8 @@ __kmp_get_critical_section_ptr( kmp_critical_name * crit, ident_t const * loc, k
     return lck;
 }
 
+#endif // KMP_USE_DYNAMIC_LOCK
+
 /*!
 @ingroup WORK_SHARING
 @param loc  source location information.
@@ -839,6 +1077,47 @@ __kmpc_critical( ident_t * loc, kmp_int32 global_tid, kmp_critical_name * crit )
     kmp_user_lock_p lck;
 
     KC_TRACE( 10, ("__kmpc_critical: called T#%d\n", global_tid ) );
+
+#if KMP_USE_DYNAMIC_LOCK
+    // Assumption: all direct locks fit in OMP_CRITICAL_SIZE.
+    // The global sequence __kmp_user_lock_seq is used unless compiler pushes a value.
+    if (DYNA_IS_D_LOCK(__kmp_user_lock_seq)) {
+        lck = (kmp_user_lock_p)crit;
+        // The thread that reaches here first needs to tag the lock word.
+        if (*((kmp_dyna_lock_t *)lck) == 0) {
+            KMP_COMPARE_AND_STORE_ACQ32((volatile kmp_int32 *)lck, 0, DYNA_GET_D_TAG(__kmp_user_lock_seq));
+        }
+        if (__kmp_env_consistency_check) {
+            __kmp_push_sync(global_tid, ct_critical, loc, lck, __kmp_user_lock_seq);
+        }
+# if USE_ITT_BUILD
+        __kmp_itt_critical_acquiring(lck);
+# endif
+# if DYNA_USE_FAST_TAS
+        if (__kmp_user_lock_seq == lockseq_tas && !__kmp_env_consistency_check) {
+            DYNA_ACQUIRE_TAS_LOCK(lck, global_tid);
+        } else
+# elif DYNA_USE_FAST_FUTEX
+        if (__kmp_user_lock_seq == lockseq_futex && !__kmp_env_consistency_check) {
+            DYNA_ACQUIRE_FUTEX_LOCK(lck, global_tid);
+        } else
+# endif
+        {
+            DYNA_D_LOCK_FUNC(lck, set)((kmp_dyna_lock_t *)lck, global_tid);
+        }
+    } else {
+        kmp_indirect_lock_t *ilk = __kmp_get_indirect_csptr(crit, loc, global_tid, __kmp_user_lock_seq);
+        lck = ilk->lock;
+        if (__kmp_env_consistency_check) {
+            __kmp_push_sync(global_tid, ct_critical, loc, lck, __kmp_user_lock_seq);
+        }
+# if USE_ITT_BUILD
+        __kmp_itt_critical_acquiring(lck);
+# endif
+        DYNA_I_LOCK_FUNC(ilk, set)(lck, global_tid);
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
 
     //TODO: add THR_OVHD_STATE
 
@@ -871,8 +1150,9 @@ __kmpc_critical( ident_t * loc, kmp_int32 global_tid, kmp_critical_name * crit )
     __kmp_itt_critical_acquiring( lck );
 #endif /* USE_ITT_BUILD */
     // Value of 'crit' should be good for using as a critical_id of the critical section directive.
-
     __kmp_acquire_user_lock_with_checks( lck, global_tid );
+
+#endif // KMP_USE_DYNAMIC_LOCK
 
 #if USE_ITT_BUILD
     __kmp_itt_critical_acquired( lck );
@@ -897,6 +1177,43 @@ __kmpc_end_critical(ident_t *loc, kmp_int32 global_tid, kmp_critical_name *crit)
 
     KC_TRACE( 10, ("__kmpc_end_critical: called T#%d\n", global_tid ));
 
+#if KMP_USE_DYNAMIC_LOCK
+    if (DYNA_IS_D_LOCK(__kmp_user_lock_seq)) {
+        lck = (kmp_user_lock_p)crit;
+        KMP_ASSERT(lck != NULL);
+        if (__kmp_env_consistency_check) {
+            __kmp_pop_sync(global_tid, ct_critical, loc);
+        }
+# if USE_ITT_BUILD
+        __kmp_itt_critical_releasing( lck );
+# endif
+# if DYNA_USE_FAST_TAS
+        if (__kmp_user_lock_seq == lockseq_tas && !__kmp_env_consistency_check) {
+            DYNA_RELEASE_TAS_LOCK(lck, global_tid);
+        } else
+# elif DYNA_USE_FAST_FUTEX
+        if (__kmp_user_lock_seq == lockseq_futex && !__kmp_env_consistency_check) {
+            DYNA_RELEASE_FUTEX_LOCK(lck, global_tid);
+        } else
+# endif
+        {
+            DYNA_D_LOCK_FUNC(lck, unset)((kmp_dyna_lock_t *)lck, global_tid);
+        }
+    } else {
+        kmp_indirect_lock_t *ilk = (kmp_indirect_lock_t *)TCR_PTR(*((kmp_indirect_lock_t **)crit));
+        KMP_ASSERT(ilk != NULL);
+        lck = ilk->lock;
+        if (__kmp_env_consistency_check) {
+            __kmp_pop_sync(global_tid, ct_critical, loc);
+        }
+# if USE_ITT_BUILD
+        __kmp_itt_critical_releasing( lck );
+# endif
+        DYNA_I_LOCK_FUNC(ilk, unset)(lck, global_tid);
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     if ( ( __kmp_user_lock_kind == lk_tas )
       && ( sizeof( lck->tas.lk.poll ) <= OMP_CRITICAL_SIZE ) ) {
         lck = (kmp_user_lock_p)crit;
@@ -920,8 +1237,17 @@ __kmpc_end_critical(ident_t *loc, kmp_int32 global_tid, kmp_critical_name *crit)
     __kmp_itt_critical_releasing( lck );
 #endif /* USE_ITT_BUILD */
     // Value of 'crit' should be good for using as a critical_id of the critical section directive.
-
     __kmp_release_user_lock_with_checks( lck, global_tid );
+
+#if OMPT_SUPPORT && OMPT_BLAME
+    if ((ompt_status == ompt_status_track_callback) &&
+        ompt_callbacks.ompt_callback(ompt_event_release_critical)) {
+        ompt_callbacks.ompt_callback(ompt_event_release_critical)(
+            (uint64_t) lck);
+    }
+#endif
+
+#endif // KMP_USE_DYNAMIC_LOCK
 
     KA_TRACE( 15, ("__kmpc_end_critical: done T#%d\n", global_tid ));
 }
@@ -1041,6 +1367,31 @@ __kmpc_single(ident_t *loc, kmp_int32 global_tid)
 {
     KMP_COUNT_BLOCK(OMP_SINGLE);
     kmp_int32 rc = __kmp_enter_single( global_tid, loc, TRUE );
+
+#if OMPT_SUPPORT && OMPT_TRACE
+    kmp_info_t *this_thr        = __kmp_threads[ global_tid ];
+    kmp_team_t *team            = this_thr -> th.th_team;
+    int tid = __kmp_tid_from_gtid( global_tid );
+
+    if ((ompt_status == ompt_status_track_callback)) {
+        if (rc) {
+            if (ompt_callbacks.ompt_callback(ompt_event_single_in_block_begin)) {
+                ompt_callbacks.ompt_callback(ompt_event_single_in_block_begin)(
+                    team->t.ompt_team_info.parallel_id,
+                    team->t.t_implicit_task_taskdata[tid].ompt_task_info.task_id,
+                    team->t.ompt_team_info.microtask);
+            }
+        } else {
+            if (ompt_callbacks.ompt_callback(ompt_event_single_others_begin)) {
+                ompt_callbacks.ompt_callback(ompt_event_single_others_begin)(
+                    team->t.ompt_team_info.parallel_id,
+                    team->t.t_implicit_task_taskdata[tid].ompt_task_info.task_id);
+            }
+            this_thr->th.ompt_thread_info.state = ompt_state_wait_single;
+        }
+    }
+#endif
+
     return rc;
 }
 
@@ -1057,6 +1408,19 @@ void
 __kmpc_end_single(ident_t *loc, kmp_int32 global_tid)
 {
     __kmp_exit_single( global_tid );
+
+#if OMPT_SUPPORT && OMPT_TRACE
+    kmp_info_t *this_thr        = __kmp_threads[ global_tid ];
+    kmp_team_t *team            = this_thr -> th.th_team;
+    int tid = __kmp_tid_from_gtid( global_tid );
+
+    if ((ompt_status == ompt_status_track_callback) &&
+        ompt_callbacks.ompt_callback(ompt_event_single_in_block_end)) {
+        ompt_callbacks.ompt_callback(ompt_event_single_in_block_end)(
+            team->t.ompt_team_info.parallel_id,
+            team->t.t_implicit_task_taskdata[tid].ompt_task_info.task_id);
+    }
+#endif
 }
 
 /*!
@@ -1070,6 +1434,19 @@ void
 __kmpc_for_static_fini( ident_t *loc, kmp_int32 global_tid )
 {
     KE_TRACE( 10, ("__kmpc_for_static_fini called T#%d\n", global_tid));
+
+#if OMPT_SUPPORT && OMPT_TRACE
+    kmp_info_t *this_thr        = __kmp_threads[ global_tid ];
+    kmp_team_t *team            = this_thr -> th.th_team;
+    int tid = __kmp_tid_from_gtid( global_tid );
+
+    if ((ompt_status == ompt_status_track_callback) &&
+        ompt_callbacks.ompt_callback(ompt_event_loop_end)) {
+        ompt_callbacks.ompt_callback(ompt_event_loop_end)(
+            team->t.ompt_team_info.parallel_id,
+            team->t.t_implicit_task_taskdata[tid].ompt_task_info.task_id);
+    }
+#endif
 
     if ( __kmp_env_consistency_check )
      __kmp_pop_workshare( global_tid, ct_pdo, loc );
@@ -1180,7 +1557,7 @@ void
 kmpc_set_defaults( char const * str )
 {
     // __kmp_aux_set_defaults initializes the library if needed
-    __kmp_aux_set_defaults( str, strlen( str ) );
+    __kmp_aux_set_defaults( str, KMP_STRLEN( str ) );
 }
 
 int
@@ -1326,6 +1703,27 @@ __kmpc_copyprivate( ident_t *loc, kmp_int32 gtid, size_t cpy_size, void *cpy_dat
 /* initialize the lock */
 void
 __kmpc_init_lock( ident_t * loc, kmp_int32 gtid,  void ** user_lock ) {
+#if KMP_USE_DYNAMIC_LOCK
+    KMP_DEBUG_ASSERT(__kmp_init_serial);
+    if (__kmp_env_consistency_check && user_lock == NULL) {
+        KMP_FATAL(LockIsUninitialized, "omp_init_lock");
+    }
+    if (DYNA_IS_D_LOCK(__kmp_user_lock_seq)) {
+        DYNA_INIT_D_LOCK(user_lock, __kmp_user_lock_seq);
+# if USE_ITT_BUILD
+        __kmp_itt_lock_creating((kmp_user_lock_p)user_lock, NULL);
+# endif
+    } else {
+        DYNA_INIT_I_LOCK(user_lock, __kmp_user_lock_seq);
+        kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(user_lock);
+        DYNA_SET_I_LOCK_LOCATION(ilk, loc);
+# if USE_ITT_BUILD
+        __kmp_itt_lock_creating(ilk->lock, loc);
+# endif
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     static char const * const func = "omp_init_lock";
     kmp_user_lock_p lck;
     KMP_DEBUG_ASSERT( __kmp_init_serial );
@@ -1357,11 +1755,42 @@ __kmpc_init_lock( ident_t * loc, kmp_int32 gtid,  void ** user_lock ) {
 #if USE_ITT_BUILD
     __kmp_itt_lock_creating( lck );
 #endif /* USE_ITT_BUILD */
+
+#endif // KMP_USE_DYNAMIC_LOCK
 } // __kmpc_init_lock
 
 /* initialize the lock */
 void
 __kmpc_init_nest_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
+#if KMP_USE_DYNAMIC_LOCK
+
+    KMP_DEBUG_ASSERT(__kmp_init_serial);
+    if (__kmp_env_consistency_check && user_lock == NULL) {
+        KMP_FATAL(LockIsUninitialized, "omp_init_nest_lock");
+    }
+    // Invoke init function after converting to nested version.
+    kmp_dyna_lockseq_t nested_seq;
+    switch (__kmp_user_lock_seq) {
+        case lockseq_tas:       nested_seq = lockseq_nested_tas;        break;
+#if DYNA_HAS_FUTEX
+        case lockseq_futex:     nested_seq = lockseq_nested_futex;      break;
+#endif
+        case lockseq_ticket:    nested_seq = lockseq_nested_ticket;     break;
+        case lockseq_queuing:   nested_seq = lockseq_nested_queuing;    break;
+        case lockseq_drdpa:     nested_seq = lockseq_nested_drdpa;      break;
+        default:                nested_seq = lockseq_nested_queuing;    break;
+                                // Use nested queuing lock for lock kinds without "nested" implementation.
+    }
+    DYNA_INIT_I_LOCK(user_lock, nested_seq);
+    // All nested locks are indirect locks.
+    kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(user_lock);
+    DYNA_SET_I_LOCK_LOCATION(ilk, loc);
+# if USE_ITT_BUILD
+    __kmp_itt_lock_creating(ilk->lock, loc);
+# endif
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     static char const * const func = "omp_init_nest_lock";
     kmp_user_lock_p lck;
     KMP_DEBUG_ASSERT( __kmp_init_serial );
@@ -1395,11 +1824,25 @@ __kmpc_init_nest_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
 #if USE_ITT_BUILD
     __kmp_itt_lock_creating( lck );
 #endif /* USE_ITT_BUILD */
+
+#endif // KMP_USE_DYNAMIC_LOCK
 } // __kmpc_init_nest_lock
 
 void
 __kmpc_destroy_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
+#if KMP_USE_DYNAMIC_LOCK
 
+# if USE_ITT_BUILD
+    kmp_user_lock_p lck;
+    if (DYNA_EXTRACT_D_TAG(user_lock) == 0) {
+        lck = ((kmp_indirect_lock_t *)DYNA_LOOKUP_I_LOCK(user_lock))->lock;
+    } else {
+        lck = (kmp_user_lock_p)user_lock;
+    }
+    __kmp_itt_lock_destroyed(lck);
+# endif
+    DYNA_D_LOCK_FUNC(user_lock, destroy)((kmp_dyna_lock_t *)user_lock);
+#else
     kmp_user_lock_p lck;
 
     if ( ( __kmp_user_lock_kind == lk_tas )
@@ -1434,11 +1877,21 @@ __kmpc_destroy_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
     else {
         __kmp_user_lock_free( user_lock, gtid, lck );
     }
+#endif // KMP_USE_DYNAMIC_LOCK
 } // __kmpc_destroy_lock
 
 /* destroy the lock */
 void
 __kmpc_destroy_nest_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
+#if KMP_USE_DYNAMIC_LOCK
+
+# if USE_ITT_BUILD
+    kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(user_lock);
+    __kmp_itt_lock_destroyed(ilk->lock);
+# endif
+    DYNA_D_LOCK_FUNC(user_lock, destroy)((kmp_dyna_lock_t *)user_lock);
+
+#else // KMP_USE_DYNAMIC_LOCK
 
     kmp_user_lock_p lck;
 
@@ -1477,11 +1930,35 @@ __kmpc_destroy_nest_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
     else {
         __kmp_user_lock_free( user_lock, gtid, lck );
     }
+#endif // KMP_USE_DYNAMIC_LOCK
 } // __kmpc_destroy_nest_lock
 
 void
 __kmpc_set_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
     KMP_COUNT_BLOCK(OMP_set_lock);
+#if KMP_USE_DYNAMIC_LOCK
+    int tag = DYNA_EXTRACT_D_TAG(user_lock);
+# if USE_ITT_BUILD
+   __kmp_itt_lock_acquiring((kmp_user_lock_p)user_lock); // itt function will get to the right lock object.
+# endif
+# if DYNA_USE_FAST_TAS
+    if (tag == locktag_tas && !__kmp_env_consistency_check) {
+        DYNA_ACQUIRE_TAS_LOCK(user_lock, gtid);
+    } else
+# elif DYNA_USE_FAST_FUTEX
+    if (tag == locktag_futex && !__kmp_env_consistency_check) {
+        DYNA_ACQUIRE_FUTEX_LOCK(user_lock, gtid);
+    } else
+# endif
+    {
+        __kmp_direct_set_ops[tag]((kmp_dyna_lock_t *)user_lock, gtid);
+    }
+# if USE_ITT_BUILD
+    __kmp_itt_lock_acquired((kmp_user_lock_p)user_lock);
+# endif
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     kmp_user_lock_p lck;
 
     if ( ( __kmp_user_lock_kind == lk_tas )
@@ -1507,11 +1984,23 @@ __kmpc_set_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
 #if USE_ITT_BUILD
     __kmp_itt_lock_acquired( lck );
 #endif /* USE_ITT_BUILD */
-}
 
+#endif // KMP_USE_DYNAMIC_LOCK
+}
 
 void
 __kmpc_set_nest_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
+#if KMP_USE_DYNAMIC_LOCK
+
+# if USE_ITT_BUILD
+    __kmp_itt_lock_acquiring((kmp_user_lock_p)user_lock);
+# endif
+    DYNA_D_LOCK_FUNC(user_lock, set)((kmp_dyna_lock_t *)user_lock, gtid);
+# if USE_ITT_BUILD
+    __kmp_itt_lock_acquired((kmp_user_lock_p)user_lock);
+#endif
+
+#else // KMP_USE_DYNAMIC_LOCK
     kmp_user_lock_p lck;
 
     if ( ( __kmp_user_lock_kind == lk_tas ) && ( sizeof( lck->tas.lk.poll )
@@ -1538,11 +2027,33 @@ __kmpc_set_nest_lock( ident_t * loc, kmp_int32 gtid, void ** user_lock ) {
 #if USE_ITT_BUILD
     __kmp_itt_lock_acquired( lck );
 #endif /* USE_ITT_BUILD */
+#endif // KMP_USE_DYNAMIC_LOCK
 }
 
 void
 __kmpc_unset_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
 {
+#if KMP_USE_DYNAMIC_LOCK
+
+    int tag = DYNA_EXTRACT_D_TAG(user_lock);
+# if USE_ITT_BUILD
+    __kmp_itt_lock_releasing((kmp_user_lock_p)user_lock);
+# endif
+# if DYNA_USE_FAST_TAS
+    if (tag == locktag_tas && !__kmp_env_consistency_check) {
+        DYNA_RELEASE_TAS_LOCK(user_lock, gtid);
+    } else
+# elif DYNA_USE_FAST_FUTEX
+    if (tag == locktag_futex && !__kmp_env_consistency_check) {
+        DYNA_RELEASE_FUTEX_LOCK(user_lock, gtid);
+    } else
+# endif
+    {
+        __kmp_direct_unset_ops[tag]((kmp_dyna_lock_t *)user_lock, gtid);
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     kmp_user_lock_p lck;
 
     /* Can't use serial interval since not block structured */
@@ -1577,12 +2088,30 @@ __kmpc_unset_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
 #endif /* USE_ITT_BUILD */
 
     RELEASE_LOCK( lck, gtid );
+
+#if OMPT_SUPPORT && OMPT_BLAME
+    if ((ompt_status == ompt_status_track_callback) &&
+        ompt_callbacks.ompt_callback(ompt_event_release_lock)) {
+        ompt_callbacks.ompt_callback(ompt_event_release_lock)((uint64_t) lck);
+    }
+#endif
+
+#endif // KMP_USE_DYNAMIC_LOCK
 }
 
 /* release the lock */
 void
 __kmpc_unset_nest_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
 {
+#if KMP_USE_DYNAMIC_LOCK
+
+# if USE_ITT_BUILD
+    __kmp_itt_lock_releasing((kmp_user_lock_p)user_lock);
+# endif
+    DYNA_D_LOCK_FUNC(user_lock, unset)((kmp_dyna_lock_t *)user_lock, gtid);
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     kmp_user_lock_p lck;
 
     /* Can't use serial interval since not block structured */
@@ -1619,7 +2148,23 @@ __kmpc_unset_nest_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
     __kmp_itt_lock_releasing( lck );
 #endif /* USE_ITT_BUILD */
 
-    RELEASE_NESTED_LOCK( lck, gtid );
+    int release_status;
+    release_status = RELEASE_NESTED_LOCK( lck, gtid );
+#if OMPT_SUPPORT && OMPT_BLAME
+    if (ompt_status == ompt_status_track_callback) {
+        if (release_status == KMP_LOCK_RELEASED) {
+            if (ompt_callbacks.ompt_callback(ompt_event_release_nest_lock_last)) {
+                ompt_callbacks.ompt_callback(ompt_event_release_nest_lock_last)(
+                    (uint64_t) lck);
+            }
+        } else if (ompt_callbacks.ompt_callback(ompt_event_release_nest_lock_prev)) {
+            ompt_callbacks.ompt_callback(ompt_event_release_nest_lock_prev)(
+                (uint64_t) lck);
+        }
+    }
+#endif
+
+#endif // KMP_USE_DYNAMIC_LOCK
 }
 
 /* try to acquire the lock */
@@ -1628,6 +2173,39 @@ __kmpc_test_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
 {
     KMP_COUNT_BLOCK(OMP_test_lock);
     KMP_TIME_BLOCK(OMP_test_lock);
+
+#if KMP_USE_DYNAMIC_LOCK
+    int rc;
+    int tag = DYNA_EXTRACT_D_TAG(user_lock);
+# if USE_ITT_BUILD
+    __kmp_itt_lock_acquiring((kmp_user_lock_p)user_lock);
+# endif
+# if DYNA_USE_FAST_TAS
+    if (tag == locktag_tas && !__kmp_env_consistency_check) {
+        DYNA_TEST_TAS_LOCK(user_lock, gtid, rc);
+    } else
+# elif DYNA_USE_FAST_FUTEX
+    if (tag == locktag_futex && !__kmp_env_consistency_check) {
+        DYNA_TEST_FUTEX_LOCK(user_lock, gtid, rc);
+    } else
+# endif
+    {
+        rc = __kmp_direct_test_ops[tag]((kmp_dyna_lock_t *)user_lock, gtid);
+    }
+    if (rc) {
+# if USE_ITT_BUILD
+        __kmp_itt_lock_acquired((kmp_user_lock_p)user_lock);
+# endif
+        return FTN_TRUE;
+    } else {
+# if USE_ITT_BUILD
+        __kmp_itt_lock_cancelled((kmp_user_lock_p)user_lock);
+# endif
+        return FTN_FALSE;
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     kmp_user_lock_p lck;
     int          rc;
 
@@ -1660,12 +2238,31 @@ __kmpc_test_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
     return ( rc ? FTN_TRUE : FTN_FALSE );
 
     /* Can't use serial interval since not block structured */
+
+#endif // KMP_USE_DYNAMIC_LOCK
 }
 
 /* try to acquire the lock */
 int
 __kmpc_test_nest_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
 {
+#if KMP_USE_DYNAMIC_LOCK
+    int rc;
+# if USE_ITT_BUILD
+    __kmp_itt_lock_acquiring((kmp_user_lock_p)user_lock);
+# endif
+    rc = DYNA_D_LOCK_FUNC(user_lock, test)((kmp_dyna_lock_t *)user_lock, gtid);
+# if USE_ITT_BUILD
+    if (rc) {
+        __kmp_itt_lock_acquired((kmp_user_lock_p)user_lock);
+    } else {
+        __kmp_itt_lock_cancelled((kmp_user_lock_p)user_lock);
+    }
+# endif
+    return rc;
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     kmp_user_lock_p lck;
     int          rc;
 
@@ -1699,6 +2296,8 @@ __kmpc_test_nest_lock( ident_t *loc, kmp_int32 gtid, void **user_lock )
     return rc;
 
     /* Can't use serial interval since not block structured */
+
+#endif // KMP_USE_DYNAMIC_LOCK
 }
 
 
@@ -1730,6 +2329,29 @@ __kmp_enter_critical_section_reduce_block( ident_t * loc, kmp_int32 global_tid, 
     //            should we keep it visible in new reduce block?
     kmp_user_lock_p lck;
 
+#if KMP_USE_DYNAMIC_LOCK
+
+    if (DYNA_IS_D_LOCK(__kmp_user_lock_seq)) {
+        lck = (kmp_user_lock_p)crit;
+        if (*((kmp_dyna_lock_t *)lck) == 0) {
+            KMP_COMPARE_AND_STORE_ACQ32((volatile kmp_int32 *)lck, 0, DYNA_GET_D_TAG(__kmp_user_lock_seq));
+        }
+        KMP_DEBUG_ASSERT(lck != NULL);
+        if (__kmp_env_consistency_check) {
+            __kmp_push_sync(global_tid, ct_critical, loc, lck, __kmp_user_lock_seq);
+        }
+        DYNA_D_LOCK_FUNC(lck, set)((kmp_dyna_lock_t *)lck, global_tid);
+    } else {
+        kmp_indirect_lock_t *ilk = __kmp_get_indirect_csptr(crit, loc, global_tid, __kmp_user_lock_seq);
+        KMP_DEBUG_ASSERT(ilk != NULL);
+        if (__kmp_env_consistency_check) {
+            __kmp_push_sync(global_tid, ct_critical, loc, ilk->lock, __kmp_user_lock_seq);
+        }
+        DYNA_I_LOCK_FUNC(ilk, set)(ilk->lock, global_tid);
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
+
     // We know that the fast reduction code is only emitted by Intel compilers
     // with 32 byte critical sections. If there isn't enough space, then we
     // have to use a pointer.
@@ -1745,6 +2367,8 @@ __kmp_enter_critical_section_reduce_block( ident_t * loc, kmp_int32 global_tid, 
         __kmp_push_sync( global_tid, ct_critical, loc, lck );
 
     __kmp_acquire_user_lock_with_checks( lck, global_tid );
+
+#endif // KMP_USE_DYNAMIC_LOCK
 }
 
 // used in a critical section reduce block
@@ -1752,6 +2376,22 @@ static __forceinline void
 __kmp_end_critical_section_reduce_block( ident_t * loc, kmp_int32 global_tid, kmp_critical_name * crit ) {
 
     kmp_user_lock_p lck;
+
+#if KMP_USE_DYNAMIC_LOCK
+
+    if (DYNA_IS_D_LOCK(__kmp_user_lock_seq)) {
+        lck = (kmp_user_lock_p)crit;
+        if (__kmp_env_consistency_check)
+            __kmp_pop_sync(global_tid, ct_critical, loc);
+        DYNA_D_LOCK_FUNC(lck, unset)((kmp_dyna_lock_t *)lck, global_tid);
+    } else {
+        kmp_indirect_lock_t *ilk = (kmp_indirect_lock_t *)TCR_PTR(*((kmp_indirect_lock_t **)crit));
+        if (__kmp_env_consistency_check)
+            __kmp_pop_sync(global_tid, ct_critical, loc);
+        DYNA_I_LOCK_FUNC(ilk, unset)(ilk->lock, global_tid);
+    }
+
+#else // KMP_USE_DYNAMIC_LOCK
 
     // We know that the fast reduction code is only emitted by Intel compilers with 32 byte critical
     // sections. If there isn't enough space, then we have to use a pointer.
@@ -1767,6 +2407,7 @@ __kmp_end_critical_section_reduce_block( ident_t * loc, kmp_int32 global_tid, km
 
     __kmp_release_user_lock_with_checks( lck, global_tid );
 
+#endif // KMP_USE_DYNAMIC_LOCK
 } // __kmp_end_critical_section_reduce_block
 
 
@@ -1791,7 +2432,7 @@ __kmpc_reduce_nowait(
     kmp_critical_name *lck ) {
 
     KMP_COUNT_BLOCK(REDUCE_nowait);
-    int retval;
+    int retval = 0;
     PACKED_REDUCTION_METHOD_T packed_reduction_method;
 #if OMP_40_ENABLED
     kmp_team_t *team;
@@ -1809,8 +2450,13 @@ __kmpc_reduce_nowait(
         __kmp_parallel_initialize();
 
     // check correctness of reduce block nesting
+#if KMP_USE_DYNAMIC_LOCK
+    if ( __kmp_env_consistency_check )
+        __kmp_push_sync( global_tid, ct_reduce, loc, NULL, 0 );
+#else
     if ( __kmp_env_consistency_check )
         __kmp_push_sync( global_tid, ct_reduce, loc, NULL );
+#endif
 
 #if OMP_40_ENABLED
     th = __kmp_thread_from_gtid(global_tid);
@@ -1823,11 +2469,10 @@ __kmpc_reduce_nowait(
             teams_swapped = 1;
             th->th.th_info.ds.ds_tid = team->t.t_master_tid;
             th->th.th_team = team->t.t_parent;
-            th->th.th_task_team = th->th.th_team->t.t_task_team;
             th->th.th_team_nproc = th->th.th_team->t.t_nproc;
+            th->th.th_task_team = th->th.th_team->t.t_task_team[0];
             task_state = th->th.th_task_state;
-            if( th->th.th_task_team )
-                th->th.th_task_state = th->th.th_task_team->tt.tt_state;
+            th->th.th_task_state = 0;
         }
     }
 #endif // OMP_40_ENABLED
@@ -1901,8 +2546,8 @@ __kmpc_reduce_nowait(
         // Restore thread structure
         th->th.th_info.ds.ds_tid = 0;
         th->th.th_team = team;
-        th->th.th_task_team = team->t.t_task_team;
         th->th.th_team_nproc = team->t.t_nproc;
+        th->th.th_task_team = team->t.t_task_team[task_state];
         th->th.th_task_state = task_state;
     }
 #endif
@@ -1985,7 +2630,7 @@ __kmpc_reduce(
     kmp_critical_name *lck )
 {
     KMP_COUNT_BLOCK(REDUCE_wait);
-    int retval;
+    int retval = 0;
     PACKED_REDUCTION_METHOD_T packed_reduction_method;
 
     KA_TRACE( 10, ( "__kmpc_reduce() enter: called T#%d\n", global_tid ) );
@@ -1999,8 +2644,13 @@ __kmpc_reduce(
         __kmp_parallel_initialize();
 
     // check correctness of reduce block nesting
+#if KMP_USE_DYNAMIC_LOCK
+    if ( __kmp_env_consistency_check )
+        __kmp_push_sync( global_tid, ct_reduce, loc, NULL, 0 );
+#else
     if ( __kmp_env_consistency_check )
         __kmp_push_sync( global_tid, ct_reduce, loc, NULL );
+#endif
 
     packed_reduction_method = __kmp_determine_reduction_method( loc, global_tid, num_vars, reduce_size, reduce_data, reduce_func, lck );
     __KMP_SET_REDUCTION_METHOD( global_tid, packed_reduction_method );
@@ -2159,14 +2809,12 @@ __kmpc_get_parent_taskid() {
 
 void __kmpc_place_threads(int nC, int nT, int nO)
 {
-#if KMP_MIC
     if ( ! __kmp_init_serial ) {
         __kmp_serial_initialize();
     }
     __kmp_place_num_cores = nC;
     __kmp_place_num_threads_per_core = nT;
     __kmp_place_core_offset = nO;
-#endif
 }
 
 // end of file //

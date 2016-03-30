@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-scops -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-scops -analyze < %s | FileCheck %s
 
 ;    void foo(float A[][20][30], long n, long m, long p) {
 ;      for (long i = 0; i < n; i++)
@@ -16,7 +16,11 @@
 ; values for which our assumption holds.
 
 ; CHECK: Assumed Context
-; CHECK-NEXT: [n, m, p] -> {  : p <= 30 and m <= 20 }
+; CHECK-NEXT: [n, m, p] -> {  :
+; CHECK-DAG:                    p <= 30
+; CHECK-DAG:                     and
+; CHECK-DAG:                    m <= 20
+; CHECK:                   }
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
@@ -49,7 +53,7 @@ for.body6:                                        ; preds = %for.cond4
   %add = add nsw i64 %i.0, %j.0
   %add7 = add nsw i64 %add, %k.0
   %conv = sitofp i64 %add7 to float
-  %arrayidx9 = getelementptr inbounds [20 x [30 x float]]* %A, i64 %i.0, i64 %j.0, i64 %k.0
+  %arrayidx9 = getelementptr inbounds [20 x [30 x float]], [20 x [30 x float]]* %A, i64 %i.0, i64 %j.0, i64 %k.0
   store float %conv, float* %arrayidx9, align 4
   br label %for.inc
 

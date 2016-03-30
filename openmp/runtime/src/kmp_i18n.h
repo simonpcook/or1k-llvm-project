@@ -1,7 +1,5 @@
 /*
  * kmp_i18n.h
- * $Revision: 42951 $
- * $Date: 2014-01-21 14:41:41 -0600 (Tue, 21 Jan 2014) $
  */
 
 
@@ -80,7 +78,7 @@ char const *    __kmp_i18n_catgets( kmp_i18n_id_t id );
     where
 
         (1) is a message of warning severity,
-        (2) is a system error caused the previos warning,
+        (2) is a system error caused the previous warning,
         (3) is a hint for the user how to fix the problem,
         (4) is a message of informational severity.
 

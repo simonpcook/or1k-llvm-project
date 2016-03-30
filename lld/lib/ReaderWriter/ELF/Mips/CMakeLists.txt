@@ -1,12 +1,18 @@
-add_lld_library(lldMipsELFTarget
+add_llvm_library(lldMipsELFTarget
+  MipsAbiInfoHandler.cpp
   MipsCtorsOrderPass.cpp
-  MipsELFFlagsMerger.cpp
+  MipsELFFile.cpp
+  MipsELFWriters.cpp
   MipsLinkingContext.cpp
   MipsRelocationHandler.cpp
   MipsRelocationPass.cpp
+  MipsSectionChunks.cpp
   MipsTargetHandler.cpp
-  )
-
-target_link_libraries(lldMipsELFTarget ${cmake_2_8_12_INTERFACE}
-  lldCore
+  MipsTargetLayout.cpp
+  LINK_LIBS
+    lldELF
+    lldReaderWriter
+    lldCore
+    LLVMObject
+    LLVMSupport
   )

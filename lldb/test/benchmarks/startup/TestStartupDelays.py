@@ -19,7 +19,7 @@ class StartupDelaysBench(BenchBase):
         if lldb.bmExecutable:
             self.exe = lldb.bmExecutable
         else:
-            self.exe = self.lldbHere
+            self.exe = lldbtest_config.lldbExec
         if lldb.bmBreakpointSpec:
             self.break_spec = lldb.bmBreakpointSpec
         else:
@@ -30,6 +30,7 @@ class StartupDelaysBench(BenchBase):
             self.count = 30
 
     @benchmarks_test
+    @expectedFailureWindows("llvm.org/pr22274: need a pexpect replacement for windows")
     def test_startup_delay(self):
         """Test start up delays creating a target, setting a breakpoint, and run to breakpoint stop."""
         print
@@ -49,7 +50,7 @@ class StartupDelaysBench(BenchBase):
         self.stopwatch2.reset()
         for i in range(count):
             # So that the child gets torn down after the test.
-            self.child = pexpect.spawn('%s %s' % (self.lldbHere, self.lldbOption))
+            self.child = pexpect.spawn('%s %s' % (lldbtest_config.lldbExec, self.lldbOption))
             child = self.child
 
             # Turn on logging for what the child sends back.

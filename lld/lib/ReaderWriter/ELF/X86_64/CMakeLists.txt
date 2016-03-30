@@ -1,10 +1,17 @@
-add_lld_library(lldX86_64ELFTarget
+add_llvm_library(lldX86_64ELFTarget
   X86_64LinkingContext.cpp
   X86_64TargetHandler.cpp
   X86_64RelocationHandler.cpp
   X86_64RelocationPass.cpp
+  X86_64SectionChunks.cpp
+  LINK_LIBS
+    lldELF
+    lldReaderWriter
+    lldCore
+    LLVMObject
+    LLVMSupport
   )
 
-target_link_libraries(lldX86_64ELFTarget ${cmake_2_8_12_INTERFACE}
-  lldCore
-  )
+include_directories(.)
+
+add_subdirectory(ExampleSubTarget)

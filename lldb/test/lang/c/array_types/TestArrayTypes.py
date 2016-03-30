@@ -10,14 +10,14 @@ class ArrayTypesTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
-    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @skipUnlessDarwin
     @dsym_test
     def test_with_dsym_and_run_command(self):
         """Test 'frame variable var_name' on some variables with array types."""
         self.buildDsym()
         self.array_types()
 
-    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @skipUnlessDarwin
     @python_api_test    
     @dsym_test
     def test_with_dsym_and_python_api(self):
@@ -130,8 +130,12 @@ class ArrayTypesTestCase(TestBase):
 
         # Sanity check the print representation of thread.
         thr = str(thread)
+        if self.platformIsDarwin():
+            tidstr = "tid = 0x%4.4x" % thread.GetThreadID()
+        else:
+            tidstr = "tid = %u" % thread.GetThreadID()
         self.expect(thr, "Thread looks good with stop reason = breakpoint", exe=False,
-            substrs = ["tid = 0x%4.4x" % thread.GetThreadID()])
+            substrs = [tidstr])
 
         # The breakpoint should have a hit count of 1.
         self.assertTrue(breakpoint.GetHitCount() == 1, BREAKPOINT_HIT_ONCE)

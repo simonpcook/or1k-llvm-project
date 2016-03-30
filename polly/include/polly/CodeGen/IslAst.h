@@ -24,13 +24,13 @@
 
 #include "polly/Config/config.h"
 #include "polly/ScopPass.h"
-
 #include "isl/ast.h"
 
 namespace llvm {
 class raw_ostream;
 }
 
+struct isl_pw_aff;
 struct isl_ast_node;
 struct isl_ast_expr;
 struct isl_ast_build;
@@ -91,7 +91,7 @@ public:
   bool runOnScop(Scop &S);
 
   /// @brief Print a source code representation of the program.
-  void printScop(llvm::raw_ostream &OS) const;
+  void printScop(llvm::raw_ostream &OS, Scop &S) const;
 
   /// @brief Return a copy of the AST root node.
   __isl_give isl_ast_node *getAst() const;

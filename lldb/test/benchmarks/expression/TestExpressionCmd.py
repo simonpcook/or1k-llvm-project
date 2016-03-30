@@ -18,6 +18,7 @@ class ExpressionEvaluationCase(BenchBase):
             self.count = 25
 
     @benchmarks_test
+    @expectedFailureWindows("llvm.org/pr22274: need a pexpect replacement for windows")
     def test_expr_cmd(self):
         """Test lldb's expression commands and collect statistics."""
         self.buildDefault()
@@ -39,7 +40,7 @@ class ExpressionEvaluationCase(BenchBase):
         self.stopwatch.reset()
         for i in range(count):
             # So that the child gets torn down after the test.
-            self.child = pexpect.spawn('%s %s %s' % (self.lldbHere, self.lldbOption, exe))
+            self.child = pexpect.spawn('%s %s %s' % (lldbtest_config.lldbExec, self.lldbOption, exe))
             child = self.child
 
             # Turn on logging for what the child sends back.

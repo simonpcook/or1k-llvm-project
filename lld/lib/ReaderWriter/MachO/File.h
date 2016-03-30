@@ -44,7 +44,7 @@ public:
     }
     DefinedAtom::Alignment align(
         inSection->alignment,
-        sectionOffset % ((uint64_t)1 << inSection->alignment));
+        sectionOffset % inSection->alignment);
     MachODefinedAtom *atom =
         new (allocator()) MachODefinedAtom(*this, name, scope, type, merge,
                                            thumb, noDeadStrip, content, align);
@@ -67,7 +67,7 @@ public:
     }
     DefinedAtom::Alignment align(
         inSection->alignment,
-        sectionOffset % ((uint64_t)1 << inSection->alignment));
+        sectionOffset % inSection->alignment);
     MachODefinedCustomSectionAtom *atom =
         new (allocator()) MachODefinedCustomSectionAtom(*this, name, scope, type,
                                                         merge, thumb,
@@ -86,7 +86,7 @@ public:
     }
     DefinedAtom::Alignment align(
         inSection->alignment,
-        sectionOffset % ((uint64_t)1 << inSection->alignment));
+        sectionOffset % inSection->alignment);
     MachODefinedAtom *atom =
        new (allocator()) MachODefinedAtom(*this, name, scope, size, noDeadStrip,
                                           align);
@@ -115,7 +115,7 @@ public:
     addAtom(*atom);
     _undefAtoms[name] = atom;
   }
-  
+
   /// Search this file for an the atom from 'section' that covers
   /// 'offsetInSect'.  Returns nullptr is no atom found.
   MachODefinedAtom *findAtomCoveringAddress(const Section &section,
@@ -128,7 +128,7 @@ public:
     assert(offsetInSect < section.content.size());
     // Vector of atoms for section are already sorted, so do binary search.
     const auto &atomPos = std::lower_bound(vec.begin(), vec.end(), offsetInSect,
-        [offsetInSect](const SectionOffsetAndAtom &ao, 
+        [offsetInSect](const SectionOffsetAndAtom &ao,
                        uint64_t targetAddr) -> bool {
           // Each atom has a start offset of its slice of the
           // section's content. This compare function must return true
@@ -151,7 +151,7 @@ public:
       return nullptr;
     return pos->second;
   }
-  
+
   typedef std::function<void (MachODefinedAtom* atom)> DefinedAtomVisitor;
 
   void eachDefinedAtom(DefinedAtomVisitor vistor) {
@@ -187,11 +187,11 @@ protected:
       return ec;
     return std::error_code();
   }
-  
+
 private:
   struct SectionOffsetAndAtom { uint64_t offset;  MachODefinedAtom *atom; };
 
-  void addAtomForSection(const Section *inSection, MachODefinedAtom* atom, 
+  void addAtomForSection(const Section *inSection, MachODefinedAtom* atom,
                          uint64_t sectionOffset) {
     SectionOffsetAndAtom offAndAtom;
     offAndAtom.offset = sectionOffset;
@@ -200,8 +200,8 @@ private:
     addAtom(*atom);
   }
 
-  
-  typedef llvm::DenseMap<const normalized::Section *, 
+
+  typedef llvm::DenseMap<const normalized::Section *,
                          std::vector<SectionOffsetAndAtom>>  SectionToAtoms;
   typedef llvm::StringMap<const lld::Atom *> NameToAtom;
 
@@ -225,22 +225,6 @@ public:
     // is this dylib installName and not the implementation dylib's.
     // NOTE: isData is not needed for dylibs (it matters for static libs).
     return exports(name, _installName);
-  }
-
-  const atom_collection<DefinedAtom> &defined() const override {
-    return _definedAtoms;
-  }
-
-  const atom_collection<UndefinedAtom> &undefined() const override {
-    return _undefinedAtoms;
-  }
-
-  const atom_collection<SharedLibraryAtom> &sharedLibrary() const override {
-    return _sharedLibraryAtoms;
-  }
-
-  const atom_collection<AbsoluteAtom> &absolute() const override {
-    return _absoluteAtoms;
   }
 
   /// Adds symbol name that this dylib exports. The corresponding
@@ -272,6 +256,8 @@ public:
       entry.file = find(entry.path);
     }
   }
+
+  StringRef getDSOName() const override { return _installName; }
 
   std::error_code doParse() override {
     // Convert binary file to normalized mach-o.
@@ -331,10 +317,6 @@ private:
   StringRef                                  _installName;
   uint32_t                                   _currentVersion;
   uint32_t                                   _compatVersion;
-  atom_collection_vector<DefinedAtom>        _definedAtoms;
-  atom_collection_vector<UndefinedAtom>      _undefinedAtoms;
-  atom_collection_vector<SharedLibraryAtom>  _sharedLibraryAtoms;
-  atom_collection_vector<AbsoluteAtom>       _absoluteAtoms;
   std::vector<ReExportedDylib>               _reExportedDylibs;
   mutable std::unordered_map<StringRef, AtomAndFlags> _nameToAtom;
 };

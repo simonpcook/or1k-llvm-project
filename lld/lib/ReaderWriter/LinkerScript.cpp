@@ -14,6 +14,11 @@
 
 #include "lld/ReaderWriter/LinkerScript.h"
 
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/Errc.h"
+#include "llvm/Support/ELF.h"
+
 namespace lld {
 namespace script {
 void Token::dump(raw_ostream &os) const {
@@ -62,13 +67,21 @@ void Token::dump(raw_ostream &os) const {
     CASE(kw_discard)
     CASE(kw_entry)
     CASE(kw_exclude_file)
+    CASE(kw_extern)
+    CASE(kw_fill)
     CASE(kw_group)
     CASE(kw_hidden)
+    CASE(kw_input)
     CASE(kw_keep)
+    CASE(kw_length)
+    CASE(kw_memory)
+    CASE(kw_origin)
+    CASE(kw_phdrs)
     CASE(kw_provide)
     CASE(kw_provide_hidden)
     CASE(kw_only_if_ro)
     CASE(kw_only_if_rw)
+    CASE(kw_output)
     CASE(kw_output_arch)
     CASE(kw_output_format)
     CASE(kw_overlay)
@@ -94,7 +107,7 @@ static llvm::ErrorOr<uint64_t> parseDecimal(StringRef str) {
   for (auto &c : str) {
     res *= 10;
     if (c < '0' || c > '9')
-      return llvm::ErrorOr<uint64_t>(std::make_error_code(std::errc::io_error));
+      return llvm::ErrorOr<uint64_t>(make_error_code(llvm::errc::io_error));
     res += c - '0';
   }
   return res;
@@ -105,7 +118,7 @@ static llvm::ErrorOr<uint64_t> parseOctal(StringRef str) {
   for (auto &c : str) {
     res <<= 3;
     if (c < '0' || c > '7')
-      return llvm::ErrorOr<uint64_t>(std::make_error_code(std::errc::io_error));
+      return llvm::ErrorOr<uint64_t>(make_error_code(llvm::errc::io_error));
     res += c - '0';
   }
   return res;
@@ -116,7 +129,7 @@ static llvm::ErrorOr<uint64_t> parseBinary(StringRef str) {
   for (auto &c : str) {
     res <<= 1;
     if (c != '0' && c != '1')
-      return llvm::ErrorOr<uint64_t>(std::make_error_code(std::errc::io_error));
+      return llvm::ErrorOr<uint64_t>(make_error_code(llvm::errc::io_error));
     res += c - '0';
   }
   return res;
@@ -133,7 +146,7 @@ static llvm::ErrorOr<uint64_t> parseHex(StringRef str) {
     else if (c >= 'A' && c <= 'F')
       res += c - 'A' + 10;
     else
-      return llvm::ErrorOr<uint64_t>(std::make_error_code(std::errc::io_error));
+      return llvm::ErrorOr<uint64_t>(make_error_code(llvm::errc::io_error));
   }
   return res;
 }
@@ -240,66 +253,18 @@ bool Lexer::canStartNumber(char c) const {
 }
 
 bool Lexer::canContinueNumber(char c) const {
-  switch (c) {
-  // Digits
-  case '0': case '1': case '2': case '3': case '4': case '5': case '6':
-  case '7': case '8': case '9':
-  case 'A': case 'B': case 'C': case 'D': case 'E': case 'F':
-  case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
-  // Hex marker
-  case 'x': case 'X':
-  // Type suffix
-  case 'h': case 'H': case 'o': case 'O':
-  // Scale suffix
-  case 'M': case 'K':
-    return true;
-  default:
-    return false;
-  }
+  // [xX] = hex marker, [hHoO] = type suffix, [MK] = scale suffix.
+  return strchr("0123456789ABCDEFabcdefxXhHoOMK", c);
 }
 
 bool Lexer::canStartName(char c) const {
-  switch (c) {
-  case 'A': case 'B': case 'C': case 'D': case 'E': case 'F': case 'G':
-  case 'H': case 'I': case 'J': case 'K': case 'L': case 'M': case 'N':
-  case 'O': case 'P': case 'Q': case 'R': case 'S': case 'T': case 'U':
-  case 'V': case 'W': case 'X': case 'Y': case 'Z':
-  case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': case 'g':
-  case 'h': case 'i': case 'j': case 'k': case 'l': case 'm': case 'n':
-  case 'o': case 'p': case 'q': case 'r': case 's': case 't': case 'u':
-  case 'v': case 'w': case 'x': case 'y': case 'z':
-  case '_': case '.': case '$': case '/': case '\\':
-  case '*':
-    return true;
-  default:
-    return false;
-  }
+  return strchr(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.$/\\*", c);
 }
 
 bool Lexer::canContinueName(char c) const {
-  switch (c) {
-  case 'A': case 'B': case 'C': case 'D': case 'E': case 'F': case 'G':
-  case 'H': case 'I': case 'J': case 'K': case 'L': case 'M': case 'N':
-  case 'O': case 'P': case 'Q': case 'R': case 'S': case 'T': case 'U':
-  case 'V': case 'W': case 'X': case 'Y': case 'Z':
-  case 'a': case 'b': case 'c': case 'd': case 'e': case 'f': case 'g':
-  case 'h': case 'i': case 'j': case 'k': case 'l': case 'm': case 'n':
-  case 'o': case 'p': case 'q': case 'r': case 's': case 't': case 'u':
-  case 'v': case 'w': case 'x': case 'y': case 'z':
-  case '0': case '1': case '2': case '3': case '4': case '5': case '6':
-  case '7': case '8': case '9':
-  case '_': case '.': case '$': case '/': case '\\': case '~': case '=':
-  case '+':
-  case '[':
-  case ']':
-  case '*':
-  case '?':
-  case '-':
-  case ':':
-    return true;
-  default:
-    return false;
-  }
+  return strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                "0123456789_.$/\\~=+[]*?-:", c);
 }
 
 /// Helper function to split a StringRef in two at the nth character.
@@ -510,14 +475,26 @@ void Lexer::lex(Token &tok) {
             .Case("AT", Token::kw_at)
             .Case("ENTRY", Token::kw_entry)
             .Case("EXCLUDE_FILE", Token::kw_exclude_file)
+            .Case("EXTERN", Token::kw_extern)
+            .Case("FILL", Token::kw_fill)
             .Case("GROUP", Token::kw_group)
             .Case("HIDDEN", Token::kw_hidden)
+            .Case("INPUT", Token::kw_input)
             .Case("KEEP", Token::kw_keep)
+            .Case("LENGTH", Token::kw_length)
+            .Case("l", Token::kw_length)
+            .Case("len", Token::kw_length)
+            .Case("MEMORY", Token::kw_memory)
             .Case("ONLY_IF_RO", Token::kw_only_if_ro)
             .Case("ONLY_IF_RW", Token::kw_only_if_rw)
+            .Case("ORIGIN", Token::kw_origin)
+            .Case("o", Token::kw_origin)
+            .Case("org", Token::kw_origin)
+            .Case("OUTPUT", Token::kw_output)
             .Case("OUTPUT_ARCH", Token::kw_output_arch)
             .Case("OUTPUT_FORMAT", Token::kw_output_format)
             .Case("OVERLAY", Token::kw_overlay)
+            .Case("PHDRS", Token::kw_phdrs)
             .Case("PROVIDE", Token::kw_provide)
             .Case("PROVIDE_HIDDEN", Token::kw_provide_hidden)
             .Case("SEARCH_DIR", Token::kw_search_dir)
@@ -550,23 +527,22 @@ void Lexer::skipWhitespace() {
       break;
     // Potential comment.
     case '/':
-      if (_buffer.size() >= 2 && _buffer[1] == '*') {
-        // Skip starting /*
-        _buffer = _buffer.drop_front(2);
-        // If the next char is also a /, it's not the end.
-        if (!_buffer.empty() && _buffer[0] == '/')
-          _buffer = _buffer.drop_front();
-
-        // Scan for /'s. We're done if it is preceded by a *.
-        while (true) {
-          if (_buffer.empty())
-            break;
-          _buffer = _buffer.drop_front();
-          if (_buffer.data()[-1] == '/' && _buffer.data()[-2] == '*')
-            break;
-        }
-      } else
+      if (_buffer.size() <= 1 || _buffer[1] != '*')
         return;
+      // Skip starting /*
+      _buffer = _buffer.drop_front(2);
+      // If the next char is also a /, it's not the end.
+      if (!_buffer.empty() && _buffer[0] == '/')
+        _buffer = _buffer.drop_front();
+
+      // Scan for /'s. We're done if it is preceded by a *.
+      while (true) {
+        if (_buffer.empty())
+          break;
+        _buffer = _buffer.drop_front();
+        if (_buffer.data()[-1] == '/' && _buffer.data()[-2] == '*')
+          break;
+      }
       break;
     default:
       return;
@@ -577,8 +553,19 @@ void Lexer::skipWhitespace() {
 // Constant functions
 void Constant::dump(raw_ostream &os) const { os << _num; }
 
+ErrorOr<int64_t> Constant::evalExpr(const SymbolTableTy &symbolTable) const {
+  return _num;
+}
+
 // Symbol functions
 void Symbol::dump(raw_ostream &os) const { os << _name; }
+
+ErrorOr<int64_t> Symbol::evalExpr(const SymbolTableTy &symbolTable) const {
+  auto it = symbolTable.find(_name);
+  if (it == symbolTable.end())
+    return LinkerScriptReaderError::unknown_symbol_in_expr;
+  return it->second;
+}
 
 // FunctionCall functions
 void FunctionCall::dump(raw_ostream &os) const {
@@ -591,6 +578,11 @@ void FunctionCall::dump(raw_ostream &os) const {
   os << ")";
 }
 
+ErrorOr<int64_t>
+FunctionCall::evalExpr(const SymbolTableTy &symbolTable) const {
+  return LinkerScriptReaderError::unrecognized_function_in_expr;
+}
+
 // Unary functions
 void Unary::dump(raw_ostream &os) const {
   os << "(";
@@ -600,6 +592,22 @@ void Unary::dump(raw_ostream &os) const {
     os << "~";
   _child->dump(os);
   os << ")";
+}
+
+ErrorOr<int64_t> Unary::evalExpr(const SymbolTableTy &symbolTable) const {
+  auto child = _child->evalExpr(symbolTable);
+  if (child.getError())
+    return child.getError();
+
+  int64_t childRes = *child;
+  switch (_op) {
+  case Unary::Minus:
+    return -childRes;
+  case Unary::Not:
+    return ~childRes;
+  }
+
+  llvm_unreachable("");
 }
 
 // BinOp functions
@@ -656,6 +664,37 @@ void BinOp::dump(raw_ostream &os) const {
   os << ")";
 }
 
+ErrorOr<int64_t> BinOp::evalExpr(const SymbolTableTy &symbolTable) const {
+  auto lhs = _lhs->evalExpr(symbolTable);
+  if (lhs.getError())
+    return lhs.getError();
+  auto rhs = _rhs->evalExpr(symbolTable);
+  if (rhs.getError())
+    return rhs.getError();
+
+  int64_t lhsRes = *lhs;
+  int64_t rhsRes = *rhs;
+
+  switch(_op) {
+  case And:                 return lhsRes & rhsRes;
+  case CompareDifferent:    return lhsRes != rhsRes;
+  case CompareEqual:        return lhsRes == rhsRes;
+  case CompareGreater:      return lhsRes > rhsRes;
+  case CompareGreaterEqual: return lhsRes >= rhsRes;
+  case CompareLess:         return lhsRes < rhsRes;
+  case CompareLessEqual:    return lhsRes <= rhsRes;
+  case Div:                 return lhsRes / rhsRes;
+  case Mul:                 return lhsRes * rhsRes;
+  case Or:                  return lhsRes | rhsRes;
+  case Shl:                 return lhsRes << rhsRes;
+  case Shr:                 return lhsRes >> rhsRes;
+  case Sub:                 return lhsRes - rhsRes;
+  case Sum:                 return lhsRes + rhsRes;
+  }
+
+  llvm_unreachable("");
+}
+
 // TernaryConditional functions
 void TernaryConditional::dump(raw_ostream &os) const {
   _conditional->dump(os);
@@ -665,11 +704,21 @@ void TernaryConditional::dump(raw_ostream &os) const {
   _falseExpr->dump(os);
 }
 
+ErrorOr<int64_t>
+TernaryConditional::evalExpr(const SymbolTableTy &symbolTable) const {
+  auto conditional = _conditional->evalExpr(symbolTable);
+  if (conditional.getError())
+    return conditional.getError();
+  if (*conditional)
+    return _trueExpr->evalExpr(symbolTable);
+  return _falseExpr->evalExpr(symbolTable);
+}
+
 // SymbolAssignment functions
 void SymbolAssignment::dump(raw_ostream &os) const {
   int numParen = 0;
 
-  if (_assignmentVisibility != Normal) {
+  if (_assignmentVisibility != Default) {
     switch (_assignmentVisibility) {
     case Hidden:
       os << "HIDDEN(";
@@ -757,7 +806,7 @@ void InputSectionName::dump(raw_ostream &os) const {
 
 // InputSectionSortedGroup functions
 static void dumpInputSections(raw_ostream &os,
-                              const std::vector<const InputSection *> &secs) {
+                              llvm::ArrayRef<const InputSection *> secs) {
   bool excludeFile = false;
   bool first = true;
 
@@ -796,7 +845,7 @@ void InputSectionsCmd::dump(raw_ostream &os) const {
     os << "KEEP(";
 
   int numParen = dumpSortDirectives(os, _fileSortMode);
-  os << _fileName;
+  os << _memberName;
   for (int i = 0; i < numParen; ++i)
     os << ")";
 
@@ -816,6 +865,12 @@ void InputSectionsCmd::dump(raw_ostream &os) const {
 
   if (_keep)
     os << ")";
+}
+
+void FillCmd::dump(raw_ostream &os) const {
+  os << "FILL(";
+  dumpByteStream(os, StringRef((const char *)_bytes.begin(), _bytes.size()));
+  os << ")";
 }
 
 // OutputSectionDescription functions
@@ -870,6 +925,9 @@ void OutputSectionDescription::dump(raw_ostream &os) const {
   }
   os << "  }";
 
+  for (auto && phdr : _phdrs)
+    os << " : " << phdr;
+
   if (_fillStream.size() > 0) {
     os << " =";
     dumpByteStream(os, _fillStream);
@@ -877,6 +935,33 @@ void OutputSectionDescription::dump(raw_ostream &os) const {
     os << " =";
     _fillExpr->dump(os);
   }
+}
+
+void PHDR::dump(raw_ostream &os) const {
+  os << _name << " " << _type;
+  if (_includeFileHdr)
+    os << " FILEHDR";
+  if (_includePHDRs)
+    os << " PHDRS";
+  if (_at) {
+    os << " AT (";
+    _at->dump(os);
+    os << ")";
+  }
+  if (_flags)
+    os << " FLAGS (" << _flags << ")";
+  os << ";\n";
+}
+
+static PHDR none("NONE", 0, false, false, NULL, 0);
+const PHDR *PHDR::NONE = &none;
+
+void PHDRS::dump(raw_ostream &os) const {
+  os << "PHDRS\n{\n";
+  for (auto &&phdr : _phdrs) {
+    phdr->dump(os);
+  }
+  os << "}\n";
 }
 
 // Sections functions
@@ -889,61 +974,120 @@ void Sections::dump(raw_ostream &os) const {
   os << "}\n";
 }
 
+// Memory functions
+void MemoryBlock::dump(raw_ostream &os) const {
+    os << _name;
+
+    if (!_attr.empty())
+      os << " (" << _attr << ")";
+
+    os << " : ";
+
+    os << "ORIGIN = ";
+    _origin->dump(os);
+    os << ", ";
+
+    os << "LENGTH = ";
+    _length->dump(os);
+}
+
+void Memory::dump(raw_ostream &os) const {
+  os << "MEMORY\n{\n";
+  for (auto &block : _blocks) {
+    block->dump(os);
+    os << "\n";
+  }
+  os << "}\n";
+}
+
+// Extern functions
+void Extern::dump(raw_ostream &os) const {
+  os << "EXTERN(";
+  for (unsigned i = 0, e = _symbols.size(); i != e; ++i) {
+    if (i)
+      os << " ";
+    os << _symbols[i];
+  }
+  os << ")\n";
+}
+
+
 // Parser functions
-LinkerScript *Parser::parse() {
+std::error_code Parser::parse() {
   // Get the first token.
   _lex.lex(_tok);
   // Parse top level commands.
   while (true) {
     switch (_tok._kind) {
     case Token::eof:
-      return &_script;
+      return std::error_code();
     case Token::semicolon:
       consumeToken();
       break;
+    case Token::kw_output: {
+      auto output = parseOutput();
+      if (!output)
+        return LinkerScriptReaderError::parse_error;
+      _script._commands.push_back(output);
+      break;
+    }
     case Token::kw_output_format: {
       auto outputFormat = parseOutputFormat();
       if (!outputFormat)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(outputFormat);
       break;
     }
     case Token::kw_output_arch: {
       auto outputArch = parseOutputArch();
       if (!outputArch)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(outputArch);
       break;
     }
+    case Token::kw_input: {
+      Input *input = parsePathList<Input>();
+      if (!input)
+        return LinkerScriptReaderError::parse_error;
+      _script._commands.push_back(input);
+      break;
+    }
     case Token::kw_group: {
-      auto group = parseGroup();
+      Group *group = parsePathList<Group>();
       if (!group)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(group);
       break;
     }
     case Token::kw_as_needed:
       // Not allowed at top level.
       error(_tok, "AS_NEEDED not allowed at top level.");
-      return nullptr;
+      return LinkerScriptReaderError::parse_error;
     case Token::kw_entry: {
       Entry *entry = parseEntry();
       if (!entry)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(entry);
+      break;
+    }
+    case Token::kw_phdrs: {
+      PHDRS *phdrs = parsePHDRS();
+      if (!phdrs)
+        return LinkerScriptReaderError::parse_error;
+      _script._commands.push_back(phdrs);
       break;
     }
     case Token::kw_search_dir: {
       SearchDir *searchDir = parseSearchDir();
       if (!searchDir)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(searchDir);
       break;
     }
     case Token::kw_sections: {
       Sections *sections = parseSections();
       if (!sections)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(sections);
       break;
     }
@@ -953,24 +1097,37 @@ LinkerScript *Parser::parse() {
     case Token::kw_provide_hidden: {
       const Command *cmd = parseSymbolAssignment();
       if (!cmd)
-        return nullptr;
+        return LinkerScriptReaderError::parse_error;
+      _script._commands.push_back(cmd);
+      break;
+    }
+    case Token::kw_memory: {
+      const Command *cmd = parseMemory();
+      if (!cmd)
+        return LinkerScriptReaderError::parse_error;
+      _script._commands.push_back(cmd);
+      break;
+    }
+    case Token::kw_extern: {
+      const Command *cmd = parseExtern();
+      if (!cmd)
+        return LinkerScriptReaderError::parse_error;
       _script._commands.push_back(cmd);
       break;
     }
     default:
       // Unexpected.
       error(_tok, "expected linker script command");
-      return nullptr;
+      return LinkerScriptReaderError::parse_error;
     }
   }
-
-  return nullptr;
+  return LinkerScriptReaderError::parse_error;
 }
 
 const Expression *Parser::parseFunctionCall() {
   assert((_tok._kind == Token::identifier || _tok._kind == Token::kw_align) &&
          "expected function call first tokens");
-  std::vector<const Expression *> params;
+  SmallVector<const Expression *, 8> params;
   StringRef name = _tok._range;
 
   consumeToken();
@@ -979,7 +1136,7 @@ const Expression *Parser::parseFunctionCall() {
 
   if (_tok._kind == Token::r_paren) {
     consumeToken();
-    return new (_alloc) FunctionCall(_tok._range, params);
+    return new (_alloc) FunctionCall(*this, _tok._range, params);
   }
 
   if (const Expression *firstParam = parseExpression())
@@ -997,7 +1154,7 @@ const Expression *Parser::parseFunctionCall() {
 
   if (!expectAndConsume(Token::r_paren, "expected )"))
     return nullptr;
-  return new (_alloc) FunctionCall(name, params);
+  return new (_alloc) FunctionCall(*this, name, params);
 }
 
 bool Parser::expectExprOperand() {
@@ -1018,7 +1175,7 @@ const Expression *Parser::parseExprOperand() {
   case Token::identifier: {
     if (peek()._kind== Token::l_paren)
       return parseFunctionCall();
-    Symbol *sym = new (_alloc) Symbol(_tok._range);
+    Symbol *sym = new (_alloc) Symbol(*this, _tok._range);
     consumeToken();
     return sym;
   }
@@ -1026,17 +1183,17 @@ const Expression *Parser::parseExprOperand() {
     return parseFunctionCall();
   case Token::minus:
     consumeToken();
-    return new (_alloc) Unary(Unary::Minus, parseExprOperand());
+    return new (_alloc) Unary(*this, Unary::Minus, parseExprOperand());
   case Token::tilde:
     consumeToken();
-    return new (_alloc) Unary(Unary::Not, parseExprOperand());
+    return new (_alloc) Unary(*this, Unary::Not, parseExprOperand());
   case Token::number: {
     auto val = parseNum(_tok._range);
     if (val.getError()) {
       error(_tok, "Unrecognized number constant");
       return nullptr;
     }
-    Constant *c = new (_alloc) Constant(*val);
+    Constant *c = new (_alloc) Constant(*this, *val);
     consumeToken();
     return c;
   }
@@ -1184,7 +1341,7 @@ const Expression *Parser::parseOperatorOperandLoop(const Expression *lhs,
     const Expression *rhs = parseExpression(precedence - 1);
     if (!rhs)
       return nullptr;
-    binOp = new (_alloc) BinOp(lhs, op, rhs);
+    binOp = new (_alloc) BinOp(*this, lhs, op, rhs);
     lhs = binOp;
   }
 }
@@ -1208,7 +1365,28 @@ const Expression *Parser::parseTernaryCondOp(const Expression *lhs) {
   if (!falseExpr)
     return nullptr;
 
-  return new (_alloc) TernaryConditional(lhs, trueExpr, falseExpr);
+  return new (_alloc) TernaryConditional(*this, lhs, trueExpr, falseExpr);
+}
+
+// Parse OUTPUT(ident)
+Output *Parser::parseOutput() {
+  assert(_tok._kind == Token::kw_output && "Expected OUTPUT");
+  consumeToken();
+  if (!expectAndConsume(Token::l_paren, "expected ("))
+    return nullptr;
+
+  if (_tok._kind != Token::identifier) {
+    error(_tok, "Expected identifier in OUTPUT.");
+    return nullptr;
+  }
+
+  auto ret = new (_alloc) Output(*this, _tok._range);
+  consumeToken();
+
+  if (!expectAndConsume(Token::r_paren, "expected )"))
+    return nullptr;
+
+  return ret;
 }
 
 // Parse OUTPUT_FORMAT(ident)
@@ -1223,7 +1401,9 @@ OutputFormat *Parser::parseOutputFormat() {
     return nullptr;
   }
 
-  auto ret = new (_alloc) OutputFormat(_tok._range);
+  SmallVector<StringRef, 8> formats;
+  formats.push_back(_tok._range);
+
   consumeToken();
 
   do {
@@ -1235,14 +1415,14 @@ OutputFormat *Parser::parseOutputFormat() {
       error(_tok, "Expected identifier in OUTPUT_FORMAT.");
       return nullptr;
     }
-    ret->addOutputFormat(_tok._range);
+    formats.push_back(_tok._range);
     consumeToken();
   } while (isNextToken(Token::comma));
 
   if (!expectAndConsume(Token::r_paren, "expected )"))
     return nullptr;
 
-  return ret;
+  return new (_alloc) OutputFormat(*this, formats);
 }
 
 // Parse OUTPUT_ARCH(ident)
@@ -1257,7 +1437,7 @@ OutputArch *Parser::parseOutputArch() {
     return nullptr;
   }
 
-  auto ret = new (_alloc) OutputArch(_tok._range);
+  auto ret = new (_alloc) OutputArch(*this, _tok._range);
   consumeToken();
 
   if (!expectAndConsume(Token::r_paren, "expected )"))
@@ -1266,15 +1446,13 @@ OutputArch *Parser::parseOutputArch() {
   return ret;
 }
 
-// Parse GROUP(file ...)
-Group *Parser::parseGroup() {
-  assert(_tok._kind == Token::kw_group && "Expected GROUP!");
+// Parse file list for INPUT or GROUP
+template<class T> T *Parser::parsePathList() {
   consumeToken();
   if (!expectAndConsume(Token::l_paren, "expected ("))
     return nullptr;
 
-  std::vector<Path> paths;
-
+  SmallVector<Path, 8> paths;
   while (_tok._kind == Token::identifier || _tok._kind == Token::libname ||
          _tok._kind == Token::kw_as_needed) {
     switch (_tok._kind) {
@@ -1294,17 +1472,13 @@ Group *Parser::parseGroup() {
       llvm_unreachable("Invalid token.");
     }
   }
-
-  auto ret = new (_alloc) Group(paths);
-
   if (!expectAndConsume(Token::r_paren, "expected )"))
     return nullptr;
-
-  return ret;
+  return new (_alloc) T(*this, paths);
 }
 
 // Parse AS_NEEDED(file ...)
-bool Parser::parseAsNeeded(std::vector<Path> &paths) {
+bool Parser::parseAsNeeded(SmallVectorImpl<Path> &paths) {
   assert(_tok._kind == Token::kw_as_needed && "Expected AS_NEEDED!");
   consumeToken();
   if (!expectAndConsume(Token::l_paren, "expected ("))
@@ -1344,7 +1518,7 @@ Entry *Parser::parseEntry() {
   consumeToken();
   if (!expectAndConsume(Token::r_paren, "expected )"))
     return nullptr;
-  return new (_alloc) Entry(entryName);
+  return new (_alloc) Entry(*this, entryName);
 }
 
 // Parse SEARCH_DIR(ident)
@@ -1361,7 +1535,7 @@ SearchDir *Parser::parseSearchDir() {
   consumeToken();
   if (!expectAndConsume(Token::r_paren, "expected )"))
     return nullptr;
-  return new (_alloc) SearchDir(searchPath);
+  return new (_alloc) SearchDir(*this, searchPath);
 }
 
 const SymbolAssignment *Parser::parseSymbolAssignment() {
@@ -1369,7 +1543,7 @@ const SymbolAssignment *Parser::parseSymbolAssignment() {
           _tok._kind == Token::kw_provide ||
           _tok._kind == Token::kw_provide_hidden) &&
          "Expected identifier!");
-  SymbolAssignment::AssignmentVisibility visibility = SymbolAssignment::Normal;
+  SymbolAssignment::AssignmentVisibility visibility = SymbolAssignment::Default;
   SymbolAssignment::AssignmentKind kind;
   int numParen = 0;
 
@@ -1457,7 +1631,7 @@ const SymbolAssignment *Parser::parseSymbolAssignment() {
     if (!expectAndConsume(Token::r_paren, "expected )"))
       return nullptr;
 
-  return new (_alloc) SymbolAssignment(name, expr, kind, visibility);
+  return new (_alloc) SymbolAssignment(*this, name, expr, kind, visibility);
 }
 
 llvm::ErrorOr<InputSectionsCmd::VectorTy> Parser::parseExcludeFile() {
@@ -1467,16 +1641,16 @@ llvm::ErrorOr<InputSectionsCmd::VectorTy> Parser::parseExcludeFile() {
 
   if (!expectAndConsume(Token::l_paren, "expected ("))
     return llvm::ErrorOr<InputSectionsCmd::VectorTy>(
-        std::make_error_code(std::errc::io_error));
+        make_error_code(llvm::errc::io_error));
 
   while (_tok._kind == Token::identifier) {
-    res.push_back(new (_alloc) InputSectionName(_tok._range, true));
+    res.push_back(new (_alloc) InputSectionName(*this, _tok._range, true));
     consumeToken();
   }
 
   if (!expectAndConsume(Token::r_paren, "expected )"))
     return llvm::ErrorOr<InputSectionsCmd::VectorTy>(
-        std::make_error_code(std::errc::io_error));
+        make_error_code(llvm::errc::io_error));
   return llvm::ErrorOr<InputSectionsCmd::VectorTy>(std::move(res));
 }
 
@@ -1550,10 +1724,11 @@ const InputSection *Parser::parseSortedInputSections() {
   if (numParen == -1)
     return nullptr;
 
-  std::vector<const InputSection *> inputSections;
+  SmallVector<const InputSection *, 8> inputSections;
 
   while (_tok._kind == Token::identifier) {
-    inputSections.push_back(new (_alloc) InputSectionName(_tok._range, false));
+    inputSections.push_back(new (_alloc)
+                                InputSectionName(*this, _tok._range, false));
     consumeToken();
   }
 
@@ -1562,7 +1737,7 @@ const InputSection *Parser::parseSortedInputSections() {
     if (!expectAndConsume(Token::r_paren, "expected )"))
       return nullptr;
 
-  return new (_alloc) InputSectionSortedGroup(sortMode, inputSections);
+  return new (_alloc) InputSectionSortedGroup(*this, sortMode, inputSections);
 }
 
 const InputSectionsCmd *Parser::parseInputSectionsCmd() {
@@ -1577,7 +1752,7 @@ const InputSectionsCmd *Parser::parseInputSectionsCmd() {
   bool keep = false;
   WildcardSortMode fileSortMode = WildcardSortMode::NA;
   WildcardSortMode archiveSortMode = WildcardSortMode::NA;
-  StringRef fileName;
+  StringRef memberName;
   StringRef archiveName;
 
   if (_tok._kind == Token::kw_keep) {
@@ -1593,7 +1768,7 @@ const InputSectionsCmd *Parser::parseInputSectionsCmd() {
     int numParen = parseSortDirectives(fileSortMode);
     if (numParen == -1)
       return nullptr;
-    fileName = _tok._range;
+    memberName = _tok._range;
     consumeToken();
     if (numParen) {
       while (numParen--)
@@ -1619,11 +1794,11 @@ const InputSectionsCmd *Parser::parseInputSectionsCmd() {
     }
   }
 
-  std::vector<const InputSection *> inputSections;
+  SmallVector<const InputSection *, 8> inputSections;
 
   if (_tok._kind != Token::l_paren)
     return new (_alloc)
-        InputSectionsCmd(fileName, archiveName, keep, fileSortMode,
+        InputSectionsCmd(*this, memberName, archiveName, keep, fileSortMode,
                          archiveSortMode, inputSections);
   consumeToken();
 
@@ -1644,7 +1819,7 @@ const InputSectionsCmd *Parser::parseInputSectionsCmd() {
     case Token::star:
     case Token::identifier: {
       inputSections.push_back(new (_alloc)
-                                  InputSectionName(_tok._range, false));
+                                  InputSectionName(*this, _tok._range, false));
       consumeToken();
       break;
     }
@@ -1667,8 +1842,48 @@ const InputSectionsCmd *Parser::parseInputSectionsCmd() {
     if (!expectAndConsume(Token::r_paren, "expected )"))
       return nullptr;
   return new (_alloc)
-      InputSectionsCmd(fileName, archiveName, keep, fileSortMode,
+      InputSectionsCmd(*this, memberName, archiveName, keep, fileSortMode,
                        archiveSortMode, inputSections);
+}
+
+const FillCmd *Parser::parseFillCmd() {
+  assert(_tok._kind == Token::kw_fill && "Expected FILL!");
+  consumeToken();
+  if (!expectAndConsume(Token::l_paren, "expected ("))
+    return nullptr;
+
+  SmallVector<uint8_t, 8> storage;
+
+  // If the expression is just a number, it's arbitrary length.
+  if (_tok._kind == Token::number && peek()._kind == Token::r_paren) {
+    if (_tok._range.size() > 2 && _tok._range.startswith("0x")) {
+      StringRef num = _tok._range.substr(2);
+      for (char c : num) {
+        unsigned nibble = llvm::hexDigitValue(c);
+        if (nibble == -1u)
+          goto not_simple_hex;
+        storage.push_back(nibble);
+      }
+      
+      if (storage.size() % 2 != 0)
+        storage.insert(storage.begin(), 0);
+
+      // Collapse nibbles.
+      for (std::size_t i = 0, e = storage.size() / 2; i != e; ++i)
+        storage[i] = (storage[i * 2] << 4) + storage[(i * 2) + 1];
+
+      storage.resize(storage.size() / 2);
+    }
+  }
+not_simple_hex:
+
+  const Expression *expr = parseExpression();
+  if (!expr)
+    return nullptr;
+  if (!expectAndConsume(Token::r_paren, "expected )"))
+    return nullptr;
+  
+  return new(getAllocator()) FillCmd(*this, storage);
 }
 
 const OutputSectionDescription *Parser::parseOutputSectionDescription() {
@@ -1685,7 +1900,7 @@ const OutputSectionDescription *Parser::parseOutputSectionDescription() {
   bool discard = false;
   OutputSectionDescription::Constraint constraint =
       OutputSectionDescription::C_None;
-  std::vector<const Command *> outputSectionCommands;
+  SmallVector<const Command *, 8> outputSectionCommands;
 
   if (_tok._kind == Token::kw_discard)
     discard = true;
@@ -1770,6 +1985,12 @@ const OutputSectionDescription *Parser::parseOutputSectionDescription() {
         break;
       }
       break;
+    case Token::kw_fill:
+      if (const Command *cmd = parseFillCmd())
+        outputSectionCommands.push_back(cmd);
+      else
+        return nullptr;
+      break;
     case Token::kw_keep:
     case Token::star:
     case Token::colon:
@@ -1799,6 +2020,17 @@ const OutputSectionDescription *Parser::parseOutputSectionDescription() {
   if (!expectAndConsume(Token::r_brace, "expected }"))
     return nullptr;
 
+  SmallVector<StringRef, 2> phdrs;
+  while (_tok._kind == Token::colon) {
+    consumeToken();
+    if (_tok._kind != Token::identifier) {
+      error(_tok, "expected program header name");
+      return nullptr;
+    }
+    phdrs.push_back(_tok._range);
+    consumeToken();
+  }
+
   if (_tok._kind == Token::equal) {
     consumeToken();
     if (_tok._kind != Token::number || !_tok._range.startswith_lower("0x")) {
@@ -1822,8 +2054,8 @@ const OutputSectionDescription *Parser::parseOutputSectionDescription() {
   }
 
   return new (_alloc) OutputSectionDescription(
-      sectionName, address, align, subAlign, at, fillExpr, fillStream,
-      alignWithInput, discard, constraint, outputSectionCommands);
+      *this, sectionName, address, align, subAlign, at, fillExpr, fillStream,
+      alignWithInput, discard, constraint, outputSectionCommands, phdrs);
 }
 
 const Overlay *Parser::parseOverlay() {
@@ -1832,12 +2064,116 @@ const Overlay *Parser::parseOverlay() {
   return nullptr;
 }
 
+const PHDR *Parser::parsePHDR() {
+  assert(_tok._kind == Token::identifier && "Expected identifier!");
+  
+  StringRef name = _tok._range;
+  consumeToken();
+    
+  uint64_t type;
+
+  switch (_tok._kind) {
+  case Token::identifier:
+  case Token::number:
+  case Token::l_paren: {
+    const Expression *expr = parseExpression();
+    if (!expr)
+      return nullptr;
+    Expression::SymbolTableTy PHDRTypes;
+#define PHDR_INSERT(x) PHDRTypes.insert(std::make_pair(#x, llvm::ELF::x))
+    PHDR_INSERT(PT_NULL);
+    PHDR_INSERT(PT_LOAD);
+    PHDR_INSERT(PT_DYNAMIC);
+    PHDR_INSERT(PT_INTERP);
+    PHDR_INSERT(PT_NOTE);
+    PHDR_INSERT(PT_SHLIB);
+    PHDR_INSERT(PT_PHDR);
+    PHDR_INSERT(PT_TLS);
+    PHDR_INSERT(PT_LOOS);
+    PHDR_INSERT(PT_GNU_EH_FRAME);
+    PHDR_INSERT(PT_GNU_STACK);
+    PHDR_INSERT(PT_GNU_RELRO);
+    PHDR_INSERT(PT_SUNW_EH_FRAME);
+    PHDR_INSERT(PT_SUNW_UNWIND);
+    PHDR_INSERT(PT_HIOS);
+    PHDR_INSERT(PT_LOPROC);
+    PHDR_INSERT(PT_ARM_ARCHEXT);
+    PHDR_INSERT(PT_ARM_EXIDX);
+    PHDR_INSERT(PT_ARM_UNWIND);
+    PHDR_INSERT(PT_MIPS_REGINFO);
+    PHDR_INSERT(PT_MIPS_RTPROC);
+    PHDR_INSERT(PT_MIPS_OPTIONS);
+    PHDR_INSERT(PT_MIPS_ABIFLAGS);
+    PHDR_INSERT(PT_HIPROC);
+#undef PHDR_INSERT
+    auto t = expr->evalExpr(PHDRTypes);
+    if (t == LinkerScriptReaderError::unknown_symbol_in_expr) {
+      error(_tok, "Unknown type");
+      return nullptr;
+    }
+    if (!t)
+      return nullptr;
+    type = *t;
+    break;
+  }
+  default:
+    error(_tok, "expected identifier or expression");
+    return nullptr;
+  }
+
+  uint64_t flags = 0;
+
+  if (_tok._kind == Token::identifier && _tok._range == "FLAGS") {
+    consumeToken();
+    if (!expectAndConsume(Token::l_paren, "Expected ("))
+      return nullptr;
+    const Expression *flagsExpr = parseExpression();
+    if (!flagsExpr)
+      return nullptr;
+    auto f = flagsExpr->evalExpr();
+    if (!f)
+      return nullptr;
+    flags = *f;
+    if (!expectAndConsume(Token::r_paren, "Expected )"))
+      return nullptr;
+  }
+  
+  if (!expectAndConsume(Token::semicolon, "Expected ;"))
+    return nullptr;
+
+  return new (getAllocator()) PHDR(name, type, false, false, nullptr, flags);
+}
+
+PHDRS *Parser::parsePHDRS() {
+  assert(_tok._kind == Token::kw_phdrs && "Expected PHDRS!");
+  consumeToken();
+  if (!expectAndConsume(Token::l_brace, "expected {"))
+    return nullptr;
+
+  SmallVector<const PHDR *, 8> phdrs;
+
+  while (true) {
+    if (_tok._kind == Token::identifier) {
+      const PHDR *phdr = parsePHDR();
+      if (!phdr)
+        return nullptr;
+      phdrs.push_back(phdr);
+    } else
+      break;
+  }
+
+  if (!expectAndConsume(Token::r_brace, "expected }"))
+    return nullptr;
+
+  return new (getAllocator()) PHDRS(*this, phdrs);
+}
+
 Sections *Parser::parseSections() {
   assert(_tok._kind == Token::kw_sections && "Expected SECTIONS!");
   consumeToken();
   if (!expectAndConsume(Token::l_brace, "expected {"))
     return nullptr;
-  std::vector<const Command *> sectionsCommands;
+  SmallVector<const Command *, 8> sectionsCommands;
 
   bool unrecognizedToken = false;
   // Parse zero or more sections-commands
@@ -1914,8 +2250,596 @@ Sections *Parser::parseSections() {
           "expected symbol assignment, entry, overlay or output section name."))
     return nullptr;
 
-  return new (_alloc) Sections(sectionsCommands);
+  return new (_alloc) Sections(*this, sectionsCommands);
 }
 
-} // end namespace script
+Memory *Parser::parseMemory() {
+  assert(_tok._kind == Token::kw_memory && "Expected MEMORY!");
+  consumeToken();
+  if (!expectAndConsume(Token::l_brace, "expected {"))
+    return nullptr;
+  SmallVector<const MemoryBlock *, 8> blocks;
+
+  bool unrecognizedToken = false;
+  // Parse zero or more memory block descriptors.
+  while (!unrecognizedToken) {
+    if (_tok._kind == Token::identifier) {
+      StringRef name;
+      StringRef attrs;
+      const Expression *origin = nullptr;
+      const Expression *length = nullptr;
+
+      name = _tok._range;
+      consumeToken();
+
+      // Parse optional memory region attributes.
+      if (_tok._kind == Token::l_paren) {
+        consumeToken();
+
+        if (_tok._kind != Token::identifier) {
+          error(_tok, "Expected memory attribute string.");
+          return nullptr;
+        }
+        attrs = _tok._range;
+        consumeToken();
+
+        if (!expectAndConsume(Token::r_paren, "expected )"))
+          return nullptr;
+      }
+
+      if (!expectAndConsume(Token::colon, "expected :"))
+        return nullptr;
+
+      // Parse the ORIGIN (base address of memory block).
+      if (!expectAndConsume(Token::kw_origin, "expected ORIGIN"))
+        return nullptr;
+
+      if (!expectAndConsume(Token::equal, "expected ="))
+        return nullptr;
+
+      origin = parseExpression();
+      if (!origin)
+        return nullptr;
+
+      if (!expectAndConsume(Token::comma, "expected ,"))
+        return nullptr;
+
+      // Parse the LENGTH (length of memory block).
+      if (!expectAndConsume(Token::kw_length, "expected LENGTH"))
+        return nullptr;
+
+      if (!expectAndConsume(Token::equal, "expected ="))
+        return nullptr;
+
+      length = parseExpression();
+      if (!length)
+        return nullptr;
+
+      MemoryBlock *block =
+          new (_alloc) MemoryBlock(name, attrs, origin, length);
+      blocks.push_back(block);
+    } else {
+      unrecognizedToken = true;
+    }
+  }
+  if (!expectAndConsume(
+          Token::r_brace,
+          "expected memory block definition."))
+    return nullptr;
+
+  return new (_alloc) Memory(*this, blocks);
+}
+
+Extern *Parser::parseExtern() {
+  assert(_tok._kind == Token::kw_extern && "Expected EXTERN!");
+  consumeToken();
+  if (!expectAndConsume(Token::l_paren, "expected ("))
+    return nullptr;
+
+  // Parse one or more symbols.
+  SmallVector<StringRef, 8> symbols;
+  if (_tok._kind != Token::identifier) {
+    error(_tok, "expected one or more symbols in EXTERN.");
+    return nullptr;
+  }
+  symbols.push_back(_tok._range);
+  consumeToken();
+  while (_tok._kind == Token::identifier) {
+    symbols.push_back(_tok._range);
+    consumeToken();
+  }
+
+  if (!expectAndConsume(Token::r_paren, "expected symbol in EXTERN."))
+    return nullptr;
+
+  return new (_alloc) Extern(*this, symbols);
+}
+
+// Sema member functions
+Sema::Sema() : _parsedPHDRS(false) {}
+
+void Sema::perform() {
+  for (auto &parser : _scripts)
+    perform(parser->get());
+}
+
+bool Sema::less(const SectionKey &lhs, const SectionKey &rhs) const {
+  int a = getLayoutOrder(lhs, true);
+  int b = getLayoutOrder(rhs, true);
+
+  if (a != b) {
+    if (a < 0)
+      return false;
+    if (b < 0)
+      return true;
+    return a < b;
+  }
+
+  // If both sections are not mapped anywhere, they have the same order
+  if (a < 0)
+    return false;
+
+  // If both sections fall into the same layout order, we need to find their
+  // relative position as written in the (InputSectionsCmd).
+  return localCompare(a, lhs, rhs);
+}
+
+StringRef Sema::getOutputSection(const SectionKey &key) const {
+  int layoutOrder = getLayoutOrder(key, true);
+  if (layoutOrder < 0)
+    return StringRef();
+
+  for (int i = layoutOrder - 1; i >= 0; --i) {
+    if (!isa<OutputSectionDescription>(_layoutCommands[i]))
+      continue;
+
+    const OutputSectionDescription *out =
+        dyn_cast<OutputSectionDescription>(_layoutCommands[i]);
+    return out->name();
+  }
+
+  return StringRef();
+}
+
+std::vector<const SymbolAssignment *>
+Sema::getExprs(const SectionKey &key) {
+  int layoutOrder = getLayoutOrder(key, false);
+  auto ans = std::vector<const SymbolAssignment *>();
+
+  if (layoutOrder < 0 || _deliveredExprs.count(layoutOrder) > 0)
+    return ans;
+
+  for (int i = layoutOrder - 1; i >= 0; --i) {
+    if (isa<InputSection>(_layoutCommands[i]))
+      break;
+    if (auto assgn = dyn_cast<SymbolAssignment>(_layoutCommands[i]))
+      ans.push_back(assgn);
+  }
+
+  // Reverse this order so we evaluate the expressions in the original order
+  // of the linker script
+  std::reverse(ans.begin(), ans.end());
+
+  // Mark this layout number as delivered
+  _deliveredExprs.insert(layoutOrder);
+  return ans;
+}
+
+std::error_code Sema::evalExpr(const SymbolAssignment *assgn,
+                               uint64_t &curPos) {
+  _symbolTable[StringRef(".")] = curPos;
+
+  auto ans = assgn->expr()->evalExpr(_symbolTable);
+  if (ans.getError())
+    return ans.getError();
+  uint64_t result = *ans;
+
+  if (assgn->symbol() == ".") {
+    curPos = result;
+    return std::error_code();
+  }
+
+  _symbolTable[assgn->symbol()] = result;
+  return std::error_code();
+}
+
+const llvm::StringSet<> &Sema::getScriptDefinedSymbols() const {
+  // Do we have cached results?
+  if (!_definedSymbols.empty())
+    return _definedSymbols;
+
+  // Populate our defined set and return it
+  for (auto cmd : _layoutCommands)
+    if (auto sa = dyn_cast<SymbolAssignment>(cmd)) {
+      StringRef symbol = sa->symbol();
+      if (!symbol.empty() && symbol != ".")
+        _definedSymbols.insert(symbol);
+    }
+
+  return _definedSymbols;
+}
+
+uint64_t Sema::getLinkerScriptExprValue(StringRef name) const {
+  auto it = _symbolTable.find(name);
+  assert (it != _symbolTable.end() && "Invalid symbol name!");
+  return it->second;
+}
+
+std::error_code
+Sema::getPHDRsForOutputSection(StringRef name,
+                               std::vector<const PHDR *> &phdrs) const {
+  // Cache results if not done yet.
+  if (auto ec = const_cast<Sema *>(this)->buildSectionToPHDR())
+    return ec;
+
+  auto vec = _sectionToPHDR.lookup(name);
+  std::copy(std::begin(vec), std::end(vec), std::back_inserter(phdrs));
+  return std::error_code();
+}
+
+void Sema::dump() const {
+  raw_ostream &os = llvm::outs();
+  os << "Linker script semantics dump\n";
+  int num = 0;
+  for (auto &parser : _scripts) {
+    os << "Dumping script #" << ++num << ":\n";
+    parser->get()->dump(os);
+    os << "\n";
+  }
+  os << "Dumping rule ids:\n";
+  for (unsigned i = 0; i < _layoutCommands.size(); ++i) {
+    os << "LayoutOrder " << i << ":\n";
+    _layoutCommands[i]->dump(os);
+    os << "\n\n";
+  }
+}
+
+/// Given a string "pattern" with wildcard characters, return true if it
+/// matches "name". This function is useful when checking if a given name
+/// pattern written in the linker script, i.e. ".text*", should match
+/// ".text.anytext".
+static bool wildcardMatch(StringRef pattern, StringRef name) {
+  auto i = name.begin();
+
+  // Check if each char in pattern also appears in our input name, handling
+  // special wildcard characters.
+  for (auto j = pattern.begin(), e = pattern.end(); j != e; ++j) {
+    if (i == name.end())
+      return false;
+
+    switch (*j) {
+    case '*':
+      while (!wildcardMatch(pattern.drop_front(j - pattern.begin() + 1),
+                            name.drop_front(i - name.begin() + 1))) {
+        if (i == name.end())
+          return false;
+        ++i;
+      }
+      break;
+    case '?':
+      // Matches any character
+      break;
+    case '[': {
+      // Matches a range of characters specified between brackets
+      size_t end = pattern.find(']', j - pattern.begin());
+      if (end == pattern.size())
+        return false;
+
+      StringRef chars = pattern.slice(j - pattern.begin(), end);
+      if (chars.find(i) == StringRef::npos)
+        return false;
+
+      j = pattern.begin() + end;
+      break;
+    }
+    case '\\':
+      ++j;
+      if (*j != *i)
+        return false;
+      break;
+    default:
+      // No wildcard character means we must match exactly the same char
+      if (*j != *i)
+        return false;
+      break;
+    }
+    ++i;
+  }
+
+  // If our pattern has't consumed the entire string, it is not a match
+  return i == name.end();
+}
+
+int Sema::matchSectionName(int id, const SectionKey &key) const {
+  const InputSectionsCmd *cmd = dyn_cast<InputSectionsCmd>(_layoutCommands[id]);
+
+  if (!cmd || !wildcardMatch(cmd->archiveName(), key.archivePath))
+    return -1;
+
+  while ((size_t)++id < _layoutCommands.size() &&
+         (isa<InputSection>(_layoutCommands[id]))) {
+    if (isa<InputSectionSortedGroup>(_layoutCommands[id]))
+      continue;
+
+    const InputSectionName *in =
+        dyn_cast<InputSectionName>(_layoutCommands[id]);
+    if (wildcardMatch(in->name(), key.sectionName))
+      return id;
+  }
+  return -1;
+}
+
+int Sema::getLayoutOrder(const SectionKey &key, bool coarse) const {
+  // First check if we already answered this layout question
+  if (coarse) {
+    auto entry = _cacheSectionOrder.find(key);
+    if (entry != _cacheSectionOrder.end())
+      return entry->second;
+  } else {
+    auto entry = _cacheExpressionOrder.find(key);
+    if (entry != _cacheExpressionOrder.end())
+      return entry->second;
+  }
+
+  // Try to match exact file name
+  auto range = _memberToLayoutOrder.equal_range(key.memberPath);
+  for (auto I = range.first, E = range.second; I != E; ++I) {
+    int order = I->second;
+    int exprOrder = -1;
+
+    if ((exprOrder = matchSectionName(order, key)) >= 0) {
+      if (coarse) {
+        _cacheSectionOrder.insert(std::make_pair(key, order));
+        return order;
+      }
+      _cacheExpressionOrder.insert(std::make_pair(key, exprOrder));
+      return exprOrder;
+    }
+  }
+
+  // If we still couldn't find a rule for this input section, try to match
+  // wildcards
+  for (auto I = _memberNameWildcards.begin(), E = _memberNameWildcards.end();
+       I != E; ++I) {
+    if (!wildcardMatch(I->first, key.memberPath))
+      continue;
+    int order = I->second;
+    int exprOrder = -1;
+
+    if ((exprOrder = matchSectionName(order, key)) >= 0) {
+      if (coarse) {
+        _cacheSectionOrder.insert(std::make_pair(key, order));
+        return order;
+      }
+      _cacheExpressionOrder.insert(std::make_pair(key, exprOrder));
+      return exprOrder;
+    }
+  }
+
+  _cacheSectionOrder.insert(std::make_pair(key, -1));
+  _cacheExpressionOrder.insert(std::make_pair(key, -1));
+  return -1;
+}
+
+static bool compareSortedNames(WildcardSortMode sortMode, StringRef lhs,
+                               StringRef rhs) {
+  switch (sortMode) {
+  case WildcardSortMode::None:
+  case WildcardSortMode::NA:
+    return false;
+  case WildcardSortMode::ByAlignment:
+  case WildcardSortMode::ByInitPriority:
+  case WildcardSortMode::ByAlignmentAndName:
+    assert(false && "Unimplemented sort order");
+    break;
+  case WildcardSortMode::ByName:
+    return lhs.compare(rhs) < 0;
+  case WildcardSortMode::ByNameAndAlignment:
+    int compare = lhs.compare(rhs);
+    if (compare != 0)
+      return compare < 0;
+    return compareSortedNames(WildcardSortMode::ByAlignment, lhs, rhs);
+  }
+  return false;
+}
+
+static bool sortedGroupContains(const InputSectionSortedGroup *cmd,
+                                const Sema::SectionKey &key) {
+  for (const InputSection *child : *cmd) {
+    if (auto i = dyn_cast<InputSectionName>(child)) {
+      if (wildcardMatch(i->name(), key.sectionName))
+        return true;
+      continue;
+    }
+
+    auto *sortedGroup = dyn_cast<InputSectionSortedGroup>(child);
+    assert(sortedGroup && "Expected InputSectionSortedGroup object");
+
+    if (sortedGroupContains(sortedGroup, key))
+      return true;
+  }
+
+  return false;
+}
+
+bool Sema::localCompare(int order, const SectionKey &lhs,
+                        const SectionKey &rhs) const {
+  const InputSectionsCmd *cmd =
+      dyn_cast<InputSectionsCmd>(_layoutCommands[order]);
+
+  assert(cmd && "Invalid InputSectionsCmd index");
+
+  if (lhs.archivePath != rhs.archivePath)
+    return compareSortedNames(cmd->archiveSortMode(), lhs.archivePath,
+                              rhs.archivePath);
+
+  if (lhs.memberPath != rhs.memberPath)
+    return compareSortedNames(cmd->fileSortMode(), lhs.memberPath,
+                              rhs.memberPath);
+
+  // Both sections come from the same exact same file and rule. Start walking
+  // through input section names as written in the linker script and the
+  // first one to match will have higher priority.
+  for (const InputSection *inputSection : *cmd) {
+    if (auto i = dyn_cast<InputSectionName>(inputSection)) {
+      // If both match, return false (both have equal priority)
+      // If rhs match, return false (rhs has higher priority)
+      if (wildcardMatch(i->name(), rhs.sectionName))
+        return false;
+      //  If lhs matches first, it has priority over rhs
+      if (wildcardMatch(i->name(), lhs.sectionName))
+        return true;
+      continue;
+    }
+
+    // Handle sorted subgroups specially
+    auto *sortedGroup = dyn_cast<InputSectionSortedGroup>(inputSection);
+    assert(sortedGroup && "Expected InputSectionSortedGroup object");
+
+    bool a = sortedGroupContains(sortedGroup, lhs);
+    bool b = sortedGroupContains(sortedGroup, rhs);
+    if (a && !b)
+      return false;
+    if (b && !a)
+      return true;
+    if (!a && !a)
+      continue;
+
+    return compareSortedNames(sortedGroup->sortMode(), lhs.sectionName,
+                              rhs.sectionName);
+  }
+
+  llvm_unreachable("");
+  return false;
+}
+
+std::error_code Sema::buildSectionToPHDR() {
+  if (_parsedPHDRS)
+    return std::error_code();
+  _parsedPHDRS = true;
+
+  // No scripts - nothing to do.
+  if (_scripts.empty() || _layoutCommands.empty())
+    return std::error_code();
+
+  // Collect all header declarations.
+  llvm::StringMap<const PHDR *> phdrs;
+  for (auto &parser : _scripts) {
+    for (auto *cmd : parser->get()->_commands) {
+      if (auto *ph = dyn_cast<PHDRS>(cmd)) {
+        for (auto *p : *ph)
+          phdrs[p->name()] = p;
+      }
+    }
+  }
+  const bool noPhdrs = phdrs.empty();
+
+  // Add NONE header to the map provided there's no user-defined
+  // header with the same name.
+  if (!_sectionToPHDR.count(PHDR::NONE->name()))
+    phdrs[PHDR::NONE->name()] = PHDR::NONE;
+
+  // Match output sections to available headers.
+  llvm::SmallVector<const PHDR *, 2> phdrsCur, phdrsLast { PHDR::NONE };
+  for (const Command *cmd : _layoutCommands) {
+    auto osd = dyn_cast<OutputSectionDescription>(cmd);
+    if (!osd || osd->isDiscarded())
+      continue;
+
+    phdrsCur.clear();
+    for (StringRef name : osd->PHDRs()) {
+      auto it = phdrs.find(name);
+      if (it == phdrs.end()) {
+        return LinkerScriptReaderError::unknown_phdr_ids;
+      }
+      phdrsCur.push_back(it->second);
+    }
+
+    // If no headers and no errors - insert empty headers set.
+    // If the current set of headers is empty, then use the last non-empty
+    // set. Otherwise mark the current set to be the last non-empty set for
+    // successors.
+    if (noPhdrs)
+      phdrsCur.clear();
+    else if (phdrsCur.empty())
+      phdrsCur = phdrsLast;
+    else
+      phdrsLast = phdrsCur;
+
+    _sectionToPHDR[osd->name()] = phdrsCur;
+  }
+  return std::error_code();
+}
+
+static bool hasWildcard(StringRef name) {
+  for (auto ch : name)
+    if (ch == '*' || ch == '?' || ch == '[' || ch == '\\')
+      return true;
+  return false;
+}
+
+void Sema::linearizeAST(const InputSection *inputSection) {
+  if (isa<InputSectionName>(inputSection)) {
+    _layoutCommands.push_back(inputSection);
+    return;
+  }
+
+  auto *sortedGroup = dyn_cast<InputSectionSortedGroup>(inputSection);
+  assert(sortedGroup && "Expected InputSectionSortedGroup object");
+
+  for (const InputSection *child : *sortedGroup) {
+    linearizeAST(child);
+  }
+}
+
+void Sema::linearizeAST(const InputSectionsCmd *inputSections) {
+  StringRef memberName = inputSections->memberName();
+  // Populate our maps for fast lookup of InputSectionsCmd
+  if (hasWildcard(memberName))
+    _memberNameWildcards.push_back(
+        std::make_pair(memberName, (int)_layoutCommands.size()));
+  else if (!memberName.empty())
+    _memberToLayoutOrder.insert(
+        std::make_pair(memberName.str(), (int)_layoutCommands.size()));
+
+  _layoutCommands.push_back(inputSections);
+  for (const InputSection *inputSection : *inputSections)
+    linearizeAST(inputSection);
+}
+
+void Sema::linearizeAST(const Sections *sections) {
+  for (const Command *sectionCommand : *sections) {
+    if (isa<SymbolAssignment>(sectionCommand)) {
+      _layoutCommands.push_back(sectionCommand);
+      continue;
+    }
+
+    if (!isa<OutputSectionDescription>(sectionCommand))
+      continue;
+
+    _layoutCommands.push_back(sectionCommand);
+    auto *outSection = dyn_cast<OutputSectionDescription>(sectionCommand);
+
+    for (const Command *outSecCommand : *outSection) {
+      if (isa<SymbolAssignment>(outSecCommand)) {
+        _layoutCommands.push_back(outSecCommand);
+        continue;
+      }
+
+      if (!isa<InputSectionsCmd>(outSecCommand))
+        continue;
+
+      linearizeAST(dyn_cast<InputSectionsCmd>(outSecCommand));
+    }
+  }
+}
+
+void Sema::perform(const LinkerScript *ls) {
+  for (const Command *c : ls->_commands) {
+    if (const Sections *sec = dyn_cast<Sections>(c))
+      linearizeAST(sec);
+  }
+}
+
+} // End namespace script
 } // end namespace lld

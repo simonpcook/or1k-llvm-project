@@ -11,13 +11,11 @@
 #include "lld/Core/LinkingContext.h"
 #include "lld/Core/Resolver.h"
 #include "lld/Core/Simple.h"
-#include "lld/ReaderWriter/Writer.h"
+#include "lld/Core/Writer.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/Support/Process.h"
 
 namespace lld {
 
-#ifndef NDEBUG
 LinkingContext::LinkingContext()
     : _deadStrip(false), _allowDuplicates(false),
       _globalsAreDeadStripRoots(false),
@@ -26,26 +24,8 @@ LinkingContext::LinkingContext()
       _warnIfCoalesableAtomsHaveDifferentCanBeNull(false),
       _warnIfCoalesableAtomsHaveDifferentLoadName(false),
       _printRemainingUndefines(true), _allowRemainingUndefines(false),
-      _logInputFiles(false), _allowShlibUndefines(false),
-      _runRoundTripPasses(false), _outputFileType(OutputFileType::Default),
-      _nextOrdinal(0) {
-  llvm::Optional<std::string> env =
-      llvm::sys::Process::GetEnv("LLD_RUN_ROUNDTRIP_TEST");
-  if (env.hasValue() && !env.getValue().empty())
-    _runRoundTripPasses = true;
-}
-#else
-LinkingContext::LinkingContext()
-    : _deadStrip(false), _allowDuplicates(false),
-      _globalsAreDeadStripRoots(false),
-      _searchArchivesToOverrideTentativeDefinitions(false),
-      _searchSharedLibrariesToOverrideTentativeDefinitions(false),
-      _warnIfCoalesableAtomsHaveDifferentCanBeNull(false),
-      _warnIfCoalesableAtomsHaveDifferentLoadName(false),
-      _printRemainingUndefines(true), _allowRemainingUndefines(false),
-      _logInputFiles(false), _allowShlibUndefines(false),
+      _logInputFiles(false), _allowShlibUndefines(true),
       _outputFileType(OutputFileType::Default), _nextOrdinal(0) {}
-#endif
 
 LinkingContext::~LinkingContext() {}
 
@@ -57,9 +37,9 @@ std::error_code LinkingContext::writeFile(const File &linkedFile) const {
   return this->writer().writeFile(linkedFile, _outputPath);
 }
 
-bool LinkingContext::createImplicitFiles(
-    std::vector<std::unique_ptr<File> > &result) {
-  return this->writer().createImplicitFiles(result);
+void LinkingContext::createImplicitFiles(
+    std::vector<std::unique_ptr<File>> &result) {
+  this->writer().createImplicitFiles(result);
 }
 
 std::unique_ptr<File> LinkingContext::createEntrySymbolFile() const {

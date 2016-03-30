@@ -15,9 +15,8 @@
 #define POLLY_SUPPORT_GIC_HELPER_H
 
 #include "llvm/ADT/APInt.h"
-#include "isl/ctx.h"
 #include "llvm/Support/raw_ostream.h"
-
+#include "isl/ctx.h"
 #include <string>
 
 struct isl_map;
@@ -72,8 +71,13 @@ inline llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
 }
 
 /// @brief Return @p Prefix + @p Val->getName() + @p Suffix but Isl compatible.
-std::string getIslCompatibleName(std::string Prefix, const llvm::Value *Val,
-                                 std::string Suffix);
+std::string getIslCompatibleName(const std::string &Prefix,
+                                 const llvm::Value *Val,
+                                 const std::string &Suffix);
+
+std::string getIslCompatibleName(const std::string &Prefix,
+                                 const std::string &Middle,
+                                 const std::string &Suffix);
 
 } // end namespace polly
 

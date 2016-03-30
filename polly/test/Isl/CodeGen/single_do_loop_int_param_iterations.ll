@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-ast -S -analyze  < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-ast -S -analyze  < %s | FileCheck %s
 ; XFAIL: *
 
 ;define N 20
@@ -28,7 +28,6 @@
 ;}
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-unknown-linux-gnu"
 
 @A = common global [20 x i32] zeroinitializer, align 4 ; <[20 x i32]*> [#uses=1]
 
@@ -42,7 +41,7 @@ entry:
 
 do.body:                                          ; preds = %do.cond, %entry
   %0 = phi i32 [ 0, %entry ], [ %inc, %do.cond ]  ; <i32> [#uses=2]
-  store i32 %0, i32* getelementptr inbounds ([20 x i32]* @A, i32 0, i32 0)
+  store i32 %0, i32* getelementptr inbounds ([20 x i32], [20 x i32]* @A, i32 0, i32 0)
   %inc = add nsw i32 %0, 1                        ; <i32> [#uses=2]
   br label %do.cond
 
@@ -57,9 +56,9 @@ do.end:                                           ; preds = %do.cond
 
 define i32 @main() nounwind {
 entry:
-  store i32 0, i32* getelementptr inbounds ([20 x i32]* @A, i32 0, i32 0)
+  store i32 0, i32* getelementptr inbounds ([20 x i32], [20 x i32]* @A, i32 0, i32 0)
   call void @bar(i32 10)
-  %tmp = load i32* getelementptr inbounds ([20 x i32]* @A, i32 0, i32 0) ; <i32> [#uses=1]
+  %tmp = load i32, i32* getelementptr inbounds ([20 x i32], [20 x i32]* @A, i32 0, i32 0) ; <i32> [#uses=1]
   %cmp = icmp eq i32 %tmp, 19                     ; <i1> [#uses=1]
   br i1 %cmp, label %if.then, label %if.else
 

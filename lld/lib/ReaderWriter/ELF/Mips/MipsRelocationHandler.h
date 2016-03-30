@@ -9,29 +9,22 @@
 #ifndef LLD_READER_WRITER_ELF_MIPS_MIPS_RELOCATION_HANDLER_H
 #define LLD_READER_WRITER_ELF_MIPS_MIPS_RELOCATION_HANDLER_H
 
-#include "MipsLinkingContext.h"
+#include "lld/Core/Reference.h"
 
 namespace lld {
 namespace elf {
 
-class MipsTargetHandler;
+class MipsLinkingContext;
+template<typename ELFT> class MipsTargetLayout;
 
-class MipsTargetRelocationHandler final
-    : public TargetRelocationHandler<Mips32ElELFType> {
-public:
-  MipsTargetRelocationHandler(MipsTargetLayout<Mips32ElELFType> &layout,
-                              ELFLinkingContext &targetInfo)
-      : TargetRelocationHandler<Mips32ElELFType>(targetInfo),
-        _mipsTargetLayout(layout) {}
+template <class ELFT>
+std::unique_ptr<TargetRelocationHandler>
+createMipsRelocationHandler(MipsLinkingContext &ctx,
+                            MipsTargetLayout<ELFT> &layout);
 
-  std::error_code applyRelocation(ELFWriter &, llvm::FileOutputBuffer &,
-                                  const lld::AtomLayout &,
-                                  const Reference &) const override;
-
-private:
-  MipsTargetLayout<Mips32ElELFType> &_mipsTargetLayout;
-};
-
+template <class ELFT>
+Reference::Addend readMipsRelocAddend(Reference::KindValue kind,
+                                      const uint8_t *content);
 } // elf
 } // lld
 

@@ -234,7 +234,7 @@ __cxa_throw(void* thrown_object, std::type_info* tinfo, void (*dest)(void*))
     globals->uncaughtExceptions += 1;   // Not atomically, since globals are thread-local
 
     exception_header->unwindHeader.exception_cleanup = exception_cleanup_func;
-#if __USING_SJLJ_EXCEPTIONS__
+#ifdef __USING_SJLJ_EXCEPTIONS__
     _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
 #else
     _Unwind_RaiseException(&exception_header->unwindHeader);
@@ -258,12 +258,10 @@ __cxa_get_exception_ptr(void* unwind_exception) throw()
 {
 #if LIBCXXABI_ARM_EHABI
     return reinterpret_cast<void*>(
-           static_cast<_Unwind_Control_Block*>(unwind_exception)->barrier_cache.bitpattern[0]);
+        static_cast<_Unwind_Control_Block*>(unwind_exception)->barrier_cache.bitpattern[0]);
 #else
-    return cxa_exception_from_exception_unwind_exception
-           (
-               static_cast<_Unwind_Exception*>(unwind_exception)
-           )->adjustedPtr;
+    return cxa_exception_from_exception_unwind_exception(
+        static_cast<_Unwind_Exception*>(unwind_exception))->adjustedPtr;
 #endif
 }
 
@@ -571,7 +569,7 @@ __cxa_rethrow()
         //   nothing
         globals->caughtExceptions = 0;
     }
-#if __USING_SJLJ_EXCEPTIONS__
+#ifdef __USING_SJLJ_EXCEPTIONS__
     _Unwind_SjLj_RaiseException(&exception_header->unwindHeader);
 #else
     _Unwind_RaiseException(&exception_header->unwindHeader);
@@ -700,7 +698,7 @@ __cxa_rethrow_primary_exception(void* thrown_object)
         setDependentExceptionClass(&dep_exception_header->unwindHeader);
         __cxa_get_globals()->uncaughtExceptions += 1;
         dep_exception_header->unwindHeader.exception_cleanup = dependent_exception_cleanup;
-#if __USING_SJLJ_EXCEPTIONS__
+#ifdef __USING_SJLJ_EXCEPTIONS__
         _Unwind_SjLj_RaiseException(&dep_exception_header->unwindHeader);
 #else
         _Unwind_RaiseException(&dep_exception_header->unwindHeader);
@@ -712,13 +710,16 @@ __cxa_rethrow_primary_exception(void* thrown_object)
 }
 
 bool
-__cxa_uncaught_exception() throw()
+__cxa_uncaught_exception() throw() { return __cxa_uncaught_exceptions() != 0; }
+
+unsigned int
+__cxa_uncaught_exceptions() throw()
 {
     // This does not report foreign exceptions in flight
     __cxa_eh_globals* globals = __cxa_get_globals_fast();
     if (globals == 0)
-        return false;
-    return globals->uncaughtExceptions != 0;
+        return 0;
+    return globals->uncaughtExceptions;
 }
 
 }  // extern "C"

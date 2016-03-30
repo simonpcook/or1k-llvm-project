@@ -147,6 +147,7 @@ ConnectionGenericFile::Connect(const char *s, Error *error_ptr)
     }
 
     m_owns_file = true;
+    m_uri.assign(s);
     return eConnectionStatusSuccess;
 }
 
@@ -175,6 +176,7 @@ ConnectionGenericFile::Disconnect(Error *error_ptr)
 
     ::ZeroMemory(&m_file_position, sizeof(m_file_position));
     m_owns_file = false;
+    m_uri.clear();
     return eConnectionStatusSuccess;
 }
 
@@ -206,9 +208,9 @@ ConnectionGenericFile::Read(void *dst, size_t dst_len, uint32_t timeout_usec, ll
             TimeValue time_value;
             time_value.OffsetWithMicroSeconds(timeout_usec);
             DWORD milliseconds = time_value.milliseconds();
-            result = ::WaitForMultipleObjects(llvm::array_lengthof(m_event_handles), m_event_handles, FALSE, milliseconds);
+            DWORD wait_result = ::WaitForMultipleObjects(llvm::array_lengthof(m_event_handles), m_event_handles, FALSE, milliseconds);
             // All of the events are manual reset events, so make sure we reset them to non-signalled.
-            switch (result)
+            switch (wait_result)
             {
                 case WAIT_OBJECT_0 + kBytesAvailableEvent:
                     break;
@@ -326,6 +328,12 @@ finish:
                     return_info.GetError().AsCString());
     }
     return return_info.GetBytes();
+}
+
+std::string
+ConnectionGenericFile::GetURI()
+{
+    return m_uri;
 }
 
 bool

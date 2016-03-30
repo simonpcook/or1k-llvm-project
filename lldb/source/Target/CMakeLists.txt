@@ -14,8 +14,6 @@ add_lldb_library(lldbTarget
   LanguageRuntime.cpp
   Memory.cpp
   MemoryHistory.cpp
-  NativeRegisterContext.cpp
-  NativeRegisterContextRegisterInfo.cpp
   ObjCLanguageRuntime.cpp
   OperatingSystem.cpp
   PathMappingList.cpp
@@ -42,6 +40,7 @@ add_lldb_library(lldbTarget
   ThreadPlan.cpp
   ThreadPlanBase.cpp
   ThreadPlanCallFunction.cpp
+  ThreadPlanCallFunctionUsingABI.cpp
   ThreadPlanCallUserExpression.cpp
   ThreadPlanPython.cpp
   ThreadPlanRunToAddress.cpp

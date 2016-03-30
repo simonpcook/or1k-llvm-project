@@ -13,10 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/CodeGen/IRBuilder.h"
-
 #include "polly/ScopInfo.h"
 #include "polly/Support/ScopHelper.h"
-
 #include "llvm/IR/Metadata.h"
 #include "llvm/Support/Debug.h"
 
@@ -35,9 +33,9 @@ static MDNode *getID(LLVMContext &Ctx, Metadata *arg0 = nullptr,
   MDNode *ID;
   SmallVector<Metadata *, 3> Args;
   // Use a temporary node to safely create a unique pointer for the first arg.
-  MDNode *TempNode = MDNode::getTemporary(Ctx, None);
+  auto TempNode = MDNode::getTemporary(Ctx, None);
   // Reserve operand 0 for loop id self reference.
-  Args.push_back(TempNode);
+  Args.push_back(TempNode.get());
 
   if (arg0)
     Args.push_back(arg0);
@@ -46,7 +44,6 @@ static MDNode *getID(LLVMContext &Ctx, Metadata *arg0 = nullptr,
 
   ID = MDNode::get(Ctx, Args);
   ID->replaceOperandWith(0, ID);
-  MDNode::deleteTemporary(TempNode);
   return ID;
 }
 
@@ -62,8 +59,8 @@ void ScopAnnotator::buildAliasScopes(Scop &S) {
   OtherAliasScopeListMap.clear();
 
   SetVector<Value *> BasePtrs;
-  for (ScopStmt *Stmt : S)
-    for (MemoryAccess *MA : *Stmt)
+  for (ScopStmt &Stmt : S)
+    for (MemoryAccess *MA : Stmt)
       BasePtrs.insert(MA->getBaseAddr());
 
   std::string AliasScopeStr = "polly.alias.scope.";

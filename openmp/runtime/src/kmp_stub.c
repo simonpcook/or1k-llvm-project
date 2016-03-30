@@ -1,7 +1,5 @@
 /*
  * kmp_stub.c -- stub versions of user-callable OpenMP RT functions.
- * $Revision: 42951 $
- * $Date: 2014-01-21 14:41:41 -0600 (Tue, 21 Jan 2014) $
  */
 
 
@@ -212,7 +210,7 @@ double __kmps_get_wtime( void ) {
             }; // if
         }; // if
     #else
-        // gettimeofday() returns seconds and microseconds sinse the Epoch.
+        // gettimeofday() returns seconds and microseconds since the Epoch.
         struct timeval  tval;
         int             rc;
         rc = gettimeofday( & tval, NULL );

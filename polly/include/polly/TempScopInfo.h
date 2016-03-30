@@ -17,7 +17,6 @@
 #define POLLY_TEMP_SCOP_EXTRACTION_H
 
 #include "polly/ScopDetection.h"
-
 #include "llvm/Analysis/RegionPass.h"
 #include "llvm/IR/Instructions.h"
 
@@ -28,8 +27,6 @@ class DataLayout;
 using namespace llvm;
 
 namespace polly {
-
-extern bool PollyDelinearize;
 
 //===---------------------------------------------------------------------===//
 /// @brief A memory access described by a SCEV expression and the access type.
@@ -55,6 +52,11 @@ public:
   SmallVector<const SCEV *, 4> Subscripts, Sizes;
 
   explicit IRAccess(TypeKind Type, Value *BaseAddress, const SCEV *Offset,
+                    unsigned elemBytes, bool Affine)
+      : BaseAddress(BaseAddress), Offset(Offset), ElemBytes(elemBytes),
+        Type(Type), IsAffine(Affine) {}
+
+  explicit IRAccess(TypeKind Type, Value *BaseAddress, const SCEV *Offset,
                     unsigned elemBytes, bool Affine,
                     SmallVector<const SCEV *, 4> Subscripts,
                     SmallVector<const SCEV *, 4> Sizes)
@@ -74,6 +76,8 @@ public:
   bool isRead() const { return Type == READ; }
 
   bool isWrite() const { return Type == MUST_WRITE; }
+
+  void setMayWrite() { Type = MAY_WRITE; }
 
   bool isMayWrite() const { return Type == MAY_WRITE; }
 
@@ -131,7 +135,7 @@ class TempScop {
   const BBCondMapType &BBConds;
 
   // Access function of bbs.
-  const AccFuncMapType &AccFuncMap;
+  AccFuncMapType &AccFuncMap;
 
   friend class TempScopInfo;
 
@@ -164,8 +168,8 @@ public:
   ///
   /// @return All access functions in BB
   ///
-  const AccFuncSetType *getAccessFunctions(const BasicBlock *BB) const {
-    AccFuncMapType::const_iterator at = AccFuncMap.find(BB);
+  AccFuncSetType *getAccessFunctions(const BasicBlock *BB) {
+    AccFuncMapType::iterator at = AccFuncMap.find(BB);
     return at != AccFuncMap.end() ? &(at->second) : 0;
   }
   //@}
@@ -194,8 +198,8 @@ typedef std::map<const Region *, TempScop *> TempScopMapType;
 ///
 class TempScopInfo : public FunctionPass {
   //===-------------------------------------------------------------------===//
-  TempScopInfo(const TempScopInfo &) LLVM_DELETED_FUNCTION;
-  const TempScopInfo &operator=(const TempScopInfo &) LLVM_DELETED_FUNCTION;
+  TempScopInfo(const TempScopInfo &) = delete;
+  const TempScopInfo &operator=(const TempScopInfo &) = delete;
 
   // The ScalarEvolution to help building Scop.
   ScalarEvolution *SE;
@@ -234,13 +238,12 @@ class TempScopInfo : public FunctionPass {
 
   /// @brief Build condition constrains to BBs in a valid Scop.
   ///
-  /// @param BB           The BasicBlock to build condition constrains
-  /// @param RegionEntry  The entry block of the Smallest Region that containing
-  ///                     BB
-  void buildCondition(BasicBlock *BB, BasicBlock *RegionEntry);
+  /// @param BB The BasicBlock to build condition constrains
+  /// @param R  The region for the current TempScop.
+  void buildCondition(BasicBlock *BB, Region &R);
 
   // Build the affine function of the given condition
-  void buildAffineCondition(Value &V, bool inverted, Comparison **Comp) const;
+  Comparison buildAffineCondition(Value &V, bool inverted);
 
   // Return the temporary Scop information of Region R, where R must be a valid
   // part of Scop
@@ -252,25 +255,50 @@ class TempScopInfo : public FunctionPass {
 
   /// @brief Build an instance of IRAccess from the Load/Store instruction.
   ///
-  /// @param Inst The Load/Store instruction that access the memory
-  /// @param L    The parent loop of the instruction
-  /// @param R    The region on which we are going to build a TempScop
+  /// @param Inst       The Load/Store instruction that access the memory
+  /// @param L          The parent loop of the instruction
+  /// @param R          The region on which we are going to build a TempScop
+  /// @param BoxedLoops The set of loops that are overapproximated in @p R.
   ///
   /// @return     The IRAccess to describe the access function of the
   ///             instruction.
-  IRAccess buildIRAccess(Instruction *Inst, Loop *L, Region *R);
+  IRAccess buildIRAccess(Instruction *Inst, Loop *L, Region *R,
+                         const ScopDetection::BoxedLoopsSetTy *BoxedLoops);
 
   /// @brief Analyze and extract the cross-BB scalar dependences (or,
   ///        dataflow dependencies) of an instruction.
   ///
-  /// @param Inst The instruction to be analyzed
-  /// @param R    The SCoP region
+  /// @param Inst               The instruction to be analyzed
+  /// @param R                  The SCoP region
+  /// @param NonAffineSubRegion The non affine sub-region @p Inst is in.
   ///
   /// @return     True if the Instruction is used in other BB and a scalar write
   ///             Access is required.
-  bool buildScalarDependences(Instruction *Inst, Region *R);
+  bool buildScalarDependences(Instruction *Inst, Region *R,
+                              Region *NonAffineSubRegio);
 
-  void buildAccessFunctions(Region &RefRegion, BasicBlock &BB);
+  /// @brief Create IRAccesses for the given PHI node in the given region.
+  ///
+  /// @param PHI                The PHI node to be handled
+  /// @param R                  The SCoP region
+  /// @param Functions          The access functions of the current BB
+  /// @param NonAffineSubRegion The non affine sub-region @p PHI is in.
+  void buildPHIAccesses(PHINode *PHI, Region &R, AccFuncSetType &Functions,
+                        Region *NonAffineSubRegion);
+
+  /// @brief Build the access functions for the subregion @p SR.
+  ///
+  /// @param R  The SCoP region.
+  /// @param SR A subregion of @p R.
+  void buildAccessFunctions(Region &R, Region &SR);
+
+  /// @brief Build the access functions for the basic block @p BB
+  ///
+  /// @param R                  The SCoP region.
+  /// @param BB                 A basic block in @p R.
+  /// @param NonAffineSubRegion The non affine sub-region @p BB is in.
+  void buildAccessFunctions(Region &R, BasicBlock &BB,
+                            Region *NonAffineSubRegion = nullptr);
 
 public:
   static char ID;

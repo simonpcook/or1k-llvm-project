@@ -1,4 +1,4 @@
-add_lld_library(lldPECOFF
+add_llvm_library(lldPECOFF
   EdataPass.cpp
   IdataPass.cpp
   LinkerGeneratedSymbolFile.cpp
@@ -9,9 +9,8 @@ add_lld_library(lldPECOFF
   ReaderImportHeader.cpp
   WriterImportLibrary.cpp
   WriterPECOFF.cpp
-  )
-
-target_link_libraries(lldPECOFF ${cmake_2_8_12_INTERFACE}
-  lldReaderWriter
-  lldDriver
+  LINK_LIBS
+    lldCore
+    LLVMObject
+    LLVMSupport
   )

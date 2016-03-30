@@ -72,22 +72,6 @@ dnl **************************************************************************
 dnl **************************************************************************
 dnl * Set the location of various third-party software packages
 dnl **************************************************************************
-dnl Find Gmp
-find_lib_and_headers([gmp], [gmp.h], [gmp])
-
-dnl Find Isl
-saved_CXXFLAGS=$CXXFLAGS
-CXXFLAGS="$CXXFLAGS"
-find_lib_and_headers([isl], [isl/val.h], [isl], [required])
-CXXFLAGS=$saved_CXXFLAGS
-
-dnl Check that we have libpluto.
-saved_CXXFLAGS=$CXXFLAGS
-CXXFLAGS="$CXXFLAGS $gmp_inc $isl_inc"
-find_lib_and_headers([pluto], [pluto/libpluto.h], [pluto])
-CXXFLAGS=$saved_CXXFLAGS
-AS_IF([test "x$pluto_found" = "xyes"],
-  [AC_DEFINE([PLUTO_FOUND],[1],[Define if pluto found])])
 
 dnl Check if CUDA lib there
 dnl Disable the build of polly, even if it is checked out into tools/polly.
@@ -110,6 +94,14 @@ AS_IF([test "x$cuda_found" = "xyes"],
 dnl **************************************************************************
 dnl * Create the output files
 dnl **************************************************************************
+
+dnl Let ISL's configure generate isl_config.h and gitversion.h
+AC_CONFIG_SUBDIRS(lib/External/isl)
+AC_CONFIG_COMMANDS_POST([
+  dnl Configure ISL with small integer optimization, but do not add the
+  dnl option to config.status as it is mandatory for Polly.
+  ac_configure_args="$ac_configure_args --with-int=imath-32"
+])
 
 dnl This must be last
 AC_CONFIG_HEADERS(include/polly/Config/config.h)

@@ -12,14 +12,14 @@ class LibcxxVBoolDataFormatterTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
-    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @skipUnlessDarwin
     @dsym_test
     def test_with_dsym_and_run_command(self):
         """Test data formatter commands."""
         self.buildDsym()
         self.data_formatter_commands()
 
-    @skipIfLinux # No standard locations for libc++ on Linux, so skip for now 
+    @skipIfGcc
     @skipIfWindows # http://llvm.org/pr21800
     @dwarf_test
     def test_with_dwarf_and_run_command(self):

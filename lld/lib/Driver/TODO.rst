@@ -31,17 +31,13 @@ Missing Options
 * -s,--strip-all
 * -S,--strip-debug
 * --trace
-* -T,--script
 * -dT,--default-script
 * -Ur
 * --unique
 * -v,--version,-V
-* -x,--discard-all
-* -X,--discard-locals
 * -y,--trace-symbol
 * -z (keywords need to be implemented)
 * --accept-unknown-input-arch,--no-accept-unknown-input-arch
-* --as-needed,--no-as-needed
 * -Bdynamic,-dy,-call_shared
 * -Bgroup
 * -dn,-non_shared

@@ -31,6 +31,7 @@ class PipeWindows : public PipeBase
 
     Error CreateNew(bool child_process_inherit) override;
     Error CreateNew(llvm::StringRef name, bool child_process_inherit) override;
+    Error CreateWithUniqueName(llvm::StringRef prefix, bool child_process_inherit, llvm::SmallVectorImpl<char>& name) override;
     Error OpenAsReader(llvm::StringRef name, bool child_process_inherit) override;
     Error OpenAsWriterWithTimeout(llvm::StringRef name, bool child_process_inherit, const std::chrono::microseconds &timeout) override;
 
@@ -41,6 +42,8 @@ class PipeWindows : public PipeBase
     int GetWriteFileDescriptor() const override;
     int ReleaseReadFileDescriptor() override;
     int ReleaseWriteFileDescriptor() override;
+    void CloseReadFileDescriptor() override;
+    void CloseWriteFileDescriptor() override;
 
     void Close() override;
 
@@ -55,9 +58,6 @@ class PipeWindows : public PipeBase
 
   private:
     Error OpenNamedPipe(llvm::StringRef name, bool child_process_inherit, bool is_read);
-
-    void CloseReadEndpoint();
-    void CloseWriteEndpoint();
 
     HANDLE m_read;
     HANDLE m_write;

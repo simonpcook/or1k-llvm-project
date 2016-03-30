@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-code-generator=isl -polly-ast -analyze %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-code-generator=isl -polly-ast -analyze %s | FileCheck %s
 ;
 ;    void jd(int *A, int *B, int c) {
 ;      for (int i = 0; i < 1024; i++)
@@ -24,9 +24,9 @@ for.cond:                                         ; preds = %for.inc, %entry
 
 for.body:                                         ; preds = %for.cond
   %idxprom = sext i32 %c to i64
-  %arrayidx = getelementptr inbounds i32* %B, i64 %idxprom
-  %tmp = load i32* %arrayidx, align 4
-  %arrayidx2 = getelementptr inbounds i32* %A, i64 %indvars.iv
+  %arrayidx = getelementptr inbounds i32, i32* %B, i64 %idxprom
+  %tmp = load i32, i32* %arrayidx, align 4
+  %arrayidx2 = getelementptr inbounds i32, i32* %A, i64 %indvars.iv
   store i32 %tmp, i32* %arrayidx2, align 4
   br label %for.inc
 

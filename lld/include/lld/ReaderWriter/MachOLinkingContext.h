@@ -11,8 +11,8 @@
 #define LLD_READER_WRITER_MACHO_LINKING_CONTEXT_H
 
 #include "lld/Core/LinkingContext.h"
-#include "lld/ReaderWriter/Reader.h"
-#include "lld/ReaderWriter/Writer.h"
+#include "lld/Core/Reader.h"
+#include "lld/Core/Writer.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -72,7 +72,7 @@ public:
   bool validateImpl(raw_ostream &diagnostics) override;
   std::string demangle(StringRef symbolName) const override;
 
-  bool createImplicitFiles(std::vector<std::unique_ptr<File>> &) override;
+  void createImplicitFiles(std::vector<std::unique_ptr<File>> &) override;
 
   uint32_t getCPUType() const;
   uint32_t getCPUSubType() const;
@@ -128,6 +128,9 @@ public:
   const StringRefVector &sysLibRoots() const { return _syslibRoots; }
   bool PIE() const { return _pie; }
   void setPIE(bool pie) { _pie = pie; }
+
+  uint64_t stackSize() const { return _stackSize; }
+  void setStackSize(uint64_t stackSize) { _stackSize = stackSize; }
 
   uint64_t baseAddress() const { return _baseAddress; }
   void setBaseAddress(uint64_t baseAddress) { _baseAddress = baseAddress; }
@@ -228,10 +231,10 @@ public:
   const StringRefVector &rpaths() const { return _rpaths; }
 
   /// Add section alignment constraint on final layout.
-  void addSectionAlignment(StringRef seg, StringRef sect, uint8_t align2);
+  void addSectionAlignment(StringRef seg, StringRef sect, uint16_t align);
 
   /// Returns true if specified section had alignment constraints.
-  bool sectionAligned(StringRef seg, StringRef sect, uint8_t &align2) const;
+  bool sectionAligned(StringRef seg, StringRef sect, uint16_t &align) const;
 
   StringRef dyldPath() const { return "/usr/lib/dyld"; }
 
@@ -240,6 +243,9 @@ public:
 
   // GOT creation Pass should be run.
   bool needsGOTPass() const;
+
+  /// Pass to add TLV sections.
+  bool needsTLVPass() const;
 
   /// Pass to transform __compact_unwind into __unwind_info should be run.
   bool needsCompactUnwindPass() const;
@@ -252,6 +258,10 @@ public:
 
   /// Used to keep track of direct and indirect dylibs.
   void registerDylib(mach_o::MachODylibFile *dylib, bool upward) const;
+
+  // Reads a file from disk to memory. Returns only a needed chunk
+  // if a fat binary.
+  ErrorOr<std::unique_ptr<MemoryBuffer>> getMemoryBuffer(StringRef path);
 
   /// Used to find indirect dylibs. Instantiates a MachODylibFile if one
   /// has not already been made for the requested dylib.  Uses -L and -F
@@ -267,8 +277,7 @@ public:
 
   /// If the memoryBuffer is a fat file with a slice for the current arch,
   /// this method will return the offset and size of that slice.
-  bool sliceFromFatFile(const MemoryBuffer &mb, uint32_t &offset,
-                        uint32_t &size);
+  bool sliceFromFatFile(MemoryBufferRef mb, uint32_t &offset, uint32_t &size);
 
   /// Returns if a command line option specified dylib is an upward link.
   bool isUpwardDylib(StringRef installName) const;
@@ -287,15 +296,16 @@ public:
   /// bits are xxxx.yy.zz.  Largest number is 65535.255.255
   static bool parsePackedVersion(StringRef str, uint32_t &result);
 
-  void maybeSortInputFiles() override;
+  void finalizeInputFiles() override;
+
+  bool customAtomOrderer(const DefinedAtom *left, const DefinedAtom *right,
+                         bool &leftBeforeRight) const;
 
 private:
   Writer &writer() const override;
   mach_o::MachODylibFile* loadIndirectDylib(StringRef path);
   void checkExportWhiteList(const DefinedAtom *atom) const;
   void checkExportBlackList(const DefinedAtom *atom) const;
-  bool customAtomOrderer(const DefinedAtom *left, const DefinedAtom *right,
-                         bool &leftBeforeRight);
   struct ArchInfo {
     StringRef                 archName;
     MachOLinkingContext::Arch arch;
@@ -307,7 +317,7 @@ private:
   struct SectionAlign {
     StringRef segmentName;
     StringRef sectionName;
-    uint8_t   align2;
+    uint16_t  align;
   };
 
   struct OrderFileNode {
@@ -334,6 +344,7 @@ private:
   uint64_t _pageZeroSize;
   uint64_t _pageSize;
   uint64_t _baseAddress;
+  uint64_t _stackSize;
   uint32_t _compatibilityVersion;
   uint32_t _currentVersion;
   StringRef _installName;
@@ -350,7 +361,8 @@ private:
   mutable llvm::StringMap<mach_o::MachODylibFile*> _pathToDylibMap;
   mutable std::set<mach_o::MachODylibFile*> _allDylibs;
   mutable std::set<mach_o::MachODylibFile*> _upwardDylibs;
-  mutable std::vector<std::unique_ptr<class MachOFileNode>> _indirectDylibs;
+  mutable std::vector<std::unique_ptr<File>> _indirectDylibs;
+  mutable std::mutex _dylibsMutex;
   ExportMode _exportMode;
   llvm::StringSet<> _exportedSymbols;
   DebugInfoMode _debugInfoMode;

@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-codegen-isl -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -polly-codegen -S < %s | FileCheck %s
 ;
 ; Test case to trigger the hard way of creating a unique entering
 ; edge for the SCoP. It is triggered because the entering edge
@@ -47,7 +47,7 @@ for.cond:                                         ; preds = %for.inc, %if
   br i1 %exitcond, label %for.body, label %while.begin
 
 for.body:                                         ; preds = %for.cond
-  %arrayidx = getelementptr inbounds i32* %A, i64 %indvars.iv
+  %arrayidx = getelementptr inbounds i32, i32* %A, i64 %indvars.iv
   %tmp = trunc i64 %indvars.iv to i32
   store i32 %tmp, i32* %arrayidx, align 4
   br label %for.inc

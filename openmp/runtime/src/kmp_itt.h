@@ -1,8 +1,6 @@
 #if USE_ITT_BUILD
 /*
  * kmp_itt.h -- ITT Notify interface.
- * $Revision: 43457 $
- * $Date: 2014-09-17 03:57:22 -0500 (Wed, 17 Sep 2014) $
  */
 
 
@@ -68,7 +66,7 @@ __kmp_inline void __kmp_itt_frame_submit( int gtid, __itt_timestamp begin, __itt
 __kmp_inline void __kmp_itt_metadata_imbalance( int gtid, kmp_uint64 begin, kmp_uint64 end, kmp_uint64 imbalance, kmp_uint64 reduction );
 // sched_type: 0 - static, 1 - dynamic, 2 - guided, 3 - custom (all others); iterations - loop trip count, chunk - chunk size
 __kmp_inline void __kmp_itt_metadata_loop( ident_t * loc, kmp_uint64 sched_type, kmp_uint64 iterations, kmp_uint64 chunk );
-__kmp_inline void __kmp_itt_metadata_single();
+__kmp_inline void __kmp_itt_metadata_single( ident_t * loc );
 
 // --- Barrier reporting ---
 __kmp_inline void * __kmp_itt_barrier_object( int gtid, int bt, int set_name = 0, int delta = 0 );
@@ -86,7 +84,11 @@ __kmp_inline void   __kmp_itt_task_starting( void * object );
 __kmp_inline void   __kmp_itt_task_finished( void * object );
 
 // --- Lock reporting ---
+#if KMP_USE_DYNAMIC_LOCK
+__kmp_inline void   __kmp_itt_lock_creating(  kmp_user_lock_p lock, const ident_t * );
+#else
 __kmp_inline void   __kmp_itt_lock_creating(  kmp_user_lock_p lock );
+#endif
 __kmp_inline void   __kmp_itt_lock_acquiring( kmp_user_lock_p lock );
 __kmp_inline void   __kmp_itt_lock_acquired(  kmp_user_lock_p lock );
 __kmp_inline void   __kmp_itt_lock_releasing( kmp_user_lock_p lock );
@@ -94,7 +96,11 @@ __kmp_inline void   __kmp_itt_lock_cancelled( kmp_user_lock_p lock );
 __kmp_inline void   __kmp_itt_lock_destroyed( kmp_user_lock_p lock );
 
 // --- Critical reporting ---
+#if KMP_USE_DYNAMIC_LOCK
+__kmp_inline void   __kmp_itt_critical_creating(  kmp_user_lock_p lock, const ident_t * );
+#else
 __kmp_inline void   __kmp_itt_critical_creating(  kmp_user_lock_p lock );
+#endif
 __kmp_inline void   __kmp_itt_critical_acquiring( kmp_user_lock_p lock );
 __kmp_inline void   __kmp_itt_critical_acquired(  kmp_user_lock_p lock );
 __kmp_inline void   __kmp_itt_critical_releasing( kmp_user_lock_p lock );

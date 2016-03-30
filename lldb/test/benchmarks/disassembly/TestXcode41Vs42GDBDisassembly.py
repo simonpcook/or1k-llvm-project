@@ -13,7 +13,7 @@ class XCode41Vs42GDBDisassembly(BenchBase):
         BenchBase.setUp(self)
         self.gdb_41_exe = '/Xcode41/usr/bin/gdb'
         self.gdb_42_exe = '/Developer/usr/bin/gdb'
-        self.exe = self.lldbHere
+        self.exe = lldbtest_config.lldbExec
         self.function = 'Driver::MainLoop()'
         self.gdb_41_avg = None
         self.gdb_42_avg = None
@@ -22,6 +22,7 @@ class XCode41Vs42GDBDisassembly(BenchBase):
             self.count = 5
 
     @benchmarks_test
+    @expectedFailureWindows("llvm.org/pr22274: need a pexpect replacement for windows")
     def test_run_41_then_42(self):
         """Test disassembly on a large function with 4.1 vs. 4.2's gdb."""
         print
@@ -34,6 +35,7 @@ class XCode41Vs42GDBDisassembly(BenchBase):
         print "gdb_42_avg/gdb_41_avg: %f" % (self.gdb_42_avg/self.gdb_41_avg)
 
     @benchmarks_test
+    @expectedFailureWindows("llvm.org/pr22274: need a pexpect replacement for windows")
     def test_run_42_then_41(self):
         """Test disassembly on a large function with 4.1 vs. 4.2's gdb."""
         print

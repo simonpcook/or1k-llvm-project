@@ -63,6 +63,8 @@ static uint32_t g_initialize_count = 0;
 void
 PlatformRemoteiOS::Initialize ()
 {
+    PlatformDarwin::Initialize ();
+
     if (g_initialize_count++ == 0)
     {
         PluginManager::RegisterPlugin (PlatformRemoteiOS::GetPluginNameStatic(),
@@ -81,6 +83,8 @@ PlatformRemoteiOS::Terminate ()
             PluginManager::UnregisterPlugin (PlatformRemoteiOS::CreateInstance);
         }
     }
+
+    PlatformDarwin::Terminate ();
 }
 
 PlatformSP
@@ -296,10 +300,18 @@ PlatformRemoteiOS::GetContainedFilesIntoVectorOfStringsCallback (void *baton,
 }
 
 bool
-PlatformRemoteiOS::UpdateSDKDirectoryInfosInNeeded()
+PlatformRemoteiOS::UpdateSDKDirectoryInfosIfNeeded()
 {
     if (m_sdk_directory_infos.empty())
     {
+        // A --sysroot option was supplied - add it to our list of SDKs to check
+        if (m_sdk_sysroot)
+        {
+            FileSpec sdk_sysroot_fspec(m_sdk_sysroot.GetCString(), true);
+            const SDKDirectoryInfo sdk_sysroot_directory_info(sdk_sysroot_fspec);
+            m_sdk_directory_infos.push_back(sdk_sysroot_directory_info);
+            return true;
+        }
         const char *device_support_dir = GetDeviceSupportDirectory();
         if (device_support_dir)
         {
@@ -358,7 +370,7 @@ const PlatformRemoteiOS::SDKDirectoryInfo *
 PlatformRemoteiOS::GetSDKDirectoryForCurrentOSVersion ()
 {
     uint32_t i;
-    if (UpdateSDKDirectoryInfosInNeeded())
+    if (UpdateSDKDirectoryInfosIfNeeded())
     {
         const uint32_t num_sdk_infos = m_sdk_directory_infos.size();
 
@@ -377,7 +389,7 @@ PlatformRemoteiOS::GetSDKDirectoryForCurrentOSVersion ()
         uint32_t major, minor, update;
         if (GetOSVersion(major, minor, update))
         {
-            if (UpdateSDKDirectoryInfosInNeeded())
+            if (UpdateSDKDirectoryInfosIfNeeded())
             {
                 // First try for an exact match of major, minor and update
                 for (i=0; i<num_sdk_infos; ++i)
@@ -432,7 +444,7 @@ const PlatformRemoteiOS::SDKDirectoryInfo *
 PlatformRemoteiOS::GetSDKDirectoryForLatestOSVersion ()
 {
     const PlatformRemoteiOS::SDKDirectoryInfo *result = NULL;
-    if (UpdateSDKDirectoryInfosInNeeded())
+    if (UpdateSDKDirectoryInfosIfNeeded())
     {
         const uint32_t num_sdk_infos = m_sdk_directory_infos.size();
         // First try for an exact match of major, minor and update
@@ -533,7 +545,7 @@ uint32_t
 PlatformRemoteiOS::FindFileInAllSDKs (const char *platform_file_path,
                                       FileSpecList &file_list)
 {
-    if (platform_file_path && platform_file_path[0] && UpdateSDKDirectoryInfosInNeeded())
+    if (platform_file_path && platform_file_path[0] && UpdateSDKDirectoryInfosIfNeeded())
     {
         const uint32_t num_sdk_infos = m_sdk_directory_infos.size();
         lldb_private::FileSpec local_file;
@@ -681,6 +693,7 @@ PlatformRemoteiOS::GetSymbolFile (const FileSpec &platform_file,
 
 Error
 PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
+                                    Process* process,
                                     ModuleSP &module_sp,
                                     const FileSpecList *module_search_paths_ptr,
                                     ModuleSP *old_module_sp_ptr,
@@ -698,9 +711,8 @@ PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
     if (platform_file.GetPath(platform_file_path, sizeof(platform_file_path)))
     {
         ModuleSpec platform_module_spec(module_spec);
-        UpdateSDKDirectoryInfosInNeeded();
 
-        UpdateSDKDirectoryInfosInNeeded();
+        UpdateSDKDirectoryInfosIfNeeded();
 
         const uint32_t num_sdk_infos = m_sdk_directory_infos.size();
 
@@ -742,7 +754,28 @@ PlatformRemoteiOS::GetSharedModule (const ModuleSpec &module_spec,
             }
         }
         
-        // First try for an exact match of major, minor and update
+        // First try for an exact match of major, minor and update:
+        // If a particalar SDK version was specified via --version or --build, look for a match on disk.
+        const SDKDirectoryInfo *current_sdk_info = GetSDKDirectoryForCurrentOSVersion();
+        const uint32_t current_sdk_idx = GetSDKIndexBySDKDirectoryInfo(current_sdk_info);
+        if (current_sdk_idx < num_sdk_infos && current_sdk_idx != m_last_module_sdk_idx)
+        {
+            if (GetFileInSDK (platform_file_path, current_sdk_idx, platform_module_spec.GetFileSpec()))
+            {
+                module_sp.reset();
+                error = ResolveExecutable (platform_module_spec,
+                                           module_sp,
+                                           NULL);
+                if (module_sp)
+                {
+                    m_last_module_sdk_idx = current_sdk_idx;
+                    error.Clear();
+                    return error;
+                }
+            }
+        }
+
+        // Second try all SDKs that were found.
         for (uint32_t sdk_idx=0; sdk_idx<num_sdk_infos; ++sdk_idx)
         {
             if (m_last_module_sdk_idx == sdk_idx)
@@ -824,3 +857,13 @@ PlatformRemoteiOS::GetConnectedSDKIndex ()
     return m_connected_module_sdk_idx;
 }
 
+uint32_t
+PlatformRemoteiOS::GetSDKIndexBySDKDirectoryInfo (const SDKDirectoryInfo *sdk_info)
+{
+    if (sdk_info == NULL)
+    {
+        return UINT32_MAX;
+    }
+
+    return sdk_info - &m_sdk_directory_infos[0];
+}

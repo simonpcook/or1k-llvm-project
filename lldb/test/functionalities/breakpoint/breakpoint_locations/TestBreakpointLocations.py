@@ -12,7 +12,7 @@ class BreakpointLocationsTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
-    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @skipUnlessDarwin
     @dsym_test
     def test_with_dsym(self):
         """Test breakpoint enable/disable for a breakpoint ID with multiple locations."""
@@ -41,7 +41,7 @@ class BreakpointLocationsTestCase(TestBase):
 
         # The breakpoint list should show 3 locations.
         self.expect("breakpoint list -f", "Breakpoint locations shown correctly",
-            substrs = ["1: file = 'main.c', line = %d, locations = 3" % self.line],
+            substrs = ["1: file = 'main.c', line = %d, exact_match = 0, locations = 3" % self.line],
             patterns = ["where = a.out`func_inlined .+unresolved, hit count = 0",
                         "where = a.out`main .+\[inlined\].+unresolved, hit count = 0"])
 

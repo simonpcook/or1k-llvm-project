@@ -1,6 +1,4 @@
 # defs.mk
-# $Revision: 42951 $
-# $Date: 2014-01-21 14:41:41 -0600 (Tue, 21 Jan 2014) $
 
 #
 #//===----------------------------------------------------------------------===//
@@ -41,7 +39,11 @@ out_cmn_dir  = $(out_dir)common$(suffix)/
 out_ptf_dir  = $(out_dir)$(platform)$(suffix)/
 _out_lib_dir = $(out_dir)$(1)$(suffix)/lib$(if $(filter mac_%,$(1)),.thin)/
 out_lib_dir  = $(call _out_lib_dir,$(platform))
+ifneq "$(arch)" "mic"
 out_l10n_dir = $(out_lib_dir)$(if $(filter lin mac,$(os)),locale/)
+else
+out_l10n_dir = $(out_lib_dir)
+endif
 ifeq "$(os)" "mac"
     _out_lib_fat_dir = $(out_dir)$(1)$(suffix)/lib/
     out_lib_fat_dir  = $(call _out_lib_fat_dir,$(platform))

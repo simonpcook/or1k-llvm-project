@@ -1,10 +1,10 @@
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-ast -analyze < %s | FileCheck %s -check-prefix=AST
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-codegen-isl -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-codegen-isl -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-ast -analyze < %s | FileCheck %s -check-prefix=AST
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-codegen -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-codegen -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
 
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-import-jscop -polly-import-jscop-dir=%S -polly-ast -analyze < %s | FileCheck %s -check-prefix=AST-STRIDE4
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-import-jscop -polly-import-jscop-dir=%S -polly-codegen-isl -S < %s | FileCheck %s -check-prefix=IR-STRIDE4
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-import-jscop -polly-import-jscop-dir=%S -polly-codegen-isl -S < %s | FileCheck %s -check-prefix=IR-STRIDE4
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-import-jscop -polly-import-jscop-dir=%S -polly-ast -analyze < %s | FileCheck %s -check-prefix=AST-STRIDE4
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-import-jscop -polly-import-jscop-dir=%S -polly-codegen -S < %s | FileCheck %s -check-prefix=IR-STRIDE4
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-parallel -polly-parallel-force -polly-import-jscop -polly-import-jscop-dir=%S -polly-codegen -S < %s | FileCheck %s -check-prefix=IR-STRIDE4
 
 ; This extensive test case tests the creation of the full set of OpenMP calls
 ; as well as the subfunction creation using a trivial loop as example.
@@ -60,8 +60,8 @@
 ; IR-NEXT:   br i1 %[[cmp]], label %polly.par.loadIVBounds, label %polly.par.exit
 
 ; IR-LABEL: polly.par.loadIVBounds:
-; IR-NEXT:   %polly.par.LB = load i64* %polly.par.LBPtr
-; IR-NEXT:   %polly.par.UB = load i64* %polly.par.UBPtr
+; IR-NEXT:   %polly.par.LB = load i64, i64* %polly.par.LBPtr
+; IR-NEXT:   %polly.par.UB = load i64, i64* %polly.par.UBPtr
 ; IR-NEXT:   %polly.par.UBAdjusted = sub i64 %polly.par.UB, 1
 ; IR-NEXT:   br label %polly.loop_preheader
 
@@ -73,7 +73,7 @@
 ; IR-NEXT:   br label %polly.stmt.S
 
 ; IR-LABEL: polly.stmt.S:
-; IR-NEXT:   %[[gep:[._a-zA-Z0-9]*]] = getelementptr [1024 x float]* {{.*}}, i64 0, i64 %polly.indvar
+; IR-NEXT:   %[[gep:[._a-zA-Z0-9]*]] = getelementptr [1024 x float], [1024 x float]* {{.*}}, i64 0, i64 %polly.indvar
 ; IR-NEXT:   store float 1.000000e+00, float* %[[gep]]
 ; IR-NEXT:   %polly.indvar_next = add nsw i64 %polly.indvar, 1
 ; IR-NEXT:   %polly.adjust_ub = sub i64 %polly.par.UBAdjusted, 1
@@ -91,7 +91,6 @@
 ; IR-STRIDE4   %polly.adjust_ub = sub i64 %polly.par.UBAdjusted, 4
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-unknown-linux-gnu"
 
 @A = common global [1024 x float] zeroinitializer, align 16
 
@@ -101,7 +100,7 @@ entry:
 
 for.i:
   %indvar = phi i64 [ %indvar.next, %for.inc], [ 0, %entry ]
-  %scevgep = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
+  %scevgep = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
   %exitcond = icmp ne i64 %indvar, 1024
   br i1 %exitcond, label %S, label %exit
 

@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-codegen-isl -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-no-early-exit -polly-codegen -S < %s | FileCheck %s
 
 ; Test the code generation in the presence of a scalar out-of-scop value being
 ; used from within the SCoP.
@@ -8,7 +8,6 @@
 
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
-target triple = "x86_64-unknown-linux-gnu"
 
 define void @scalar-function-argument(float* %A, float %sqrinv) {
 entry:
@@ -17,7 +16,7 @@ entry:
 for.body:
   %indvar = phi i64 [ %indvar.next, %for.body ], [ 0, %entry ]
   %mul104 = fmul float 1.0, %sqrinv
-  %rp107 = getelementptr float* %A, i64 %indvar
+  %rp107 = getelementptr float, float* %A, i64 %indvar
   store float %mul104, float* %rp107, align 4
   %indvar.next = add nsw i64 %indvar, 1
   %cmp = icmp slt i64 1024, %indvar.next
@@ -38,7 +37,7 @@ entry:
 for.body:
   %indvar = phi i64 [ %indvar.next, %for.body ], [ 0, %entry ]
   %mul104 = fmul float 1.0, %sqrinv
-  %rp107 = getelementptr float* %A, i64 %indvar
+  %rp107 = getelementptr float, float* %A, i64 %indvar
   store float %mul104, float* %rp107, align 4
   %indvar.next = add nsw i64 %indvar, 1
   %cmp = icmp slt i64 1024, %indvar.next

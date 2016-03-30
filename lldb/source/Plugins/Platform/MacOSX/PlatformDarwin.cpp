@@ -7,15 +7,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "lldb/lldb-python.h"
-
 #include "PlatformDarwin.h"
 
 // C Includes
 // C++ Includes
 // Other libraries and framework includes
+#include "clang/Basic/VersionTuple.h"
 // Project includes
 #include "lldb/Breakpoint/BreakpointLocation.h"
+#include "lldb/Breakpoint/BreakpointSite.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Error.h"
 #include "lldb/Core/Log.h"
@@ -26,6 +26,7 @@
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/Symbols.h"
+#include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/SymbolFile.h"
 #include "lldb/Symbol/SymbolVendor.h"
@@ -67,6 +68,8 @@ PlatformDarwin::LocateExecutableScriptingResources (Target *target,
         // should not lose ".file" but GetFileNameStrippingExtension() will do precisely that.
         // Ideally, we should have a per-platform list of extensions (".exe", ".app", ".dSYM", ".framework")
         // which should be stripped while leaving "this.binary.file" as-is.
+        ScriptInterpreter *script_interpreter = target->GetDebugger().GetCommandInterpreter().GetScriptInterpreter();
+        
         FileSpec module_spec = module.GetFileSpec();
         
         if (module_spec)
@@ -87,6 +90,8 @@ PlatformDarwin::LocateExecutableScriptingResources (Target *target,
                             {
                                 std::string module_basename (module_spec.GetFilename().GetCString());
                                 std::string original_module_basename (module_basename);
+                                
+                                bool was_keyword = false;
 
                                 // FIXME: for Python, we cannot allow certain characters in module
                                 // filenames we import. Theoretically, different scripting languages may
@@ -97,7 +102,11 @@ PlatformDarwin::LocateExecutableScriptingResources (Target *target,
                                 std::replace(module_basename.begin(), module_basename.end(), '.', '_');
                                 std::replace(module_basename.begin(), module_basename.end(), ' ', '_');
                                 std::replace(module_basename.begin(), module_basename.end(), '-', '_');
-                                
+                                if (script_interpreter && script_interpreter->IsReservedWord(module_basename.c_str()))
+                                {
+                                    module_basename.insert(module_basename.begin(), '_');
+                                    was_keyword = true;
+                                }
 
                                 StreamString path_string;
                                 StreamString original_path_string;
@@ -115,19 +124,22 @@ PlatformDarwin::LocateExecutableScriptingResources (Target *target,
                                     if (module_basename != original_module_basename
                                         && orig_script_fspec.Exists())
                                     {
+                                        const char* reason_for_complaint = was_keyword ? "conflicts with a keyword" : "contains reserved characters";
                                         if (script_fspec.Exists())
                                             feedback_stream->Printf("warning: the symbol file '%s' contains a debug script. However, its name"
-                                                                    " '%s' contains reserved characters and as such cannot be loaded. LLDB will"
+                                                                    " '%s' %s and as such cannot be loaded. LLDB will"
                                                                     " load '%s' instead. Consider removing the file with the malformed name to"
                                                                     " eliminate this warning.\n",
                                                                     symfile_spec.GetPath().c_str(),
                                                                     original_path_string.GetData(),
+                                                                    reason_for_complaint,
                                                                     path_string.GetData());
                                         else
                                             feedback_stream->Printf("warning: the symbol file '%s' contains a debug script. However, its name"
-                                                                    " contains reserved characters and as such cannot be loaded. If you intend"
+                                                                    " %s and as such cannot be loaded. If you intend"
                                                                     " to have this script loaded, please rename '%s' to '%s' and retry.\n",
                                                                     symfile_spec.GetPath().c_str(),
+                                                                    reason_for_complaint,
                                                                     original_path_string.GetData(),
                                                                     path_string.GetData());
                                     }
@@ -198,9 +210,7 @@ PlatformDarwin::ResolveExecutable (const ModuleSpec &module_spec,
     {
         if (m_remote_platform_sp)
         {
-            error = m_remote_platform_sp->ResolveExecutable (module_spec,
-                                                             exe_module_sp,
-                                                             module_search_paths_ptr);
+            error = GetCachedExecutable (resolved_module_spec, exe_module_sp, module_search_paths_ptr, *m_remote_platform_sp);
         }
         else
         {
@@ -222,11 +232,11 @@ PlatformDarwin::ResolveExecutable (const ModuleSpec &module_spec,
         if (resolved_module_spec.GetArchitecture().IsValid())
         {
             error = ModuleList::GetSharedModule (resolved_module_spec,
-                                                 exe_module_sp, 
+                                                 exe_module_sp,
                                                  module_search_paths_ptr,
-                                                 NULL, 
+                                                 NULL,
                                                  NULL);
-        
+
             if (error.Fail() || exe_module_sp.get() == NULL || exe_module_sp->GetObjectFile() == NULL)
             {
                 exe_module_sp.reset();
@@ -244,11 +254,12 @@ PlatformDarwin::ResolveExecutable (const ModuleSpec &module_spec,
             for (uint32_t idx = 0; GetSupportedArchitectureAtIndex (idx, resolved_module_spec.GetArchitecture()); ++idx)
             {
                 error = GetSharedModule (resolved_module_spec,
-                                         exe_module_sp, 
+                                         NULL,
+                                         exe_module_sp,
                                          module_search_paths_ptr,
-                                         NULL, 
+                                         NULL,
                                          NULL);
-                // Did we find an executable using one of the 
+                // Did we find an executable using one of the
                 if (error.Success())
                 {
                     if (exe_module_sp && exe_module_sp->GetObjectFile())
@@ -313,7 +324,7 @@ static lldb_private::Error
 MakeCacheFolderForFile (const FileSpec& module_cache_spec)
 {
     FileSpec module_cache_folder = module_cache_spec.CopyByRemovingLastPathComponent();
-    return FileSystem::MakeDirectory(module_cache_folder.GetPath().c_str(), eFilePermissionsDirectoryDefault);
+    return FileSystem::MakeDirectory(module_cache_folder, eFilePermissionsDirectoryDefault);
 }
 
 static lldb_private::Error
@@ -455,6 +466,7 @@ PlatformDarwin::GetSharedModuleWithLocalCache (const lldb_private::ModuleSpec &m
 
 Error
 PlatformDarwin::GetSharedModule (const ModuleSpec &module_spec,
+                                 Process* process,
                                  ModuleSP &module_sp,
                                  const FileSpecList *module_search_paths_ptr,
                                  ModuleSP *old_module_sp_ptr,
@@ -470,6 +482,7 @@ PlatformDarwin::GetSharedModule (const ModuleSpec &module_spec,
         if (m_remote_platform_sp)
         {
             error = m_remote_platform_sp->GetSharedModule (module_spec,
+                                                           process,
                                                            module_sp,
                                                            module_search_paths_ptr,
                                                            old_module_sp_ptr,
@@ -481,6 +494,7 @@ PlatformDarwin::GetSharedModule (const ModuleSpec &module_spec,
     {
         // Fall back to the local platform and find the file locally
         error = Platform::GetSharedModule (module_spec,
+                                           process,
                                            module_sp,
                                            module_search_paths_ptr,
                                            old_module_sp_ptr,
@@ -501,6 +515,7 @@ PlatformDarwin::GetSharedModule (const ModuleSpec &module_spec,
                     if (Host::ResolveExecutableInBundle (new_module_spec.GetFileSpec()))
                     {
                         Error new_error (Platform::GetSharedModule (new_module_spec,
+                                                                    process,
                                                                     module_sp,
                                                                     NULL,
                                                                     old_module_sp_ptr,
@@ -530,6 +545,7 @@ PlatformDarwin::GetSharedModule (const ModuleSpec &module_spec,
                                 ModuleSpec new_module_spec (module_spec);
                                 new_module_spec.GetFileSpec() = new_file_spec;
                                 Error new_error (Platform::GetSharedModule (new_module_spec,
+                                                                            process,
                                                                             module_sp,
                                                                             NULL,
                                                                             old_module_sp_ptr,
@@ -987,6 +1003,7 @@ PlatformDarwin::ARMGetSupportedArchitectureAtIndex (uint32_t idx, ArchSpec &arch
 const char *
 PlatformDarwin::GetDeveloperDirectory()
 {
+    Mutex::Locker locker (m_mutex);
     if (m_developer_directory.empty())
     {
         bool developer_dir_path_valid = false;
@@ -1155,7 +1172,7 @@ PlatformDarwin::GetResumeCountForLaunchInfo (ProcessLaunchInfo &launch_info)
         // /bin/sh re-exec's itself as /bin/bash requiring another resume.
         // But it only does this if the COMMAND_MODE environment variable
         // is set to "legacy".
-        char * const *envp = (char * const*)launch_info.GetEnvironmentEntries().GetConstArgumentVector();
+        const char **envp = launch_info.GetEnvironmentEntries().GetConstArgumentVector();
         if (envp != NULL)
         {
             for (int i = 0; envp[i] != NULL; i++)
@@ -1327,7 +1344,7 @@ PlatformDarwin::DirectoryEnumerator(void *baton,
     }
     
     return FileSpec::EnumerateDirectoryResult::eEnumerateDirectoryResultNext;
-};
+}
 
 FileSpec
 PlatformDarwin::FindSDKInXcodeForModules (SDKType sdk_type,
@@ -1419,7 +1436,7 @@ PlatformDarwin::GetSDKDirectoryForModules (SDKType sdk_type)
 }
 
 void
-PlatformDarwin::AddClangModuleCompilationOptionsForSDKType (std::vector<std::string> &options, SDKType sdk_type)
+PlatformDarwin::AddClangModuleCompilationOptionsForSDKType (Target *target, std::vector<std::string> &options, SDKType sdk_type)
 {
     const std::vector<std::string> apple_arguments =
     {
@@ -1435,29 +1452,77 @@ PlatformDarwin::AddClangModuleCompilationOptionsForSDKType (std::vector<std::str
                    apple_arguments.end());
     
     StreamString minimum_version_option;
-    unsigned int major = 0, minor = 0, micro = 0;
-    GetOSVersion(major, minor, micro);
-    if (micro == UINT32_MAX)
-        micro = 0; // FIXME who actually likes this behavior?
-    
+    uint32_t versions[3] = { 0, 0, 0 };
+    bool use_current_os_version = false;
     switch (sdk_type)
     {
-    case SDKType::iPhoneOS:
-        minimum_version_option.PutCString("-mios-version-min=");
-        minimum_version_option.PutCString(clang::VersionTuple(major, minor, micro).getAsString().c_str());
-        break;
-    case SDKType::iPhoneSimulator:
-        minimum_version_option.PutCString("-mios-simulator-version-min=");
-        minimum_version_option.PutCString(clang::VersionTuple(major, minor, micro).getAsString().c_str());
-        break;
-    case SDKType::MacOSX:
-        minimum_version_option.PutCString("-mmacosx-version-min=");
-        minimum_version_option.PutCString(clang::VersionTuple(major, minor, micro).getAsString().c_str());
+        case SDKType::iPhoneOS:
+#if defined (__arm__) || defined (__arm64__) || defined (__aarch64__)
+            use_current_os_version = true;
+#else
+            use_current_os_version = false;
+#endif
+            break;
+
+        case SDKType::iPhoneSimulator:
+            use_current_os_version = false;
+            break;
+
+        case SDKType::MacOSX:
+#if defined (__i386__) || defined (__x86_64__)
+            use_current_os_version = true;
+#else
+            use_current_os_version = false;
+#endif
+            break;
     }
-    
-    options.push_back(minimum_version_option.GetString());
-    
-    FileSpec sysroot_spec = GetSDKDirectoryForModules(sdk_type);
+
+    bool versions_valid = false;
+    if (use_current_os_version)
+        versions_valid = GetOSVersion(versions[0], versions[1], versions[2]);
+    else if (target)
+    {
+        // Our OS doesn't match our executable so we need to get the min OS version from the object file
+        ModuleSP exe_module_sp = target->GetExecutableModule();
+        if (exe_module_sp)
+        {
+            ObjectFile *object_file = exe_module_sp->GetObjectFile();
+            if (object_file)
+                versions_valid = object_file->GetMinimumOSVersion(versions, 3) > 0;
+        }
+    }
+    // Only add the version-min options if we got a version from somewhere
+    if (versions_valid && versions[0] != UINT32_MAX)
+    {
+        // Make any invalid versions be zero if needed
+        if (versions[1] == UINT32_MAX)
+            versions[1] = 0;
+        if (versions[2] == UINT32_MAX)
+            versions[2] = 0;
+        
+        switch (sdk_type)
+        {
+        case SDKType::iPhoneOS:
+            minimum_version_option.PutCString("-mios-version-min=");
+            minimum_version_option.PutCString(clang::VersionTuple(versions[0], versions[1], versions[2]).getAsString().c_str());
+            break;
+        case SDKType::iPhoneSimulator:
+            minimum_version_option.PutCString("-mios-simulator-version-min=");
+            minimum_version_option.PutCString(clang::VersionTuple(versions[0], versions[1], versions[2]).getAsString().c_str());
+            break;
+        case SDKType::MacOSX:
+            minimum_version_option.PutCString("-mmacosx-version-min=");
+            minimum_version_option.PutCString(clang::VersionTuple(versions[0], versions[1], versions[2]).getAsString().c_str());
+        }
+        options.push_back(minimum_version_option.GetString());
+    }
+
+    FileSpec sysroot_spec;
+    // Scope for mutex locker below
+    {
+        Mutex::Locker locker (m_mutex);
+        sysroot_spec = GetSDKDirectoryForModules(sdk_type);
+    }
     
     if (sysroot_spec.IsDirectory())
     {

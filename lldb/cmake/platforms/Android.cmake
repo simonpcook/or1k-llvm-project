@@ -41,10 +41,22 @@ set( __ANDROID_NDK__ True )
 set( ANDROID_ABI "${ANDROID_ABI}" CACHE INTERNAL "Android Abi" FORCE )
 if( ANDROID_ABI STREQUAL "x86" )
  set( CMAKE_SYSTEM_PROCESSOR "i686" )
- set( ANDROID_TOOLCHAIN_NAME "x86-linux-android" )
+ set( ANDROID_TOOLCHAIN_NAME "i686-linux-android" )
 elseif( ANDROID_ABI STREQUAL "x86_64" )
  set( CMAKE_SYSTEM_PROCESSOR "x86_64" )
  set( ANDROID_TOOLCHAIN_NAME "x86_64-linux-android" )
+elseif( ANDROID_ABI STREQUAL "armeabi" )
+ set( CMAKE_SYSTEM_PROCESSOR "armv5te" )
+ set( ANDROID_TOOLCHAIN_NAME "arm-linux-androideabi" )
+elseif( ANDROID_ABI STREQUAL "aarch64" )
+ set( CMAKE_SYSTEM_PROCESSOR "aarch64" )
+ set( ANDROID_TOOLCHAIN_NAME "aarch64-linux-android" )
+elseif( ANDROID_ABI STREQUAL "mips" )
+ set( CMAKE_SYSTEM_PROCESSOR "mips" )
+ set( ANDROID_TOOLCHAIN_NAME "mipsel-linux-android" )
+elseif( ANDROID_ABI STREQUAL "mips64" )
+ set( CMAKE_SYSTEM_PROCESSOR "mips64" )
+ set( ANDROID_TOOLCHAIN_NAME "mips64el-linux-android" )
 else()
  message( SEND_ERROR "Unknown ANDROID_ABI = \"${ANDROID_ABI}\"." )
 endif()
@@ -52,27 +64,41 @@ endif()
 set( ANDROID_TOOLCHAIN_DIR "${ANDROID_TOOLCHAIN_DIR}" CACHE INTERNAL "Android standalone toolchain directory" FORCE )
 set( ANDROID_SYSROOT "${ANDROID_TOOLCHAIN_DIR}/sysroot" CACHE INTERNAL "Android Sysroot" FORCE )
 
-# force python exe to be the one in Android toolchian
-set( PYTHON_EXECUTABLE "${ANDROID_TOOLCHAIN_DIR}/bin/python" CACHE INTERNAL "Python exec path" FORCE )
-
-if( NOT CMAKE_C_COMPILER )
- set( CMAKE_C_COMPILER   "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-gcc"     CACHE PATH "C compiler" )
- set( CMAKE_CXX_COMPILER "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-g++"     CACHE PATH "C++ compiler" )
- set( CMAKE_ASM_COMPILER "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-gcc"     CACHE PATH "assembler" )
- set( CMAKE_STRIP        "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-strip"   CACHE PATH "strip" )
- set( CMAKE_AR           "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-ar"      CACHE PATH "archive" )
- set( CMAKE_LINKER       "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-ld"      CACHE PATH "linker" )
- set( CMAKE_NM           "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-nm"      CACHE PATH "nm" )
- set( CMAKE_OBJCOPY      "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-objcopy" CACHE PATH "objcopy" )
- set( CMAKE_OBJDUMP      "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-objdump" CACHE PATH "objdump" )
- set( CMAKE_RANLIB       "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-ranlib"  CACHE PATH "ranlib" )
+# CMAKE_EXECUTABLE_SUFFIX is undefined in CMAKE_TOOLCHAIN_FILE
+if( WIN32 )
+ set( EXECUTABLE_SUFFIX ".exe" )
 endif()
 
-set( ANDROID_CXX_FLAGS "--sysroot=${ANDROID_SYSROOT} -pie -fPIE -funwind-tables -fsigned-char -no-canonical-prefixes" )
+# force python exe to be the one in Android toolchian
+set( PYTHON_EXECUTABLE "${ANDROID_TOOLCHAIN_DIR}/bin/python${EXECUTABLE_SUFFIX}" CACHE INTERNAL "Python exec path" FORCE )
+
+if( NOT CMAKE_C_COMPILER )
+ set( CMAKE_C_COMPILER   "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-gcc${EXECUTABLE_SUFFIX}"     CACHE PATH "C compiler" )
+ set( CMAKE_CXX_COMPILER "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-g++${EXECUTABLE_SUFFIX}"     CACHE PATH "C++ compiler" )
+ set( CMAKE_ASM_COMPILER "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-gcc${EXECUTABLE_SUFFIX}"     CACHE PATH "assembler" )
+ set( CMAKE_STRIP        "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-strip${EXECUTABLE_SUFFIX}"   CACHE PATH "strip" )
+ set( CMAKE_AR           "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-ar${EXECUTABLE_SUFFIX}"      CACHE PATH "archive" )
+ set( CMAKE_LINKER       "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-ld${EXECUTABLE_SUFFIX}"      CACHE PATH "linker" )
+ set( CMAKE_NM           "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-nm${EXECUTABLE_SUFFIX}"      CACHE PATH "nm" )
+ set( CMAKE_OBJCOPY      "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-objcopy${EXECUTABLE_SUFFIX}" CACHE PATH "objcopy" )
+ set( CMAKE_OBJDUMP      "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-objdump${EXECUTABLE_SUFFIX}" CACHE PATH "objdump" )
+ set( CMAKE_RANLIB       "${ANDROID_TOOLCHAIN_DIR}/bin/${ANDROID_TOOLCHAIN_NAME}-ranlib${EXECUTABLE_SUFFIX}"  CACHE PATH "ranlib" )
+endif()
+
+set( ANDROID_CXX_FLAGS "--sysroot=${ANDROID_SYSROOT} -funwind-tables -fsigned-char -no-canonical-prefixes" )
 # TODO: different ARM abi have different flags such as neon, vfpv etc
 if( X86 )
  set( ANDROID_CXX_FLAGS "${ANDROID_CXX_FLAGS} -funswitch-loops -finline-limit=300" )
+elseif( ANDROID_ABI STREQUAL "armeabi" )
+ # 64 bit atomic operations used in c++ libraries require armv7-a instructions
+ # armv5te and armv6 were tried but do not work.
+ set( ANDROID_CXX_FLAGS "${ANDROID_CXX_FLAGS} -march=armv7-a" )
 endif()
+
+# PIE is required for API 21+ so we enable it
+# unfortunately, it is not supported before API 14 so we need to do something else there
+# see http://llvm.org/pr23457
+set( ANDROID_CXX_FLAGS "${ANDROID_CXX_FLAGS} -pie -fPIE" )
 
 # linker flags
 set( ANDROID_CXX_FLAGS    "${ANDROID_CXX_FLAGS} -fdata-sections -ffunction-sections" )

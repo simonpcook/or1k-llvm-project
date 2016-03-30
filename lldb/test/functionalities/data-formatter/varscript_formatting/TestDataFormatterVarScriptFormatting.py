@@ -13,7 +13,7 @@ class PythonSynthDataFormatterTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
-    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @skipUnlessDarwin
     @dsym_test
     def test_with_dsym_and_run_command(self):
         """Test data formatter commands."""
@@ -58,7 +58,7 @@ class PythonSynthDataFormatterTestCase(TestBase):
         self.addTearDownHook(cleanup)
         
         self.runCmd("command script import helperfunc.py")
-        self.runCmd('type summary add -x "^something<.*>$" -s "T is a ${var.script:helperfunc.f}"')
+        self.runCmd('type summary add -x "^something<.*>$" -s "T is a ${script.var:helperfunc.f}"')
 
         self.expect("frame variable x", substrs = ['T is a non-pointer type']);
             

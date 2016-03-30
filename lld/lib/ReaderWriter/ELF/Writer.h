@@ -11,16 +11,13 @@
 #define LLD_READER_WRITER_ELF_WRITER_H
 
 #include "lld/Core/File.h"
-#include "lld/ReaderWriter/Writer.h"
+#include "lld/Core/Writer.h"
 
 namespace lld {
 namespace elf {
 /// \brief The Writer class is a base class for the linker to write
 ///        various kinds of ELF files.
 class ELFWriter : public Writer {
-public:
-  ELFWriter() { }
-
 public:
   /// \brief builds the chunks that needs to be written to the output
   ///        ELF file

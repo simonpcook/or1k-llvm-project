@@ -134,17 +134,26 @@ static void replace(std::string &str, const std::string &find,
 static void makeIslCompatible(std::string &str) {
   replace(str, ".", "_");
   replace(str, "\"", "_");
+  replace(str, " ", "__");
+  replace(str, "=>", "TO");
 }
 
-std::string polly::getIslCompatibleName(std::string Prefix, const Value *Val,
-                                        std::string Suffix) {
+std::string polly::getIslCompatibleName(const std::string &Prefix,
+                                        const std::string &Middle,
+                                        const std::string &Suffix) {
+  std::string S = Prefix + Middle + Suffix;
+  makeIslCompatible(S);
+  return S;
+}
+
+std::string polly::getIslCompatibleName(const std::string &Prefix,
+                                        const Value *Val,
+                                        const std::string &Suffix) {
   std::string ValStr;
   raw_string_ostream OS(ValStr);
   Val->printAsOperand(OS, false);
   ValStr = OS.str();
   // Remove the leading %
   ValStr.erase(0, 1);
-  ValStr = Prefix + ValStr + Suffix;
-  makeIslCompatible(ValStr);
-  return ValStr;
+  return getIslCompatibleName(Prefix, ValStr, Suffix);
 }

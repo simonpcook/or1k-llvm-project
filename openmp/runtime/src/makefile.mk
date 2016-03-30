@@ -1,6 +1,4 @@
 # makefile.mk #
-# $Revision: 43473 $
-# $Date: 2014-09-26 15:02:57 -0500 (Fri, 26 Sep 2014) $
 
 #
 #//===----------------------------------------------------------------------===//
@@ -66,11 +64,9 @@ LIB_TYPE     := $(call check_variable,LIB_TYPE,norm prof stub)
 # Type of library: dynamic or static linking.
 LINK_TYPE    := $(call check_variable,LINK_TYPE,dyna stat)
 # Supported OpenMP version, 2.5 or 3.0.
-OMP_VERSION  := $(call check_variable,OMP_VERSION,40 30 25)
+OMP_VERSION  := $(call check_variable,OMP_VERSION,41 40 30 25)
 # Generate optimized code.
 OPTIMIZATION := $(call check_variable,OPTIMIZATION,off on)
-# Target compiler.
-TARGET_COMPILER := $(call check_variable,TARGET_COMPILER,12 11)
 # Library version: 4 -- legacy, 5 -- compat.
 VERSION      := $(call check_variable,VERSION,5 4)
 # quad precision floating point
@@ -92,13 +88,15 @@ define curr_config
     LINK_TYPE=$(LINK_TYPE)
     OMP_VERSION=$(OMP_VERSION)
     OPTIMIZATION=$(OPTIMIZATION)
-    TARGET_COMPILER=$(TARGET_COMPILER)
     VERSION=$(VERSION)
     CPPFLAGS=$(subst $(space),_,$(CPPFLAGS))
     CFLAGS=$(subst $(space),_,$(CFLAGS))
     CXXFLAGS=$(subst $(space),_,$(CXXFLAGS))
     FFLAGS=$(subst $(space),_,$(FFLAGS))
     LDFLAGS=$(subst $(space),_,$(LDFLAGS))
+    OMPT_SUPPORT=$(OMPT_SUPPORT)
+    OMPT_BLAME=$(OMPT_BLAME)
+    OMPT_TRACE=$(OMPT_TRACE)
 endef
 # And check it.
 include $(tools_dir)src/common-checks.mk
@@ -109,16 +107,6 @@ legal_type = $(if $(filter norm,$(LIB_TYPE)),Performance,$(if $(filter prof,$(LI
 # Check the OS X version (we need it to decide which tool use for objects accumulation)
 ifeq "$(os)" "mac"
     mac_os_new := $(shell /bin/sh -c 'if [[ `sw_vers -productVersion` > 10.6 ]]; then echo "1"; else echo "0"; fi')
-endif
-
-# Form target directory name for MIC platforms
-ifeq "$(MIC_ARCH)" "knc"
-    mic-postf1  = .knc
-endif
-ifeq "$(MIC_OS)" "lin"
-    mic-postfix = $(mic-postf1).lin
-else
-    mic-postfix = $(mic-postf1)
 endif
 
 
@@ -213,7 +201,7 @@ ifeq "$(filter gcc clang,$(c))" ""
         fort-flags += -Qsox
     else
         # For unknown reason, icc and ifort on mac does not accept this option.
-        ifneq "$(filter lin lrb,$(os))" ""
+        ifneq "$(filter lin,$(os))" ""
             c-flags    += -sox
             cxx-flags  += -sox
             fort-flags += -sox
@@ -233,7 +221,7 @@ ifeq "$(fort)" "ifort"
     endif
 endif
 
-ifeq "$(os)" "lrb"
+ifeq "$(arch)" "mic"
     c-flags    += -mmic
     cxx-flags  += -mmic
     fort-flags += -mmic
@@ -264,6 +252,7 @@ ifeq "$(os)" "win"
 endif
 
 ifeq "$(os)" "lin"
+    ifneq "$(arch)" "mic"
     c-flags   += -Wsign-compare
     cxx-flags += -Wsign-compare
     ld-flags  += -Wsign-compare
@@ -273,13 +262,14 @@ ifeq "$(os)" "lin"
         ld-flags  += -Werror
     endif
 endif
+endif
 ifeq "$(os)" "win"
     c-flags   += -WX
     cxx-flags += -WX
     ld-flags  += -WX:NO
 endif
 
-ifeq "$(os)" "lrb"
+ifeq "$(arch)" "mic"
     # With "-ftls-model=initial-exec" the compiler generates faster code for static TLS
     # accesses, it generates slower calls to glibc otherwise. We don't use this
     # feature on Linux because it prevents dynamic loading (use of dlopen) of the library.
@@ -340,6 +330,7 @@ endif
 # --- Linker options ---
 
 ifeq "$(os)" "lin"
+    ifneq "$(arch)" "mic"
     ifneq "$(LIB_TYPE)" "stub"
         ifeq "$(ld)" "ld"
             # Warn about non-PIC code presence
@@ -389,7 +380,7 @@ ifeq "$(os)" "lin"
             ld-flags-extra += -lirc_pic
             endif
         endif
-        ifeq "$(filter 32 32e 64 ppc64,$(arch))" ""
+        ifeq "$(filter 32 32e 64 ppc64 ppc64le,$(arch))" ""
             ld-flags-extra += $(shell pkg-config --libs libffi)
         endif
     else
@@ -398,9 +389,7 @@ ifeq "$(os)" "lin"
             ld-flags += -Bstatic -L/usr/lib64 -lc_nonshared -Bdynamic
         endif
     endif
-endif
-
-ifeq "$(os)" "lrb"
+    else # Below are Intel(R) Many Integrated Core Architecture linker flags
   ifeq "$(ld)" "ld"
     ifneq "$(LIB_TYPE)" "stub"
         ld-flags += -lthr
@@ -426,16 +415,16 @@ ifeq "$(os)" "lrb"
 #    ld-flags += -lintlc
     ifneq "$(LIB_TYPE)" "stub"
         ld-flags += -pthread
-        ifeq "$(MIC_OS)" "lin"
             ld-flags += -ldl
         endif
-    endif
     # include the c++ library for stats-gathering code
     ifeq "$(stats)" "on"
         ld-flags-extra += -Wl,-lstdc++
     endif
   endif
 endif
+endif
+
 
 ifeq "$(os)" "mac"
     ifeq "$(ld)" "icc"
@@ -463,7 +452,7 @@ ifeq "$(os)" "win"
     ifeq "$(LINK_TYPE)" "dyna"
         cpp-flags += -D _USRDLL
     endif
-else # lin, lrb or mac
+else # lin, mic or mac
     cpp-flags += -D _GNU_SOURCE
     cpp-flags += -D _REENTRANT
 endif
@@ -490,16 +479,13 @@ endif
 cpp-flags += -D KMP_LIBRARY_FILE=\"$(lib_file)\"
 cpp-flags += -D KMP_VERSION_MAJOR=$(VERSION)
 
-# customize ppc64 cache line size to 128, 64 otherwise
-ifeq "$(arch)" "ppc64"
-	cpp-flags += -D CACHE_LINE=128
-else 
-	cpp-flags += -D CACHE_LINE=64
-endif
-
-# customize aarch64 cache line size to 128, 64 otherwise magic won't happen
-# Just kidding.. can we have some documentation on this, please
-ifeq "$(arch)" "aarch64"
+# Customize ppc64 and aarch64 cache line size to 128, use 64 otherwise
+# Almost all data structures (kmp.h) are aligned to a cache line to reduce false sharing, thus
+# increasing performance.  For heavily accessed data structures (e.g., kmp_base_info), there are
+# members of the data structure that are grouped together according to their memory access 
+# pattern.  For example, readonly data is put on cache lines together. Then, on separate cachelines,
+# private data used by the working thread is put on its own cache lines. etc.
+ifneq "$(filter aarch64 ppc64 ppc64le,$(arch))" ""
 	cpp-flags += -D CACHE_LINE=128
 else 
 	cpp-flags += -D CACHE_LINE=64
@@ -510,12 +496,13 @@ cpp-flags += -D BUILD_PARALLEL_ORDERED
 cpp-flags += -D KMP_ASM_INTRINS
 cpp-flags += -D KMP_USE_INTERNODE_ALIGNMENT=0
 # Linux and MIC compile with version symbols
-ifneq "$(filter lin lrb,$(os))" ""
-ifeq "$(filter ppc64,$(arch))" ""
+# ppc64 and ppc64le architectures don't compile with version symbols
+ifneq "$(filter lin,$(os))" ""
+ifeq "$(filter ppc64 ppc64le,$(arch))" ""
     cpp-flags += -D KMP_USE_VERSION_SYMBOLS
 endif
 endif
-ifneq "$(os)" "lrb"
+ifneq "$(arch)" "mic"
     cpp-flags += -D USE_LOAD_BALANCE
 endif
 ifneq "$(os)" "win"
@@ -526,7 +513,7 @@ ifeq "$(os)" "win"
     cpp-flags += -D KMP_WIN_CDECL
 endif
 ifeq "$(LINK_TYPE)" "dyna"
-    cpp-flags += -D GUIDEDLL_EXPORTS
+    cpp-flags += -D KMP_DYNAMIC_LIB
 endif
 ifeq "$(LIB_TYPE)" "stub"
     cpp-flags += -D KMP_STUB
@@ -539,13 +526,13 @@ else # 5
     endif
 endif
 cpp-flags += -D KMP_NESTED_HOT_TEAMS
-ifneq "$(filter 32 32e,$(arch))" ""
+ifneq "$(filter 32 32e mic,$(arch))" ""
 cpp-flags += -D KMP_USE_ADAPTIVE_LOCKS=1 -D KMP_DEBUG_ADAPTIVE_LOCKS=0
 endif
 
 # is the std c++ library needed? (for stats-gathering, it is)
 std_cpp_lib=0
-ifneq "$(filter lin lrb,$(os))" ""
+ifneq "$(filter lin,$(os))" ""
     ifeq "$(stats)" "on"
         cpp-flags += -D KMP_STATS_ENABLED=1
         std_cpp_lib=1
@@ -612,7 +599,7 @@ cpp-flags += -D INTEL_ITTNOTIFY_PREFIX=__kmp_itt_
 # Windows* OS: This define causes problems with LoadLibrary + declspec(thread) on Windows* OS. See CQ50564,
 #     tests kmp_load_library_lib*.c, and the following MSDN reference:
 #     http://support.microsoft.com/kb/118816
-ifneq "$(filter lin lrb,$(os))" ""
+ifneq "$(filter lin ,$(os))" ""
     ifeq "$(LINK_TYPE)" "dyna"
         cpp-flags += -D KMP_TDATA_GTID
     else
@@ -621,29 +608,6 @@ ifneq "$(filter lin lrb,$(os))" ""
         ifeq "$(arch)" "32e"
             cpp-flags += -D KMP_TDATA_GTID
         endif
-    endif
-endif
-
-# Intel compiler has a bug: in case of cross-build if used with
-# -x assembler-with-cpp option, it defines macros for both architectures,
-# host and tartget. For example, if compiler for IA-32 architecture
-# runs on Intel(R) 64, it defines both __i386 and __x86_64. (Note it is a bug
-# only if -x assembler-with-cpp is specified, in case of C files icc defines
-# only one, target architecture). So we cannot autodetect target architecture
-# within the file, and have to pass target architecture from command line.
-ifneq "$(os)" "win"
-    ifeq "$(arch)" "arm"
-        z_Linux_asm$(obj) : \
-		    cpp-flags += -D KMP_ARCH_ARM
-    else ifeq "$(arch)" "ppc64" 
-        z_Linux_asm$(obj) : \
-			cpp-flags += -D KMP_ARCH_PPC64		    
-    else ifeq "$(arch)" "aarch64"
-        z_Linux_asm$(obj) : \                            
-                        cpp-flags += -D KMP_ARCH_AARCH64
-    else
-        z_Linux_asm$(obj) : \
-		    cpp-flags += -D KMP_ARCH_X86$(if $(filter 32e,$(arch)),_64)
     endif
 endif
 
@@ -659,11 +623,15 @@ gd-flags += -D $(LIB_TYPE)
 ifeq "$(HAVE_QUAD)" "1"
     gd-flags += -D HAVE_QUAD
 endif
-ifeq "$(OMP_VERSION)" "40"
-    gd-flags += -D OMP_40 -D OMP_30
+ifeq "$(OMP_VERSION)" "41"
+    gd-flags += -D OMP_41 -D OMP_40 -D OMP_30
 else
-    ifeq "$(OMP_VERSION)" "30"
-        gd-flags += -D OMP_30
+    ifeq "$(OMP_VERSION)" "40"
+        gd-flags += -D OMP_40 -D OMP_30
+    else
+        ifeq "$(OMP_VERSION)" "30"
+            gd-flags += -D OMP_30
+        endif
     endif
 endif
 ifneq "$(VERSION)" "4"
@@ -682,7 +650,6 @@ ev-flags += -D Revision="\$$Revision" -D Date="\$$Date"
 ev-flags += -D KMP_TYPE="$(call legal_type,$(LIB_TYPE))" -D KMP_ARCH="$(call legal_arch,$(arch))"
 ev-flags += -D KMP_VERSION_MAJOR=$(VERSION) -D KMP_VERSION_MINOR=0 -D KMP_VERSION_BUILD=$(build)
 ev-flags += -D KMP_BUILD_DATE="$(date)"
-ev-flags += -D KMP_TARGET_COMPILER=$(TARGET_COMPILER)
 ev-flags += -D KMP_DIAG=$(if $(filter on,$(DIAG)),1,0)
 ev-flags += -D KMP_DEBUG_INFO=$(if $(filter on,$(DEBUG_INFO)),1,0)
 ifeq "$(OMP_VERSION)" "40"
@@ -706,12 +673,25 @@ ld-flags   += $(LDFLAGS)
 # --------------------------------------------------------------------------------------------------
 # Files.
 # --------------------------------------------------------------------------------------------------
+ifeq "$(OMPT_SUPPORT)" "on"
+    ompt_items = ompt-general
+    cpp-flags += -D OMPT_SUPPORT=1
+
+    ifeq "$(OMPT_BLAME)" "on"
+        cpp-flags += -D OMPT_BLAME=1
+    endif
+
+    ifeq "$(OMPT_TRACE)" "on"
+        cpp-flags += -D OMPT_TRACE=1
+    endif
+endif
 
 # Library files. These files participate in all kinds of library.
 lib_c_items :=      \
     kmp_ftn_cdecl   \
     kmp_ftn_extra   \
     kmp_version     \
+    $(ompt_items)   \
     $(empty)
 lib_cpp_items :=
 lib_asm_items :=
@@ -729,7 +709,8 @@ else # norm or prof
         kmp_atomic                   \
         kmp_csupport                 \
         kmp_debug                    \
-	kmp_itt                      \
+        kmp_debugger                 \
+        kmp_itt                      \
         $(empty)
     ifeq "$(USE_ITT_NOTIFY)" "1"
         lib_c_items +=  ittnotify_static
@@ -757,7 +738,7 @@ else # norm or prof
         kmp_sched                    \
         $(empty)
 
-ifeq "$(OMP_VERSION)" "40"
+ifeq ($(OMP_VERSION),$(filter $(OMP_VERSION),40 41))
     lib_cpp_items += kmp_taskdeps
     lib_cpp_items += kmp_cancel
 endif
@@ -784,23 +765,21 @@ endif
                         lib_asm_items =
                         gd-flags += -D shim
                         # for some reason, test-touch-md is able to work with
-                        # the build compiler's version of libiomp5md.dll, but
+                        # the build compiler's version of libompmd.dll, but
                         # test-touch-mt can't load it.
                         do_test_touch_mt := 0
                     endif
                 endif
             endif
         endif
-    else # lin, lrb or mac
+    else # lin, mic or mac
         lib_c_items += z_Linux_util
         # GCC Compatibility files
         ifeq "$(VERSION)" "4"
         else # 5
             lib_c_items += kmp_gsupport
         endif
-#        ifneq "$(arch)" "ppc64"
         lib_asm_items += z_Linux_asm
-#	     endif
     endif
 endif
 
@@ -825,14 +804,13 @@ ifeq "$(VERSION)" "4"
         _lib_item += _stats
     endif
 else
-    _lib_item = libiomp
+    _lib_item = libomp
     ifeq "$(LIB_TYPE)" "prof"
         _lib_item += prof
     endif
     ifeq "$(LIB_TYPE)" "stub"
         _lib_item += stubs
     endif
-    _lib_item += $(VERSION)
     ifeq "$(os)" "win"
         ifeq "$(LINK_TYPE)" "dyna"
             _lib_item += md
@@ -853,14 +831,13 @@ ifeq "$(os)-$(LINK_TYPE)" "win-dyna"
     imp_file  = $(lib_item)$(lib)
     def_file  = $(lib_item).def
     res_file  = $(lib_item).res
-    rc_file   = $(lib_item).rc
     # PDB file should be generated if: ( DEBIG_INFO is on ) OR ( we are building 32-bit normal
     # library AND version is 5 ).
     ifneq "$(filter on,$(DEBUG_INFO))$(filter norm-5,$(LIB_TYPE)-$(VERSION))" ""
         pdb_file = $(lib_item).pdb
     endif
 endif
-ifneq "$(filter lin lrb,$(os))" ""
+ifneq "$(filter lin,$(os))" ""
     ifeq "$(LINK_TYPE)" "dyna"
       ifneq "$(DEBUG_INFO)" "on"
         dbg_file = $(lib_item).dbg
@@ -873,12 +850,14 @@ endif
 # --- Output files ---
 
 out_lib_files  = $(addprefix $(out_lib_dir),$(lib_file) $(imp_file) $(pdb_file) $(dbg_file))
-out_inc_files  = $(addprefix $(out_ptf_dir)include_compat/,iomp_lib.h)
 out_mod_files  = \
     $(addprefix $(out_ptf_dir)include/,omp_lib.mod omp_lib_kinds.mod)
 out_cmn_files  = \
-    $(addprefix $(out_cmn_dir)include/,omp.h omp_lib.h omp_lib.f omp_lib.f90) \
-    $(addprefix $(out_cmn_dir)include_compat/,iomp.h)
+    $(addprefix $(out_cmn_dir)include/,omp.h omp_lib.h omp_lib.f omp_lib.f90)
+ifeq "$(OMPT_SUPPORT)" "on"
+    out_cmn_files  += $(addprefix $(out_cmn_dir)include/,ompt.h)
+endif
+
 ifneq "$(out_lib_fat_dir)" ""
     out_lib_fat_files  = $(addprefix $(out_lib_fat_dir),$(lib_file) $(imp_file))
 endif
@@ -980,7 +959,7 @@ ifneq "$(filter icc icl icl.exe,$(c))" ""
     ifeq "$(os)" "win"
         libirc  = $(icc_lib_dir)\libircmt$(lib)
         libipgo = $(icc_lib_dir)\libipgo$(lib)
-    else # lin, lrb or mac
+    else # lin, mic or mac
         ifeq "$(LINK_TYPE)" "dyna"
             # In case of dynamic linking, prefer libi*_pic.a libraries, they contains
             # position-independent code.
@@ -1003,7 +982,9 @@ ifneq "$(filter icc icl icl.exe,$(c))" ""
     # Linux* OS:
     # We link in libraries to static library only.
     ifeq "$(os)-$(LINK_TYPE)" "lin-stat"
+        ifneq "$(arch)" "mic"
         linked_in_libs += libirc
+    endif
     endif
     # OS X*:
     # The trick is not required in case of dynamic library, but on Intel(R) 64 architecture we have a
@@ -1033,12 +1014,11 @@ endif
 # --------------------------------------------------------------------------------------------------
 
 all    : lib inc mod
-lib    : tests $(out_lib_files)
-inc    : $(out_inc_files)
+lib    : tests $(out_lib_files) libomp_aliases
 mod    : $(out_mod_files)
 clean  :
 	$(rm) $(out_lib_files) $(out_lib_fat_files)
-	$(rm) $(out_inc_files) $(out_mod_files)
+	$(rm) $(out_mod_files)
 
 # --------------------------------------------------------------------------------------------------
 # Building library.
@@ -1054,11 +1034,11 @@ ifneq "$(dbg_file)" ""
 	$(cp) $< $@
 endif
 
-ifneq "$(filter lin lrb,$(os))" ""
+ifneq "$(filter lin,$(os))" ""
     lib_file_deps = $(if $(linked_in_libs),required/.objs,$(lib_obj_files))
 endif
 ifeq "$(os)" "mac"
-    lib_file_deps = iomp$(obj)
+    lib_file_deps = omp$(obj)
 endif
 ifeq "$(os)" "win"
     lib_file_deps = $(if $(linked_in_libs),wiped/.objs,$(lib_obj_files))
@@ -1152,29 +1132,34 @@ endif
 
 stripped/$(lib_file) : unstripped/$(lib_file) $(dbg_file) stripped/.dir .rebuild
 	$(target)
+        ifeq "$(arch)" "mic"
+	    x86_64-k1om-linux-objcopy --strip-debug $< $@.tmp
+	    x86_64-k1om-linux-objcopy --add-gnu-debuglink=$(dbg_file) $@.tmp $@
+        else
 	objcopy --strip-debug $< $@.tmp
 	objcopy --add-gnu-debuglink=$(dbg_file) $@.tmp $@
+        endif
 
 ifeq "$(os)" "mac"
 
     # These targets are under condition because of some OS X*-specific ld and nm options. For
     # example, GNU nm does not accept -j, GNU ld does not know -filelist.
 
-    # iomp.o is a big object file including all the OMP RTL object files and object files from
+    # omp.o is a big object file including all the OMP RTL object files and object files from
     # external libraries (like libirc). It is partially linked, references to external symbols
     # (e. g. references to libirc) already resolved, symbols defined in external libraries are
     # hidden by using -unexported-symbol-list and -non_global_symbols_strip_list linker options
     # (both options are required).
     # AC: 2012-04-12: after MAC machines upgrade compiler fails to create object, so use linker instead
 ifeq "$(mac_os_new)" "1"
-    iomp$(obj) : $(lib_obj_files) external-symbols.lst external-objects.lst .rebuild
+    omp$(obj) : $(lib_obj_files) external-symbols.lst external-objects.lst .rebuild
 	    $(target)
 	    ld -r -unexported_symbols_list external-symbols.lst \
 		-non_global_symbols_strip_list external-symbols.lst \
 		-filelist external-objects.lst \
 		-o $@ $(obj_deps_files)
 else
-    iomp$(obj) : $(lib_obj_files) external-symbols.lst external-objects.lst .rebuild
+    omp$(obj) : $(lib_obj_files) external-symbols.lst external-objects.lst .rebuild
 	    $(target)
 	    $(c) -r -nostartfiles -static-intel  -no-intel-extensions \
 		-Wl,-unexported_symbols_list,external-symbols.lst \
@@ -1184,7 +1169,7 @@ else
 endif
 
     # external-objects.lst is a list of object files extracted from external libraries, which should
-    # be linked into iomp.o. kmp_dummy.o is added to the list to avoid empty list -- OS X* utilities
+    # be linked into omp.o. kmp_dummy.o is added to the list to avoid empty list -- OS X* utilities
     # nm and ld do not like empty lists.
     external-objects.lst : $(lib_obj_files) $(addsuffix /.objs,$(linked_in_libs)) kmp_dummy$(obj) \
 	$(tools_dir)required-objects.pl .rebuild
@@ -1245,12 +1230,8 @@ $(def_file) : dllexports \
 	$(target)
 	$(perl) $(tools_dir)generate-def.pl $(gd-flags) -o $@ $<
 
-libiomp.rc : libiomp.rc.var kmp_version.c
-libiomp.rc : ev-flags += -D KMP_FILE=$(lib_file)
-
-$(rc_file) : libiomp.rc .rebuild
-	$(target)
-	$(cp) $< $@
+libomp.rc : libomp.rc.var kmp_version.c
+libomp.rc : ev-flags += -D KMP_FILE=$(lib_file)
 
 kmp_dummy.c : .rebuild
 	$(target)
@@ -1262,8 +1243,8 @@ kmp_dummy.c : .rebuild
 
 # --- test-touch ---
 
-# test-touch is not available for lrb.
-ifneq "$(os)" "lrb"
+# test-touch is not available for mic.
+ifneq "$(arch)" "mic"
 
     # Compile a simple C test and link it with the library. Do it two times: the first link gives us
     # clear message if there are any problems, the second link run in verbose mode, linker output
@@ -1400,7 +1381,7 @@ endif
 
 # But test-relo does actual work only on Linux* OS and
 # Intel(R) Many Integrated Core Architecture in case of dynamic linking.
-ifeq "$(if $(filter lin lrb,$(os)),os)-$(LINK_TYPE)" "os-dyna"
+ifeq "$(if $(filter lin,$(os)),os)-$(LINK_TYPE)" "os-dyna"
 
     # Make sure dynamic library does not contain position-dependent code.
     force-test-relo : test-relo/.force test-relo/.test
@@ -1408,7 +1389,11 @@ ifeq "$(if $(filter lin lrb,$(os)),os)-$(LINK_TYPE)" "os-dyna"
 
     test-relo/.test : $(lib_item)$(dll) test-relo/.dir .rebuild
 	    $(target)
+        ifeq "$(arch)" "mic"
+	    x86_64-k1om-linux-readelf -d $< > $(dir $@)readelf.log
+        else
 	    readelf -d $< > $(dir $@)readelf.log
+        endif
 	    grep -e TEXTREL $(dir $@)readelf.log; [ $$? -eq 1 ]
 	    $(touch) $@
 
@@ -1417,9 +1402,7 @@ endif
 # --- test-execstack ---
 
 # But test-execstack does actual work only on Linux* OS in case of dynamic linking.
-# TODO: Enable it on Intel(R) Many Integrated Core Architecture as well.
 ifeq "$(if $(filter lin,$(os)),os)-$(LINK_TYPE)" "os-dyna"
-
     tests += test-execstack
 
     # Make sure stack is not executable.
@@ -1428,15 +1411,14 @@ ifeq "$(if $(filter lin,$(os)),os)-$(LINK_TYPE)" "os-dyna"
 
     test-execstack/.test : $(lib_item)$(dll) test-execstack/.dir .rebuild
 	    $(target)
-	    $(perl) $(tools_dir)check-execstack.pl $<
+		$(perl) $(tools_dir)check-execstack.pl $(oa-opts) $<
 	    $(touch) $@
-
 endif
 
 # --- test-instr ---
 
 # But test-instr does actual work only on Intel(R) Many Integrated Core Architecture.
-ifeq "$(os)" "lrb"
+ifeq "$(arch)" "mic"
 
     # Make sure dynamic library does not contain position-dependent code.
     force-test-instr : test-instr/.force test-instr/.test
@@ -1444,7 +1426,7 @@ ifeq "$(os)" "lrb"
 
     test-instr/.test : $(lib_file) $(tools_dir)check-instruction-set.pl test-instr/.dir .rebuild
 	    $(target)
-	    $(perl) $(tools_dir)check-instruction-set.pl $(oa-opts) --show --mic-arch=$(MIC_ARCH) --mic-os=$(MIC_OS) $<
+		$(perl) $(tools_dir)check-instruction-set.pl $(oa-opts) --show --mic-arch=$(MIC_ARCH) $<
 	    $(touch) $@
 
 endif
@@ -1462,63 +1444,54 @@ ifneq "$(filter %-dyna win-%,$(os)-$(LINK_TYPE))" ""
         ifeq "$(arch)" "32"
             td_exp += libc.so.6
             td_exp += ld-linux.so.2
+            td_exp += libgcc_s.so.1
         endif
         ifeq "$(arch)" "32e"
             td_exp += libc.so.6
             td_exp += ld-linux-x86-64.so.2
+            td_exp += libgcc_s.so.1
         endif
         ifeq "$(arch)" "64"
             td_exp += libc.so.6.1
+            td_exp += libgcc_s.so.1
         endif
         ifeq "$(arch)" "arm"
             td_exp += libc.so.6
             td_exp += ld-linux-armhf.so.3
+            td_exp += libgcc_s.so.1
         endif
-        ifeq "$(arch)" "ppc64"
+        ifneq "$(filter ppc64 ppc64le,$(arch))" ""
             td_exp += libc.so.6
             td_exp += ld64.so.1
+            # warning: this is for ppc64le, but as we do not currently
+            # distinguish it from ppc64, we need to add this dep here
+            td_exp += ld64.so.2
+            td_exp += libgcc_s.so.1
         endif
         ifeq "$(arch)" "aarch"
             td_exp += libc.so.6
             td_exp += ld-linux-aarch64.so.1
+        endif
+        ifeq "$(arch)-$(MIC_ARCH)" "mic-knf"
+            td_exp += ld-linux-l1om.so.2
+            td_exp += libc.so.6
+            td_exp += libgcc_s.so.1
+        endif
+        ifeq "$(arch)-$(MIC_ARCH)" "mic-knc"
+            td_exp += ld-linux-k1om.so.2
+            td_exp += libc.so.6
         endif
         ifeq "$(std_cpp_lib)" "1"
             td_exp += libstdc++.so.6
         endif
 
         td_exp += libdl.so.2
-        td_exp += libgcc_s.so.1
-        ifeq "$(filter 32 32e 64 ppc64,$(arch))" ""
+        ifeq "$(filter 32 32e 64 ppc64 ppc64le mic,$(arch))" ""
             td_exp += libffi.so.6
             td_exp += libffi.so.5
         endif
         ifneq "$(LIB_TYPE)" "stub"
             td_exp += libpthread.so.0
-        endif
-    endif
-    ifeq "$(os)" "lrb"
-        ifeq "$(MIC_OS)" "lin"
-            ifeq "$(std_cpp_lib)" "1"
-                td_exp += libstdc++.so.6
-            endif
-            ifeq "$(MIC_ARCH)" "knf"
-                td_exp += "ld-linux-l1om.so.2"
-                td_exp += libc.so.6
-                td_exp += libpthread.so.0
-                td_exp += libdl.so.2
-                td_exp += libgcc_s.so.1
-            endif
-            ifeq "$(MIC_ARCH)" "knc"
-                td_exp += "ld-linux-k1om.so.2"
-                td_exp += libc.so.6
-                td_exp += libdl.so.2
-                td_exp += libpthread.so.0
-            endif
-        endif
-        ifeq "$(MIC_OS)" "bsd"
-            td_exp += libc.so.7
-            td_exp += libthr.so.3
-            td_exp += libunwind.so.5
         endif
     endif
     ifeq "$(os)" "mac"
@@ -1552,21 +1525,13 @@ endif
 # --------------------------------------------------------------------------------------------------
 # Fortran files.
 # --------------------------------------------------------------------------------------------------
-ifeq "$(TARGET_COMPILER)" "11"
-    omp_lib_f = omp_lib.f
-endif
-ifeq "$(TARGET_COMPILER)" "12"
-    omp_lib_f = omp_lib.f90
-endif
-ifeq "$(omp_lib_f)" ""
-    $(error omp_lib_f is not defined)
-endif
-omp_lib.mod omp_lib_kinds.mod : $(omp_lib_f) .rebuild
+omp_lib_f = omp_lib.f90
+omp_lib_kinds.mod : $(omp_lib_f) .rebuild
 	$(target)
 	$(fort) $(fort-flags) $<
+omp_lib.mod : omp_lib_kinds.mod
 
 omp_lib.h  : ev-flags += -D KMP_INT_PTR_KIND="int_ptr_kind()"
-iomp_lib.h : ev-flags += -D KMP_INT_PTR_KIND=$(if $(filter 32,$(arch)),4,8)
 
 # --------------------------------------------------------------------------------------------------
 # Common files.

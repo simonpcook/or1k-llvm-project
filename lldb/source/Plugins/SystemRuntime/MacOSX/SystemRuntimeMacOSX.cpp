@@ -20,6 +20,7 @@
 #include "lldb/Expression/ClangFunction.h"
 #include "lldb/Expression/ClangUtilityFunction.h"
 #include "lldb/Host/FileSpec.h"
+#include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/SymbolContext.h"
 #include "Plugins/Process/Utility/HistoryThread.h"
@@ -315,7 +316,7 @@ SystemRuntimeMacOSX::ReadLibdispatchOffsetsAddress ()
             dispatch_queue_offsets_symbol = module_sp->FindFirstSymbolWithNameAndType (g_dispatch_queue_offsets_symbol_name, eSymbolTypeData);
     }
     if (dispatch_queue_offsets_symbol)
-        m_dispatch_queue_offsets_addr = dispatch_queue_offsets_symbol->GetAddress().GetLoadAddress(&m_process->GetTarget());
+        m_dispatch_queue_offsets_addr = dispatch_queue_offsets_symbol->GetLoadAddress(&m_process->GetTarget());
 }
 
 void
@@ -360,7 +361,7 @@ SystemRuntimeMacOSX::ReadLibpthreadOffsetsAddress ()
                                                            (g_libpthread_layout_offsets_symbol_name, eSymbolTypeData);
         if (libpthread_layout_offsets_symbol)
         {
-            m_libpthread_layout_offsets_addr =  libpthread_layout_offsets_symbol->GetAddress().GetLoadAddress(&m_process->GetTarget());
+            m_libpthread_layout_offsets_addr = libpthread_layout_offsets_symbol->GetLoadAddress(&m_process->GetTarget());
         }
     }
 }
@@ -409,7 +410,7 @@ SystemRuntimeMacOSX::ReadLibdispatchTSDIndexesAddress ()
                                                            (g_libdispatch_tsd_indexes_symbol_name, eSymbolTypeData);
         if (libdispatch_tsd_indexes_symbol)
         {
-            m_dispatch_tsd_indexes_addr =  libdispatch_tsd_indexes_symbol->GetAddress().GetLoadAddress(&m_process->GetTarget());
+            m_dispatch_tsd_indexes_addr = libdispatch_tsd_indexes_symbol->GetLoadAddress(&m_process->GetTarget());
         }
     }
 }

@@ -1,7 +1,5 @@
 /*
  * kmp_import.c
- * $Revision: 42951 $
- * $Date: 2014-01-21 14:41:41 -0600 (Tue, 21 Jan 2014) $
  */
 
 
@@ -17,9 +15,9 @@
 
 /*
     ------------------------------------------------------------------------------------------------
-    Object generated from this source file is linked to Windows* OS DLL import library (libiomp5md.lib)
+    Object generated from this source file is linked to Windows* OS DLL import library (libompmd.lib)
     only! It is not a part of regular static or dynamic OpenMP RTL. Any code that just needs to go
-    in the libiomp5md.lib (but not in libiomp5mt.lib and libiomp5md.dll) should be placed in this
+    in the libompmd.lib (but not in libompmt.lib and libompmd.dll) should be placed in this
     file.
     ------------------------------------------------------------------------------------------------
 */

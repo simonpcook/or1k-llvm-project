@@ -1,7 +1,5 @@
 /*
  * kmp_str.h -- String manipulation routines.
- * $Revision: 43435 $
- * $Date: 2014-09-04 15:16:08 -0500 (Thu, 04 Sep 2014) $
  */
 
 
@@ -29,7 +27,6 @@
 
 #if KMP_OS_WINDOWS
 # define strdup    _strdup
-# define snprintf  _snprintf
 #endif
 
 /*  some macros to replace ctype.h functions  */

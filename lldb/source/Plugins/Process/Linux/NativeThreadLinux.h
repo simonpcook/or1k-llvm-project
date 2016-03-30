@@ -11,10 +11,14 @@
 #define liblldb_NativeThreadLinux_H_
 
 #include "lldb/lldb-private-forward.h"
-#include "../../../Host/common/NativeThreadProtocol.h"
+#include "lldb/Host/common/NativeThreadProtocol.h"
 
-namespace lldb_private
-{
+#include <map>
+#include <string>
+
+namespace lldb_private {
+namespace process_linux {
+
     class NativeProcessLinux;
 
     class NativeThreadLinux : public NativeThreadProtocol
@@ -34,7 +38,7 @@ namespace lldb_private
         GetState () override;
 
         bool
-        GetStopReason (ThreadStopInfo &stop_info) override;
+        GetStopReason (ThreadStopInfo &stop_info, std::string& description) override;
 
         NativeRegisterContextSP
         GetRegisterContext () override;
@@ -45,16 +49,10 @@ namespace lldb_private
         Error
         RemoveWatchpoint (lldb::addr_t addr) override;
 
-        uint32_t
-        TranslateStopInfoToGdbSignal (const ThreadStopInfo &stop_info) const override;
-
     private:
         // ---------------------------------------------------------------------
         // Interface for friend classes
         // ---------------------------------------------------------------------
-        void
-        SetLaunching ();
-
         void
         SetRunning ();
 
@@ -62,7 +60,7 @@ namespace lldb_private
         SetStepping ();
 
         void
-        SetStoppedBySignal (uint32_t signo);
+        SetStoppedBySignal(uint32_t signo, const siginfo_t *info = nullptr);
 
         /// Return true if the thread is stopped.
         /// If stopped by a signal, indicate the signo in the signo argument.
@@ -76,17 +74,39 @@ namespace lldb_private
         void
         SetStoppedByBreakpoint ();
 
+        void
+        SetStoppedByWatchpoint (uint32_t wp_index);
+
         bool
         IsStoppedAtBreakpoint ();
 
+        bool
+        IsStoppedAtWatchpoint ();
+
         void
-        SetCrashedWithException (uint64_t exception_type, lldb::addr_t exception_addr);
+        SetStoppedByTrace ();
+
+        void
+        SetCrashedWithException (const siginfo_t& info);
 
         void
         SetSuspended ();
 
         void
         SetExited ();
+
+        Error
+        RequestStop ();
+
+        typedef std::function<Error (lldb::tid_t tid, bool supress_signal)> ResumeThreadFunction;
+        struct ThreadContext
+        {
+            bool stop_requested = false;
+            ResumeThreadFunction request_resume_function;
+        };
+
+        ThreadContext &
+        GetThreadContext() { return m_thread_context; }
 
         // ---------------------------------------------------------------------
         // Private interface
@@ -100,7 +120,13 @@ namespace lldb_private
         lldb::StateType m_state;
         ThreadStopInfo m_stop_info;
         NativeRegisterContextSP m_reg_context_sp;
+        std::string m_stop_description;
+        using WatchpointIndexMap = std::map<lldb::addr_t, uint32_t>;
+        WatchpointIndexMap m_watchpoint_index_map;
+        ThreadContext m_thread_context;
     };
-}
+
+} // namespace process_linux
+} // namespace lldb_private
 
 #endif // #ifndef liblldb_NativeThreadLinux_H_

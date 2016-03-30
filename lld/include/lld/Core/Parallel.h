@@ -16,8 +16,9 @@
 #include "llvm/Support/MathExtras.h"
 
 #ifdef _MSC_VER
-// Exceptions are disabled so this isn't defined, but concrt assumes it is.
-static void *__uncaught_exception() { return nullptr; }
+// concrt.h depends on eh.h for __uncaught_exception declaration
+// even if we disable exceptions.
+#include <eh.h>
 #endif
 
 #include <algorithm>
@@ -68,6 +69,44 @@ public:
   }
 };
 
+/// \brief An implementation of future. std::future and std::promise in
+/// old libstdc++ have a threading bug; there is a small chance that a
+/// call of future::get throws an exception in the normal use case.
+/// We want to use our own future implementation until we drop support
+/// of old versions of libstdc++.
+/// https://gcc.gnu.org/ml/gcc-patches/2014-05/msg01389.html
+template<typename T> class Future {
+public:
+  Future() : _hasValue(false) {}
+
+  void set(T &&val) {
+    assert(!_hasValue);
+    {
+      std::unique_lock<std::mutex> lock(_mutex);
+      _val = val;
+      _hasValue = true;
+    }
+    _cond.notify_all();
+  }
+
+  T &get() {
+    std::unique_lock<std::mutex> lock(_mutex);
+    if (_hasValue)
+      return _val;
+    _cond.wait(lock, [&] { return _hasValue; });
+    return _val;
+  }
+
+private:
+  T _val;
+  bool _hasValue;
+  std::mutex _mutex;
+  std::condition_variable _cond;
+};
+
+// Classes in this namespace are implementation details of this header.
+namespace internal {
+
 /// \brief An abstract class that takes closures and runs them asynchronously.
 class Executor {
 public:
@@ -75,6 +114,45 @@ public:
   virtual void add(std::function<void()> func) = 0;
 };
 
+#if !defined(LLVM_ENABLE_THREADS) || LLVM_ENABLE_THREADS == 0
+class SyncExecutor : public Executor {
+public:
+  virtual void add(std::function<void()> func) {
+    func();
+  }
+};
+
+inline Executor *getDefaultExecutor() {
+  static SyncExecutor exec;
+  return &exec;
+}
+#elif defined(_MSC_VER)
+/// \brief An Executor that runs tasks via ConcRT.
+class ConcRTExecutor : public Executor {
+  struct Taskish {
+    Taskish(std::function<void()> task) : _task(task) {}
+
+    std::function<void()> _task;
+
+    static void run(void *p) {
+      Taskish *self = static_cast<Taskish *>(p);
+      self->_task();
+      concurrency::Free(self);
+    }
+  };
+
+public:
+  virtual void add(std::function<void()> func) {
+    Concurrency::CurrentScheduler::ScheduleTask(Taskish::run,
+        new (concurrency::Alloc(sizeof(Taskish))) Taskish(func));
+  }
+};
+
+inline Executor *getDefaultExecutor() {
+  static ConcRTExecutor exec;
+  return &exec;
+}
+#else
 /// \brief An implementation of an Executor that runs closures on a thread pool
 ///   in filo order.
 class ThreadPoolExecutor : public Executor {
@@ -133,38 +211,13 @@ private:
   Latch _done;
 };
 
-#ifdef _MSC_VER
-/// \brief An Executor that runs tasks via ConcRT.
-class ConcRTExecutor : public Executor {
-  struct Taskish {
-    Taskish(std::function<void()> task) : _task(task) {}
-
-    std::function<void()> _task;
-
-    static void run(void *p) {
-      Taskish *self = static_cast<Taskish *>(p);
-      self->_task();
-      concurrency::Free(self);
-    }
-  };
-
-public:
-  virtual void add(std::function<void()> func) {
-    Concurrency::CurrentScheduler::ScheduleTask(Taskish::run,
-        new (concurrency::Alloc(sizeof(Taskish))) Taskish(func));
-  }
-};
-
-inline Executor *getDefaultExecutor() {
-  static ConcRTExecutor exec;
-  return &exec;
-}
-#else
 inline Executor *getDefaultExecutor() {
   static ThreadPoolExecutor exec;
   return &exec;
 }
 #endif
+
+}  // namespace internal
 
 /// \brief Allows launching a number of tasks and waiting for them to finish
 ///   either explicitly via sync() or implicitly on destruction.
@@ -174,7 +227,7 @@ class TaskGroup {
 public:
   void spawn(std::function<void()> f) {
     _latch.inc();
-    getDefaultExecutor()->add([&, f] {
+    internal::getDefaultExecutor()->add([&, f] {
       f();
       _latch.dec();
     });
@@ -183,7 +236,15 @@ public:
   void sync() const { _latch.sync(); }
 };
 
-#ifdef _MSC_VER
+#if !defined(LLVM_ENABLE_THREADS) || LLVM_ENABLE_THREADS == 0
+template <class RandomAccessIterator, class Comp>
+void parallel_sort(
+    RandomAccessIterator start, RandomAccessIterator end,
+    const Comp &comp = std::less<
+        typename std::iterator_traits<RandomAccessIterator>::value_type>()) {
+  std::sort(start, end, comp);
+}
+#elif defined(_MSC_VER)
 // Use ppl parallel_sort on Windows.
 template <class RandomAccessIterator, class Comp>
 void parallel_sort(
@@ -221,14 +282,14 @@ void parallel_quick_sort(RandomAccessIterator start, RandomAccessIterator end,
   auto pivot = medianOf3(start, end, comp);
   // Move pivot to end.
   std::swap(*(end - 1), *pivot);
-  pivot = std::partition(start, end - 1, [end](decltype(*start) v) {
-    return v < *(end - 1);
+  pivot = std::partition(start, end - 1, [&comp, end](decltype(*start) v) {
+    return comp(v, *(end - 1));
   });
   // Move pivot to middle of partition.
   std::swap(*pivot, *(end - 1));
 
   // Recurse.
-  tg.spawn([=, &tg] {
+  tg.spawn([=, &comp, &tg] {
     parallel_quick_sort(start, pivot, comp, tg, depth - 1);
   });
   parallel_quick_sort(pivot + 1, end, comp, tg, depth - 1);
@@ -250,7 +311,12 @@ template <class T> void parallel_sort(T *start, T *end) {
   parallel_sort(start, end, std::less<T>());
 }
 
-#ifdef _MSC_VER
+#if !defined(LLVM_ENABLE_THREADS) || LLVM_ENABLE_THREADS == 0
+template <class Iterator, class Func>
+void parallel_for_each(Iterator begin, Iterator end, Func func) {
+  std::for_each(begin, end, func);
+}
+#elif defined(_MSC_VER)
 // Use ppl parallel_for_each on Windows.
 template <class Iterator, class Func>
 void parallel_for_each(Iterator begin, Iterator end, Func func) {
@@ -259,7 +325,12 @@ void parallel_for_each(Iterator begin, Iterator end, Func func) {
 #else
 template <class Iterator, class Func>
 void parallel_for_each(Iterator begin, Iterator end, Func func) {
-  // TODO: Make this parallel.
+  TaskGroup tg;
+  ptrdiff_t taskSize = 1024;
+  while (taskSize <= std::distance(begin, end)) {
+    tg.spawn([=, &func] { std::for_each(begin, begin + taskSize, func); });
+    begin += taskSize;
+  }
   std::for_each(begin, end, func);
 }
 #endif

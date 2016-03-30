@@ -20,6 +20,7 @@ class RepeatedExprsCase(BenchBase):
             self.count = 100
 
     @benchmarks_test
+    @expectedFailureWindows("llvm.org/pr22274: need a pexpect replacement for windows")
     def test_compare_lldb_to_gdb(self):
         """Test repeated expressions with lldb vs. gdb."""
         self.buildDefault()
@@ -41,7 +42,7 @@ class RepeatedExprsCase(BenchBase):
         prompt = self.child_prompt
 
         # So that the child gets torn down after the test.
-        self.child = pexpect.spawn('%s %s %s' % (self.lldbExec, self.lldbOption, exe))
+        self.child = pexpect.spawn('%s %s %s' % (lldbtest_config.lldbExec, self.lldbOption, exe))
         child = self.child
 
         # Turn on logging for what the child sends back.

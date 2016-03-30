@@ -15,9 +15,9 @@ using namespace clang::ast_matchers;
 
 namespace clang {
 
-namespace ast_matchers {
-AST_MATCHER_P(Stmt, ignoringTemporaryExpr, internal::Matcher<Stmt>,
-              InnerMatcher) {
+namespace {
+AST_MATCHER_P(Stmt, ignoringTemporaryExpr,
+              ast_matchers::internal::Matcher<Stmt>, InnerMatcher) {
   const Stmt *E = &Node;
   for (;;) {
     // Temporaries with non-trivial dtors.
@@ -38,14 +38,16 @@ AST_MATCHER_P(Stmt, ignoringTemporaryExpr, internal::Matcher<Stmt>,
 
 // Finds a node if it's a base of an already bound node.
 AST_MATCHER_P(CXXRecordDecl, baseOfBoundNode, std::string, ID) {
-  return Builder->removeBindings([&](const internal::BoundNodesMap &Nodes) {
-    const auto *Derived = Nodes.getNodeAs<CXXRecordDecl>(ID);
-    return Derived != &Node && !Derived->isDerivedFrom(&Node);
-  });
+  return Builder->removeBindings(
+      [&](const ast_matchers::internal::BoundNodesMap &Nodes) {
+        const auto *Derived = Nodes.getNodeAs<CXXRecordDecl>(ID);
+        return Derived != &Node && !Derived->isDerivedFrom(&Node);
+      });
 }
-} // namespace ast_matchers
+} // namespace
 
 namespace tidy {
+namespace misc {
 
 void UndelegatedConstructorCheck::registerMatchers(MatchFinder *Finder) {
   // We look for calls to constructors of the same type in constructors. To do
@@ -70,5 +72,6 @@ void UndelegatedConstructorCheck::check(const MatchFinder::MatchResult &Result) 
                          "A temporary object is created here instead");
 }
 
+} // namespace misc
 } // namespace tidy
 } // namespace clang

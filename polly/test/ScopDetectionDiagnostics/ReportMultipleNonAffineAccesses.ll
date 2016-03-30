@@ -1,9 +1,9 @@
-; RUN: opt %loadPolly -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -analyze < %s 2>&1| FileCheck %s
-; RUN: opt %loadPolly -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-detect-keep-going -analyze < %s 2>&1| FileCheck %s -check-prefix=ALL
-; RUN: opt %loadPolly -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize -analyze < %s 2>&1| FileCheck %s -check-prefix=DELIN
-; RUN: opt %loadPolly -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize -polly-detect-keep-going -analyze < %s 2>&1| FileCheck %s -check-prefix=DELIN-ALL
-; RUN: opt %loadPolly -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-allow-nonaffine -analyze < %s 2>&1| FileCheck %s -check-prefix=NONAFFINE
-; RUN: opt %loadPolly -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize -polly-allow-nonaffine -analyze < %s 2>&1| FileCheck %s -check-prefix=NONAFFINE
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -analyze < %s 2>&1| FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize=false -polly-detect-keep-going -analyze < %s 2>&1| FileCheck %s -check-prefix=ALL
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize -analyze < %s 2>&1| FileCheck %s -check-prefix=DELIN
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize -polly-detect-keep-going -analyze < %s 2>&1| FileCheck %s -check-prefix=DELIN-ALL
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-allow-nonaffine -analyze < %s 2>&1| FileCheck %s -check-prefix=NONAFFINE
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -pass-remarks-missed="polly-detect" -polly-detect-track-failures -polly-detect -polly-delinearize -polly-allow-nonaffine -analyze < %s 2>&1| FileCheck %s -check-prefix=NONAFFINE
 
 ;  1 void manyaccesses(float A[restrict], long n, float B[restrict][n])
 ;  2 {
@@ -69,28 +69,28 @@ for.body:                                         ; preds = %entry.split, %for.b
   %tmp3 = phi i64 [ 0, %entry.split ], [ %tmp14, %for.body ], !dbg !15
   %mul = mul i64 %tmp3, 2, !dbg !17
   %tmp4 = mul i64 %tmp, %tmp3, !dbg !18
-  %arrayidx8 = getelementptr float* %B, i64 %tmp4, !dbg !19
+  %arrayidx8 = getelementptr float, float* %B, i64 %tmp4, !dbg !19
   %mul9 = mul i64 %n, %tmp3, !dbg !15
-  %arrayidx12 = getelementptr float* %B, i64 %mul9, !dbg !20
-  %arrayidx15 = getelementptr float* %B, i64 %tmp3, !dbg !21
+  %arrayidx12 = getelementptr float, float* %B, i64 %mul9, !dbg !20
+  %arrayidx15 = getelementptr float, float* %B, i64 %tmp3, !dbg !21
   %mul1 = mul nsw i64 %mul, %tmp3, !dbg !17
-  %arrayidx = getelementptr inbounds float* %A, i64 %mul1, !dbg !22
-  %tmp5 = load float* %arrayidx, align 4, !dbg !22
+  %arrayidx = getelementptr inbounds float, float* %A, i64 %mul1, !dbg !22
+  %tmp5 = load float, float* %arrayidx, align 4, !dbg !22
   %mul3 = mul nsw i64 %mul, %tmp3, !dbg !27
   %add1 = or i64 %mul3, 1, !dbg !27
-  %arrayidx4 = getelementptr inbounds float* %A, i64 %add1, !dbg !28
-  %tmp6 = load float* %arrayidx4, align 4, !dbg !28
-  %tmp7 = load float* %B, align 4, !dbg !29
-  %tmp8 = load float* %arrayidx8, align 4, !dbg !19
+  %arrayidx4 = getelementptr inbounds float, float* %A, i64 %add1, !dbg !28
+  %tmp6 = load float, float* %arrayidx4, align 4, !dbg !28
+  %tmp7 = load float, float* %B, align 4, !dbg !29
+  %tmp8 = load float, float* %arrayidx8, align 4, !dbg !19
   %tmp9 = mul i64 %mul9, %tmp3, !dbg !15
   %arrayidx10.sum = add i64 %tmp9, %tmp3, !dbg !15
-  %arrayidx11 = getelementptr inbounds float* %B, i64 %arrayidx10.sum, !dbg !15
-  %tmp10 = load float* %arrayidx11, align 4, !dbg !15
-  %tmp11 = load float* %arrayidx12, align 4, !dbg !20
-  %tmp12 = load float* %arrayidx15, align 4, !dbg !21
+  %arrayidx11 = getelementptr inbounds float, float* %B, i64 %arrayidx10.sum, !dbg !15
+  %tmp10 = load float, float* %arrayidx11, align 4, !dbg !15
+  %tmp11 = load float, float* %arrayidx12, align 4, !dbg !20
+  %tmp12 = load float, float* %arrayidx15, align 4, !dbg !21
   %mul16 = mul nsw i64 %tmp3, %tmp3, !dbg !30
-  %arrayidx18 = getelementptr inbounds float* %B, i64 %mul16, !dbg !31
-  %tmp13 = load float* %arrayidx18, align 4, !dbg !31
+  %arrayidx18 = getelementptr inbounds float, float* %B, i64 %mul16, !dbg !31
+  %tmp13 = load float, float* %arrayidx18, align 4, !dbg !31
   %add19 = fadd float %tmp5, %tmp6, !dbg !32
   %add20 = fadd float %add19, %tmp7, !dbg !33
   %add21 = fadd float %add20, %tmp8, !dbg !34
@@ -99,7 +99,7 @@ for.body:                                         ; preds = %entry.split, %for.b
   %add24 = fadd float %add23, %tmp12, !dbg !37
   %add25 = fadd float %add24, %tmp13, !dbg !38
   %mul26 = mul nsw i64 %tmp3, %tmp3, !dbg !39
-  %arrayidx27 = getelementptr inbounds float* %A, i64 %mul26, !dbg !40
+  %arrayidx27 = getelementptr inbounds float, float* %A, i64 %mul26, !dbg !40
   store float %add25, float* %arrayidx27, align 4, !dbg !40
   %tmp14 = add nsw i64 %tmp3, 1, !dbg !41
   %exitcond = icmp ne i64 %tmp14, 1024, !dbg !10
@@ -113,42 +113,42 @@ for.end:                                          ; preds = %for.body
 !llvm.module.flags = !{!7, !8}
 !llvm.ident = !{!9}
 
-!0 = !{!"0x11\0012\00clang version 3.6.0 \001\00\000\00\002", !1, !2, !2, !3, !2, !2} ; [ DW_TAG_compile_unit ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c] [DW_LANG_C99]
-!1 = !{!"/tmp/test.c", !"/home/grosser/Projects/polly/git/tools/polly/test"}
+!0 = !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.6.0 ", isOptimized: true, emissionKind: 2, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !2, imports: !2)
+!1 = !DIFile(filename: "/tmp/test.c", directory: "/home/grosser/Projects/polly/git/tools/polly/test")
 !2 = !{}
 !3 = !{!4}
-!4 = !{!"0x2e\00manyaccesses\00manyaccesses\00\001\000\001\000\006\00256\001\002", !1, !5, !6, null, void (float*, i64, float*)* @manyaccesses, null, null, !2} ; [ DW_TAG_subprogram ] [line 1] [def] [scope 2] [manyaccesses]
-!5 = !{!"0x29", !1}          ; [ DW_TAG_file_type ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c]
-!6 = !{!"0x15\00\000\000\000\000\000\000", i32 0, null, null, !2, null, null, null} ; [ DW_TAG_subroutine_type ] [line 0, size 0, align 0, offset 0] [from ]
+!4 = !DISubprogram(name: "manyaccesses", line: 1, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, scopeLine: 2, file: !1, scope: !5, type: !6, function: void (float*, i64, float*)* @manyaccesses, variables: !2)
+!5 = !DIFile(filename: "/tmp/test.c", directory: "/home/grosser/Projects/polly/git/tools/polly/test")
+!6 = !DISubroutineType(types: !2)
 !7 = !{i32 2, !"Dwarf Version", i32 4}
-!8 = !{i32 2, !"Debug Info Version", i32 2}
+!8 = !{i32 2, !"Debug Info Version", i32 3}
 !9 = !{!"clang version 3.6.0 "}
-!10 = !MDLocation(line: 3, column: 20, scope: !11)
-!11 = !{!"0xb\002", !1, !12} ; [ DW_TAG_lexical_block ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c]
-!12 = !{!"0xb\001", !1, !13} ; [ DW_TAG_lexical_block ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c]
-!13 = !{!"0xb\003\003\001", !1, !14} ; [ DW_TAG_lexical_block ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c]
-!14 = !{!"0xb\003\003\000", !1, !4} ; [ DW_TAG_lexical_block ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c]
-!15 = !MDLocation(line: 8, column: 16, scope: !16)
-!16 = !{!"0xb\003\0035\002", !1, !13} ; [ DW_TAG_lexical_block ] [/home/grosser/Projects/polly/git/tools/polly/test//tmp/test.c]
-!17 = !MDLocation(line: 4, column: 26, scope: !16)
-!18 = !MDLocation(line: 4, column: 22, scope: !16)
-!19 = !MDLocation(line: 7, column: 16, scope: !16)
-!20 = !MDLocation(line: 9, column: 16, scope: !16)
-!21 = !MDLocation(line: 10, column: 16, scope: !16)
-!22 = !MDLocation(line: 4, column: 16, scope: !16)
-!27 = !MDLocation(line: 5, column: 26, scope: !16)
-!28 = !MDLocation(line: 5, column: 16, scope: !16)
-!29 = !MDLocation(line: 6, column: 16, scope: !16)
-!30 = !MDLocation(line: 11, column: 23, scope: !16) ; [ DW_TAG_lexical_block ] [/]
-!31 = !MDLocation(line: 11, column: 16, scope: !16) ; [ DW_TAG_lexical_block ] [/]
-!32 = !MDLocation(line: 13, column: 21, scope: !16)
-!33 = !MDLocation(line: 13, column: 26, scope: !16)
-!34 = !MDLocation(line: 13, column: 31, scope: !16)
-!35 = !MDLocation(line: 13, column: 36, scope: !16)
-!36 = !MDLocation(line: 13, column: 41, scope: !16)
-!37 = !MDLocation(line: 13, column: 46, scope: !16)
-!38 = !MDLocation(line: 13, column: 51, scope: !16)
-!39 = !MDLocation(line: 13, column: 11, scope: !16)
-!40 = !MDLocation(line: 13, column: 5, scope: !16)
-!41 = !MDLocation(line: 3, column: 30, scope: !13)
-!42 = !MDLocation(line: 15, column: 1, scope: !4)
+!10 = !DILocation(line: 3, column: 20, scope: !11)
+!11 = !DILexicalBlockFile(discriminator: 2, file: !1, scope: !12)
+!12 = !DILexicalBlockFile(discriminator: 1, file: !1, scope: !13)
+!13 = distinct !DILexicalBlock(line: 3, column: 3, file: !1, scope: !14)
+!14 = distinct !DILexicalBlock(line: 3, column: 3, file: !1, scope: !4)
+!15 = !DILocation(line: 8, column: 16, scope: !16)
+!16 = distinct !DILexicalBlock(line: 3, column: 35, file: !1, scope: !13)
+!17 = !DILocation(line: 4, column: 26, scope: !16)
+!18 = !DILocation(line: 4, column: 22, scope: !16)
+!19 = !DILocation(line: 7, column: 16, scope: !16)
+!20 = !DILocation(line: 9, column: 16, scope: !16)
+!21 = !DILocation(line: 10, column: 16, scope: !16)
+!22 = !DILocation(line: 4, column: 16, scope: !16)
+!27 = !DILocation(line: 5, column: 26, scope: !16)
+!28 = !DILocation(line: 5, column: 16, scope: !16)
+!29 = !DILocation(line: 6, column: 16, scope: !16)
+!30 = !DILocation(line: 11, column: 23, scope: !16) ; [ DW_TAG_lexical_block ] [/]
+!31 = !DILocation(line: 11, column: 16, scope: !16) ; [ DW_TAG_lexical_block ] [/]
+!32 = !DILocation(line: 13, column: 21, scope: !16)
+!33 = !DILocation(line: 13, column: 26, scope: !16)
+!34 = !DILocation(line: 13, column: 31, scope: !16)
+!35 = !DILocation(line: 13, column: 36, scope: !16)
+!36 = !DILocation(line: 13, column: 41, scope: !16)
+!37 = !DILocation(line: 13, column: 46, scope: !16)
+!38 = !DILocation(line: 13, column: 51, scope: !16)
+!39 = !DILocation(line: 13, column: 11, scope: !16)
+!40 = !DILocation(line: 13, column: 5, scope: !16)
+!41 = !DILocation(line: 3, column: 30, scope: !13)
+!42 = !DILocation(line: 15, column: 1, scope: !4)

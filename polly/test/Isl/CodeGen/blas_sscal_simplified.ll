@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-codegen-isl < %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-codegen < %s
 ;
 ; Regression test for a bug in the runtime check generation.
 
@@ -28,8 +28,8 @@ for.body.lr.ph:                                   ; preds = %entry.split
 
 for.body:                                         ; preds = %for.body.lr.ph, %for.body
   %indvar = phi i64 [ 0, %for.body.lr.ph ], [ %indvar.next, %for.body ]
-  %sx.addr.02 = getelementptr float* %sx, i64 %indvar
-  %tmp = load float* %sx.addr.02, align 4
+  %sx.addr.02 = getelementptr float, float* %sx, i64 %indvar
+  %tmp = load float, float* %sx.addr.02, align 4
   %mul = fmul float %tmp, %sa
   store float %mul, float* %sx.addr.02, align 4
   %indvar.next = add i64 %indvar, 1

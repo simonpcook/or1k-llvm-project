@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "lld/ReaderWriter/Writer.h"
+#include "lld/Core/Writer.h"
 #include "DynamicLibraryWriter.h"
 #include "ExecutableWriter.h"
 
@@ -16,8 +16,8 @@ using namespace llvm::object;
 
 namespace lld {
 
-std::unique_ptr<Writer> createWriterELF(TargetHandlerBase *handler) {
-  return std::move(handler->getWriter());
+std::unique_ptr<Writer> createWriterELF(const ELFLinkingContext &ctx) {
+  return ctx.getTargetHandler().getWriter();
 }
 
 } // namespace lld

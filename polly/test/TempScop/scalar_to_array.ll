@@ -1,9 +1,8 @@
-; RUN: opt %loadPolly -basicaa -polly-analyze-ir -disable-polly-intra-scop-scalar-to-array -analyze < %s | FileCheck %s
-; RUN: opt %loadPolly -basicaa -polly-analyze-ir -disable-polly-intra-scop-scalar-to-array -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-analyze-ir -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-analyze-ir -analyze < %s | FileCheck %s
 
 ; ModuleID = 'scalar_to_array.ll'
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
-target triple = "x86_64-unknown-linux-gnu"
 
 @A = common global [1024 x float] zeroinitializer, align 8
 
@@ -44,7 +43,7 @@ for.cond:                                         ; preds = %for.inc, %entry
   br i1 %exitcond, label %for.body, label %return
 
 for.body:                                         ; preds = %for.cond
-  %arrayidx = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
+  %arrayidx = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
   %float = uitofp i64 %indvar to float
   store float %float, float* %arrayidx
   br label %for.inc
@@ -74,15 +73,15 @@ for.cond:                                         ; preds = %for.inc, %entry
   br i1 %exitcond, label %for.body.a, label %return
 
 for.body.a:                                       ; preds = %for.cond
-  %arrayidx = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
-  %scalar = load float* %arrayidx
+  %arrayidx = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
+  %scalar = load float, float* %arrayidx
   br label %for.body.b
 ; CHECK: BB: for.body.a
 ; CHECK: Read A[{0,+,4}<%for.cond>]
 ; CHECK: Write scalar[0]
 
 for.body.b:                                       ; preds = %for.body.a
-  %arrayidx2 = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
+  %arrayidx2 = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
   %float = uitofp i64 %indvar to float
   %sum = fadd float %scalar, %float
   store float %sum, float* %arrayidx2
@@ -119,8 +118,8 @@ for.head:                                         ; preds = %for.inc, %entry
   br label %for.body
 
 for.body:                                         ; preds = %for.head
-  %arrayidx = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
-  %scalar = load float* %arrayidx
+  %arrayidx = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
+  %scalar = load float, float* %arrayidx
   store float %scalar, float* %scalar.s2a
 ; Escaped uses are still required to be rewritten to stack variable.
 ; CHECK: BB: for.body
@@ -134,7 +133,7 @@ for.inc:                                          ; preds = %for.body
   br i1 %exitcond, label %for.head, label %for.after
 
 for.after:                                        ; preds = %for.inc
-  %scalar.loadoutside = load float* %scalar.s2a
+  %scalar.loadoutside = load float, float* %scalar.s2a
   fence seq_cst
   %return_value = fptosi float %scalar.loadoutside to i32
   br label %return
@@ -168,7 +167,7 @@ for.cond:                                         ; preds = %for.inc, %preheader
   br i1 %exitcond, label %for.body, label %return
 
 for.body:                                         ; preds = %for.cond
-  %arrayidx = getelementptr [1024 x float]* @A, i64 0, i64 %indvar
+  %arrayidx = getelementptr [1024 x float], [1024 x float]* @A, i64 0, i64 %indvar
   store float %scalar, float* %arrayidx
   br label %for.inc
 ; CHECK: BB: for.body

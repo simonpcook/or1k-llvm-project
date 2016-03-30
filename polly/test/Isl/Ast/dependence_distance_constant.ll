@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-ast -polly-ast-detect-parallel -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -polly-ast -polly-ast-detect-parallel -analyze < %s | FileCheck %s
 ;
 ;        void f(int *A, int N) {
 ; CHECK:   #pragma minimal dependence distance: 1
@@ -28,11 +28,11 @@ for.cond1:                                        ; preds = %for.inc, %for.body
   br i1 %exitcond, label %for.body3, label %for.end
 
 for.body3:                                        ; preds = %for.cond1
-  %arrayidx = getelementptr inbounds i32* %A, i32 %i.0
-  %tmp = load i32* %arrayidx, align 4
+  %arrayidx = getelementptr inbounds i32, i32* %A, i32 %i.0
+  %tmp = load i32, i32* %arrayidx, align 4
   %add = add nsw i32 %tmp, 1
   %add4 = add nsw i32 %i.0, 8
-  %arrayidx5 = getelementptr inbounds i32* %A, i32 %add4
+  %arrayidx5 = getelementptr inbounds i32, i32* %A, i32 %add4
   store i32 %add, i32* %arrayidx5, align 4
   br label %for.inc
 

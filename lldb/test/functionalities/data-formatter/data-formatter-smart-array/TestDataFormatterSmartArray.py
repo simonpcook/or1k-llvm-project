@@ -12,7 +12,7 @@ class SmartArrayDataFormatterTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
-    @unittest2.skipUnless(sys.platform.startswith("darwin"), "requires Darwin")
+    @skipUnlessDarwin
     @dsym_test
     def test_with_dsym_and_run_command(self):
         """Test data formatter commands."""
@@ -57,7 +57,7 @@ class SmartArrayDataFormatterTestCase(TestBase):
         self.runCmd("type summary add --summary-string \"${var%V}\" SomeData")
 
         self.expect("frame variable data",
-            substrs = ['invalid use of aggregate type'])
+            substrs = ['SomeData @ 0x'])
 # ${var%s}
         self.runCmd("type summary add --summary-string \"ptr = ${var%s}\" \"char *\"")
 

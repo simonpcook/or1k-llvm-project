@@ -28,7 +28,7 @@
 #include <vector>
 
 namespace lld {
-SymbolTable::SymbolTable(LinkingContext &context) : _context(context) {}
+SymbolTable::SymbolTable(LinkingContext &context) : _ctx(context) {}
 
 bool SymbolTable::add(const UndefinedAtom &atom) { return addByName(atom); }
 
@@ -133,43 +133,12 @@ static MergeResolution mergeSelect(DefinedAtom::Merge first,
   return mergeCases[first][second];
 }
 
-static const DefinedAtom *followReference(const DefinedAtom *atom,
-                                          uint32_t kind) {
-  for (const Reference *r : *atom)
-    if (r->kindNamespace() == Reference::KindNamespace::all &&
-        r->kindArch() == Reference::KindArch::all &&
-        r->kindValue() == kind)
-      return cast<const DefinedAtom>(r->target());
-  return nullptr;
-}
-
-static uint64_t getSizeFollowReferences(const DefinedAtom *atom,
-                                        uint32_t kind) {
-  uint64_t size = 0;
-  for (;;) {
-    atom = followReference(atom, kind);
-    if (!atom)
-      return size;
-    size += atom->size();
-  }
-}
-
-// Returns the size of the section containing the given atom. Atoms in the same
-// section are connected by layout-before and layout-after edges, so this
-// function traverses them to get the total size of atoms in the same section.
-static uint64_t sectionSize(const DefinedAtom *atom) {
-  return atom->size()
-      + getSizeFollowReferences(atom, lld::Reference::kindLayoutBefore)
-      + getSizeFollowReferences(atom, lld::Reference::kindLayoutAfter);
-}
-
 bool SymbolTable::addByName(const Atom &newAtom) {
   StringRef name = newAtom.name();
   assert(!name.empty());
   const Atom *existing = findByName(name);
   if (existing == nullptr) {
     // Name is not in symbol table yet, add it associate with this atom.
-    _context.notifySymbolTableAdd(&newAtom);
     _nameTable[name] = &newAtom;
     return true;
   }
@@ -198,14 +167,14 @@ bool SymbolTable::addByName(const Atom &newAtom) {
       useNew = true;
       break;
     case MCR_Largest: {
-      uint64_t existingSize = sectionSize(existingDef);
-      uint64_t newSize = sectionSize(newDef);
+      uint64_t existingSize = existingDef->sectionSize();
+      uint64_t newSize = newDef->sectionSize();
       useNew = (newSize >= existingSize);
       break;
     }
     case MCR_SameSize: {
-      uint64_t existingSize = sectionSize(existingDef);
-      uint64_t newSize = sectionSize(newDef);
+      uint64_t existingSize = existingDef->sectionSize();
+      uint64_t newSize = newDef->sectionSize();
       if (existingSize == newSize) {
         useNew = true;
         break;
@@ -216,7 +185,7 @@ bool SymbolTable::addByName(const Atom &newAtom) {
       // fallthrough
     }
     case MCR_Error:
-      if (!_context.getAllowDuplicates()) {
+      if (!_ctx.getAllowDuplicates()) {
         llvm::errs() << "Duplicate symbols: "
                      << existing->name()
                      << ":"
@@ -238,8 +207,7 @@ bool SymbolTable::addByName(const Atom &newAtom) {
     const UndefinedAtom* newUndef = cast<UndefinedAtom>(&newAtom);
 
     bool sameCanBeNull = (existingUndef->canBeNull() == newUndef->canBeNull());
-    if (!sameCanBeNull &&
-        _context.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
+    if (!sameCanBeNull && _ctx.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
       llvm::errs() << "lld warning: undefined symbol "
                    << existingUndef->name()
                    << " has different weakness in "
@@ -275,14 +243,14 @@ bool SymbolTable::addByName(const Atom &newAtom) {
         (curShLib->canBeNullAtRuntime() == newShLib->canBeNullAtRuntime());
     bool sameName = curShLib->loadName().equals(newShLib->loadName());
     if (sameName && !sameNullness &&
-        _context.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
+        _ctx.warnIfCoalesableAtomsHaveDifferentCanBeNull()) {
       // FIXME: need diagonstics interface for writing warning messages
       llvm::errs() << "lld warning: shared library symbol "
                    << curShLib->name() << " has different weakness in "
                    << curShLib->file().path() << " and in "
                    << newShLib->file().path();
     }
-    if (!sameName && _context.warnIfCoalesableAtomsHaveDifferentLoadName()) {
+    if (!sameName && _ctx.warnIfCoalesableAtomsHaveDifferentLoadName()) {
       // FIXME: need diagonstics interface for writing warning messages
       llvm::errs() << "lld warning: shared library symbol "
                    << curShLib->name() << " has different load path in "
@@ -299,7 +267,7 @@ bool SymbolTable::addByName(const Atom &newAtom) {
   }
 
   // Give context a chance to change which is kept.
-  _context.notifySymbolTableCoalesce(existing, &newAtom, useNew);
+  _ctx.notifySymbolTableCoalesce(existing, &newAtom, useNew);
 
   if (useNew) {
     // Update name table to use new atom.
@@ -391,10 +359,6 @@ const Atom *SymbolTable::replacement(const Atom *atom) {
 
 bool SymbolTable::isCoalescedAway(const Atom *atom) {
   return _replacedAtoms.count(atom) > 0;
-}
-
-unsigned int SymbolTable::size() {
-  return _nameTable.size();
 }
 
 std::vector<const UndefinedAtom *> SymbolTable::undefines() {

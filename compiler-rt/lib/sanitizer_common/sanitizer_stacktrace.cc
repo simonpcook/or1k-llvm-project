@@ -20,6 +20,8 @@ namespace __sanitizer {
 uptr StackTrace::GetNextInstructionPc(uptr pc) {
 #if defined(__mips__)
   return pc + 8;
+#elif defined(__powerpc__)
+  return pc + 4;
 #else
   return pc + 1;
 #endif
@@ -68,7 +70,7 @@ static inline uhwptr *GetCanonicFrame(uptr bp,
 }
 
 void BufferedStackTrace::FastUnwindStack(uptr pc, uptr bp, uptr stack_top,
-                                         uptr stack_bottom, uptr max_depth) {
+                                         uptr stack_bottom, u32 max_depth) {
   CHECK_GE(max_depth, 2);
   trace_buffer[0] = pc;
   size = 1;

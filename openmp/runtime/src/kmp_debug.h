@@ -1,7 +1,5 @@
 /*
  * kmp_debug.h -- debug / assertion code for Assure library
- * $Revision: 42951 $
- * $Date: 2014-01-21 14:41:41 -0600 (Tue, 21 Jan 2014) $
  */
 
 
@@ -42,9 +40,13 @@
     Do not use _KMP_BUILD_ASSERT and __KMP_BUILD_ASSERT directly, it is working guts.
 */
 
-#define __KMP_BUILD_ASSERT( expr, suffix )  static char __kmp_build_check_##suffix[ (expr) ? 1 : -1 ]
+#define __KMP_BUILD_ASSERT( expr, suffix )  typedef char __kmp_build_check_##suffix[ (expr) ? 1 : -1 ]
 #define _KMP_BUILD_ASSERT( expr, suffix )   __KMP_BUILD_ASSERT( (expr), suffix )
-#define KMP_BUILD_ASSERT( expr )            _KMP_BUILD_ASSERT( (expr), __LINE__ )
+#ifdef KMP_USE_ASSERT 
+    #define KMP_BUILD_ASSERT( expr )            _KMP_BUILD_ASSERT( (expr), __LINE__ )
+#else
+    #define KMP_BUILD_ASSERT( expr )            /* nothing to do */
+#endif
 
 // -------------------------------------------------------------------------------------------------
 // Run-time assertions.

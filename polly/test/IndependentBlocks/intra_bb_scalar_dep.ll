@@ -1,7 +1,7 @@
-; RUN: opt %loadPolly -basicaa -polly-independent -S < %s | FileCheck %s
-; RUN: opt %loadPolly -basicaa -polly-independent -S < %s | FileCheck %s
-; RUN: opt %loadPolly -basicaa -polly-independent -disable-polly-intra-scop-scalar-to-array -S < %s | FileCheck %s
-; RUN: opt %loadPolly -basicaa -polly-independent -disable-polly-intra-scop-scalar-to-array -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-independent -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-independent -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-independent -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-independent -S < %s | FileCheck %s
 
 ; void f(long A[], int N, int *init_ptr) {
 ;   long i, j;
@@ -15,7 +15,6 @@
 ; }
 
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128"
-target triple = "x86_64-unknown-linux-gnu"
 
 define void @f(i64* noalias %A, i64 %N, i64* noalias %init_ptr) nounwind {
 entry:
@@ -34,12 +33,12 @@ entry.next:
 
 for.j:
   %indvar.j = phi i64 [ 0, %entry.next ], [ %indvar.j.next, %for.j ]
-  %init = load i64* %init_ptr
+  %init = load i64, i64* %init_ptr
   %init_plus_two = add i64 %init, 2
 ; The scalar evolution of %init_plus_two is (2 + %init). So we have a
 ; non-trivial scalar evolution referring to a value in the same basic block.
 ; We want to ensure that this scalar is not translated into a memory copy.
-  %scevgep = getelementptr i64* %A, i64 %indvar.j
+  %scevgep = getelementptr i64, i64* %A, i64 %indvar.j
   store i64 %init_plus_two, i64* %scevgep
   %indvar.j.next = add nsw i64 %indvar.j, 1
   %exitcond.j = icmp eq i64 %indvar.j.next, %N

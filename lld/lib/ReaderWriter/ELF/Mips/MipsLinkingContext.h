@@ -22,36 +22,29 @@ enum {
   LLD_R_MIPS_32_HI16 = 1025,
   /// \brief The same as R_MIPS_26 but for global symbols.
   LLD_R_MIPS_GLOBAL_26 = 1026,
-  /// \brief Setup hi 16 bits using the symbol this reference refers to.
-  LLD_R_MIPS_HI16 = 1027,
-  /// \brief Setup low 16 bits using the symbol this reference refers to.
-  LLD_R_MIPS_LO16 = 1028,
   /// \brief Represents a reference between PLT and dynamic symbol.
   LLD_R_MIPS_STO_PLT = 1029,
   /// \brief The same as R_MICROMIPS_26_S1 but for global symbols.
   LLD_R_MICROMIPS_GLOBAL_26_S1 = 1030,
+  /// \brief Apply high 32+16 bits of symbol + addend.
+  LLD_R_MIPS_64_HI16 = 1031,
 };
-
-typedef llvm::object::ELFType<llvm::support::little, 2, false> Mips32ElELFType;
-
-template <class ELFType> class MipsTargetLayout;
 
 class MipsLinkingContext final : public ELFLinkingContext {
 public:
   MipsLinkingContext(llvm::Triple triple);
 
-  uint32_t getMergedELFFlags() const;
-
-  // ELFLinkingContext
+  void registerRelocationNames(Registry &r) override;
+  int getMachineType() const override { return llvm::ELF::EM_MIPS; }
   uint64_t getBaseAddress() const override;
   StringRef entrySymbolName() const override;
   StringRef getDefaultInterpreter() const override;
   void addPasses(PassManager &pm) override;
   bool isRelaOutputFormat() const override { return false; }
-  bool isDynamicRelocation(const DefinedAtom &,
-                           const Reference &r) const override;
+  bool isDynamicRelocation(const Reference &r) const override;
   bool isCopyRelocation(const Reference &r) const override;
-  bool isPLTRelocation(const DefinedAtom &, const Reference &r) const override;
+  bool isPLTRelocation(const Reference &r) const override;
+  bool isRelativeReloc(const Reference &r) const override;
 };
 
 } // elf

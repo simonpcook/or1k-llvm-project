@@ -7033,14 +7033,30 @@ public:
                              TargetInfo::ConstraintInfo &Info) const override {
     switch (*Name) {
     default: return false;
-    case 'O': // Zero
-      return true;
     case 'b': // Base register
     case 'f': // Floating point register
       Info.setAllowsRegister();
       return true;
-    case 'K': // 16-bit immediate
+    case 'I': // signed 16 bit immediate
+      Info.setRequiresImmediate(-0x8000, 0x7fff);
+      return true;
+    case 'J': // integer zero
+      Info.setRequiresImmediate(0, 0);
+      return true;
+    case 'K': // unsigned 16 bit immediate
       Info.setRequiresImmediate(0, 0xffff);
+      return true;
+    case 'L': // immediate in the range 0 to 31
+      Info.setRequiresImmediate(0, 31);
+      return true;
+    case 'M': // signed 32 bit immediate where lower 16 bits are 0
+      Info.setRequiresImmediate(-0x80000000, 0x7fffffff);
+      return true;
+    case 'N': // signed 26 bit immediate
+      Info.setRequiresImmediate(-0x4000000, 0x3ffffff);
+      return true;
+    case 'O': // integer zero
+      Info.setRequiresImmediate(0, 0);
       return true;
     }
   }

@@ -18,7 +18,8 @@ LINK_LIBS_IN_SHARED = 1
 SHARED_LIBRARY = 1
 
 ifeq (,$(findstring -DLLDB_DISABLE_PYTHON,$(CXXFLAGS)))
-PYTHON_BUILD_FLAGS = $(shell python-config --ldflags)
+PYTHON_CONFIG?=	python-config
+PYTHON_BUILD_FLAGS = $(shell $(PYTHON_CONFIG) --ldflags)
 endif
 
 # Include all archives in liblldb.so file
@@ -50,6 +51,8 @@ USEDLIBS = lldbAPI.a \
 	lldbPluginDynamicLoaderHexagon.a \
 	lldbPluginDynamicLoaderMacOSXDYLD.a \
 	lldbPluginDynamicLoaderWindowsDYLD.a \
+	lldbPluginExpressionParserClang.a \
+	lldbPluginExpressionParserGo.a \
 	lldbPluginInstructionARM.a \
 	lldbPluginInstructionARM64.a \
 	lldbPluginInstructionMIPS.a \
@@ -59,21 +62,28 @@ USEDLIBS = lldbAPI.a \
 	lldbPluginAppleObjCRuntime.a \
 	lldbPluginRenderScriptRuntime.a \
 	lldbPluginMemoryHistoryASan.a \
+	lldbPluginCPlusPlusLanguage.a \
+	lldbPluginLanguageRuntimeGo.a \
+	lldbPluginObjCLanguage.a \
+	lldbPluginObjCPlusPlusLanguage.a \
+	lldbPluginGoLanguage.a \
 	lldbPluginObjectContainerBSDArchive.a \
 	lldbPluginObjectContainerMachOArchive.a \
 	lldbPluginObjectFileELF.a \
 	lldbPluginObjectFileJIT.a \
 	lldbPluginSymbolVendorELF.a \
 	lldbPluginObjectFilePECOFF.a \
+	lldbPluginOSGo.a \
 	lldbPluginOSPython.a \
 	lldbPluginPlatformGDB.a \
+	lldbPluginProcessElfCore.a \
 	lldbPluginProcessGDBRemote.a \
 	lldbPluginSymbolFileDWARF.a \
 	lldbPluginSymbolFileSymtab.a \
 	lldbPluginSystemRuntimeMacOSX.a \
 	lldbPluginUnwindAssemblyInstEmulation.a \
 	lldbPluginUnwindAssemblyX86.a \
-	lldbPluginUtility.a \
+	lldbPluginProcessUtility.a \
 	lldbSymbol.a \
 	lldbTarget.a \
 	lldbUtility.a \
@@ -90,13 +100,18 @@ USEDLIBS = lldbAPI.a \
 	clangSerialization.a \
 	LLVMMCDisassembler.a \
 	LLVMProfileData.a \
+	LLVMObjCARCOpts.a \
 	lldbPluginPlatformMacOSX.a \
 	lldbPluginPlatformLinux.a \
 	lldbPluginPlatformWindows.a \
 	lldbPluginPlatformFreeBSD.a \
+	lldbPluginPlatformNetBSD.a \
 	lldbPluginPlatformPOSIX.a \
 	lldbPluginPlatformKalimba.a \
-	lldbPluginPlatformAndroid.a
+	lldbPluginPlatformAndroid.a \
+	lldbPluginJITLoaderGDB.a \
+	lldbPluginScriptInterpreterNone.a \
+	lldbPluginScriptInterpreterPython.a
 
 # Because GCC requires RTTI enabled for lldbCore (see source/Core/Makefile) it is
 # necessary to also link the clang rewriter libraries so vtable references can
@@ -117,28 +132,21 @@ ifeq ($(HOST_OS),Darwin)
               lldbPluginObjectFileMachO.a \
               lldbPluginSymbolVendorMacOSX.a \
               lldbPluginProcessDarwin.a \
-              lldbPluginProcessMachCore.a \
-              lldbPluginProcessElfCore.a \
-              lldbPluginJITLoaderGDB.a
+              lldbPluginProcessMachCore.a
 endif
 
 ifeq ($(HOST_OS),Linux)
   USEDLIBS += lldbPluginProcessLinux.a \
-              lldbPluginProcessPOSIX.a \
-              lldbPluginProcessElfCore.a \
-              lldbPluginJITLoaderGDB.a
-endif
-
-ifeq ($(HOST_OS),MingW)
-  USEDLIBS += lldbPluginProcessElfCore.a \
-              lldbPluginJITLoaderGDB.a
+              lldbPluginProcessPOSIX.a
 endif
 
 ifneq (,$(filter $(HOST_OS), FreeBSD GNU/kFreeBSD))
   USEDLIBS += lldbPluginProcessPOSIX.a \
-              lldbPluginProcessFreeBSD.a \
-              lldbPluginProcessElfCore.a \
-              lldbPluginJITLoaderGDB.a
+              lldbPluginProcessFreeBSD.a
+endif
+
+ifeq ($(HOST_OS),NetBSD)
+  USEDLIBS += lldbPluginProcessPOSIX.a
 endif
 
 include $(LEVEL)/Makefile.common
@@ -195,4 +203,15 @@ ifeq ($(HOST_OS),FreeBSD)
     # Link in python
     LLVMLibsOptions += $(PYTHON_BUILD_FLAGS) -lrt -L/usr/local/lib -lexecinfo \
                        -ledit -lncurses -lpanel -lpthread
+endif
+
+ifeq ($(HOST_OS),NetBSD)
+    # Include everything from the .a's into the shared library.
+    ProjLibsOptions := -Wl,--whole-archive $(ProjLibsOptions) \
+                       -Wl,--no-whole-archive
+    # Allow unresolved symbols.
+    LLVMLibsOptions += -Wl,--allow-shlib-undefined
+    # Link in python
+    LLVMLibsOptions += $(PYTHON_BUILD_FLAGS) -lrt -L/usr/pkg/lib -lexecinfo \
+                       -ledit -lcurses -lpthread -lkvm -Wl,-rpath,/usr/pkg/lib
 endif

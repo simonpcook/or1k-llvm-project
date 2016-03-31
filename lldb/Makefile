@@ -12,6 +12,7 @@
 
 ifndef LLDB_LEVEL
 
+
 IS_TOP_LEVEL := 1
 LLDB_LEVEL := .
 DIRS := include scripts source lib tools
@@ -45,7 +46,8 @@ endif
 
 ifeq (,$(findstring -DLLDB_DISABLE_PYTHON,$(CXXFLAGS)))
 # Set Python include directory
-PYTHON_INC_DIR = $(shell python-config --includes)
+PYTHON_CONFIG?=	python-config
+PYTHON_INC_DIR = $(shell $(PYTHON_CONFIG) --includes)
 CPP.Flags +=   $(PYTHON_INC_DIR)
 endif
 
@@ -85,14 +87,6 @@ EXTRA_OPTIONS += -Wno-sign-compare
 # LLDB Top Level specific stuff.
 
 ifeq ($(IS_TOP_LEVEL),1)
-
-ifneq ($(PROJ_SRC_ROOT),$(PROJ_OBJ_ROOT))
-$(RecursiveTargets)::
-	$(Verb) if [ ! -f test/Makefile ]; then \
-	  $(MKDIR) test; \
-	  $(CP) $(PROJ_SRC_DIR)/test/Makefile test/Makefile; \
-	fi
-endif
 
 test::
 	@ $(MAKE) -C test

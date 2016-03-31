@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ObjectFilePECOFF.h"
+#include "WindowsMiniDump.h"
 
 #include "llvm/Support/COFF.h"
 
@@ -24,6 +25,7 @@
 #include "lldb/Core/Timer.h"
 #include "lldb/Core/UUID.h"
 #include "lldb/Symbol/ObjectFile.h"
+#include "lldb/Target/Process.h"
 #include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Target.h"
 
@@ -42,7 +44,8 @@ ObjectFilePECOFF::Initialize()
                                    GetPluginDescriptionStatic(),
                                    CreateInstance,
                                    CreateMemoryInstance,
-                                   GetModuleSpecifications);
+                                   GetModuleSpecifications,
+                                   SaveCore);
 }
 
 void
@@ -148,6 +151,14 @@ ObjectFilePECOFF::GetModuleSpecifications (const lldb_private::FileSpec& file,
     return specs.GetSize() - initial_count;
 }
 
+bool
+ObjectFilePECOFF::SaveCore(const lldb::ProcessSP &process_sp,
+                           const lldb_private::FileSpec &outfile,
+                           lldb_private::Error &error)
+{
+    return SaveMiniDump(process_sp, outfile, error);
+}
+
 
 bool
 ObjectFilePECOFF::MagicBytesMatch (DataBufferSP& data_sp)
@@ -158,6 +169,18 @@ ObjectFilePECOFF::MagicBytesMatch (DataBufferSP& data_sp)
     return magic == IMAGE_DOS_SIGNATURE;
 }
 
+lldb::SymbolType
+ObjectFilePECOFF::MapSymbolType(uint16_t coff_symbol_type)
+{
+    // TODO:  We need to complete this mapping of COFF symbol types to LLDB ones.
+    // For now, here's a hack to make sure our function have types.
+    const auto complex_type = coff_symbol_type >> llvm::COFF::SCT_COMPLEX_TYPE_SHIFT;
+    if (complex_type == llvm::COFF::IMAGE_SYM_DTYPE_FUNCTION)
+    {
+        return lldb::eSymbolTypeCode;
+    }
+    return lldb::eSymbolTypeInvalid;
+}
 
 ObjectFilePECOFF::ObjectFilePECOFF (const lldb::ModuleSP &module_sp, 
                                     DataBufferSP& data_sp,
@@ -523,8 +546,8 @@ ObjectFilePECOFF::GetSymtab()
             {
                 const uint32_t symbol_size = 18;
                 const uint32_t addr_byte_size = GetAddressByteSize ();
-                const size_t symbol_data_size = num_syms * symbol_size; 
-                // Include the 4 bytes string table size at the end of the symbols
+                const size_t symbol_data_size = num_syms * symbol_size;
+                // Include the 4-byte string table size at the end of the symbols
                 DataBufferSP symtab_data_sp(m_file.ReadFileContents (m_coff_header.symoff, symbol_data_size + 4));
                 DataExtractor symtab_data (symtab_data_sp, GetByteOrder(), addr_byte_size);
                 lldb::offset_t offset = symbol_data_size;
@@ -545,8 +568,8 @@ ObjectFilePECOFF::GetSymtab()
                     coff_symbol_t symbol;
                     const uint32_t symbol_offset = offset;
                     const char *symbol_name_cstr = NULL;
-                    // If the first 4 bytes of the symbol string are zero, then we
-                    // it is followed by a 4 byte string table offset. Else these
+                    // If the first 4 bytes of the symbol string are zero, then they
+                    // are followed by a 4-byte string table offset. Else these
                     // 8 bytes contain the symbol name
                     if (symtab_data.GetU32 (&offset) == 0)
                     {
@@ -575,6 +598,7 @@ ObjectFilePECOFF::GetSymtab()
                     {
                         Address symbol_addr(sect_list->GetSectionAtIndex(symbol.sect-1), symbol.value);
                         symbols[i].GetAddressRef() = symbol_addr;
+                        symbols[i].SetType(MapSymbolType(symbol.type));
                     }
 
                     if (symbol.naux > 0)
@@ -693,6 +717,7 @@ ObjectFilePECOFF::CreateSections (SectionList &unified_section_list)
                 static ConstString g_sect_name_dwarf_debug_ranges (".debug_ranges");
                 static ConstString g_sect_name_dwarf_debug_str (".debug_str");
                 static ConstString g_sect_name_eh_frame (".eh_frame");
+                static ConstString g_sect_name_go_symtab (".gosymtab");
                 SectionType section_type = eSectionTypeOther;
                 if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_CODE &&
                     ((const_sect_name == g_code_sect_name) || (const_sect_name == g_CODE_sect_name)))
@@ -736,6 +761,7 @@ ObjectFilePECOFF::CreateSections (SectionList &unified_section_list)
                 else if (const_sect_name == g_sect_name_dwarf_debug_ranges)    section_type = eSectionTypeDWARFDebugRanges;
                 else if (const_sect_name == g_sect_name_dwarf_debug_str)       section_type = eSectionTypeDWARFDebugStr;
                 else if (const_sect_name == g_sect_name_eh_frame)              section_type = eSectionTypeEHFrame;
+                else if (const_sect_name == g_sect_name_go_symtab)             section_type = eSectionTypeGoSymtab;
                 else if (m_sect_headers[idx].flags & llvm::COFF::IMAGE_SCN_CNT_CODE)
                 {
                     section_type = eSectionTypeCode;

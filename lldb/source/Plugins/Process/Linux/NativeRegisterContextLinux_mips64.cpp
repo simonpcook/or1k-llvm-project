@@ -20,6 +20,7 @@
 #include "lldb/Core/Log.h"
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Host/HostInfo.h"
+#include "lldb/Host/Host.h"
 #include "lldb/Core/EmulateInstruction.h"
 #include "lldb/lldb-enumerations.h"
 #include "lldb/lldb-private-enumerations.h"
@@ -416,14 +417,14 @@ CreateRegisterInfoInterface(const ArchSpec& target_arch)
     if (HostInfo::GetArchitecture().GetAddressByteSize() == 4)
     {
         // 32-bit hosts run with a RegisterContextLinux_mips context.
-        return new RegisterContextLinux_mips(target_arch);
+        return new RegisterContextLinux_mips(target_arch, NativeRegisterContextLinux_mips64::IsMSAAvailable());
     }
     else
     {
         assert((HostInfo::GetArchitecture().GetAddressByteSize() == 8) &&
                "Register setting path assumes this is a 64-bit host");
         // mips64 hosts know how to work with 64-bit and 32-bit EXEs using the mips64 register context.
-        return new RegisterContextLinux_mips64 (target_arch);
+        return new RegisterContextLinux_mips64 (target_arch, NativeRegisterContextLinux_mips64::IsMSAAvailable());
     }
 }
 
@@ -494,7 +495,7 @@ NativeRegisterContextLinux_mips64::GetPCfromBreakpointLocation (lldb::addr_t fai
         log->Printf ("NativeRegisterContextLinux_mips64::%s Reading PC from breakpoint location", __FUNCTION__);
 
     // PC register is at index 34 of the register array
-    const RegisterInfo *const pc_info_p = GetRegisterInfoAtIndex (34);
+    const RegisterInfo *const pc_info_p = GetRegisterInfoAtIndex (gpr_pc_mips64);
         
     error = ReadRegister (pc_info_p, pc_value);
     if (error.Success ())
@@ -502,7 +503,7 @@ NativeRegisterContextLinux_mips64::GetPCfromBreakpointLocation (lldb::addr_t fai
         pc = pc_value.GetAsUInt64 ();
         
         // CAUSE register is at index 37 of the register array
-        const RegisterInfo *const cause_info_p = GetRegisterInfoAtIndex (37);
+        const RegisterInfo *const cause_info_p = GetRegisterInfoAtIndex (gpr_cause_mips64);
         RegisterValue cause_value;
 
         ReadRegister (cause_info_p, cause_value);
@@ -623,13 +624,6 @@ NativeRegisterContextLinux_mips64::ReadRegister (const RegisterInfo *reg_info, R
     else
     {
         error = ReadRegisterRaw(reg, reg_value);
-        if (error.Success())
-        {
-            // If our return byte size was greater than the return value reg size, then
-            // use the type specified by reg_info rather than the uint64_t default
-            if (reg_value.GetByteSize() > reg_info->byte_size)
-                reg_value.SetType(reg_info);
-        }
     }
 
     return error;
@@ -934,7 +928,7 @@ GetWatchHi (struct pt_watch_regs *regs, uint32_t index)
         return regs->mips32.watchhi[index];
     else if (regs->style == pt_watch_style_mips64)
         return regs->mips64.watchhi[index];
-    else
+    if(log)
         log->Printf("Invalid watch register style");
     return 0;
 }
@@ -947,7 +941,7 @@ SetWatchHi (struct pt_watch_regs *regs, uint32_t index, uint16_t value)
         regs->mips32.watchhi[index] = value;
     else if (regs->style == pt_watch_style_mips64)
         regs->mips64.watchhi[index] = value;
-    else
+    if(log)
         log->Printf("Invalid watch register style");
     return;
 }
@@ -960,7 +954,7 @@ GetWatchLo (struct pt_watch_regs *regs, uint32_t index)
         return regs->mips32.watchlo[index];
     else if (regs->style == pt_watch_style_mips64)
         return regs->mips64.watchlo[index];
-    else
+    if(log)
         log->Printf("Invalid watch register style");
     return LLDB_INVALID_ADDRESS;
 }
@@ -973,7 +967,7 @@ SetWatchLo (struct pt_watch_regs *regs, uint32_t index, uint64_t value)
         regs->mips32.watchlo[index] = (uint32_t) value;
     else if (regs->style == pt_watch_style_mips64)
         regs->mips64.watchlo[index] = value;
-    else
+    if(log)
         log->Printf("Invalid watch register style");
     return;
 }
@@ -986,7 +980,7 @@ GetIRWMask (struct pt_watch_regs *regs, uint32_t index)
         return regs->mips32.watch_masks[index] & IRW;
     else if (regs->style == pt_watch_style_mips64)
         return regs->mips64.watch_masks[index] & IRW;
-    else
+    if(log)
         log->Printf("Invalid watch register style");
     return 0;
 }
@@ -999,7 +993,7 @@ GetRegMask (struct pt_watch_regs *regs, uint32_t index)
         return regs->mips32.watch_masks[index] & ~IRW;
     else if (regs->style == pt_watch_style_mips64)
         return regs->mips64.watch_masks[index] & ~IRW;
-    else
+    if(log)
         log->Printf("Invalid watch register style");
     return 0;
 }
@@ -1099,7 +1093,7 @@ GetVacantWatchIndex (struct pt_watch_regs *regs, lldb::addr_t addr, uint32_t siz
             }
         }
     }
-    return 0;
+    return LLDB_INVALID_INDEX32;
 }
 
 bool
@@ -1111,9 +1105,12 @@ NativeRegisterContextLinux_mips64::IsMSA(uint32_t reg_index) const
 bool
 NativeRegisterContextLinux_mips64::IsMSAAvailable()
 {
-    Error error = NativeRegisterContextLinux::ReadRegisterSet(&m_msa, sizeof(MSA_linux_mips), NT_MIPS_MSA);
+    MSA_linux_mips msa_buf;
+    unsigned int regset = NT_MIPS_MSA;
 
-    if (error.Success() && m_msa.mir)
+    Error error = NativeProcessLinux::PtraceWrapper(PTRACE_GETREGSET, Host::GetCurrentProcessID(), static_cast<void *>(&regset), &msa_buf, sizeof(MSA_linux_mips));
+
+    if (error.Success() && msa_buf.mir)
     {
         return true;
     }
@@ -1129,19 +1126,13 @@ NativeRegisterContextLinux_mips64::IsWatchpointHit (uint32_t wp_index, bool &is_
 
     // reading the current state of watch regs
     struct pt_watch_regs watch_readback;
-    NativeProcessProtocolSP process_sp (m_thread.GetProcess ());
-    NativeProcessLinux *const process_p = static_cast<NativeProcessLinux*> (process_sp.get ());
-    Error error = process_p->DoOperation([&] {
-        return DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&watch_readback));
-    });
+    Error error =  DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&watch_readback));
 
     if (GetWatchHi (&watch_readback, wp_index) & (IRW))
     {
         // clear hit flag in watchhi 
         SetWatchHi (&watch_readback, wp_index, (GetWatchHi (&watch_readback, wp_index) & ~(IRW)));
-        process_p->DoOperation([&] {
-            return DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&watch_readback));
-        });
+        DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&watch_readback));
      
         is_hit = true;
         return error;
@@ -1182,11 +1173,7 @@ NativeRegisterContextLinux_mips64::ClearHardwareWatchpoint(uint32_t wp_index)
 
     struct pt_watch_regs regs;
     // First reading the current state of watch regs
-    NativeProcessProtocolSP process_sp (m_thread.GetProcess ());
-    NativeProcessLinux *const process_p = static_cast<NativeProcessLinux*> (process_sp.get ());
-    process_p->DoOperation([&] {
-        return DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void*>(&regs));
-    });
+    DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void*>(&regs));
 
     if (regs.style == pt_watch_style_mips32)
     {
@@ -1201,9 +1188,7 @@ NativeRegisterContextLinux_mips64::ClearHardwareWatchpoint(uint32_t wp_index)
         regs.mips64.watch_masks[wp_index] = default_watch_regs.mips64.watch_masks[wp_index];
     }
 
-    Error error = process_p->DoOperation([&] {
-        return DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
-    });
+    Error error = DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
     if(!error.Fail())
     {
         hw_addr_map[wp_index] = LLDB_INVALID_ADDRESS;
@@ -1215,11 +1200,7 @@ NativeRegisterContextLinux_mips64::ClearHardwareWatchpoint(uint32_t wp_index)
 Error
 NativeRegisterContextLinux_mips64::ClearAllHardwareWatchpoints()
 {
-    NativeProcessProtocolSP process_sp (m_thread.GetProcess ());
-    NativeProcessLinux *const process_p = static_cast<NativeProcessLinux *> (process_sp.get ());
-    return process_p->DoOperation([&] {
-        return DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&default_watch_regs));
-    });
+    return DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&default_watch_regs));
 }
 
 Error
@@ -1238,24 +1219,18 @@ NativeRegisterContextLinux_mips64::SetHardwareWatchpoint (
     struct pt_watch_regs regs;
 
     // First reading the current state of watch regs
-    NativeProcessProtocolSP process_sp (m_thread.GetProcess ());
-    NativeProcessLinux *const process_p = static_cast<NativeProcessLinux*> (process_sp.get ());
-    process_p->DoOperation([&] {
-        return DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
-    });
+    DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
 
     // Try if a new watch point fits in this state
     int index = GetVacantWatchIndex (&regs, addr, size, watch_flags, NumSupportedHardwareWatchpoints());
 
     // New watchpoint doesn't fit
-    if (!index)
+    if (index == LLDB_INVALID_INDEX32)
     return LLDB_INVALID_INDEX32;
 
 
     // It fits, so we go ahead with updating the state of watch regs 
-    process_p->DoOperation([&] {
-        return DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
-    });
+    DoWriteWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
 
     // Storing exact address  
     hw_addr_map[index] = addr; 
@@ -1324,7 +1299,7 @@ WriteRegisterCallback (EmulateInstruction *instruction, void *baton,
                        const EmulateInstruction::Context &context,
                        const RegisterInfo *reg_info, const RegisterValue &reg_value)
 {
-    if (reg_info->kinds[lldb::eRegisterKindDWARF] == gcc_dwarf_bad_mips64)
+    if (reg_info->kinds[lldb::eRegisterKindDWARF] == dwarf_bad_mips64)
     {
         EmulatorBaton* emulator_baton = static_cast<EmulatorBaton*>(baton);
         emulator_baton->m_watch_hit_addr = reg_value.GetAsUInt64 ();
@@ -1379,17 +1354,7 @@ NativeRegisterContextLinux_mips64::NumSupportedHardwareWatchpoints ()
     static int num_valid = 0;
     if (!num_valid)
     {
-        NativeProcessProtocolSP process_sp (m_thread.GetProcess ());
-        if (!process_sp)
-        {
-            printf ("NativeProcessProtocol is NULL");
-            return 0;
-        }
-
-        NativeProcessLinux *const process_p = static_cast<NativeProcessLinux*> (process_sp.get ());
-        process_p->DoOperation([&] {
-            return DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
-        });
+        DoReadWatchPointRegisterValue(m_thread.GetID(), static_cast<void *>(&regs));
         default_watch_regs = regs; // Keeping default watch regs values for future use
         switch (regs.style)
         {
@@ -1400,7 +1365,8 @@ NativeRegisterContextLinux_mips64::NumSupportedHardwareWatchpoints ()
                 num_valid = regs.mips64.num_valid;
                 return num_valid;
             default:
-                log->Printf("NativeRegisterContextLinux_mips64::%s Error: Unrecognized watch register style", __FUNCTION__);
+                if(log)
+                    log->Printf("NativeRegisterContextLinux_mips64::%s Error: Unrecognized watch register style", __FUNCTION__);
         }
         return 0;
     }
@@ -1414,12 +1380,23 @@ NativeRegisterContextLinux_mips64::DoReadRegisterValue(uint32_t offset,
 {
     GPR_linux_mips regs;
     ::memset(&regs, 0, sizeof(GPR_linux_mips));
+
+    // Clear all bits in RegisterValue before writing actual value read from ptrace to avoid garbage value in 32-bit MSB 
+    value.SetBytes((void *)(((unsigned char *)&regs) + offset), 8, GetByteOrder());
     Error error = NativeProcessLinux::PtraceWrapper(PTRACE_GETREGS, m_thread.GetID(), NULL, &regs, sizeof regs);
     if (error.Success())
     {
         lldb_private::ArchSpec arch;
         if (m_thread.GetProcess()->GetArchitecture(arch))
-            value.SetBytes((void *)(((unsigned char *)(&regs)) + offset), 8, arch.GetByteOrder());
+        {
+            void* target_address = ((uint8_t*)&regs) + offset + 4 * (arch.GetMachine() == llvm::Triple::mips);
+            uint32_t target_size;
+            if ((::strcmp(reg_name, "sr") == 0) || (::strcmp(reg_name, "cause") == 0) || (::strcmp(reg_name, "config5") == 0))
+                target_size = 4;
+            else
+                target_size = arch.GetFlags() & lldb_private::ArchSpec::eMIPSABI_O32 ? 4 : 8;
+            value.SetBytes(target_address, target_size, arch.GetByteOrder());
+        }
         else
             error.SetErrorString("failed to get architecture");
     }
@@ -1431,12 +1408,18 @@ NativeRegisterContextLinux_mips64::DoWriteRegisterValue(uint32_t offset,
                                                         const char* reg_name,
                                                         const RegisterValue &value)
 {
-    elf_gregset_t regs;
+    GPR_linux_mips regs;
     Error error = NativeProcessLinux::PtraceWrapper(PTRACE_GETREGS, m_thread.GetID(), NULL, &regs, sizeof regs);
     if (error.Success())
     {
-        ::memcpy((void *)(((unsigned char *)(&regs)) + offset), value.GetBytes(), 8);
-        error = NativeProcessLinux::PtraceWrapper(PTRACE_SETREGS, m_thread.GetID(), NULL, &regs, sizeof regs);
+        lldb_private::ArchSpec arch;
+        if (m_thread.GetProcess()->GetArchitecture(arch))
+        {
+            ::memcpy((void *)(((unsigned char *)(&regs)) + offset), value.GetBytes(), arch.GetFlags() & lldb_private::ArchSpec::eMIPSABI_O32 ? 4 : 8);
+            error = NativeProcessLinux::PtraceWrapper(PTRACE_SETREGS, m_thread.GetID(), NULL, &regs, sizeof regs);
+        }
+        else
+            error.SetErrorString("failed to get architecture");
     }
     return error;
 }

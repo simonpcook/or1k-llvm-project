@@ -16,6 +16,7 @@
 #ifndef KMP_OS_H
 #define KMP_OS_H
 
+#include "kmp_config.h"
 #include <stdlib.h>
 
 #define KMP_FTN_PLAIN   1
@@ -61,8 +62,6 @@
 #else
 # error Unknown compiler
 #endif
-
-#include "kmp_platform.h"
 
 #if (KMP_OS_LINUX || KMP_OS_WINDOWS) && !KMP_OS_CNK && !KMP_ARCH_PPC64
 # define KMP_AFFINITY_SUPPORTED 1
@@ -174,21 +173,15 @@ typedef double  kmp_real64;
 # define KMP_UINTPTR_SPEC  "lu"
 #endif
 
-#ifdef KMP_I8
+#ifdef BUILD_I8
   typedef kmp_int64      kmp_int;
   typedef kmp_uint64     kmp_uint;
-# define  KMP_INT_SPEC	 KMP_INT64_SPEC
-# define  KMP_UINT_SPEC	 KMP_UINT64_SPEC
-# define  KMP_INT_MAX    ((kmp_int64)0x7FFFFFFFFFFFFFFFLL)
-# define  KMP_INT_MIN    ((kmp_int64)0x8000000000000000LL)
 #else
   typedef kmp_int32      kmp_int;
   typedef kmp_uint32     kmp_uint;
-# define  KMP_INT_SPEC	 KMP_INT32_SPEC
-# define  KMP_UINT_SPEC	 KMP_UINT32_SPEC
-# define  KMP_INT_MAX    ((kmp_int32)0x7FFFFFFF)
-# define  KMP_INT_MIN    ((kmp_int32)0x80000000)
-#endif /* KMP_I8 */
+#endif /* BUILD_I8 */
+#define  KMP_INT_MAX     ((kmp_int32)0x7FFFFFFF)
+#define  KMP_INT_MIN     ((kmp_int32)0x80000000)
 
 #ifdef __cplusplus
     //-------------------------------------------------------------------------
@@ -279,22 +272,6 @@ extern "C" {
 # define KMP_ALIGN_CACHE      __declspec( align(CACHE_LINE) )
 # define KMP_ALIGN_CACHE_INTERNODE      __declspec( align(INTERNODE_CACHE_LINE) )
 # define KMP_ALIGN(bytes)     __declspec( align(bytes) )
-#endif
-
-#if defined(__MIC__) || defined(__MIC2__)
-    #define KMP_MIC  1
-// Intel(R) Composer XE (13.0) defines both __MIC__ and __MIC2__ !
-# if __MIC2__ || __KNC__
-    #define KMP_MIC1 0
-    #define KMP_MIC2 1
-# else
-    #define KMP_MIC1 1
-    #define KMP_MIC2 0
-# endif
-#else
-    #define KMP_MIC  0
-    #define KMP_MIC1 0
-    #define KMP_MIC2 0
 #endif
 
 /* General purpose fence types for memory operations */
@@ -414,7 +391,7 @@ extern kmp_real64 __kmp_xchg_real64( volatile kmp_real64 *p, kmp_real64 v );
 //# define KMP_COMPARE_AND_STORE_RET32(p, cv, sv) __kmp_compare_and_store_ret32( (p), (cv), (sv) )
 # define KMP_COMPARE_AND_STORE_RET64(p, cv, sv) __kmp_compare_and_store_ret64( (p), (cv), (sv) )
 
-# define KMP_XCHG_FIXED8(p, v)                  __kmp_xchg_fixed8( (p), (v) );
+# define KMP_XCHG_FIXED8(p, v)                  __kmp_xchg_fixed8( (volatile kmp_int8*)(p), (kmp_int8)(v) );
 # define KMP_XCHG_FIXED16(p, v)                 __kmp_xchg_fixed16( (p), (v) );
 //# define KMP_XCHG_FIXED32(p, v)                 __kmp_xchg_fixed32( (p), (v) );
 //# define KMP_XCHG_FIXED64(p, v)                 __kmp_xchg_fixed64( (p), (v) );
@@ -551,7 +528,7 @@ extern kmp_real64 __kmp_xchg_real64( volatile kmp_real64 *p, kmp_real64 v );
 # define KMP_COMPARE_AND_STORE_RET32(p, cv, sv) __kmp_compare_and_store_ret32( (p), (cv), (sv) )
 # define KMP_COMPARE_AND_STORE_RET64(p, cv, sv) __kmp_compare_and_store_ret64( (p), (cv), (sv) )
 
-# define KMP_XCHG_FIXED8(p, v)                  __kmp_xchg_fixed8( (p), (v) );
+# define KMP_XCHG_FIXED8(p, v)                  __kmp_xchg_fixed8( (volatile kmp_int8*)(p), (kmp_int8)(v) );
 # define KMP_XCHG_FIXED16(p, v)                 __kmp_xchg_fixed16( (p), (v) );
 # define KMP_XCHG_FIXED32(p, v)                 __kmp_xchg_fixed32( (p), (v) );
 # define KMP_XCHG_FIXED64(p, v)                 __kmp_xchg_fixed64( (p), (v) );
@@ -668,21 +645,12 @@ typedef void    (*microtask_t)( int *gtid, int *npr, ... );
 # define VOLATILE_CAST(x)        (x)
 #endif
 
-#ifdef KMP_I8
-# define KMP_WAIT_YIELD           __kmp_wait_yield_8
-# define KMP_EQ                   __kmp_eq_8
-# define KMP_NEQ                  __kmp_neq_8
-# define KMP_LT                   __kmp_lt_8
-# define KMP_GE                   __kmp_ge_8
-# define KMP_LE                   __kmp_le_8
-#else
-# define KMP_WAIT_YIELD           __kmp_wait_yield_4
-# define KMP_EQ                   __kmp_eq_4
-# define KMP_NEQ                  __kmp_neq_4
-# define KMP_LT                   __kmp_lt_4
-# define KMP_GE                   __kmp_ge_4
-# define KMP_LE                   __kmp_le_4
-#endif /* KMP_I8 */
+#define KMP_WAIT_YIELD           __kmp_wait_yield_4
+#define KMP_EQ                   __kmp_eq_4
+#define KMP_NEQ                  __kmp_neq_4
+#define KMP_LT                   __kmp_lt_4
+#define KMP_GE                   __kmp_ge_4
+#define KMP_LE                   __kmp_le_4
 
 /* Workaround for Intel(R) 64 code gen bug when taking address of static array (Intel(R) 64 Tracker #138) */
 #if (KMP_ARCH_X86_64 || KMP_ARCH_PPC64) && KMP_OS_LINUX
@@ -706,8 +674,23 @@ typedef void    (*microtask_t)( int *gtid, int *npr, ... );
 #endif
 
 // Enable dynamic user lock
-#ifndef KMP_USE_DYNAMIC_LOCK
-# define KMP_USE_DYNAMIC_LOCK 0
+#if OMP_41_ENABLED
+# define KMP_USE_DYNAMIC_LOCK 1
+#endif
+
+// Enable TSX if dynamic user lock is turned on
+#if KMP_USE_DYNAMIC_LOCK
+// Visual studio can't handle the asm sections in this code
+# define KMP_USE_TSX             (KMP_ARCH_X86 || KMP_ARCH_X86_64) && !KMP_COMPILER_MSVC
+# ifdef KMP_USE_ADAPTIVE_LOCKS
+#  undef KMP_USE_ADAPTIVE_LOCKS
+# endif
+# define KMP_USE_ADAPTIVE_LOCKS KMP_USE_TSX
+#endif
+
+// Enable tick time conversion of ticks to seconds
+#if KMP_STATS_ENABLED
+# define KMP_HAVE_TICK_TIME (KMP_OS_LINUX && (KMP_MIC || KMP_ARCH_X86 || KMP_ARCH_X86_64))
 #endif
 
 // Warning levels

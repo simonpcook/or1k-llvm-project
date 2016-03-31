@@ -70,11 +70,17 @@ template <typename ISLTy, typename ISL_CTX_GETTER, typename ISL_PRINTER>
 static inline std::string stringFromIslObjInternal(__isl_keep ISLTy *isl_obj,
                                                    ISL_CTX_GETTER ctx_getter_fn,
                                                    ISL_PRINTER printer_fn) {
+  if (!isl_obj)
+    return "null";
   isl_ctx *ctx = ctx_getter_fn(isl_obj);
   isl_printer *p = isl_printer_to_str(ctx);
   printer_fn(p, isl_obj);
   char *char_str = isl_printer_get_str(p);
-  std::string string(char_str);
+  std::string string;
+  if (char_str)
+    string = char_str;
+  else
+    string = "null";
   free(char_str);
   isl_printer_free(p);
   return string;

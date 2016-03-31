@@ -12,6 +12,7 @@
 #ifndef POLLY_SCEV_VALIDATOR_H
 #define POLLY_SCEV_VALIDATOR_H
 
+#include "polly/Support/ScopHelper.h"
 #include "llvm/ADT/SetVector.h"
 #include <vector>
 
@@ -21,6 +22,7 @@ class SCEV;
 class ScalarEvolution;
 class Value;
 class Loop;
+class LoadInst;
 }
 
 namespace polly {
@@ -45,8 +47,15 @@ void findValues(const llvm::SCEV *Expr, llvm::SetVector<llvm::Value *> &Values);
 /// @param R The region in which we look for dependences.
 bool hasScalarDepsInsideRegion(const llvm::SCEV *S, const llvm::Region *R);
 bool isAffineExpr(const llvm::Region *R, const llvm::SCEV *Expression,
-                  llvm::ScalarEvolution &SE,
-                  const llvm::Value *BaseAddress = 0);
+                  llvm::ScalarEvolution &SE, const llvm::Value *BaseAddress = 0,
+                  InvariantLoadsSetTy *ILS = nullptr);
+
+/// @brief Check if @p V describes an affine parameter constraint in @p R.
+bool isAffineParamConstraint(llvm::Value *V, const llvm::Region *R,
+                             llvm::ScalarEvolution &SE,
+                             std::vector<const llvm::SCEV *> &Params,
+                             bool OrExpr = false);
+
 std::vector<const llvm::SCEV *>
 getParamsInAffineExpr(const llvm::Region *R, const llvm::SCEV *Expression,
                       llvm::ScalarEvolution &SE,

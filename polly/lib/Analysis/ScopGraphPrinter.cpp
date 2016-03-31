@@ -20,9 +20,18 @@
 #include "llvm/Analysis/DOTGraphTraitsPass.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/RegionIterator.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace polly;
 using namespace llvm;
+static cl::opt<std::string>
+    ViewFilter("polly-view-only",
+               cl::desc("Only view functions that match this pattern"),
+               cl::Hidden, cl::init(""), cl::ZeroOrMore);
+
+static cl::opt<bool> ViewAll("polly-view-all",
+                             cl::desc("Also show functions without any scops"),
+                             cl::Hidden, cl::init(false), cl::ZeroOrMore);
 
 namespace llvm {
 template <>
@@ -173,6 +182,16 @@ struct DOTGraphTraits<ScopDetection *> : public DOTGraphTraits<RegionNode *> {
 struct ScopViewer : public DOTGraphTraitsViewer<ScopDetection, false> {
   static char ID;
   ScopViewer() : DOTGraphTraitsViewer<ScopDetection, false>("scops", ID) {}
+  bool processFunction(Function &F, ScopDetection &SD) override {
+    if (ViewFilter != "" && !F.getName().count(ViewFilter))
+      return false;
+
+    if (ViewAll)
+      return true;
+
+    // Check that at least one scop was detected.
+    return std::distance(SD.begin(), SD.end()) > 0;
+  }
 };
 char ScopViewer::ID = 0;
 

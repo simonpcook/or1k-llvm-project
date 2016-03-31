@@ -16,9 +16,6 @@
 #include <cstdlib> // getenv
 #endif
 #include <new>
-#include <tuple>
-#include <memory>
-#include <vector>
 #include <algorithm>
 
 #include "libunwind_ext.h"
@@ -58,12 +55,19 @@ _LIBUNWIND_EXPORT int unw_init_local(unw_cursor_t *cursor,
 #elif defined(__ppc__)
   new ((void *)cursor) UnwindCursor<LocalAddressSpace, Registers_ppc>(
                                  context, LocalAddressSpace::sThisAddressSpace);
-#elif defined(__arm64__)
+#elif defined(__arm64__) || defined(__aarch64__)
   new ((void *)cursor) UnwindCursor<LocalAddressSpace, Registers_arm64>(
                                  context, LocalAddressSpace::sThisAddressSpace);
 #elif _LIBUNWIND_ARM_EHABI
   new ((void *)cursor) UnwindCursor<LocalAddressSpace, Registers_arm>(
                                  context, LocalAddressSpace::sThisAddressSpace);
+#elif defined(__or1k__)
+  new ((void *)cursor) UnwindCursor<LocalAddressSpace, Registers_or1k>(
+                                 context, LocalAddressSpace::sThisAddressSpace);
+#elif defined(__mips__)
+#warning The MIPS architecture is not supported.
+#else
+#error Architecture not supported
 #endif
   AbstractUnwindCursor *co = (AbstractUnwindCursor *)cursor;
   co->setInfoBasedOnIPRegister();

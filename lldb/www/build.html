@@ -16,7 +16,7 @@
       <!--#include virtual="sidebar.incl"-->
 
       <div id="middle">
-        <h1 class="postheader">Continuous Integraton</h1>
+        <h1 class="postheader">Continuous Integration</h1>
         <div class="postcontent">
           <p>
             The following LLVM buildbots build and test LLDB trunk:
@@ -35,6 +35,8 @@
               </li>
               <li> <a href="http://lab.llvm.org:8011/builders/lldb-x86_64-freebsd">LLDB FreeBSD x86_64 (CMake)</a>
               </li>
+              <li> <a href="http://lab.llvm.org:8011/builders/lldb-amd64-ninja-netbsd7">LLDB NetBSD-7.0 amd64 (GCC 4.8.5, Ninja)</a>
+              </li>
             </ul>
           </p>
         </div>
@@ -44,7 +46,7 @@
           <ul>
             <li><a href="#BuildingLldbOnWindows">Building LLDB on Windows</a></li>
             <li><a href="#BuildingLldbOnMacOSX">Building LLDB on Mac OSX</a></li>
-            <li><a href="#BuildingLldbOnLinux">Building LLDB on Linux and FreeBSD</a></li>
+            <li><a href="#BuildingLldbOnLinux">Building LLDB on Linux, FreeBSD and NetBSD</a></li>
           </ul>
         </div>
         <div class="postfooter"></div>
@@ -165,9 +167,9 @@
           <div class="postfooter"></div>
         </div>
         <div class="post" id="BuildingLldbOnLinux">
-          <h1 class="postheader">Building LLDB on Linux and FreeBSD</h1>
+          <h1 class="postheader">Building LLDB on Linux, FreeBSD and NetBSD</h1>
           <div class="postcontent">
-            <p>This document describes the steps needed to compile LLDB on most Linux systems, and FreeBSD.</a></p>
+            <p>This document describes the steps needed to compile LLDB on most Linux systems, FreeBSD and NetBSD.</a></p>
           </div>
           <div class="postcontent">
             <h2>Preliminaries</h2>
@@ -192,6 +194,10 @@
               or the GCC port or package.
             </p>
             <p>
+              On NetBSD the base system GCC and libstdc++ are used to build LLDB,
+              Clang/LLVM and libc++ should also work.
+            </p>
+            <p>
               In addition to any dependencies required by LLVM and Clang, LLDB needs a few
               development packages that may also need to be installed depending on your
               system.  The current list of dependencies are:
@@ -202,13 +208,15 @@
               <li><a href="http://www.python.org">Python</a></li>
             </ul>
             <p>So for example, on a Fedora system one might run:</p>
-            <code>&gt; yum install swig python-devel libedit-devel</code>
+            <code>&gt; yum install libedit-devel libxml2-devel ncurses-devel python-devel swig</code>
             <p>On a Debian or Ubuntu system one might run:</p>
             <code>&gt; sudo apt-get install build-essential subversion swig python2.7-dev libedit-dev libncurses5-dev </code>
             <p>or</p>
             <code>&gt; sudo apt-get build-dep lldb-3.3 # or lldb-3.4</code>
             <p>On FreeBSD one might run:</p>
             <code>&gt; pkg install swig python</code>
+            <p>On NetBSD one might run:</p>
+            <code>&gt; pkgin install swig python27 cmake ninja-build</code>
             <p>If you wish to build the optional reference documentation, additional dependencies are required:</p>
             <ul>
               <li> Graphviz (for the 'dot' tool).
@@ -348,6 +356,11 @@
               outside the command line application, the <tt>PYTHONPATH</tt> environment variable can be used
               to let the Python interpreter find the <tt>lldb</tt> module.
             </p>
+            <p>
+              Current stable NetBSD release doesn't ship with libpanel(3), therefore it's required to disable curses(3) support with
+              the <tt>-DLLDB_DISABLE_CURSES:BOOL=TRUE</tt> option. To make sure check if <tt>/usr/include/panel.h</tt> exists in your
+              system.
+            </p>
             <p>The correct path can be obtained by invoking the command line <tt>lldb</tt> tool with the -P flag:</p>
             <code>&gt; export PYTHONPATH=`$llvm/build/Debug+Asserts/bin/lldb -P`</code>
             <p>
@@ -362,7 +375,7 @@
               In order to debug remote targets running different architectures than your host, you
               will need to compile LLDB (or at least the server component) for the target. While
               the easiest solution is to just compile it locally on the target, this is often not
-              feasable, and in these cases you will need to cross-compile LLDB on your host.
+              feasible, and in these cases you will need to cross-compile LLDB on your host.
             </p>
 
             <p>
@@ -453,7 +466,7 @@
 
             <p>
               Ubuntu already provides the packages necessary to cross-compile LLDB for arm64. It
-              is sufficient to install pacakges gcc-aarch64-linux-gnu, g++-aarch64-linux-gnu,
+              is sufficient to install packages gcc-aarch64-linux-gnu, g++-aarch64-linux-gnu,
               binutils-aarch64-linux-gnu. Then it is possible to prepare the cmake build with the
               following parameters:
             </p>
@@ -485,7 +498,7 @@
             <p>
               If you wanted to build a full version of LLDB and avoid passing
               -DLLDB_DISABLE_PYTHON and other options, you would need to obtain the target
-              versions of the respective libraries. The easiest way to achive this is to use the
+              versions of the respective libraries. The easiest way to achieve this is to use the
               <code>qemu-debootstrap</code> utility, which can prepare a system image using qemu
               and chroot to simulate the target environment. Then you can install the necessary
               packages in this environment (python-dev, libedit-dev, etc.) and point your
@@ -524,7 +537,7 @@
             </code>
 
             <p>
-              Note that the full LLVM build is not functional on android yet, so simply runing
+              Note that the full LLVM build is not functional on android yet, so simply running
               <code>ninja</code> will not work. You will need to manually specify the target you
               want to build: <code>lldb</code>, <code>lldb-server</code>, etc.
             </p>

@@ -2926,11 +2926,12 @@ __kmp_stg_parse_proc_bind( char const * name, char const * value, void * data )
             // OMP_PROC_BIND => granularity=core,scatter elsewhere
             //
             __kmp_affinity_type = affinity_scatter;
-            if( __kmp_mic_type != non_mic ) {
+#  if KMP_ARCH_X86_64 && (KMP_OS_LINUX || KMP_OS_WINDOWS)
+            if( __kmp_mic_type != non_mic )
                 __kmp_affinity_gran = affinity_gran_fine;
-            } else {
+            else
+#  endif
                 __kmp_affinity_gran = affinity_gran_core;
-            }
     }
     else {
         __kmp_affinity_type = affinity_none;
@@ -3008,6 +3009,11 @@ __kmp_stg_parse_topology_method( char const * name, char const * value,
     else if ( __kmp_str_match( "flat", 1, value ) ) {
         __kmp_affinity_top_method = affinity_top_method_flat;
     }
+# if KMP_USE_HWLOC
+    else if ( __kmp_str_match( "hwloc", 1, value) ) {
+        __kmp_affinity_top_method = affinity_top_method_hwloc;
+    }
+# endif
     else {
         KMP_WARNING( StgInvalidValue, name, value );
     }
@@ -3372,8 +3378,6 @@ __kmp_stg_print_ld_balance_interval( kmp_str_buf_t * buffer, char const * name, 
 } // __kmp_stg_print_load_balance_interval
 
 #endif /* USE_LOAD_BALANCE */
-
-
 
 // -------------------------------------------------------------------------------------------------
 // KMP_INIT_AT_FORK
@@ -3869,6 +3873,12 @@ __kmp_stg_print_lock_block( kmp_str_buf_t * buffer, char const * name, void * da
 // KMP_LOCK_KIND
 // -------------------------------------------------------------------------------------------------
 
+#if KMP_USE_DYNAMIC_LOCK
+# define KMP_STORE_LOCK_SEQ(a) (__kmp_user_lock_seq = lockseq_##a)
+#else
+# define KMP_STORE_LOCK_SEQ(a)
+#endif
+
 static void
 __kmp_stg_parse_lock_kind( char const * name, char const * value, void * data ) {
     if ( __kmp_init_user_locks ) {
@@ -3888,13 +3898,13 @@ __kmp_stg_parse_lock_kind( char const * name, char const * value, void * data ) 
       || __kmp_str_match( "testand-set", 2, value )
       || __kmp_str_match( "testandset", 2, value ) ) {
         __kmp_user_lock_kind = lk_tas;
-        DYNA_STORE_LOCK_SEQ(tas);
+        KMP_STORE_LOCK_SEQ(tas);
     }
 #if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
     else if ( __kmp_str_match( "futex", 1, value ) ) {
         if ( __kmp_futex_determine_capable() ) {
             __kmp_user_lock_kind = lk_futex;
-            DYNA_STORE_LOCK_SEQ(futex);
+            KMP_STORE_LOCK_SEQ(futex);
         }
         else {
             KMP_WARNING( FutexNotSupported, name, value );
@@ -3903,12 +3913,12 @@ __kmp_stg_parse_lock_kind( char const * name, char const * value, void * data ) 
 #endif
     else if ( __kmp_str_match( "ticket", 2, value ) ) {
         __kmp_user_lock_kind = lk_ticket;
-        DYNA_STORE_LOCK_SEQ(ticket);
+        KMP_STORE_LOCK_SEQ(ticket);
     }
     else if ( __kmp_str_match( "queuing", 1, value )
       || __kmp_str_match( "queue", 1, value ) ) {
         __kmp_user_lock_kind = lk_queuing;
-        DYNA_STORE_LOCK_SEQ(queuing);
+        KMP_STORE_LOCK_SEQ(queuing);
     }
     else if ( __kmp_str_match( "drdpa ticket", 1, value )
       || __kmp_str_match( "drdpa_ticket", 1, value )
@@ -3916,23 +3926,34 @@ __kmp_stg_parse_lock_kind( char const * name, char const * value, void * data ) 
       || __kmp_str_match( "drdpaticket", 1, value )
       || __kmp_str_match( "drdpa", 1, value ) ) {
         __kmp_user_lock_kind = lk_drdpa;
-        DYNA_STORE_LOCK_SEQ(drdpa);
+        KMP_STORE_LOCK_SEQ(drdpa);
     }
 #if KMP_USE_ADAPTIVE_LOCKS
     else if ( __kmp_str_match( "adaptive", 1, value )  ) {
         if( __kmp_cpuinfo.rtm ) { // ??? Is cpuinfo available here?
             __kmp_user_lock_kind = lk_adaptive;
-            DYNA_STORE_LOCK_SEQ(adaptive);
+            KMP_STORE_LOCK_SEQ(adaptive);
         } else {
             KMP_WARNING( AdaptiveNotSupported, name, value );
             __kmp_user_lock_kind = lk_queuing;
-            DYNA_STORE_LOCK_SEQ(queuing);
+            KMP_STORE_LOCK_SEQ(queuing);
         }
     }
 #endif // KMP_USE_ADAPTIVE_LOCKS
-#if KMP_USE_DYNAMIC_LOCK
+#if KMP_USE_DYNAMIC_LOCK && KMP_USE_TSX
+    else if ( __kmp_str_match("rtm", 1, value) ) {
+        if ( __kmp_cpuinfo.rtm ) {
+            __kmp_user_lock_kind = lk_rtm;
+            KMP_STORE_LOCK_SEQ(rtm);
+        } else {
+            KMP_WARNING( AdaptiveNotSupported, name, value );
+            __kmp_user_lock_kind = lk_queuing;
+            KMP_STORE_LOCK_SEQ(queuing);
+        }
+    }
     else if ( __kmp_str_match("hle", 1, value) ) {
-        DYNA_STORE_LOCK_SEQ(hle);
+        __kmp_user_lock_kind = lk_hle;
+        KMP_STORE_LOCK_SEQ(hle);
     }
 #endif
     else {
@@ -3956,6 +3977,16 @@ __kmp_stg_print_lock_kind( kmp_str_buf_t * buffer, char const * name, void * dat
 #if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64)
         case lk_futex:
         value = "futex";
+        break;
+#endif
+
+#if KMP_USE_DYNAMIC_LOCK && KMP_USE_TSX
+        case lk_rtm:
+        value = "rtm";
+        break;
+
+        case lk_hle:
+        value = "hle";
         break;
 #endif
 
@@ -4042,7 +4073,7 @@ __kmp_stg_parse_adaptive_lock_props( const char *name, const char *value, void *
             }
 
             num = __kmp_str_to_int( buf, *next );
-            if ( num < 1 ) { // The number of retries should be > 0
+            if ( num < 0 ) { // The number of retries should be >= 0
                 msg = KMP_I18N_STR( ValueTooSmall );
                 num = 1;
             } else if ( num > KMP_INT_MAX ) {
@@ -4066,12 +4097,8 @@ __kmp_stg_parse_adaptive_lock_props( const char *name, const char *value, void *
         KMP_WARNING( EnvSyntaxError, name, value );
         return;
     }
-    if( max_retries != 0 ) {
-        __kmp_adaptive_backoff_params.max_soft_retries = max_retries;
-    }
-    if( max_badness != 0 ) {
-        __kmp_adaptive_backoff_params.max_badness = max_badness;
-    }
+    __kmp_adaptive_backoff_params.max_soft_retries = max_retries;
+    __kmp_adaptive_backoff_params.max_badness = max_badness;
 }
 
 
@@ -4116,127 +4143,272 @@ static void
 __kmp_stg_parse_place_threads( char const * name, char const * value, void * data ) {
     // Value example: 5Cx2Tx15O
     // Which means "use 5 cores with offset 15, 2 threads per core"
-
+    // AC: extended to sockets level, examples of
+    //     "use 2 sockets with offset 6, 2 cores with offset 2 per socket, 2 threads per core":
+    //     2s,6o,2c,2o,2t; 2s,6o,2c,2t,2o; 2s@6,2c@2,2t
+    //     To not break legacy code core-offset can be last;
+    //     postfix "o" or prefix @ can be offset designator.
+    // Note: not all syntax errors are analyzed, some may be skipped.
+#define CHECK_DELIM(_x)   (*(_x) == ',' || *(_x) == 'x')
     int         num;
-    int         prev_delim = 0;
+    int single_warning = 0;
+    int flagS = 0, flagC = 0, flagT = 0, flagSO = 0, flagCO = 0;
     const char *next = value;
     const char *prev;
 
-    SKIP_WS( next );
-    if ( *next == '\0' ) {
-        return;   // leave default values
-    }
-
-    // Get num_cores first
-    if ( *next >= '0' && *next <= '9' ) {
+    SKIP_WS(next);  // skip white spaces
+    if (*next == '\0')
+        return;   // no data provided, retain default values
+    // Get num_sockets first (or whatever specified)
+    if (*next >= '0' && *next <= '9') {
         prev = next;
-        SKIP_DIGITS( next );
-        num = __kmp_str_to_int( prev, *next );
-        SKIP_WS( next );
-        if ( *next == 'C' || *next == 'c' ) {
-            __kmp_place_num_cores = num;
+        SKIP_DIGITS(next);
+        num = __kmp_str_to_int(prev, *next);
+        SKIP_WS(next);
+        if (*next == 's' || *next == 'S') {  // e.g. "2s"
+            __kmp_place_num_sockets = num;
+            flagS = 1; // got num sockets
             next++;
-        } else if ( *next == ',' || *next == 'x' ) {
+            if (*next == '@') { // socket offset, e.g. "2s@4"
+                flagSO = 1;
+                prev = ++next;  // don't allow spaces for simplicity
+                if (!(*next >= '0' && *next <= '9')) {
+                    KMP_WARNING(AffThrPlaceInvalid, name, value);
+                    return;
+                }
+                SKIP_DIGITS(next);
+                num = __kmp_str_to_int(prev, *next);
+                __kmp_place_socket_offset = num;
+            }
+        } else if (*next == 'c' || *next == 'C') {
             __kmp_place_num_cores = num;
-            prev_delim = 1;
+            flagS = flagC = 1; // sockets were not specified - use default
             next++;
-        } else if ( *next == 'T' || *next == 't' ) {
+            if (*next == '@') { // core offset, e.g. "2c@6"
+                flagCO = 1;
+                prev = ++next;  // don't allow spaces for simplicity
+                if (!(*next >= '0' && *next <= '9')) {
+                    KMP_WARNING(AffThrPlaceInvalid, name, value);
+                    return;
+                }
+                SKIP_DIGITS(next);
+                num = __kmp_str_to_int(prev, *next);
+                __kmp_place_core_offset = num;
+            }
+        } else if (CHECK_DELIM(next)) {
+            __kmp_place_num_cores = num; // no letter-designator - num cores
+            flagS = flagC = 1; // sockets were not specified - use default
+            next++;
+        } else if (*next == 't' || *next == 'T') {
             __kmp_place_num_threads_per_core = num;
+            // sockets, cores were not specified - use default
             return;   // we ignore offset value in case all cores are used
-        } else if ( *next == '\0' ) {
+        } else if (*next == '\0') {
             __kmp_place_num_cores = num;
-            return;   // the only value provided
+            return;   // the only value provided - set num cores
         } else {
-            KMP_WARNING( AffThrPlaceInvalid, name, value );
+            KMP_WARNING(AffThrPlaceInvalid, name, value);
             return;
         }
-    } else if ( *next == ',' || *next == 'x' ) {
-        // First character is delimiter, skip it, leave num_cores default value
-        prev_delim = 2;
-        next++;
     } else {
-        KMP_WARNING( AffThrPlaceInvalid, name, value );
+        KMP_WARNING(AffThrPlaceInvalid, name, value);
         return;
     }
-    SKIP_WS( next );
-    if ( *next == '\0' ) {
+    KMP_DEBUG_ASSERT(flagS); // num sockets should already be set here
+    SKIP_WS(next);
+    if (*next == '\0')
         return;   // " n  " - something like this
-    }
-    if ( ( *next == ',' || *next == 'x' ) && !prev_delim ) {
-        prev_delim = 1;
-        next++;   // skip delimiter after num_core value
-        SKIP_WS( next );
+    if (CHECK_DELIM(next)) {
+        next++;   // skip delimiter
+        SKIP_WS(next);
     }
 
-    // Get threads_per_core next
-    if ( *next >= '0' && *next <= '9' ) {
-        prev_delim = 0;
+    // Get second value (could be offset, num_cores, num_threads)
+    if (*next >= '0' && *next <= '9') {
         prev = next;
-        SKIP_DIGITS( next );
-        num = __kmp_str_to_int( prev, *next );
-        SKIP_WS( next );
-        if ( *next == 'T' || *next == 't' ) {
-            __kmp_place_num_threads_per_core = num;
+        SKIP_DIGITS(next);
+        num = __kmp_str_to_int(prev, *next);
+        SKIP_WS(next);
+        if (*next == 'c' || *next == 'C') {
+            KMP_DEBUG_ASSERT(flagC == 0);
+            __kmp_place_num_cores = num;
+            flagC = 1;
             next++;
-        } else if ( *next == ',' || *next == 'x' ) {
-            __kmp_place_num_threads_per_core = num;
-            prev_delim = 1;
+            if (*next == '@') { // core offset, e.g. "2c@6"
+                flagCO = 1;
+                prev = ++next;  // don't allow spaces for simplicity
+                if (!(*next >= '0' && *next <= '9')) {
+                    KMP_WARNING(AffThrPlaceInvalid, name, value);
+                    return;
+                }
+                SKIP_DIGITS(next);
+                num = __kmp_str_to_int(prev, *next);
+                __kmp_place_core_offset = num;
+            }
+        } else if (*next == 'o' || *next == 'O') { // offset specified
+            KMP_WARNING(AffThrPlaceDeprecated);
+            single_warning = 1;
+            if (flagC) { // whether num_cores already specified (sockets skipped)
+                KMP_DEBUG_ASSERT(!flagCO); // either "o" or @, not both
+                __kmp_place_core_offset = num;
+            } else {
+                KMP_DEBUG_ASSERT(!flagSO); // either "o" or @, not both
+                __kmp_place_socket_offset = num;
+            }
             next++;
-        } else if ( *next == 'O' || *next == 'o' ) {
-            __kmp_place_core_offset = num;
-            return;   // threads_per_core remains default
-        } else if ( *next == '\0' ) {
+        } else if (*next == 't' || *next == 'T') {
+            KMP_DEBUG_ASSERT(flagT == 0);
             __kmp_place_num_threads_per_core = num;
-            return;
+            flagC = 1; // num_cores could be skipped ?
+            flagT = 1;
+            next++; // can have core-offset specified after num threads
+        } else if (*next == '\0') {
+            KMP_DEBUG_ASSERT(flagC); // 4x2 means 4 cores 2 threads per core
+            __kmp_place_num_threads_per_core = num;
+            return;   // two values provided without letter-designator
         } else {
-            KMP_WARNING( AffThrPlaceInvalid, name, value );
+            KMP_WARNING(AffThrPlaceInvalid, name, value);
             return;
         }
-    } else if ( *next == ',' || *next == 'x' ) {
-        if ( prev_delim == 2 ) {
-            return; // no sense in the only offset value, thus skip the rest
-        }
-        KMP_DEBUG_ASSERT( prev_delim == 1 );
-        next++;     // no value for threads_per_core provided
     } else {
-        KMP_WARNING( AffThrPlaceInvalid, name, value );
+        KMP_WARNING(AffThrPlaceInvalid, name, value);
         return;
     }
-    SKIP_WS( next );
-    if ( *next == '\0' ) {
-        return;   // " nC,mT  " - something like this
-    }
-    if ( ( *next == ',' || *next == 'x' ) && !prev_delim ) {
-        prev_delim = 1;
-        next++;   // skip delimiter after threads_per_core value
-        SKIP_WS( next );
+    SKIP_WS(next);
+    if (*next == '\0')
+        return;   // " Ns,Nc  " - something like this
+    if (CHECK_DELIM(next)) {
+        next++;   // skip delimiter
+        SKIP_WS(next);
     }
 
-    // Get core offset last if any,
-    // don't bother checking syntax after all data obtained
-    if ( *next >= '0' && *next <= '9' ) {
+    // Get third value (could be core-offset, num_cores, num_threads)
+    if (*next >= '0' && *next <= '9') {
         prev = next;
-        SKIP_DIGITS( next );
-        num = __kmp_str_to_int( prev, *next );
-        __kmp_place_core_offset = num;
+        SKIP_DIGITS(next);
+        num = __kmp_str_to_int(prev, *next);
+        SKIP_WS(next);
+        if (*next == 't' || *next == 'T') {
+            KMP_DEBUG_ASSERT(flagT == 0);
+            __kmp_place_num_threads_per_core = num;
+            if (flagC == 0)
+                return; // num_cores could be skipped (e.g. 2s,4o,2t)
+            flagT = 1;
+            next++; // can have core-offset specified later (e.g. 2s,1c,2t,3o)
+        } else if (*next == 'c' || *next == 'C') {
+            KMP_DEBUG_ASSERT(flagC == 0);
+            __kmp_place_num_cores = num;
+            flagC = 1;
+            next++;
+            //KMP_DEBUG_ASSERT(*next != '@'); // socket offset used "o" designator
+        } else if (*next == 'o' || *next == 'O') {
+            KMP_WARNING(AffThrPlaceDeprecated);
+            single_warning = 1;
+            KMP_DEBUG_ASSERT(flagC);
+            //KMP_DEBUG_ASSERT(!flagSO); // socket offset couldn't use @ designator
+            __kmp_place_core_offset = num;
+            next++;
+        } else {
+            KMP_WARNING(AffThrPlaceInvalid, name, value);
+            return;
+        }
+    } else {
+        KMP_WARNING(AffThrPlaceInvalid, name, value);
+        return;
     }
+    KMP_DEBUG_ASSERT(flagC);
+    SKIP_WS(next);
+    if ( *next == '\0' )
+            return;
+    if (CHECK_DELIM(next)) {
+        next++;   // skip delimiter
+        SKIP_WS(next);
+    }
+
+    // Get 4-th value (could be core-offset, num_threads)
+    if (*next >= '0' && *next <= '9') {
+        prev = next;
+        SKIP_DIGITS(next);
+        num = __kmp_str_to_int(prev, *next);
+        SKIP_WS(next);
+        if (*next == 'o' || *next == 'O') {
+            if (!single_warning) { // warn once
+                KMP_WARNING(AffThrPlaceDeprecated);
+            }
+            KMP_DEBUG_ASSERT(!flagSO); // socket offset couldn't use @ designator
+            __kmp_place_core_offset = num;
+            next++;
+        } else if (*next == 't' || *next == 'T') {
+            KMP_DEBUG_ASSERT(flagT == 0);
+            __kmp_place_num_threads_per_core = num;
+            flagT = 1;
+            next++; // can have core-offset specified after num threads
+        } else {
+            KMP_WARNING(AffThrPlaceInvalid, name, value);
+            return;
+        }
+    } else {
+        KMP_WARNING(AffThrPlaceInvalid, name, value);
+        return;
+    }
+    SKIP_WS(next);
+    if ( *next == '\0' )
+        return;
+    if (CHECK_DELIM(next)) {
+        next++;   // skip delimiter
+        SKIP_WS(next);
+    }
+
+    // Get 5-th value (could be core-offset, num_threads)
+    if (*next >= '0' && *next <= '9') {
+        prev = next;
+        SKIP_DIGITS(next);
+        num = __kmp_str_to_int(prev, *next);
+        SKIP_WS(next);
+        if (*next == 'o' || *next == 'O') {
+            if (!single_warning) { // warn once
+                KMP_WARNING(AffThrPlaceDeprecated);
+            }
+            KMP_DEBUG_ASSERT(flagT);
+            KMP_DEBUG_ASSERT(!flagSO); // socket offset couldn't use @ designator
+            __kmp_place_core_offset = num;
+        } else if (*next == 't' || *next == 'T') {
+            KMP_DEBUG_ASSERT(flagT == 0);
+            __kmp_place_num_threads_per_core = num;
+        } else {
+            KMP_WARNING(AffThrPlaceInvalid, name, value);
+        }
+    } else {
+        KMP_WARNING(AffThrPlaceInvalid, name, value);
+    }
+    return;
+#undef CHECK_DELIM
 }
 
 static void
 __kmp_stg_print_place_threads( kmp_str_buf_t * buffer, char const * name, void * data ) {
-    if ( __kmp_place_num_cores + __kmp_place_num_threads_per_core ) {
+    if (__kmp_place_num_sockets + __kmp_place_num_cores + __kmp_place_num_threads_per_core) {
+        int comma = 0;
         kmp_str_buf_t buf;
-        __kmp_str_buf_init( &buf );
-        if( __kmp_env_format ) {
+        __kmp_str_buf_init(&buf);
+        if(__kmp_env_format)
             KMP_STR_BUF_PRINT_NAME_EX(name);
-        } else {
-            __kmp_str_buf_print( buffer, "   %s='", name );
+        else
+            __kmp_str_buf_print(buffer, "   %s='", name);
+        if (__kmp_place_num_sockets) {
+            __kmp_str_buf_print(&buf, "%ds", __kmp_place_num_sockets);
+            if (__kmp_place_socket_offset)
+                __kmp_str_buf_print(&buf, "@%d", __kmp_place_socket_offset);
+            comma = 1;
         }
-        __kmp_str_buf_print( &buf, "%dC", __kmp_place_num_cores );
-        __kmp_str_buf_print( &buf, "x%dT", __kmp_place_num_threads_per_core );
-        if ( __kmp_place_core_offset ) {
-            __kmp_str_buf_print( &buf, ",%dO", __kmp_place_core_offset );
+        if (__kmp_place_num_cores) {
+            __kmp_str_buf_print(&buf, "%s%dc", comma?",":"", __kmp_place_num_cores);
+            if (__kmp_place_core_offset)
+                __kmp_str_buf_print(&buf, "@%d", __kmp_place_core_offset);
+            comma = 1;
         }
+        if (__kmp_place_num_threads_per_core)
+            __kmp_str_buf_print(&buf, "%s%dt", comma?",":"", __kmp_place_num_threads_per_core);
         __kmp_str_buf_print(buffer, "%s'\n", buf.str );
         __kmp_str_buf_free(&buf);
 /*
@@ -4451,8 +4623,6 @@ static kmp_setting_t __kmp_stg_table[] = {
 #ifdef USE_LOAD_BALANCE
     { "KMP_LOAD_BALANCE_INTERVAL",         __kmp_stg_parse_ld_balance_interval,__kmp_stg_print_ld_balance_interval,NULL, 0, 0 },
 #endif
-
-
 
     { "KMP_NUM_LOCKS_IN_BLOCK",            __kmp_stg_parse_lock_block,         __kmp_stg_print_lock_block,         NULL, 0, 0 },
     { "KMP_LOCK_KIND",                     __kmp_stg_parse_lock_kind,          __kmp_stg_print_lock_kind,          NULL, 0, 0 },
@@ -4977,11 +5147,43 @@ __kmp_env_initialize( char const * string ) {
         // affinity.
         //
         const char *var = "KMP_AFFINITY";
+# if KMP_USE_HWLOC
+        if(hwloc_topology_init(&__kmp_hwloc_topology) < 0) {
+            __kmp_hwloc_error = TRUE;
+            if(__kmp_affinity_verbose)
+                KMP_WARNING(AffHwlocErrorOccurred, var, "hwloc_topology_init()");
+        }
+        hwloc_topology_ignore_type(__kmp_hwloc_topology, HWLOC_OBJ_CACHE);
+# endif
         if ( __kmp_affinity_type == affinity_disabled ) {
             KMP_AFFINITY_DISABLE();
         }
         else if ( ! KMP_AFFINITY_CAPABLE() ) {
+# if KMP_USE_HWLOC
+            const hwloc_topology_support* topology_support = hwloc_topology_get_support(__kmp_hwloc_topology);
+            if(hwloc_topology_load(__kmp_hwloc_topology) < 0) {
+                __kmp_hwloc_error = TRUE;
+                if(__kmp_affinity_verbose)
+                    KMP_WARNING(AffHwlocErrorOccurred, var, "hwloc_topology_load()");
+            }
+            // Is the system capable of setting/getting this thread's affinity?
+            // also, is topology discovery possible? (pu indicates ability to discover processing units)
+            // and finally, were there no errors when calling any hwloc_* API functions?
+            if(topology_support->cpubind->set_thisthread_cpubind &&
+               topology_support->cpubind->get_thisthread_cpubind &&
+               topology_support->discovery->pu &&
+               !__kmp_hwloc_error)
+            {
+                // enables affinity according to KMP_AFFINITY_CAPABLE() macro
+                KMP_AFFINITY_ENABLE(TRUE);
+            } else {
+                // indicate that hwloc didn't work and disable affinity
+                __kmp_hwloc_error = TRUE;
+                KMP_AFFINITY_DISABLE();
+            }
+# else
             __kmp_affinity_determine_capable( var );
+# endif // KMP_USE_HWLOC
             if ( ! KMP_AFFINITY_CAPABLE() ) {
                 if ( __kmp_affinity_verbose || ( __kmp_affinity_warnings
                   && ( __kmp_affinity_type != affinity_default )
@@ -5262,8 +5464,6 @@ __kmp_env_print_2() {
 
 } // __kmp_env_print_2
 #endif // OMP_40_ENABLED
-
-
 
 // end of file
 

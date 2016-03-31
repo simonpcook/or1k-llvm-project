@@ -1,23 +1,26 @@
-; RUN: opt %loadPolly -polly-codegen -S < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-codegen \
+; RUN:     -S < %s | FileCheck %s
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
 %struct.wombat = type {[4 x i32]}
+
+; CHECK-NOT:  polly.preload.begin:
+; CHECK-NOT:    %polly.access.B
+; CHECK-NOT:    %polly.access.B.load
+
+; CHECK: polly.split_new_and_old
 
 ; CHECK: polly.stmt.bb3.entry:                             ; preds = %polly.start
 ; CHECK:   br label %polly.stmt.bb3
 
 ; CHECK: polly.stmt.bb3:                                   ; preds = %polly.stmt.bb3.entry
-; CHECK:   %polly.subregion.iv = phi i32 [ 0, %polly.stmt.bb3.entry ]
-; CHECK:   %polly.subregion.iv.inc = add i32 %polly.subregion.iv, 1
 ; CHECK:   br i1 true, label %polly.stmt.bb4, label %polly.stmt.bb5
 
 ; CHECK: polly.stmt.bb4:                                   ; preds = %polly.stmt.bb3
 ; CHECK:   br label %polly.stmt.bb13.exit
 
 ; CHECK: polly.stmt.bb5:                                   ; preds = %polly.stmt.bb3
-; CHECK:   %tmp7_p_scalar_ = load i32, i32* %B, !alias.scope !0, !noalias !2
-; CHECK:   store i32 %tmp7_p_scalar_, i32* %polly.access.cast.arg2, !alias.scope !3, !noalias !4
-; CHECK:   br label %polly.stmt.bb13.exit
+; CHECK:   load i32, i32* %B
 
 ; Function Attrs: nounwind uwtable
 define void @quux(%struct.wombat* %arg, i32* %B) {

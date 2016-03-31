@@ -21,7 +21,10 @@ namespace build {
 
 void UsingNamespaceDirectiveCheck::registerMatchers(
     ast_matchers::MatchFinder *Finder) {
-  Finder->addMatcher(usingDirectiveDecl().bind("usingNamespace"), this);
+  // Only register the matchers for C++; the functionality currently does not
+  // provide any benefit to other languages, despite being benign.
+  if (getLangOpts().CPlusPlus)
+    Finder->addMatcher(usingDirectiveDecl().bind("usingNamespace"), this);
 }
 
 void
@@ -31,8 +34,8 @@ UsingNamespaceDirectiveCheck::check(const MatchFinder::MatchResult &Result) {
   if (U->isImplicit() || !Loc.isValid())
     return;
 
-  diag(Loc, "do not use namespace using-directives. Use using-declarations "
-            "instead.");
+  diag(Loc, "do not use namespace using-directives; "
+            "use using-declarations instead");
   // TODO: We could suggest a list of using directives replacing the using
   //       namespace directive.
 }

@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL: libcpp-no-exceptions
 // <random>
 
 // class random_device;
@@ -19,6 +20,7 @@
 // throw.
 
 #include <random>
+#include <system_error>
 #include <cassert>
 #include <unistd.h>
 

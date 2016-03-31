@@ -162,6 +162,8 @@ DynamicLoaderDarwinKernel::CreateInstance (Process* process, bool force)
             case llvm::Triple::Darwin:
             case llvm::Triple::MacOSX:
             case llvm::Triple::IOS:
+            case llvm::Triple::TvOS:
+            case llvm::Triple::WatchOS:
                 if (triple_ref.getVendor() != llvm::Triple::Apple)
                 {
                    return NULL;
@@ -668,6 +670,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::GetUUID () const
 bool
 DynamicLoaderDarwinKernel::KextImageInfo::ReadMemoryModule (Process *process)
 {
+    Log *log = lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_HOST);
     if (m_memory_module_sp.get() != NULL)
         return true;
     if (m_load_address == LLDB_INVALID_ADDRESS)
@@ -702,6 +705,10 @@ DynamicLoaderDarwinKernel::KextImageInfo::ReadMemoryModule (Process *process)
     {
         if (m_uuid != memory_module_sp->GetUUID())
         {
+            if (log)
+            {
+                log->Printf ("KextImageInfo::ReadMemoryModule the kernel said to find uuid %s at 0x%" PRIx64 " but instead we found uuid %s, throwing it away", m_uuid.GetAsString().c_str(), m_load_address, memory_module_sp->GetUUID().GetAsString().c_str());
+            }
             return false;
         }
     }
@@ -716,6 +723,11 @@ DynamicLoaderDarwinKernel::KextImageInfo::ReadMemoryModule (Process *process)
     m_kernel_image = is_kernel;
     if (is_kernel)
     {
+        if (log)
+        {
+            // This is unusual and probably not intended
+            log->Printf ("KextImageInfo::ReadMemoryModule read the kernel binary out of memory");
+        }
         if (memory_module_sp->GetArchitecture().IsValid())
         {
             process->GetTarget().SetArchitecture(memory_module_sp->GetArchitecture());
@@ -995,7 +1007,7 @@ DynamicLoaderDarwinKernel::KextImageInfo::GetByteOrder()
         return m_memory_module_sp->GetArchitecture().GetByteOrder();
     if (m_module_sp)
         return m_module_sp->GetArchitecture().GetByteOrder();
-    return lldb::endian::InlHostByteOrder();
+    return endian::InlHostByteOrder();
 }
 
 lldb_private::ArchSpec
@@ -1546,6 +1558,7 @@ DynamicLoaderDarwinKernel::SetNotificationBreakpointIfNeeded ()
                                                                   NULL,
                                                                   "OSKextLoadedKextSummariesUpdated",
                                                                   eFunctionNameTypeFull,
+                                                                  eLanguageTypeUnknown,
                                                                   skip_prologue,
                                                                   internal_bp,
                                                                   hardware).get();
@@ -1668,11 +1681,11 @@ DynamicLoaderDarwinKernel::GetByteOrderFromMagic (uint32_t magic)
     {
         case llvm::MachO::MH_MAGIC:
         case llvm::MachO::MH_MAGIC_64:
-            return lldb::endian::InlHostByteOrder();
+            return endian::InlHostByteOrder();
             
         case llvm::MachO::MH_CIGAM:
         case llvm::MachO::MH_CIGAM_64:
-            if (lldb::endian::InlHostByteOrder() == lldb::eByteOrderBig)
+            if (endian::InlHostByteOrder() == lldb::eByteOrderBig)
                 return lldb::eByteOrderLittle;
             else
                 return lldb::eByteOrderBig;

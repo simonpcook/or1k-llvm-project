@@ -1,4 +1,4 @@
-//===- lib/ReaderWriter/ELF/ELFFile.cpp -----------------------------------===//
+//===- lib/ReaderWriter/ELF/ELFFile.cpp -------------------------*- C++ -*-===//
 //
 //                             The LLVM Linker
 //
@@ -125,6 +125,19 @@ std::error_code ELFFile<ELFT>::createAtomizableSections() {
   // Record the number of relocs to guess at preallocating the buffer.
   uint64_t totalRelocs = 0;
   for (const Elf_Shdr &section : _objFile->sections()) {
+    switch (section.sh_type) {
+    case llvm::ELF::SHT_SYMTAB:
+      _symtab = &section;
+      continue;
+    case llvm::ELF::SHT_SYMTAB_SHNDX: {
+      ErrorOr<ArrayRef<Elf_Word>> tableOrErr = _objFile->getSHNDXTable(section);
+      if (std::error_code ec = tableOrErr.getError())
+        return ec;
+      _shndxTable = *tableOrErr;
+      continue;
+    }
+    }
+
     if (isIgnoredSection(&section))
       continue;
 
@@ -149,7 +162,7 @@ std::error_code ELFFile<ELFT>::createAtomizableSections() {
       auto sHdr = *sHdrOrErr;
       auto ri = _objFile->rel_begin(&section);
       auto re = _objFile->rel_end(&section);
-      _relocationReferences[sHdr] = make_range(ri, re);
+      _relocationReferences[sHdr] = &section;
       totalRelocs += std::distance(ri, re);
     } else {
       auto sectionName = _objFile->getSectionName(&section);
@@ -208,18 +221,27 @@ template <class ELFT>
 std::error_code ELFFile<ELFT>::createSymbolsFromAtomizableSections() {
   // Increment over all the symbols collecting atoms and symbol names for
   // later use.
-  auto SymI = _objFile->symbol_begin(), SymE = _objFile->symbol_end();
+  if (!_symtab)
+    return std::error_code();
 
+  ErrorOr<StringRef> strTableOrErr =
+      _objFile->getStringTableForSymtab(*_symtab);
+  if (std::error_code ec = strTableOrErr.getError())
+    return ec;
+  StringRef strTable = *strTableOrErr;
+
+  auto SymI = _objFile->symbol_begin(_symtab),
+       SymE = _objFile->symbol_end(_symtab);
   // Skip over dummy sym.
-  if (SymI != SymE)
-    ++SymI;
+  ++SymI;
 
   for (; SymI != SymE; ++SymI) {
-    ErrorOr<const Elf_Shdr *> section = _objFile->getSection(&*SymI);
+    ErrorOr<const Elf_Shdr *> section =
+        _objFile->getSection(SymI, _symtab, _shndxTable);
     if (std::error_code ec = section.getError())
       return ec;
 
-    auto symbolName = _objFile->getStaticSymbolName(SymI);
+    auto symbolName = SymI->getName(strTable);
     if (std::error_code ec = symbolName.getError())
       return ec;
 
@@ -301,11 +323,18 @@ template <class ELFT> std::error_code ELFFile<ELFT>::createAtoms() {
     ELFDefinedAtom<ELFT> *previousAtom = nullptr;
     ELFReference<ELFT> *anonFollowedBy = nullptr;
 
+    if (!_symtab)
+      continue;
+    ErrorOr<StringRef> strTableOrErr =
+        _objFile->getStringTableForSymtab(*_symtab);
+    if (std::error_code ec = strTableOrErr.getError())
+      return ec;
+    StringRef strTable = *strTableOrErr;
     for (auto si = symbols.begin(), se = symbols.end(); si != se; ++si) {
       auto symbol = *si;
       StringRef symbolName = "";
       if (symbol->getType() != llvm::ELF::STT_SECTION) {
-        auto symName = _objFile->getStaticSymbolName(symbol);
+        auto symName = symbol->getName(strTable);
         if (std::error_code ec = symName.getError())
           return ec;
         symbolName = *symName;
@@ -433,7 +462,7 @@ std::error_code ELFFile<ELFT>::handleGnuLinkOnceSection(
   std::vector<ELFReference<ELFT> *> refs;
   for (auto ha : atomsForSection[*sectionName]) {
     _groupChild[ha->symbol()] = std::make_pair(*sectionName, section);
-    ELFReference<ELFT> *ref =
+    auto *ref =
         new (_readerStorage) ELFReference<ELFT>(Reference::kindGroupChild);
     ref->setTarget(ha);
     refs.push_back(ref);
@@ -486,10 +515,10 @@ std::error_code ELFFile<ELFT>::handleSectionGroup(
       return ec;
     sectionNames.push_back(*sectionName);
   }
-  const Elf_Sym *symbol = _objFile->getSymbol(section->sh_info);
   ErrorOr<const Elf_Shdr *> symtab = _objFile->getSection(section->sh_link);
   if (std::error_code ec = symtab.getError())
     return ec;
+  const Elf_Sym *symbol = _objFile->getSymbol(*symtab, section->sh_info);
   ErrorOr<const Elf_Shdr *> strtab_sec =
       _objFile->getSection((*symtab)->sh_link);
   if (std::error_code ec = strtab_sec.getError())
@@ -507,7 +536,7 @@ std::error_code ELFFile<ELFT>::handleSectionGroup(
   for (auto name : sectionNames) {
     for (auto ha : atomsForSection[name]) {
       _groupChild[ha->symbol()] = std::make_pair(*symbolName, section);
-      ELFReference<ELFT> *ref =
+      auto *ref =
           new (_readerStorage) ELFReference<ELFT>(Reference::kindGroupChild);
       ref->setTarget(ha);
       refs.push_back(ref);
@@ -583,7 +612,7 @@ ELFDefinedAtom<ELFT> *ELFFile<ELFT>::createDefinedAtomAndAssignRelocations(
 template <class ELFT>
 void ELFFile<ELFT>::createRelocationReferences(const Elf_Sym *symbol,
                                                ArrayRef<uint8_t> content,
-                                               range<Elf_Rela_Iter> rels) {
+                                               range<const Elf_Rela *> rels) {
   bool isMips64EL = _objFile->isMips64EL();
   const auto symValue = getSymbolValue(symbol);
   for (const auto &rel : rels) {
@@ -601,7 +630,8 @@ template <class ELFT>
 void ELFFile<ELFT>::createRelocationReferences(const Elf_Sym *symbol,
                                                ArrayRef<uint8_t> symContent,
                                                ArrayRef<uint8_t> secContent,
-                                               range<Elf_Rel_Iter> rels) {
+                                               const Elf_Shdr *relSec) {
+  auto rels = _objFile->rels(relSec);
   bool isMips64EL = _objFile->isMips64EL();
   const auto symValue = getSymbolValue(symbol);
   for (const auto &rel : rels) {
@@ -650,8 +680,10 @@ template <class ELFT> void ELFFile<ELFT>::updateReferences() {
   for (auto &ri : _references) {
     if (ri->kindNamespace() != Reference::KindNamespace::ELF)
       continue;
-    const Elf_Sym *symbol = _objFile->getSymbol(ri->targetSymbolIndex());
-    ErrorOr<const Elf_Shdr *> shdr = _objFile->getSection(symbol);
+    const Elf_Sym *symbol =
+        _objFile->getSymbol(_symtab, ri->targetSymbolIndex());
+    ErrorOr<const Elf_Shdr *> shdr =
+        _objFile->getSection(symbol, _symtab, _shndxTable);
 
     // If the atom is not in mergeable string section, the target atom is
     // simply that atom.
@@ -695,7 +727,7 @@ template <class ELFT>
 ELFDefinedAtom<ELFT> *
 ELFFile<ELFT>::createSectionAtom(const Elf_Shdr *section, StringRef sectionName,
                                  ArrayRef<uint8_t> content) {
-  Elf_Sym *sym = new (_readerStorage) Elf_Sym;
+  auto *sym = new (_readerStorage) Elf_Sym;
   sym->st_name = 0;
   sym->setBindingAndType(llvm::ELF::STB_LOCAL, llvm::ELF::STT_SECTION);
   sym->st_other = 0;
@@ -755,7 +787,7 @@ bool ELFFile<ELFT>::redirectReferenceUsingUndefAtom(
 template <class ELFT>
 void RuntimeFile<ELFT>::addAbsoluteAtom(StringRef symbolName, bool isHidden) {
   assert(!symbolName.empty() && "AbsoluteAtoms must have a name");
-  Elf_Sym *sym = new (this->_readerStorage) Elf_Sym;
+  auto *sym = new (this->_readerStorage) Elf_Sym;
   sym->st_name = 0;
   sym->st_value = 0;
   sym->st_shndx = llvm::ELF::SHN_ABS;
@@ -772,7 +804,7 @@ void RuntimeFile<ELFT>::addAbsoluteAtom(StringRef symbolName, bool isHidden) {
 template <class ELFT>
 void RuntimeFile<ELFT>::addUndefinedAtom(StringRef symbolName) {
   assert(!symbolName.empty() && "UndefinedAtoms must have a name");
-  Elf_Sym *sym = new (this->_readerStorage) Elf_Sym;
+  auto *sym = new (this->_readerStorage) Elf_Sym;
   sym->st_name = 0;
   sym->st_value = 0;
   sym->st_shndx = llvm::ELF::SHN_UNDEF;

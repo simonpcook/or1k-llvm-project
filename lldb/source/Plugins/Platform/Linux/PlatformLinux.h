@@ -22,6 +22,9 @@ namespace platform_linux {
     class PlatformLinux : public PlatformPOSIX
     {
     public:
+        PlatformLinux(bool is_host);
+
+        ~PlatformLinux() override;
 
         static void
         DebuggerInitialize (Debugger &debugger);
@@ -31,11 +34,6 @@ namespace platform_linux {
 
         static void
         Terminate ();
-
-        PlatformLinux (bool is_host);
-
-        virtual
-        ~PlatformLinux();
 
         //------------------------------------------------------------
         // lldb_private::PluginInterface functions
@@ -111,6 +109,9 @@ namespace platform_linux {
         uint64_t
         ConvertMmapFlagsToPlatform(const ArchSpec &arch, unsigned flags) override;
 
+        ConstString
+        GetFullNameForDylib (ConstString basename) override;
+        
     private:
         DISALLOW_COPY_AND_ASSIGN (PlatformLinux);
     };
@@ -118,4 +119,4 @@ namespace platform_linux {
 } // namespace platform_linux
 } // namespace lldb_private
 
-#endif  // liblldb_PlatformLinux_h_
+#endif // liblldb_PlatformLinux_h_

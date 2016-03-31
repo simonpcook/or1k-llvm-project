@@ -160,7 +160,6 @@
 
     # Regular entry points
         __kmp_wait_yield_4
-        __kmp_wait_yield_8
         __kmp_fork_call
         __kmp_invoke_microtask
         __kmp_launch_monitor
@@ -182,10 +181,10 @@
     %endif
 
 
-#if USE_DEBUGGER
+    %ifdef USE_DEBUGGER
         __kmp_debugging                         DATA
         __kmp_omp_debug_struct_info             DATA
-#endif /* USE_DEBUGGER */
+    %endif 
 
         # Symbols for MS mutual detection:
         _You_must_link_with_exactly_one_OpenMP_library    DATA
@@ -492,6 +491,13 @@ kmp_set_warnings_off                        780
     kmp_get_cancellation_status             868
     omp_is_initial_device                   869
 %endif # OMP_40
+
+# OpenMP 41
+
+%ifdef OMP_41
+    omp_init_lock_with_hint                 870
+    omp_init_nest_lock_with_hint            871
+%endif # OMP_41
 
 %ifndef stub
     # Ordinals between 900 and 999 are reserved

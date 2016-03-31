@@ -85,6 +85,10 @@ public:
     return nullptr;
   }
 
+  const OutputSection<ELFT> *getOutputSection() const {
+    return _outputSection;
+  }
+
   void setOutputSection(OutputSection<ELFT> *os, bool isFirst = false) {
     _outputSection = os;
     _isFirstSectionInOutputSection = isFirst;
@@ -161,7 +165,7 @@ public:
   /// \brief Set the virtual address of each Atom in the Section. This
   /// routine gets called after the linker fixes up the virtual address
   /// of the section
-  virtual void assignVirtualAddress(uint64_t addr) override;
+  void assignVirtualAddress(uint64_t addr) override;
 
   /// \brief Set the file offset of each Atom in the section. This routine
   /// gets called after the linker fixes up the section offset
@@ -530,7 +534,7 @@ public:
                 StringRef interp);
 
   void write(ELFWriter *writer, TargetLayout<ELFT> &layout,
-             llvm::FileOutputBuffer &buffer);
+             llvm::FileOutputBuffer &buffer) override;
 
 private:
   StringRef _interp;
@@ -609,4 +613,4 @@ private:
 } // end namespace elf
 } // end namespace lld
 
-#endif
+#endif // LLD_READER_WRITER_ELF_SECTION_CHUNKS_H

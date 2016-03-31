@@ -670,6 +670,7 @@ __kmp_dispatch_init(
     } else {
         pr->ordered = FALSE;
     }
+
     if ( schedule == kmp_sch_static ) {
         schedule = __kmp_static;
     } else {
@@ -684,7 +685,9 @@ __kmp_dispatch_init(
             }
             // Use the chunk size specified by OMP_SCHEDULE (or default if not specified)
             chunk = team -> t.t_sched.chunk;
-
+#if USE_ITT_BUILD
+            cur_chunk = chunk;
+#endif
             #ifdef KMP_DEBUG
             {
                 const char * buff;
@@ -759,6 +762,19 @@ __kmp_dispatch_init(
         }
     } else if ( ub < lb ) {        // st == 1
         tc = 0;                    // zero-trip
+    }
+
+    // Any half-decent optimizer will remove this test when the blocks are empty since the macros expand to nothing
+    // when statistics are disabled.
+    if (schedule == __kmp_static)
+    {
+        KMP_COUNT_BLOCK(OMP_FOR_static);
+        KMP_COUNT_VALUE(FOR_static_iterations, tc);
+    }
+    else
+    {
+        KMP_COUNT_BLOCK(OMP_FOR_dynamic);
+        KMP_COUNT_VALUE(FOR_dynamic_iterations, tc);
     }
 
     pr->u.p.lb = lb;
@@ -1046,6 +1062,9 @@ __kmp_dispatch_init(
         break;
     case kmp_sch_static_chunked :
     case kmp_sch_dynamic_chunked :
+        if ( pr->u.p.parm1 <= 0 ) {
+            pr->u.p.parm1 = KMP_DEFAULT_CHUNK;
+        }
         KD_TRACE(100,("__kmp_dispatch_init: T#%d kmp_sch_static_chunked/kmp_sch_dynamic_chunked cases\n", gtid));
         break;
     case kmp_sch_trapezoidal :
@@ -1195,7 +1214,7 @@ __kmp_dispatch_init(
     #endif // ( KMP_STATIC_STEAL_ENABLED && USE_STEALING )
 
 #if OMPT_SUPPORT && OMPT_TRACE
-    if ((ompt_status == ompt_status_track_callback) &&
+    if (ompt_enabled &&
         ompt_callbacks.ompt_callback(ompt_event_loop_begin)) {
         ompt_team_info_t *team_info = __ompt_get_teaminfo(0, NULL);
         ompt_task_info_t *task_info = __ompt_get_taskinfo(0);
@@ -1359,7 +1378,7 @@ __kmp_dispatch_finish_chunk( int gtid, ident_t *loc )
 #if OMPT_SUPPORT && OMPT_TRACE
 #define OMPT_LOOP_END                                                          \
     if (status == 0) {                                                         \
-        if ((ompt_status == ompt_status_track_callback) &&                     \
+        if (ompt_enabled &&                     \
             ompt_callbacks.ompt_callback(ompt_event_loop_end)) {               \
             ompt_team_info_t *team_info = __ompt_get_teaminfo(0, NULL);        \
             ompt_task_info_t *task_info = __ompt_get_taskinfo(0);              \
@@ -1383,6 +1402,11 @@ __kmp_dispatch_next(
 #if ( KMP_STATIC_STEAL_ENABLED && KMP_ARCH_X86_64 )
     static const int ___kmp_size_type = sizeof( UT );
 #endif
+
+    // This is potentially slightly misleading, schedule(runtime) will appear here even if the actual runtme schedule
+    // is static. (Which points out a disadavantage of schedule(runtime): even when static scheduling is used it costs
+    // more than a compile time choice to use static scheduling would.)
+    KMP_TIME_BLOCK(FOR_dynamic_scheduling);
 
     int                                   status;
     dispatch_private_info_template< T > * pr;
@@ -2164,7 +2188,6 @@ __kmp_dist_get_bounds(
     T                                *pupper,
     typename traits_t< T >::signed_t  incr
 ) {
-    KMP_COUNT_BLOCK(OMP_DISTR_FOR_dynamic);
     typedef typename traits_t< T >::unsigned_t  UT;
     typedef typename traits_t< T >::signed_t    ST;
     register kmp_uint32  team_id;
@@ -2206,9 +2229,9 @@ __kmp_dist_get_bounds(
         }
     }
     th = __kmp_threads[gtid];
-    KMP_DEBUG_ASSERT(th->th.th_teams_microtask);   // we are in the teams construct
     team = th->th.th_team;
     #if OMP_40_ENABLED
+    KMP_DEBUG_ASSERT(th->th.th_teams_microtask);   // we are in the teams construct
     nteams = th->th.th_teams_size.nteams;
     #endif
     team_id = team->t.t_master_tid;
@@ -2222,6 +2245,7 @@ __kmp_dist_get_bounds(
     } else {
         trip_count = (ST)(*pupper - *plower) / incr + 1; // cast to signed to cover incr<0 case
     }
+
     if( trip_count <= nteams ) {
         KMP_DEBUG_ASSERT(
             __kmp_static == kmp_sch_static_greedy || \
@@ -2297,7 +2321,6 @@ void
 __kmpc_dispatch_init_4( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
                         kmp_int32 lb, kmp_int32 ub, kmp_int32 st, kmp_int32 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dispatch_init< kmp_int32 >( loc, gtid, schedule, lb, ub, st, chunk, true );
 }
@@ -2308,7 +2331,6 @@ void
 __kmpc_dispatch_init_4u( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
                         kmp_uint32 lb, kmp_uint32 ub, kmp_int32 st, kmp_int32 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dispatch_init< kmp_uint32 >( loc, gtid, schedule, lb, ub, st, chunk, true );
 }
@@ -2321,7 +2343,6 @@ __kmpc_dispatch_init_8( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
                         kmp_int64 lb, kmp_int64 ub,
                         kmp_int64 st, kmp_int64 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dispatch_init< kmp_int64 >( loc, gtid, schedule, lb, ub, st, chunk, true );
 }
@@ -2334,7 +2355,6 @@ __kmpc_dispatch_init_8u( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
                          kmp_uint64 lb, kmp_uint64 ub,
                          kmp_int64 st, kmp_int64 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dispatch_init< kmp_uint64 >( loc, gtid, schedule, lb, ub, st, chunk, true );
 }
@@ -2352,7 +2372,6 @@ void
 __kmpc_dist_dispatch_init_4( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
     kmp_int32 *p_last, kmp_int32 lb, kmp_int32 ub, kmp_int32 st, kmp_int32 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dist_get_bounds< kmp_int32 >( loc, gtid, p_last, &lb, &ub, st );
     __kmp_dispatch_init< kmp_int32 >( loc, gtid, schedule, lb, ub, st, chunk, true );
@@ -2362,7 +2381,6 @@ void
 __kmpc_dist_dispatch_init_4u( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
     kmp_int32 *p_last, kmp_uint32 lb, kmp_uint32 ub, kmp_int32 st, kmp_int32 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dist_get_bounds< kmp_uint32 >( loc, gtid, p_last, &lb, &ub, st );
     __kmp_dispatch_init< kmp_uint32 >( loc, gtid, schedule, lb, ub, st, chunk, true );
@@ -2372,7 +2390,6 @@ void
 __kmpc_dist_dispatch_init_8( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
     kmp_int32 *p_last, kmp_int64 lb, kmp_int64 ub, kmp_int64 st, kmp_int64 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dist_get_bounds< kmp_int64 >( loc, gtid, p_last, &lb, &ub, st );
     __kmp_dispatch_init< kmp_int64 >( loc, gtid, schedule, lb, ub, st, chunk, true );
@@ -2382,7 +2399,6 @@ void
 __kmpc_dist_dispatch_init_8u( ident_t *loc, kmp_int32 gtid, enum sched_type schedule,
     kmp_int32 *p_last, kmp_uint64 lb, kmp_uint64 ub, kmp_int64 st, kmp_int64 chunk )
 {
-    KMP_COUNT_BLOCK(OMP_FOR_dynamic);
     KMP_DEBUG_ASSERT( __kmp_init_serial );
     __kmp_dist_get_bounds< kmp_uint64 >( loc, gtid, p_last, &lb, &ub, st );
     __kmp_dispatch_init< kmp_uint64 >( loc, gtid, schedule, lb, ub, st, chunk, true );
@@ -2499,25 +2515,6 @@ kmp_uint32 __kmp_ge_4( kmp_uint32 value, kmp_uint32 checker) {
 kmp_uint32 __kmp_le_4( kmp_uint32 value, kmp_uint32 checker) {
     return value <= checker;
 }
-kmp_uint32 __kmp_eq_8( kmp_uint64 value, kmp_uint64 checker) {
-    return value == checker;
-}
-
-kmp_uint32 __kmp_neq_8( kmp_uint64 value, kmp_uint64 checker) {
-    return value != checker;
-}
-
-kmp_uint32 __kmp_lt_8( kmp_uint64 value, kmp_uint64 checker) {
-    return value < checker;
-}
-
-kmp_uint32 __kmp_ge_8( kmp_uint64 value, kmp_uint64 checker) {
-    return value >= checker;
-}
-
-kmp_uint32 __kmp_le_8( kmp_uint64 value, kmp_uint64 checker) {
-    return value <= checker;
-}
 
 kmp_uint32
 __kmp_wait_yield_4(volatile kmp_uint32 * spinner,
@@ -2545,41 +2542,6 @@ __kmp_wait_yield_4(volatile kmp_uint32 * spinner,
 
         /* if we have waited a bit, or are oversubscribed, yield */
         /* pause is in the following code */
-        KMP_YIELD( TCR_4(__kmp_nth) > __kmp_avail_proc );
-        KMP_YIELD_SPIN( spins );
-    }
-    KMP_FSYNC_SPIN_ACQUIRED( obj );
-    return r;
-}
-
-kmp_uint64
-__kmp_wait_yield_8( volatile kmp_uint64 * spinner,
-                    kmp_uint64            checker,
-                    kmp_uint32 (* pred)( kmp_uint64, kmp_uint64 )
-                    , void        * obj    // Higher-level synchronization object, or NULL.
-                    )
-{
-    // note: we may not belong to a team at this point
-    register volatile kmp_uint64         * spin          = spinner;
-    register          kmp_uint64           check         = checker;
-    register          kmp_uint32   spins;
-    register          kmp_uint32 (*f) ( kmp_uint64, kmp_uint64 ) = pred;
-    register          kmp_uint64           r;
-
-    KMP_FSYNC_SPIN_INIT( obj, (void*) spin );
-    KMP_INIT_YIELD( spins );
-    // main wait spin loop
-    while(!f(r = *spin, check))
-    {
-        KMP_FSYNC_SPIN_PREPARE( obj );
-        /* GEH - remove this since it was accidentally introduced when kmp_wait was split.
-           It causes problems with infinite recursion because of exit lock */
-        /* if ( TCR_4(__kmp_global.g.g_done) && __kmp_global.g.g_abort)
-            __kmp_abort_thread(); */
-
-        // if we are oversubscribed,
-        // or have waited a bit (and KMP_LIBARRY=throughput, then yield
-        // pause is in the following code
         KMP_YIELD( TCR_4(__kmp_nth) > __kmp_avail_proc );
         KMP_YIELD_SPIN( spins );
     }

@@ -17,8 +17,6 @@
 #include "lldb/Core/DataBufferHeap.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Core/StreamString.h"
-#include "lldb/Expression/ClangFunction.h"
-#include "lldb/Expression/ClangUtilityFunction.h"
 #include "lldb/Host/FileSpec.h"
 #include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Symbol/ObjectFile.h"
@@ -66,6 +64,8 @@ SystemRuntimeMacOSX::CreateInstance (Process* process)
                 case llvm::Triple::Darwin:
                 case llvm::Triple::MacOSX:
                 case llvm::Triple::IOS:
+                case llvm::Triple::TvOS:
+                case llvm::Triple::WatchOS:
                     create = triple_ref.getVendor() == llvm::Triple::Apple;
                     break;
                 default:
@@ -446,14 +446,15 @@ SystemRuntimeMacOSX::ReadLibdispatchTSDIndexes ()
         ClangASTContext *ast_ctx = m_process->GetTarget().GetScratchClangASTContext();
         if (ast_ctx->getASTContext() && m_dispatch_tsd_indexes_addr != LLDB_INVALID_ADDRESS)
         {
-            ClangASTType uint16 = ast_ctx->GetIntTypeFromBitSize(16, false);
-            ClangASTType dispatch_tsd_indexes_s = ast_ctx->CreateRecordType(nullptr, lldb::eAccessPublic, "__lldb_dispatch_tsd_indexes_s", clang::TTK_Struct, lldb::eLanguageTypeC);
-            dispatch_tsd_indexes_s.StartTagDeclarationDefinition();
-            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_version", uint16, lldb::eAccessPublic, 0);
-            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_queue_index", uint16, lldb::eAccessPublic, 0);
-            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_voucher_index", uint16, lldb::eAccessPublic, 0);
-            dispatch_tsd_indexes_s.AddFieldToRecordType ("dti_qos_class_index", uint16, lldb::eAccessPublic, 0);
-            dispatch_tsd_indexes_s.CompleteTagDeclarationDefinition();
+            CompilerType uint16 = ast_ctx->GetBuiltinTypeForEncodingAndBitSize (eEncodingUint, 16);
+            CompilerType dispatch_tsd_indexes_s = ast_ctx->CreateRecordType(nullptr, lldb::eAccessPublic, "__lldb_dispatch_tsd_indexes_s", clang::TTK_Struct, lldb::eLanguageTypeC);
+
+            ClangASTContext::StartTagDeclarationDefinition(dispatch_tsd_indexes_s);
+            ClangASTContext::AddFieldToRecordType (dispatch_tsd_indexes_s, "dti_version", uint16, lldb::eAccessPublic, 0);
+            ClangASTContext::AddFieldToRecordType (dispatch_tsd_indexes_s, "dti_queue_index", uint16, lldb::eAccessPublic, 0);
+            ClangASTContext::AddFieldToRecordType (dispatch_tsd_indexes_s, "dti_voucher_index", uint16, lldb::eAccessPublic, 0);
+            ClangASTContext::AddFieldToRecordType (dispatch_tsd_indexes_s, "dti_qos_class_index", uint16, lldb::eAccessPublic, 0);
+            ClangASTContext::CompleteTagDeclarationDefinition(dispatch_tsd_indexes_s);
 
             ProcessStructReader struct_reader (m_process, m_dispatch_tsd_indexes_addr, dispatch_tsd_indexes_s);
 
@@ -724,14 +725,26 @@ SystemRuntimeMacOSX::PopulateQueueList (lldb_private::QueueList &queue_list)
 
     for (ThreadSP thread_sp : m_process->Threads())
     {
-        if (thread_sp->GetQueueID() != LLDB_INVALID_QUEUE_ID)
+        if (thread_sp->GetAssociatedWithLibdispatchQueue () != eLazyBoolNo)
         {
-            if (queue_list.FindQueueByID (thread_sp->GetQueueID()).get() == NULL)
+            if (thread_sp->GetQueueID() != LLDB_INVALID_QUEUE_ID)
             {
-                QueueSP queue_sp (new Queue(m_process->shared_from_this(), thread_sp->GetQueueID(), thread_sp->GetQueueName()));
-                queue_sp->SetKind (GetQueueKind (thread_sp->GetQueueLibdispatchQueueAddress()));
-                queue_sp->SetLibdispatchQueueAddress (thread_sp->GetQueueLibdispatchQueueAddress());
-                queue_list.AddQueue (queue_sp);
+                if (queue_list.FindQueueByID (thread_sp->GetQueueID()).get() == NULL)
+                {
+                    QueueSP queue_sp (new Queue(m_process->shared_from_this(), thread_sp->GetQueueID(), thread_sp->GetQueueName()));
+                    if (thread_sp->ThreadHasQueueInformation ())
+                    {
+                        queue_sp->SetKind (thread_sp->GetQueueKind ());
+                        queue_sp->SetLibdispatchQueueAddress (thread_sp->GetQueueLibdispatchQueueAddress());
+                        queue_list.AddQueue (queue_sp);
+                    }
+                    else
+                    {
+                        queue_sp->SetKind (GetQueueKind (thread_sp->GetQueueLibdispatchQueueAddress()));
+                        queue_sp->SetLibdispatchQueueAddress (thread_sp->GetQueueLibdispatchQueueAddress());
+                        queue_list.AddQueue (queue_sp);
+                    }
+                }
             }
         }
     }

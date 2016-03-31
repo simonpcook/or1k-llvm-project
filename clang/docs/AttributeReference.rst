@@ -15,66 +15,6 @@ Introduction
 
 This page lists the attributes currently supported by Clang.
 
-AMD GPU Register Attributes
-===========================
-Clang supports attributes for controlling register usage on AMD GPU
-targets. These attributes may be attached to a kernel function
-definition and is an optimization hint to the backend for the maximum
-number of registers to use. This is useful in cases where register
-limited occupancy is known to be an important factor for the
-performance for the kernel.
-
-The semantics are as follows:
-
-- The backend will attempt to limit the number of used registers to
-  the specified value, but the exact number used is not
-  guaranteed. The number used may be rounded up to satisfy the
-  allocation requirements or ABI constraints of the subtarget. For
-  example, on Southern Islands VGPRs may only be allocated in
-  increments of 4, so requesting a limit of 39 VGPRs will really
-  attempt to use up to 40. Requesting more registers than the
-  subtarget supports will truncate to the maximum allowed. The backend
-  may also use fewer registers than requested whenever possible.
-
-- 0 implies the default no limit on register usage.
-
-- Ignored on older VLIW subtargets which did not have separate scalar
-  and vector registers, R600 through Northern Islands.
-
-amdgpu_num_sgpr
----------------
-.. csv-table:: Supported Syntaxes
-   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
-
-   "X","","","", ""
-
-Clang supports the
-``__attribute__((amdgpu_num_sgpr(<num_registers>)))`` attribute on AMD
-Southern Islands GPUs and later for controlling the number of scalar
-registers. A typical value would be between 8 and 104 in increments of
-8.
-
-Due to common instruction constraints, an additional 2-4 SGPRs are
-typically required for internal use depending on features used. This
-value is a hint for the total number of SGPRs to use, and not the
-number of user SGPRs, so no special consideration needs to be given
-for these.
-
-
-amdgpu_num_vgpr
----------------
-.. csv-table:: Supported Syntaxes
-   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
-
-   "X","","","", ""
-
-Clang supports the
-``__attribute__((amdgpu_num_vgpr(<num_registers>)))`` attribute on AMD
-Southern Islands GPUs and later for controlling the number of vector
-registers. A typical value would be between 4 and 256 in increments
-of 4.
-
-
 Function Attributes
 ===================
 
@@ -234,6 +174,14 @@ are:
   Apple's Mac OS X operating system.  The minimum deployment target is
   specified by the ``-mmacosx-version-min=*version*`` command-line argument.
 
+``tvos``
+  Apple's tvOS operating system.  The minimum deployment target is specified by
+  the ``-mtvos-version-min=*version*`` command-line argument.
+
+``watchos``
+  Apple's watchOS operating system.  The minimum deployment target is specified by
+  the ``-mwatchos-version-min=*version*`` command-line argument.
+
 A declaration can be used even when deploying back to a platform version prior
 to when the declaration was introduced.  When this happens, the declaration is
 `weakly linked
@@ -313,6 +261,46 @@ dependencies instead of emitting memory ordering instructions such as fences.
 
 Note, this attribute does not change the meaning of the program, but may result
 in generation of more efficient code.
+
+
+disable_tail_calls (clang::disable_tail_calls)
+----------------------------------------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","X","","", ""
+
+The ``disable_tail_calls`` attribute instructs the backend to not perform tail call optimization inside the marked function.
+
+For example:
+
+  .. code-block:: c
+
+    int callee(int);
+
+    int foo(int a) __attribute__((disable_tail_calls)) {
+      return callee(a); // This call is not tail-call optimized.
+    }
+
+Marking virtual functions as ``disable_tail_calls`` is legal.
+
+  .. code-block: c++
+
+    int callee(int);
+
+    class Base {
+    public:
+      [[clang::disable_tail_calls]] virtual int foo1() {
+        return callee(); // This call is not tail-call optimized.
+      }
+    };
+
+    class Derived1 : public Base {
+    public:
+      int foo1() override {
+        return callee(); // This call is tail-call optimized.
+      }
+    };
 
 
 enable_if
@@ -480,6 +468,74 @@ Clang implements two kinds of checks with this attribute.
    incorrect, the caller of ``foo`` will receive a warning.
 
 
+internal_linkage (clang::internal_linkage)
+------------------------------------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","X","","", ""
+
+The ``internal_linkage`` attribute changes the linkage type of the declaration to internal.
+This is similar to C-style ``static``, but can be used on classes and class methods. When applied to a class definition,
+this attribute affects all methods and static data members of that class.
+This can be used to contain the ABI of a C++ library by excluding unwanted class methods from the export tables.
+
+
+interrupt
+---------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+Clang supports the GNU style ``__attribute__((interrupt("ARGUMENT")))`` attribute on
+MIPS targets. This attribute may be attached to a function definition and instructs
+the backend to generate appropriate function entry/exit code so that it can be used
+directly as an interrupt service routine.
+
+By default, the compiler will produce a function prologue and epilogue suitable for
+an interrupt service routine that handles an External Interrupt Controller (eic)
+generated interrupt. This behaviour can be explicitly requested with the "eic"
+argument.
+
+Otherwise, for use with vectored interrupt mode, the argument passed should be
+of the form "vector=LEVEL" where LEVEL is one of the following values:
+"sw0", "sw1", "hw0", "hw1", "hw2", "hw3", "hw4", "hw5". The compiler will
+then set the interrupt mask to the corresponding level which will mask all
+interrupts up to and including the argument.
+
+The semantics are as follows:
+
+- The prologue is modified so that the Exception Program Counter (EPC) and
+  Status coprocessor registers are saved to the stack. The interrupt mask is
+  set so that the function can only be interrupted by a higher priority
+  interrupt. The epilogue will restore the previous values of EPC and Status.
+
+- The prologue and epilogue are modified to save and restore all non-kernel
+  registers as necessary.
+
+- The FPU is disabled in the prologue, as the floating pointer registers are not
+  spilled to the stack.
+
+- The function return sequence is changed to use an exception return instruction.
+
+- The parameter sets the interrupt mask for the function corresponding to the
+  interrupt level specified. If no mask is specified the interrupt mask
+  defaults to "eic".
+
+
+noalias
+-------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "","","X","", ""
+
+The ``noalias`` attribute indicates that the only memory accesses inside
+function are loads and stores from objects pointed to by its pointer-typed
+arguments, with arbitrary offsets.
+
+
 noduplicate (clang::noduplicate)
 --------------------------------
 .. csv-table:: Supported Syntaxes
@@ -599,6 +655,63 @@ no_split_stack (gnu::no_split_stack)
 The ``no_split_stack`` attribute disables the emission of the split stack
 preamble for a particular function. It has no effect if ``-fsplit-stack``
 is not specified.
+
+
+not_tail_called (clang::not_tail_called)
+----------------------------------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","X","","", ""
+
+The ``not_tail_called`` attribute prevents tail-call optimization on statically bound calls. It has no effect on indirect calls. Virtual functions, objective-c methods, and functions marked as ``always_inline`` cannot be marked as ``not_tail_called``.
+
+For example, it prevents tail-call optimization in the following case:
+
+  .. code-block: c
+
+    int __attribute__((not_tail_called)) foo1(int);
+
+    int foo2(int a) {
+      return foo1(a); // No tail-call optimization on direct calls.
+    }
+
+However, it doesn't prevent tail-call optimization in this case:
+
+  .. code-block: c
+
+    int __attribute__((not_tail_called)) foo1(int);
+
+    int foo2(int a) {
+      int (*fn)(int) = &foo1;
+
+      // not_tail_called has no effect on an indirect call even if the call can be
+      // resolved at compile time.
+      return (*fn)(a);
+    }
+
+Marking virtual functions as ``not_tail_called`` is an error:
+
+  .. code-block: c++
+
+    class Base {
+    public:
+      // not_tail_called on a virtual function is an error.
+      [[clang::not_tail_called]] virtual int foo1();
+
+      virtual int foo2();
+
+      // Non-virtual functions can be marked ``not_tail_called``.
+      [[clang::not_tail_called]] int foo3();
+    };
+
+    class Derived1 : public Base {
+    public:
+      int foo1() override;
+
+      // not_tail_called on a virtual function is an error.
+      [[clang::not_tail_called]] int foo2() override;
+    };
 
 
 objc_boxable
@@ -906,6 +1019,106 @@ documentation on MSDN for more information.
 .. _init_seg: http://msdn.microsoft.com/en-us/library/7977wcck(v=vs.110).aspx
 
 
+pass_object_size
+----------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+.. Note:: The mangling of functions with parameters that are annotated with
+  ``pass_object_size`` is subject to change. You can get around this by
+  using ``__asm__("foo")`` to explicitly name your functions, thus preserving
+  your ABI; also, non-overloadable C functions with ``pass_object_size`` are
+  not mangled.
+
+The ``pass_object_size(Type)`` attribute can be placed on function parameters to
+instruct clang to call ``__builtin_object_size(param, Type)`` at each callsite
+of said function, and implicitly pass the result of this call in as an invisible
+argument of type ``size_t`` directly after the parameter annotated with
+``pass_object_size``. Clang will also replace any calls to
+``__builtin_object_size(param, Type)`` in the function by said implicit
+parameter.
+
+Example usage:
+
+.. code-block:: c
+
+  int bzero1(char *const p __attribute__((pass_object_size(0))))
+      __attribute__((noinline)) {
+    int i = 0;
+    for (/**/; i < (int)__builtin_object_size(p, 0); ++i) {
+      p[i] = 0;
+    }
+    return i;
+  }
+
+  int main() {
+    char chars[100];
+    int n = bzero1(&chars[0]);
+    assert(n == sizeof(chars));
+    return 0;
+  }
+
+If successfully evaluating ``__builtin_object_size(param, Type)`` at the
+callsite is not possible, then the "failed" value is passed in. So, using the
+definition of ``bzero1`` from above, the following code would exit cleanly:
+
+.. code-block:: c
+
+  int main2(int argc, char *argv[]) {
+    int n = bzero1(argv);
+    assert(n == -1);
+    return 0;
+  }
+
+``pass_object_size`` plays a part in overload resolution. If two overload
+candidates are otherwise equally good, then the overload with one or more
+parameters with ``pass_object_size`` is preferred. This implies that the choice
+between two identical overloads both with ``pass_object_size`` on one or more
+parameters will always be ambiguous; for this reason, having two such overloads
+is illegal. For example:
+
+.. code-block:: c++
+
+  #define PS(N) __attribute__((pass_object_size(N)))
+  // OK
+  void Foo(char *a, char *b); // Overload A
+  // OK -- overload A has no parameters with pass_object_size.
+  void Foo(char *a PS(0), char *b PS(0)); // Overload B
+  // Error -- Same signature (sans pass_object_size) as overload B, and both
+  // overloads have one or more parameters with the pass_object_size attribute.
+  void Foo(void *a PS(0), void *b);
+
+  // OK
+  void Bar(void *a PS(0)); // Overload C
+  // OK
+  void Bar(char *c PS(1)); // Overload D
+
+  void main() {
+    char known[10], *unknown;
+    Foo(unknown, unknown); // Calls overload B
+    Foo(known, unknown); // Calls overload B
+    Foo(unknown, known); // Calls overload B
+    Foo(known, known); // Calls overload B
+
+    Bar(known); // Calls overload D
+    Bar(unknown); // Calls overload D
+  }
+
+Currently, ``pass_object_size`` is a bit restricted in terms of its usage:
+
+* Only one use of ``pass_object_size`` is allowed per parameter.
+
+* It is an error to take the address of a function with ``pass_object_size`` on
+  any of its parameters. If you wish to do this, you can create an overload
+  without ``pass_object_size`` on any parameters.
+
+* It is an error to apply the ``pass_object_size`` attribute to parameters that
+  are not pointers. Additionally, any parameter that ``pass_object_size`` is
+  applied to must be marked ``const`` at its function's definition.
+
+
 section (gnu::section, __declspec(allocate))
 --------------------------------------------
 .. csv-table:: Supported Syntaxes
@@ -1053,7 +1266,7 @@ novtable
 
 This attribute can be added to a class declaration or definition to signal to
 the compiler that constructors and destructors will not reference the virtual
-function table.
+function table. It is only supported when using the Microsoft C++ ABI.
 
 
 Statement Attributes
@@ -1138,7 +1351,9 @@ Loop unrolling optimization hints can be specified with ``#pragma unroll`` and
 do-while, or c++11 range-based for loop.
 
 Specifying ``#pragma unroll`` without a parameter directs the loop unroller to
-attempt to fully unroll the loop if the trip count is known at compile time:
+attempt to fully unroll the loop if the trip count is known at compile time and
+attempt to partially unroll the loop if the trip count is not known at compile
+time:
 
 .. code-block:: c++
 
@@ -1179,6 +1394,217 @@ is equivalent to ``#pragma clang loop unroll(disable)``.  See
 `language extensions
 <http://clang.llvm.org/docs/LanguageExtensions.html#extensions-for-loop-hint-optimizations>`_
 for further details including limitations of the unroll hints.
+
+
+Type Safety Checking
+====================
+Clang supports additional attributes to enable checking type safety properties
+that can't be enforced by the C type system.  Use cases include:
+
+* MPI library implementations, where these attributes enable checking that
+  the buffer type matches the passed ``MPI_Datatype``;
+* for HDF5 library there is a similar use case to MPI;
+* checking types of variadic functions' arguments for functions like
+  ``fcntl()`` and ``ioctl()``.
+
+You can detect support for these attributes with ``__has_attribute()``.  For
+example:
+
+.. code-block:: c++
+
+  #if defined(__has_attribute)
+  #  if __has_attribute(argument_with_type_tag) && \
+        __has_attribute(pointer_with_type_tag) && \
+        __has_attribute(type_tag_for_datatype)
+  #    define ATTR_MPI_PWT(buffer_idx, type_idx) __attribute__((pointer_with_type_tag(mpi,buffer_idx,type_idx)))
+  /* ... other macros ...  */
+  #  endif
+  #endif
+
+  #if !defined(ATTR_MPI_PWT)
+  # define ATTR_MPI_PWT(buffer_idx, type_idx)
+  #endif
+
+  int MPI_Send(void *buf, int count, MPI_Datatype datatype /*, other args omitted */)
+      ATTR_MPI_PWT(1,3);
+
+argument_with_type_tag
+----------------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+Use ``__attribute__((argument_with_type_tag(arg_kind, arg_idx,
+type_tag_idx)))`` on a function declaration to specify that the function
+accepts a type tag that determines the type of some other argument.
+``arg_kind`` is an identifier that should be used when annotating all
+applicable type tags.
+
+This attribute is primarily useful for checking arguments of variadic functions
+(``pointer_with_type_tag`` can be used in most non-variadic cases).
+
+For example:
+
+.. code-block:: c++
+
+  int fcntl(int fd, int cmd, ...)
+      __attribute__(( argument_with_type_tag(fcntl,3,2) ));
+
+
+pointer_with_type_tag
+---------------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+Use ``__attribute__((pointer_with_type_tag(ptr_kind, ptr_idx, type_tag_idx)))``
+on a function declaration to specify that the function accepts a type tag that
+determines the pointee type of some other pointer argument.
+
+For example:
+
+.. code-block:: c++
+
+  int MPI_Send(void *buf, int count, MPI_Datatype datatype /*, other args omitted */)
+      __attribute__(( pointer_with_type_tag(mpi,1,3) ));
+
+
+type_tag_for_datatype
+---------------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+Clang supports annotating type tags of two forms.
+
+* **Type tag that is an expression containing a reference to some declared
+  identifier.** Use ``__attribute__((type_tag_for_datatype(kind, type)))`` on a
+  declaration with that identifier:
+
+  .. code-block:: c++
+
+    extern struct mpi_datatype mpi_datatype_int
+        __attribute__(( type_tag_for_datatype(mpi,int) ));
+    #define MPI_INT ((MPI_Datatype) &mpi_datatype_int)
+
+* **Type tag that is an integral literal.** Introduce a ``static const``
+  variable with a corresponding initializer value and attach
+  ``__attribute__((type_tag_for_datatype(kind, type)))`` on that declaration,
+  for example:
+
+  .. code-block:: c++
+
+    #define MPI_INT ((MPI_Datatype) 42)
+    static const MPI_Datatype mpi_datatype_int
+        __attribute__(( type_tag_for_datatype(mpi,int) )) = 42
+
+The attribute also accepts an optional third argument that determines how the
+expression is compared to the type tag.  There are two supported flags:
+
+* ``layout_compatible`` will cause types to be compared according to
+  layout-compatibility rules (C++11 [class.mem] p 17, 18).  This is
+  implemented to support annotating types like ``MPI_DOUBLE_INT``.
+
+  For example:
+
+  .. code-block:: c++
+
+    /* In mpi.h */
+    struct internal_mpi_double_int { double d; int i; };
+    extern struct mpi_datatype mpi_datatype_double_int
+        __attribute__(( type_tag_for_datatype(mpi, struct internal_mpi_double_int, layout_compatible) ));
+
+    #define MPI_DOUBLE_INT ((MPI_Datatype) &mpi_datatype_double_int)
+
+    /* In user code */
+    struct my_pair { double a; int b; };
+    struct my_pair *buffer;
+    MPI_Send(buffer, 1, MPI_DOUBLE_INT /*, ...  */); // no warning
+
+    struct my_int_pair { int a; int b; }
+    struct my_int_pair *buffer2;
+    MPI_Send(buffer2, 1, MPI_DOUBLE_INT /*, ...  */); // warning: actual buffer element
+                                                      // type 'struct my_int_pair'
+                                                      // doesn't match specified MPI_Datatype
+
+* ``must_be_null`` specifies that the expression should be a null pointer
+  constant, for example:
+
+  .. code-block:: c++
+
+    /* In mpi.h */
+    extern struct mpi_datatype mpi_datatype_null
+        __attribute__(( type_tag_for_datatype(mpi, void, must_be_null) ));
+
+    #define MPI_DATATYPE_NULL ((MPI_Datatype) &mpi_datatype_null)
+
+    /* In user code */
+    MPI_Send(buffer, 1, MPI_DATATYPE_NULL /*, ...  */); // warning: MPI_DATATYPE_NULL
+                                                        // was specified but buffer
+                                                        // is not a null pointer
+
+
+AMD GPU Register Attributes
+===========================
+Clang supports attributes for controlling register usage on AMD GPU
+targets. These attributes may be attached to a kernel function
+definition and is an optimization hint to the backend for the maximum
+number of registers to use. This is useful in cases where register
+limited occupancy is known to be an important factor for the
+performance for the kernel.
+
+The semantics are as follows:
+
+- The backend will attempt to limit the number of used registers to
+  the specified value, but the exact number used is not
+  guaranteed. The number used may be rounded up to satisfy the
+  allocation requirements or ABI constraints of the subtarget. For
+  example, on Southern Islands VGPRs may only be allocated in
+  increments of 4, so requesting a limit of 39 VGPRs will really
+  attempt to use up to 40. Requesting more registers than the
+  subtarget supports will truncate to the maximum allowed. The backend
+  may also use fewer registers than requested whenever possible.
+
+- 0 implies the default no limit on register usage.
+
+- Ignored on older VLIW subtargets which did not have separate scalar
+  and vector registers, R600 through Northern Islands.
+
+amdgpu_num_sgpr
+---------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+Clang supports the
+``__attribute__((amdgpu_num_sgpr(<num_registers>)))`` attribute on AMD
+Southern Islands GPUs and later for controlling the number of scalar
+registers. A typical value would be between 8 and 104 in increments of
+8.
+
+Due to common instruction constraints, an additional 2-4 SGPRs are
+typically required for internal use depending on features used. This
+value is a hint for the total number of SGPRs to use, and not the
+number of user SGPRs, so no special consideration needs to be given
+for these.
+
+
+amdgpu_num_vgpr
+---------------
+.. csv-table:: Supported Syntaxes
+   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
+
+   "X","","","", ""
+
+Clang supports the
+``__attribute__((amdgpu_num_vgpr(<num_registers>)))`` attribute on AMD
+Southern Islands GPUs and later for controlling the number of vector
+registers. A typical value would be between 4 and 256 in increments
+of 4.
 
 
 Calling Conventions
@@ -1394,157 +1820,6 @@ Use ``__attribute__((test_typestate(tested_state)))`` to indicate that a method
 returns true if the object is in the specified state..
 
 
-Type Safety Checking
-====================
-Clang supports additional attributes to enable checking type safety properties
-that can't be enforced by the C type system.  Use cases include:
-
-* MPI library implementations, where these attributes enable checking that
-  the buffer type matches the passed ``MPI_Datatype``;
-* for HDF5 library there is a similar use case to MPI;
-* checking types of variadic functions' arguments for functions like
-  ``fcntl()`` and ``ioctl()``.
-
-You can detect support for these attributes with ``__has_attribute()``.  For
-example:
-
-.. code-block:: c++
-
-  #if defined(__has_attribute)
-  #  if __has_attribute(argument_with_type_tag) && \
-        __has_attribute(pointer_with_type_tag) && \
-        __has_attribute(type_tag_for_datatype)
-  #    define ATTR_MPI_PWT(buffer_idx, type_idx) __attribute__((pointer_with_type_tag(mpi,buffer_idx,type_idx)))
-  /* ... other macros ...  */
-  #  endif
-  #endif
-
-  #if !defined(ATTR_MPI_PWT)
-  # define ATTR_MPI_PWT(buffer_idx, type_idx)
-  #endif
-
-  int MPI_Send(void *buf, int count, MPI_Datatype datatype /*, other args omitted */)
-      ATTR_MPI_PWT(1,3);
-
-argument_with_type_tag
-----------------------
-.. csv-table:: Supported Syntaxes
-   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
-
-   "X","","","", ""
-
-Use ``__attribute__((argument_with_type_tag(arg_kind, arg_idx,
-type_tag_idx)))`` on a function declaration to specify that the function
-accepts a type tag that determines the type of some other argument.
-``arg_kind`` is an identifier that should be used when annotating all
-applicable type tags.
-
-This attribute is primarily useful for checking arguments of variadic functions
-(``pointer_with_type_tag`` can be used in most non-variadic cases).
-
-For example:
-
-.. code-block:: c++
-
-  int fcntl(int fd, int cmd, ...)
-      __attribute__(( argument_with_type_tag(fcntl,3,2) ));
-
-
-pointer_with_type_tag
----------------------
-.. csv-table:: Supported Syntaxes
-   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
-
-   "X","","","", ""
-
-Use ``__attribute__((pointer_with_type_tag(ptr_kind, ptr_idx, type_tag_idx)))``
-on a function declaration to specify that the function accepts a type tag that
-determines the pointee type of some other pointer argument.
-
-For example:
-
-.. code-block:: c++
-
-  int MPI_Send(void *buf, int count, MPI_Datatype datatype /*, other args omitted */)
-      __attribute__(( pointer_with_type_tag(mpi,1,3) ));
-
-
-type_tag_for_datatype
----------------------
-.. csv-table:: Supported Syntaxes
-   :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
-
-   "X","","","", ""
-
-Clang supports annotating type tags of two forms.
-
-* **Type tag that is an expression containing a reference to some declared
-  identifier.** Use ``__attribute__((type_tag_for_datatype(kind, type)))`` on a
-  declaration with that identifier:
-
-  .. code-block:: c++
-
-    extern struct mpi_datatype mpi_datatype_int
-        __attribute__(( type_tag_for_datatype(mpi,int) ));
-    #define MPI_INT ((MPI_Datatype) &mpi_datatype_int)
-
-* **Type tag that is an integral literal.** Introduce a ``static const``
-  variable with a corresponding initializer value and attach
-  ``__attribute__((type_tag_for_datatype(kind, type)))`` on that declaration,
-  for example:
-
-  .. code-block:: c++
-
-    #define MPI_INT ((MPI_Datatype) 42)
-    static const MPI_Datatype mpi_datatype_int
-        __attribute__(( type_tag_for_datatype(mpi,int) )) = 42
-
-The attribute also accepts an optional third argument that determines how the
-expression is compared to the type tag.  There are two supported flags:
-
-* ``layout_compatible`` will cause types to be compared according to
-  layout-compatibility rules (C++11 [class.mem] p 17, 18).  This is
-  implemented to support annotating types like ``MPI_DOUBLE_INT``.
-
-  For example:
-
-  .. code-block:: c++
-
-    /* In mpi.h */
-    struct internal_mpi_double_int { double d; int i; };
-    extern struct mpi_datatype mpi_datatype_double_int
-        __attribute__(( type_tag_for_datatype(mpi, struct internal_mpi_double_int, layout_compatible) ));
-
-    #define MPI_DOUBLE_INT ((MPI_Datatype) &mpi_datatype_double_int)
-
-    /* In user code */
-    struct my_pair { double a; int b; };
-    struct my_pair *buffer;
-    MPI_Send(buffer, 1, MPI_DOUBLE_INT /*, ...  */); // no warning
-
-    struct my_int_pair { int a; int b; }
-    struct my_int_pair *buffer2;
-    MPI_Send(buffer2, 1, MPI_DOUBLE_INT /*, ...  */); // warning: actual buffer element
-                                                      // type 'struct my_int_pair'
-                                                      // doesn't match specified MPI_Datatype
-
-* ``must_be_null`` specifies that the expression should be a null pointer
-  constant, for example:
-
-  .. code-block:: c++
-
-    /* In mpi.h */
-    extern struct mpi_datatype mpi_datatype_null
-        __attribute__(( type_tag_for_datatype(mpi, void, must_be_null) ));
-
-    #define MPI_DATATYPE_NULL ((MPI_Datatype) &mpi_datatype_null)
-
-    /* In user code */
-    MPI_Send(buffer, 1, MPI_DATATYPE_NULL /*, ...  */); // warning: MPI_DATATYPE_NULL
-                                                        // was specified but buffer
-                                                        // is not a null pointer
-
-
 OpenCL Address Spaces
 =====================
 The address space qualifier may be used to specify the region of memory that is
@@ -1565,8 +1840,8 @@ __constant(constant).
 
 More details can be found in the OpenCL C language Spec v2.0, Section 6.5.
 
-__constant(constant)
---------------------
+constant (__constant)
+---------------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 
@@ -1579,8 +1854,8 @@ with the constant address space qualifier can be declared in any scope and must
 have an initializer.
 
 
-__generic(generic)
-------------------
+generic (__generic)
+-------------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 
@@ -1594,8 +1869,8 @@ except for '__constant' in OpenCL code which can be used with multiple address
 spaces.
 
 
-__global(global)
-----------------
+global (__global)
+-----------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 
@@ -1609,8 +1884,8 @@ with OpenCL v2.0, the global address space can be used with global (program
 scope) variables and static local variable as well.
 
 
-__local(local)
---------------
+local (__local)
+---------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 
@@ -1624,8 +1899,8 @@ the local address space. In other scopes, only pointer types to the local addres
 space are allowed. Local address space variables cannot have an initializer.
 
 
-__private(private)
-------------------
+private (__private)
+-------------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 
@@ -1668,8 +1943,8 @@ In Objective-C, there is an alternate spelling for the nullability qualifiers th
       @property (readonly, nonnull) NSArray *subviews;
     @end
 
-nonnull
--------
+nonnull (gnu::nonnull)
+----------------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 
@@ -1700,8 +1975,8 @@ Clang also allows the ``nonnull`` attribute to be placed directly on a function 
 Note that the ``nonnull`` attribute indicates that passing null to a non-null parameter is undefined behavior, which the optimizer may take advantage of to, e.g., remove null checks. The ``_Nonnull`` type qualifier indicates that a pointer cannot be null in a more general manner (because it is part of the type system) and does not imply undefined behavior, making it more widely applicable.
 
 
-returns_nonnull
----------------
+returns_nonnull (gnu::returns_nonnull)
+--------------------------------------
 .. csv-table:: Supported Syntaxes
    :header: "GNU", "C++11", "__declspec", "Keyword", "Pragma"
 

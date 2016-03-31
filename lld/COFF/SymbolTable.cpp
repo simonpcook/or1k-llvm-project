@@ -12,7 +12,8 @@
 #include "Error.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
-#include "llvm/ADT/STLExtras.h"
+#include "lld/Core/Parallel.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/LTO/LTOCodeGenerator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -24,13 +25,21 @@ namespace lld {
 namespace coff {
 
 void SymbolTable::addFile(std::unique_ptr<InputFile> FileP) {
+#if LLVM_ENABLE_THREADS
+  std::launch Policy = std::launch::async;
+#else
+  std::launch Policy = std::launch::deferred;
+#endif
+
   InputFile *File = FileP.get();
   Files.push_back(std::move(FileP));
   if (auto *F = dyn_cast<ArchiveFile>(File)) {
-    ArchiveQueue.push_back(F);
+    ArchiveQueue.push_back(
+        std::async(Policy, [=]() { F->parse(); return F; }));
     return;
   }
-  ObjectQueue.push_back(File);
+  ObjectQueue.push_back(
+      std::async(Policy, [=]() { File->parse(); return File; }));
   if (auto *F = dyn_cast<ObjectFile>(File)) {
     ObjectFiles.push_back(F);
   } else if (auto *F = dyn_cast<BitcodeFile>(File)) {
@@ -40,66 +49,55 @@ void SymbolTable::addFile(std::unique_ptr<InputFile> FileP) {
   }
 }
 
-std::error_code SymbolTable::step() {
+void SymbolTable::step() {
   if (queueEmpty())
-    return std::error_code();
-  if (auto EC = readObjects())
-    return EC;
-  if (auto EC = readArchives())
-    return EC;
-  return std::error_code();
+    return;
+  readObjects();
+  readArchives();
 }
 
-std::error_code SymbolTable::run() {
+void SymbolTable::run() {
   while (!queueEmpty())
-    if (auto EC = step())
-      return EC;
-  return std::error_code();
+    step();
 }
 
-std::error_code SymbolTable::readArchives() {
+void SymbolTable::readArchives() {
   if (ArchiveQueue.empty())
-    return std::error_code();
+    return;
 
   // Add lazy symbols to the symbol table. Lazy symbols that conflict
   // with existing undefined symbols are accumulated in LazySyms.
   std::vector<Symbol *> LazySyms;
-  for (ArchiveFile *File : ArchiveQueue) {
+  for (std::future<ArchiveFile *> &Future : ArchiveQueue) {
+    ArchiveFile *File = Future.get();
     if (Config->Verbose)
       llvm::outs() << "Reading " << File->getShortName() << "\n";
-    if (auto EC = File->parse())
-      return EC;
-    for (Lazy *Sym : File->getLazySymbols())
-      addLazy(Sym, &LazySyms);
+    for (Lazy &Sym : File->getLazySymbols())
+      addLazy(&Sym, &LazySyms);
   }
   ArchiveQueue.clear();
 
   // Add archive member files to ObjectQueue that should resolve
   // existing undefined symbols.
   for (Symbol *Sym : LazySyms)
-    if (auto EC = addMemberFile(cast<Lazy>(Sym->Body)))
-      return EC;
-  return std::error_code();
+    addMemberFile(cast<Lazy>(Sym->Body));
 }
 
-std::error_code SymbolTable::readObjects() {
+void SymbolTable::readObjects() {
   if (ObjectQueue.empty())
-    return std::error_code();
+    return;
 
   // Add defined and undefined symbols to the symbol table.
   std::vector<StringRef> Directives;
   for (size_t I = 0; I < ObjectQueue.size(); ++I) {
-    InputFile *File = ObjectQueue[I];
+    InputFile *File = ObjectQueue[I].get();
     if (Config->Verbose)
       llvm::outs() << "Reading " << File->getShortName() << "\n";
-    if (auto EC = File->parse())
-      return EC;
     // Adding symbols may add more files to ObjectQueue
     // (but not to ArchiveQueue).
     for (SymbolBody *Sym : File->getSymbols())
       if (Sym->isExternal())
-        if (auto EC = addSymbol(Sym))
-          return EC;
+        addSymbol(Sym);
     StringRef S = File->getDirectives();
     if (!S.empty()) {
       Directives.push_back(S);
@@ -113,16 +111,14 @@ std::error_code SymbolTable::readObjects() {
   // Parse directive sections. This may add files to
   // ArchiveQueue and ObjectQueue.
   for (StringRef S : Directives)
-    if (auto EC = Driver->parseDirectives(S))
-      return EC;
-  return std::error_code();
+    Driver->parseDirectives(S);
 }
 
 bool SymbolTable::queueEmpty() {
   return ArchiveQueue.empty() && ObjectQueue.empty();
 }
 
-bool SymbolTable::reportRemainingUndefines(bool Resolve) {
+void SymbolTable::reportRemainingUndefines(bool Resolve) {
   llvm::SmallPtrSet<SymbolBody *, 8> Undefs;
   for (auto &I : Symtab) {
     Symbol *Sym = I.second;
@@ -157,7 +153,7 @@ bool SymbolTable::reportRemainingUndefines(bool Resolve) {
     Undefs.insert(Sym->Body);
   }
   if (Undefs.empty())
-    return false;
+    return;
   for (Undefined *U : Config->GCRoot)
     if (Undefs.count(U->repl()))
       llvm::errs() << "<root>: undefined symbol: " << U->getName() << "\n";
@@ -167,66 +163,58 @@ bool SymbolTable::reportRemainingUndefines(bool Resolve) {
         if (Undefs.count(Sym->repl()))
           llvm::errs() << File->getShortName() << ": undefined symbol: "
                        << Sym->getName() << "\n";
-  return !Config->Force;
+  if (!Config->Force)
+    error("Link failed");
 }
 
 void SymbolTable::addLazy(Lazy *New, std::vector<Symbol *> *Accum) {
   Symbol *Sym = insert(New);
   if (Sym->Body == New)
     return;
-  for (;;) {
-    SymbolBody *Existing = Sym->Body;
-    if (isa<Defined>(Existing))
-      return;
-    if (Lazy *L = dyn_cast<Lazy>(Existing))
-      if (L->getFileIndex() < New->getFileIndex())
-        return;
-    if (!Sym->Body.compare_exchange_strong(Existing, New))
-      continue;
-    New->setBackref(Sym);
-    if (isa<Undefined>(Existing))
-      Accum->push_back(Sym);
+  SymbolBody *Existing = Sym->Body;
+  if (isa<Defined>(Existing))
     return;
-  }
+  if (Lazy *L = dyn_cast<Lazy>(Existing))
+    if (L->getFileIndex() < New->getFileIndex())
+      return;
+  Sym->Body = New;
+  New->setBackref(Sym);
+  if (isa<Undefined>(Existing))
+    Accum->push_back(Sym);
 }
 
-std::error_code SymbolTable::addSymbol(SymbolBody *New) {
+void SymbolTable::addSymbol(SymbolBody *New) {
   // Find an existing symbol or create and insert a new one.
   assert(isa<Defined>(New) || isa<Undefined>(New));
   Symbol *Sym = insert(New);
   if (Sym->Body == New)
-    return std::error_code();
+    return;
+  SymbolBody *Existing = Sym->Body;
 
-  for (;;) {
-    SymbolBody *Existing = Sym->Body;
-
-    // If we have an undefined symbol and a lazy symbol,
-    // let the lazy symbol to read a member file.
-    if (auto *L = dyn_cast<Lazy>(Existing)) {
-      // Undefined symbols with weak aliases need not to be resolved,
-      // since they would be replaced with weak aliases if they remain
-      // undefined.
-      if (auto *U = dyn_cast<Undefined>(New))
-        if (!U->WeakAlias)
-          return addMemberFile(L);
-      if (!Sym->Body.compare_exchange_strong(Existing, New))
-        continue;
-      return std::error_code();
+  // If we have an undefined symbol and a lazy symbol,
+  // let the lazy symbol to read a member file.
+  if (auto *L = dyn_cast<Lazy>(Existing)) {
+    // Undefined symbols with weak aliases need not to be resolved,
+    // since they would be replaced with weak aliases if they remain
+    // undefined.
+    if (auto *U = dyn_cast<Undefined>(New)) {
+      if (!U->WeakAlias) {
+        addMemberFile(L);
+        return;
+      }
     }
-
-    // compare() returns -1, 0, or 1 if the lhs symbol is less preferable,
-    // equivalent (conflicting), or more preferable, respectively.
-    int Comp = Existing->compare(New);
-    if (Comp == 0) {
-      llvm::errs() << "duplicate symbol: " << Existing->getDebugName()
-                   << " and " << New->getDebugName() << "\n";
-      return make_error_code(LLDError::DuplicateSymbols);
-    }
-    if (Comp < 0)
-      if (!Sym->Body.compare_exchange_strong(Existing, New))
-        continue;
-    return std::error_code();
+    Sym->Body = New;
+    return;
   }
+
+  // compare() returns -1, 0, or 1 if the lhs symbol is less preferable,
+  // equivalent (conflicting), or more preferable, respectively.
+  int Comp = Existing->compare(New);
+  if (Comp == 0)
+    error(Twine("duplicate symbol: ") + Existing->getDebugName() + " and " +
+          New->getDebugName());
+  if (Comp < 0)
+    Sym->Body = New;
 }
 
 Symbol *SymbolTable::insert(SymbolBody *New) {
@@ -241,21 +229,17 @@ Symbol *SymbolTable::insert(SymbolBody *New) {
 }
 
 // Reads an archive member file pointed by a given symbol.
-std::error_code SymbolTable::addMemberFile(Lazy *Body) {
-  auto FileOrErr = Body->getMember();
-  if (auto EC = FileOrErr.getError())
-    return EC;
-  std::unique_ptr<InputFile> File = std::move(FileOrErr.get());
+void SymbolTable::addMemberFile(Lazy *Body) {
+  std::unique_ptr<InputFile> File = Body->getMember();
 
   // getMember returns an empty buffer if the member was already
   // read from the library.
   if (!File)
-    return std::error_code();
+    return;
   if (Config->Verbose)
     llvm::outs() << "Loaded " << File->getShortName() << " for "
                  << Body->getName() << "\n";
   addFile(std::move(File));
-  return std::error_code();
 }
 
 std::vector<Chunk *> SymbolTable::getChunks() {
@@ -274,6 +258,12 @@ Symbol *SymbolTable::find(StringRef Name) {
   return It->second;
 }
 
+Symbol *SymbolTable::findUnderscore(StringRef Name) {
+  if (Config->Machine == I386)
+    return find(("_" + Name).str());
+  return find(Name);
+}
+
 StringRef SymbolTable::findByPrefix(StringRef Prefix) {
   for (auto Pair : Symtab) {
     StringRef Name = Pair.first;
@@ -287,7 +277,7 @@ StringRef SymbolTable::findMangle(StringRef Name) {
   if (Symbol *Sym = find(Name))
     if (!isa<Undefined>(Sym->Body))
       return Name;
-  if (Config->is64())
+  if (Config->Machine != I386)
     return findByPrefix(("?" + Name + "@@Y").str());
   if (!Name.startswith("_"))
     return "";
@@ -317,8 +307,16 @@ Undefined *SymbolTable::addUndefined(StringRef Name) {
   return New;
 }
 
-void SymbolTable::addAbsolute(StringRef Name, uint64_t VA) {
-  addSymbol(new (Alloc) DefinedAbsolute(Name, VA));
+DefinedRelative *SymbolTable::addRelative(StringRef Name, uint64_t VA) {
+  auto *New = new (Alloc) DefinedRelative(Name, VA);
+  addSymbol(New);
+  return New;
+}
+
+DefinedAbsolute *SymbolTable::addAbsolute(StringRef Name, uint64_t VA) {
+  auto *New = new (Alloc) DefinedAbsolute(Name, VA);
+  addSymbol(New);
+  return New;
 }
 
 void SymbolTable::printMap(llvm::raw_ostream &OS) {
@@ -326,30 +324,13 @@ void SymbolTable::printMap(llvm::raw_ostream &OS) {
     OS << File->getShortName() << ":\n";
     for (SymbolBody *Body : File->getSymbols())
       if (auto *R = dyn_cast<DefinedRegular>(Body))
-        if (R->isLive())
+        if (R->getChunk()->isLive())
           OS << Twine::utohexstr(Config->ImageBase + R->getRVA())
              << " " << R->getName() << "\n";
   }
 }
 
-std::error_code SymbolTable::addCombinedLTOObject() {
-  if (BitcodeFiles.empty())
-    return std::error_code();
-
-  // Diagnose any undefined symbols early, but do not resolve weak externals,
-  // as resolution breaks the invariant that each Symbol points to a unique
-  // SymbolBody, which we rely on to replace DefinedBitcode symbols correctly.
-  if (reportRemainingUndefines(/*Resolve=*/false))
-    return make_error_code(LLDError::BrokenFile);
-
-  // Create an object file and add it to the symbol table by replacing any
-  // DefinedBitcode symbols with the definitions in the object file.
-  LTOCodeGenerator CG;
-  auto FileOrErr = createLTOObject(&CG);
-  if (auto EC = FileOrErr.getError())
-    return EC;
-  ObjectFile *Obj = FileOrErr.get();
-
+void SymbolTable::addCombinedLTOObject(ObjectFile *Obj) {
   for (SymbolBody *Body : Obj->getSymbols()) {
     if (!Body->isExternal())
       continue;
@@ -365,34 +346,45 @@ std::error_code SymbolTable::addCombinedLTOObject() {
     if (auto *L = dyn_cast<Lazy>(Sym->Body)) {
       // We may see new references to runtime library symbols such as __chkstk
       // here. These symbols must be wholly defined in non-bitcode files.
-      if (auto EC = addMemberFile(L))
-        return EC;
+      addMemberFile(L);
       continue;
     }
     SymbolBody *Existing = Sym->Body;
     int Comp = Existing->compare(Body);
-    if (Comp == 0) {
-      llvm::errs() << "LTO: unexpected duplicate symbol: " << Name << "\n";
-      return make_error_code(LLDError::BrokenFile);
-    }
+    if (Comp == 0)
+      error(Twine("LTO: unexpected duplicate symbol: ") + Name);
     if (Comp < 0)
       Sym->Body = Body;
   }
+}
+
+void SymbolTable::addCombinedLTOObjects() {
+  if (BitcodeFiles.empty())
+    return;
+
+  // Diagnose any undefined symbols early, but do not resolve weak externals,
+  // as resolution breaks the invariant that each Symbol points to a unique
+  // SymbolBody, which we rely on to replace DefinedBitcode symbols correctly.
+  reportRemainingUndefines(/*Resolve=*/false);
+
+  // Create an object file and add it to the symbol table by replacing any
+  // DefinedBitcode symbols with the definitions in the object file.
+  LTOCodeGenerator CG(getGlobalContext());
+  CG.setOptLevel(Config->LTOOptLevel);
+  std::vector<ObjectFile *> Objs = createLTOObjects(&CG);
+
+  for (ObjectFile *Obj : Objs)
+    addCombinedLTOObject(Obj);
 
   size_t NumBitcodeFiles = BitcodeFiles.size();
-  if (auto EC = run())
-    return EC;
-  if (BitcodeFiles.size() != NumBitcodeFiles) {
-    llvm::errs() << "LTO: late loaded symbol created new bitcode reference\n";
-    return make_error_code(LLDError::BrokenFile);
-  }
-
-  return std::error_code();
+  run();
+  if (BitcodeFiles.size() != NumBitcodeFiles)
+    error("LTO: late loaded symbol created new bitcode reference");
 }
 
 // Combine and compile bitcode files and then return the result
-// as a regular COFF object file.
-ErrorOr<ObjectFile *> SymbolTable::createLTOObject(LTOCodeGenerator *CG) {
+// as a vector of regular COFF object files.
+std::vector<ObjectFile *> SymbolTable::createLTOObjects(LTOCodeGenerator *CG) {
   // All symbols referenced by non-bitcode objects must be preserved.
   for (ObjectFile *File : ObjectFiles)
     for (SymbolBody *Body : File->getSymbols())
@@ -413,22 +405,40 @@ ErrorOr<ObjectFile *> SymbolTable::createLTOObject(LTOCodeGenerator *CG) {
       CG->addMustPreserveSymbol(S->getName());
   }
 
-  CG->setModule(BitcodeFiles[0]->releaseModule());
+  CG->setModule(BitcodeFiles[0]->takeModule());
   for (unsigned I = 1, E = BitcodeFiles.size(); I != E; ++I)
-    CG->addModule(BitcodeFiles[I]->getModule());
+    CG->addModule(BitcodeFiles[I]->takeModule().get());
 
-  std::string ErrMsg;
-  LTOMB = CG->compile(false, false, false, ErrMsg); // take MB ownership
-  if (!LTOMB) {
-    llvm::errs() << ErrMsg << '\n';
-    return make_error_code(LLDError::BrokenFile);
+  bool DisableVerify = true;
+#ifdef NDEBUG
+  DisableVerify = false;
+#endif
+  if (!CG->optimize(DisableVerify, false, false, false))
+    error(""); // optimize() should have emitted any error message.
+
+  Objs.resize(Config->LTOJobs);
+  // Use std::list to avoid invalidation of pointers in OSPtrs.
+  std::list<raw_svector_ostream> OSs;
+  std::vector<raw_pwrite_stream *> OSPtrs;
+  for (SmallVector<char, 0> &Obj : Objs) {
+    OSs.emplace_back(Obj);
+    OSPtrs.push_back(&OSs.back());
   }
-  auto *Obj = new ObjectFile(LTOMB->getMemBufferRef());
-  Files.emplace_back(Obj);
-  ObjectFiles.push_back(Obj);
-  if (auto EC = Obj->parse())
-    return EC;
-  return Obj;
+
+  if (!CG->compileOptimized(OSPtrs))
+    error(""); // compileOptimized() should have emitted any error message.
+
+  std::vector<ObjectFile *> ObjFiles;
+  for (SmallVector<char, 0> &Obj : Objs) {
+    auto *ObjFile = new ObjectFile(
+        MemoryBufferRef(StringRef(Obj.data(), Obj.size()), "<LTO object>"));
+    Files.emplace_back(ObjFile);
+    ObjectFiles.push_back(ObjFile);
+    ObjFile->parse();
+    ObjFiles.push_back(ObjFile);
+  }
+
+  return ObjFiles;
 }
 
 } // namespace coff

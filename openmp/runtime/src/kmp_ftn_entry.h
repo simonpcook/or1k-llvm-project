@@ -257,7 +257,7 @@ FTN_GET_AFFINITY_MAX_PROC( void )
             return 0;
         }
 
-    #if KMP_GROUP_AFFINITY
+    #if KMP_GROUP_AFFINITY && !KMP_USE_HWLOC
         if ( __kmp_num_proc_groups > 1 ) {
             return (int)KMP_CPU_SETSIZE;
         }
@@ -278,7 +278,11 @@ FTN_CREATE_AFFINITY_MASK( void **mask )
         if ( ! TCR_4(__kmp_init_middle) ) {
             __kmp_middle_initialize();
         }
+    # if KMP_USE_HWLOC
+        *mask = (hwloc_cpuset_t)hwloc_bitmap_alloc();
+    # else
         *mask = kmpc_malloc( __kmp_affin_mask_size );
+    # endif
         KMP_CPU_ZERO( (kmp_affin_mask_t *)(*mask) );
     #endif
 }
@@ -300,7 +304,11 @@ FTN_DESTROY_AFFINITY_MASK( void **mask )
 	        KMP_FATAL( AffinityInvalidMask, "kmp_destroy_affinity_mask" );
 	    }
         }
+    # if KMP_USE_HWLOC
+        hwloc_bitmap_free((hwloc_cpuset_t)(*mask));
+    # else
         kmpc_free( *mask );
+    # endif
         *mask = NULL;
     #endif
 }
@@ -398,7 +406,7 @@ xexpand(FTN_GET_THREAD_NUM)( void )
     #else
         int gtid;
 
-        #if KMP_OS_DARWIN || KMP_OS_FREEBSD
+        #if KMP_OS_DARWIN || KMP_OS_FREEBSD || KMP_OS_NETBSD
             gtid = __kmp_entry_gtid();
         #elif KMP_OS_WINDOWS
             if (!__kmp_init_parallel ||
@@ -804,22 +812,22 @@ typedef enum { UNINIT = -1, UNLOCKED, LOCKED } kmp_stub_lock_t;
 
 #if KMP_USE_DYNAMIC_LOCK
 void FTN_STDCALL
-FTN_INIT_LOCK_HINTED( void **user_lock, int KMP_DEREF hint )
+FTN_INIT_LOCK_WITH_HINT( void **user_lock, uintptr_t KMP_DEREF hint )
 {
     #ifdef KMP_STUB
         *((kmp_stub_lock_t *)user_lock) = UNLOCKED;
     #else
-        __kmp_init_lock_hinted( user_lock, KMP_DEREF hint );
+        __kmpc_init_lock_with_hint( NULL, __kmp_entry_gtid(), user_lock, KMP_DEREF hint );
     #endif
 }
 
 void FTN_STDCALL
-FTN_INIT_NEST_LOCK_HINTED( void **user_lock, int KMP_DEREF hint )
+FTN_INIT_NEST_LOCK_WITH_HINT( void **user_lock, uintptr_t KMP_DEREF hint )
 {
     #ifdef KMP_STUB
         *((kmp_stub_lock_t *)user_lock) = UNLOCKED;
     #else
-        __kmp_init_nest_lock_hinted( user_lock, KMP_DEREF hint );
+        __kmpc_init_nest_lock_with_hint( NULL, __kmp_entry_gtid(), user_lock, KMP_DEREF hint );
     #endif
 }
 #endif

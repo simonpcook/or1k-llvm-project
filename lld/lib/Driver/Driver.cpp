@@ -1,4 +1,4 @@
-//===- lib/Driver/Driver.cpp - Linker Driver Emulator ---------------------===//
+//===- lib/Driver/Driver.cpp - Linker Driver Emulator -----------*- C++ -*-===//
 //
 //                             The LLVM Linker
 //
@@ -64,18 +64,21 @@ FileVector loadFile(LinkingContext &ctx, StringRef path, bool wholeArchive) {
   return files;
 }
 
-/// This is where the link is actually performed.
-bool Driver::link(LinkingContext &ctx, raw_ostream &diagnostics) {
+void Driver::parseLLVMOptions(const LinkingContext &ctx) {
   // Honor -mllvm
   if (!ctx.llvmOptions().empty()) {
     unsigned numArgs = ctx.llvmOptions().size();
-    const char **args = new const char *[numArgs + 2];
+    auto **args = new const char *[numArgs + 2];
     args[0] = "lld (LLVM option parsing)";
     for (unsigned i = 0; i != numArgs; ++i)
       args[i + 1] = ctx.llvmOptions()[i];
-    args[numArgs + 1] = 0;
+    args[numArgs + 1] = nullptr;
     llvm::cl::ParseCommandLineOptions(numArgs + 1, args);
   }
+}
+
+/// This is where the link is actually performed.
+bool Driver::link(LinkingContext &ctx, raw_ostream &diagnostics) {
   if (ctx.getNodes().empty())
     return false;
 
@@ -136,4 +139,4 @@ bool Driver::link(LinkingContext &ctx, raw_ostream &diagnostics) {
   return true;
 }
 
-} // namespace
+} // namespace lld

@@ -1,14 +1,14 @@
-; RUN: opt %loadPolly -polly-detect-unprofitable -basicaa -polly-ast -polly-ast-detect-parallel -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -basicaa -polly-ast -polly-ast-detect-parallel -analyze < %s | FileCheck %s
 
 ; Verify that we actually detect this loop as the innermost loop even though
 ; there is a conditional inside.
 
 ; CHECK: #pragma simd
 ; CHECK: for (int c0 = 0; c0 <= 1023; c0 += 1) {
-; CHECK:   if (m + 1024 >= c0) {
-; CHECK:     Stmt_if_then(c0);
-; CHECK:   } else
+; CHECK:   if (c0 >= m + 1025) {
 ; CHECK:     Stmt_if_else(c0);
+; CHECK:   } else
+; CHECK:     Stmt_if_then(c0);
 ; CHECK:   Stmt_if_end(c0);
 ; CHECK: }
 

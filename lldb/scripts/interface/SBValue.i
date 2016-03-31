@@ -22,9 +22,9 @@ frame as an SBValue, and iterate through all the registers,
             GPRs = regs
             break
 
-    print '%s (number of children = %d):' % (GPRs.GetName(), GPRs.GetNumChildren())
+    print('%s (number of children = %d):' % (GPRs.GetName(), GPRs.GetNumChildren()))
     for reg in GPRs:
-        print 'Name: ', reg.GetName(), ' Value: ', reg.GetValue()
+        print('Name: ', reg.GetName(), ' Value: ', reg.GetValue())
 
 produces the output:
 
@@ -210,6 +210,11 @@ public:
     /// the 'x' member, and the child at index 1 will be the 'y' member
     /// (the child at index zero won't be a 'Point' instance).
     /// 
+    /// If you actually need an SBValue that represents the type pointed
+    /// to by a SBValue for which GetType().IsPointeeType() returns true,
+    /// regardless of the pointee type, you can do that with the SBValue.Dereference
+    /// method (or the equivalent deref property).
+    ///
     /// Arrays have a preset number of children that can be accessed by
     /// index and will returns invalid child values for indexes that are
     /// out of bounds unless the \a synthetic_allowed is \b true. In this
@@ -238,7 +243,7 @@ public:
     GetChildAtIndex (uint32_t idx, 
                      lldb::DynamicValueType use_dynamic,
                      bool can_create_synthetic);
-    
+
     lldb::SBValue
     CreateChildAtOffset (const char *name, uint32_t offset, lldb::SBType type);
     
@@ -320,6 +325,21 @@ public:
 
     uint32_t
     GetNumChildren ();
+
+    %feature("doctstring", "
+    //------------------------------------------------------------------
+    /// Returns the number for children. 
+    ///
+    /// @param[in] max
+    ///     If max is less the lldb.UINT32_MAX, then the returned value is
+    ///     capped to max.
+    ///
+    /// @return
+    ///     An integer value capped to the argument max.
+    //------------------------------------------------------------------
+    ") GetNumChildren;
+    uint32_t
+    GetNumChildren (uint32_t max);
 
     void *
     GetOpaqueType();

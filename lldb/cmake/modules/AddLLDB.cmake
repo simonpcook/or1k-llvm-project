@@ -56,7 +56,7 @@ macro(add_lldb_library name)
   if (PARAM_OBJECT)
     add_library(${name} ${libkind} ${srcs})
   else()
-    llvm_add_library(${name} ${libkind} ${srcs})
+    llvm_add_library(${name} ${libkind} DISABLE_LLVM_LINK_LLVM_DYLIB ${srcs})
 
     lldb_link_common_libs(${name} "${libkind}")
 
@@ -93,6 +93,22 @@ macro(add_lldb_library name)
 endmacro(add_lldb_library)
 
 macro(add_lldb_executable name)
-  add_llvm_executable(${name} ${ARGN})
+  add_llvm_executable(${name} DISABLE_LLVM_LINK_LLVM_DYLIB ${ARGN})
   set_target_properties(${name} PROPERTIES FOLDER "lldb executables")
 endmacro(add_lldb_executable)
+
+# Support appending linker flags to an existing target.
+# This will preserve the existing linker flags on the
+# target, if there are any.
+function(lldb_append_link_flags target_name new_link_flags)
+  # Retrieve existing linker flags.
+  get_target_property(current_link_flags ${target_name} LINK_FLAGS)
+
+  # If we had any linker flags, include them first in the new linker flags.
+  if(current_link_flags)
+    set(new_link_flags "${current_link_flags} ${new_link_flags}")
+  endif()
+
+  # Now set them onto the target.
+  set_target_properties(${target_name} PROPERTIES LINK_FLAGS ${new_link_flags})
+endfunction()

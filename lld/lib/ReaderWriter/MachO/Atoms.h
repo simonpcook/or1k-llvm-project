@@ -25,11 +25,11 @@ public:
 
   // Constructor for zero-fill content
   MachODefinedAtom(const File &f, const StringRef name, Scope scope,
-                   uint64_t size, bool noDeadStrip, Alignment align)
+                   ContentType type, uint64_t size, bool noDeadStrip,
+                   Alignment align)
       : SimpleDefinedAtom(f), _name(name),
         _content(ArrayRef<uint8_t>(nullptr, size)), _align(align),
-        _contentType(DefinedAtom::typeZeroFill),
-        _scope(scope), _merge(mergeNo), _thumb(false),
+        _contentType(type), _scope(scope), _merge(mergeNo), _thumb(false),
         _noDeadStrip(noDeadStrip) {}
 
   uint64_t size() const override { return _content.size(); }
@@ -103,7 +103,6 @@ private:
   StringRef _sectionName;
 };
 
-
 class MachOTentativeDefAtom : public SimpleDefinedAtom {
 public:
   MachOTentativeDefAtom(const File &f, const StringRef name, Scope scope,
@@ -126,7 +125,7 @@ public:
   ArrayRef<uint8_t> rawContent() const override { return ArrayRef<uint8_t>(); }
 
 private:
-  const StringRef _name;
+  const std::string _name;
   const Scope _scope;
   const uint64_t _size;
   const DefinedAtom::Alignment _align;
@@ -138,7 +137,7 @@ public:
                          StringRef dylibInstallName, bool weakDef)
       : SharedLibraryAtom(), _file(file), _name(name),
         _dylibInstallName(dylibInstallName) {}
-  virtual ~MachOSharedLibraryAtom() {}
+  ~MachOSharedLibraryAtom() override = default;
 
   StringRef loadName() const override { return _dylibInstallName; }
 
@@ -168,8 +167,7 @@ private:
   StringRef _dylibInstallName;
 };
 
+} // namespace mach_o
+} // namespace lld
 
-} // mach_o
-} // lld
-
-#endif
+#endif // LLD_READER_WRITER_MACHO_ATOMS_H

@@ -15,20 +15,17 @@
 using namespace clang::ast_matchers;
 
 namespace clang {
-namespace {
-AST_MATCHER(NamespaceDecl, isAnonymousNamespace) {
-  return Node.isAnonymousNamespace();
-}
-} // namespace
-
 namespace tidy {
 namespace google {
 namespace build {
 
 void UnnamedNamespaceInHeaderCheck::registerMatchers(
     ast_matchers::MatchFinder *Finder) {
-  Finder->addMatcher(
-      namespaceDecl(isAnonymousNamespace()).bind("anonymousNamespace"), this);
+  // Only register the matchers for C++; the functionality currently does not
+  // provide any benefit to other languages, despite being benign.
+  if (getLangOpts().CPlusPlus)
+    Finder->addMatcher(namespaceDecl(isAnonymous()).bind("anonymousNamespace"),
+                       this);
 }
 
 void
@@ -44,7 +41,7 @@ UnnamedNamespaceInHeaderCheck::check(const MatchFinder::MatchResult &Result) {
   StringRef FileName = SM->getPresumedLoc(Loc).getFilename();
   if (FileName.endswith(".h") || FileName.endswith(".hh") ||
       FileName.endswith(".hpp") || FileName.endswith(".hxx"))
-    diag(Loc, "do not use unnamed namespaces in header files.");
+    diag(Loc, "do not use unnamed namespaces in header files");
 }
 
 } // namespace build

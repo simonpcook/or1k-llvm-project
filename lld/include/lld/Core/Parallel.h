@@ -14,21 +14,15 @@
 #include "lld/Core/LLVM.h"
 #include "lld/Core/range.h"
 #include "llvm/Support/MathExtras.h"
-
-#ifdef _MSC_VER
-// concrt.h depends on eh.h for __uncaught_exception declaration
-// even if we disable exceptions.
-#include <eh.h>
-#endif
+#include "llvm/Support/thread.h"
 
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
-#include <thread>
 #include <stack>
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && LLVM_ENABLE_THREADS
 #include <concrt.h>
 #include <ppl.h>
 #endif
@@ -110,7 +104,7 @@ namespace internal {
 /// \brief An abstract class that takes closures and runs them asynchronously.
 class Executor {
 public:
-  virtual ~Executor() {}
+  virtual ~Executor() = default;
   virtual void add(std::function<void()> func) = 0;
 };
 
@@ -172,7 +166,7 @@ public:
     }).detach();
   }
 
-  ~ThreadPoolExecutor() {
+  ~ThreadPoolExecutor() override {
     std::unique_lock<std::mutex> lock(_mutex);
     _stop = true;
     lock.unlock();
@@ -336,4 +330,4 @@ void parallel_for_each(Iterator begin, Iterator end, Func func) {
 #endif
 } // end namespace lld
 
-#endif
+#endif // LLD_CORE_PARALLEL_H

@@ -31,8 +31,8 @@ using llvm::support::little64_t;
 
 class ArchHandler_arm64 : public ArchHandler {
 public:
-  ArchHandler_arm64();
-  virtual ~ArchHandler_arm64();
+  ArchHandler_arm64() = default;
+  ~ArchHandler_arm64() override = default;
 
   const Registry::KindStrings *kindStrings() override { return _sKindStrings; }
 
@@ -49,6 +49,9 @@ public:
     case gotPage21:
     case gotOffset12:
       canBypassGOT = true;
+      return true;
+    case delta32ToGOT:
+      canBypassGOT = false;
       return true;
     case imageOffsetGot:
       canBypassGOT = false;
@@ -73,6 +76,9 @@ public:
     case gotOffset12:
       const_cast<Reference *>(ref)->setKindValue(targetNowGOT ?
                                                  offset12scale8 : addOffset12);
+      break;
+    case delta32ToGOT:
+      const_cast<Reference *>(ref)->setKindValue(delta32);
       break;
     case imageOffsetGot:
       const_cast<Reference *>(ref)->setKindValue(imageOffset);
@@ -212,10 +218,6 @@ private:
   static Arm64Kind offset12KindFromInstruction(uint32_t instr);
   static uint32_t setImm12(uint32_t instr, uint32_t offset);
 };
-
-ArchHandler_arm64::ArchHandler_arm64() {}
-
-ArchHandler_arm64::~ArchHandler_arm64() {}
 
 const Registry::KindStrings ArchHandler_arm64::_sKindStrings[] = {
   LLD_KIND_STRING_ENTRY(invalid),
@@ -480,6 +482,9 @@ std::error_code ArchHandler_arm64::getPairReferenceInfo(
     *kind = delta64;
     if (auto ec = atomFromSymbolIndex(reloc2.symbol, target))
       return ec;
+    // The offsets of the 2 relocations must match
+    if (reloc1.offset != reloc2.offset)
+      return make_dynamic_error_code("paired relocs must have the same offset");
     *addend = (int64_t)*(const little64_t *)fixupContent + offsetInAtom;
     return std::error_code();
   case ((ARM64_RELOC_SUBTRACTOR                  | rExtern | rLength4) << 16 |
@@ -502,6 +507,23 @@ void ArchHandler_arm64::generateAtomContent(
   // Copy raw bytes.
   memcpy(atomContentBuffer, atom.rawContent().data(), atom.size());
   // Apply fix-ups.
+#ifndef NDEBUG
+  if (atom.begin() != atom.end()) {
+    DEBUG_WITH_TYPE("atom-content", llvm::dbgs()
+                    << "Applying fixups to atom:\n"
+                    << "   address="
+                    << llvm::format("    0x%09lX", &atom)
+                    << ", file=#"
+                    << atom.file().ordinal()
+                    << ", atom=#"
+                    << atom.ordinal()
+                    << ", name="
+                    << atom.name()
+                    << ", type="
+                    << atom.contentType()
+                    << "\n");
+  }
+#endif
   for (const Reference *ref : atom) {
     uint32_t offset = ref->offsetInAtom();
     const Atom *target = ref->target();
@@ -665,17 +687,28 @@ void ArchHandler_arm64::applyFixupRelocatable(const Reference &ref,
   case delta64:
     *loc64 = ref.addend() + inAtomAddress - fixupAddress;
     return;
+  case unwindFDEToFunction:
+    // We don't emit unwindFDEToFunction in -r mode as they are implicitly
+    // generated from the data in the __eh_frame section.  So here we need
+    // to use the targetAddress so that we can generate the full relocation
+    // when we parse again later.
+    *loc64 = targetAddress - fixupAddress;
+    return;
   case delta32:
     *loc32 = ref.addend() + inAtomAddress - fixupAddress;
     return;
   case negDelta32:
-    *loc32 = fixupAddress - inAtomAddress + ref.addend();
+    // We don't emit negDelta32 in -r mode as they are implicitly
+    // generated from the data in the __eh_frame section.  So here we need
+    // to use the targetAddress so that we can generate the full relocation
+    // when we parse again later.
+    *loc32 = fixupAddress - targetAddress + ref.addend();
     return;
   case pointer64ToGOT:
     *loc64 = 0;
     return;
   case delta32ToGOT:
-    *loc32 = -fixupAddress;
+    *loc32 = inAtomAddress - fixupAddress;
     return;
   case addOffset12:
     llvm_unreachable("lazy reference kind implies GOT pass was run");
@@ -686,9 +719,6 @@ void ArchHandler_arm64::applyFixupRelocatable(const Reference &ref,
   case imageOffsetGot:
   case unwindInfoToEhFrame:
     llvm_unreachable("fixup implies __unwind_info");
-    return;
-  case unwindFDEToFunction:
-    // Do nothing for now
     return;
   case invalid:
     // Fall into llvm_unreachable().

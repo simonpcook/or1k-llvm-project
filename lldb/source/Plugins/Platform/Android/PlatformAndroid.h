@@ -12,7 +12,6 @@
 
 // C Includes
 // C++ Includes
-
 #include <string>
 
 // Other libraries and framework includes
@@ -25,16 +24,15 @@ namespace platform_android {
     class PlatformAndroid : public platform_linux::PlatformLinux
     {
     public:
+        PlatformAndroid(bool is_host);
+
+        ~PlatformAndroid() override;
+
         static void
         Initialize ();
 
         static void
         Terminate ();
-
-        PlatformAndroid (bool is_host);
-
-        virtual
-        ~PlatformAndroid();
 
         //------------------------------------------------------------
         // lldb_private::PluginInterface functions
@@ -73,6 +71,18 @@ namespace platform_android {
                  const FileSpec& destination,
                  uint32_t uid = UINT32_MAX,
                  uint32_t gid = UINT32_MAX) override;
+        
+        uint32_t
+        GetSdkVersion();
+
+        bool
+        GetRemoteOSVersion() override;
+
+        Error
+        DisconnectRemote () override;
+
+        uint32_t
+        GetDefaultMemoryCacheLineSize() override;
 
      protected:
         const char *
@@ -84,12 +94,21 @@ namespace platform_android {
                              const uint64_t src_size,
                              const FileSpec &dst_file_spec) override;
 
+        Error
+        DownloadSymbolFile (const lldb::ModuleSP& module_sp,
+                            const FileSpec& dst_file_spec) override;
+
+        const char*
+        GetLibdlFunctionDeclarations() const override;
+
     private:
         std::string m_device_id;
+        uint32_t m_sdk_version;
+
         DISALLOW_COPY_AND_ASSIGN (PlatformAndroid);
     };
 
 } // namespace platofor_android
 } // namespace lldb_private
 
-#endif  // liblldb_PlatformAndroid_h_
+#endif // liblldb_PlatformAndroid_h_

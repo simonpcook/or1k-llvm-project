@@ -12,7 +12,9 @@
 include(CheckCCompilerFlag)
 include(CheckCSourceCompiles)
 include(CheckCXXCompilerFlag)
+include(CheckIncludeFile)
 include(CheckLibraryExists)
+include(CheckIncludeFiles)
 include(LibompCheckLinkerFlag)
 include(LibompCheckFortranFlag)
 
@@ -180,15 +182,78 @@ else()
 endif()
 
 # Check if stats-gathering is available
-if(NOT (WIN32 OR APPLE) AND (${IA32} OR ${INTEL64} OR ${MIC}))
-  set(LIBOMP_HAVE_STATS TRUE)
-else()
-  set(LIBOMP_HAVE_STATS FALSE)
+if(${LIBOMP_STATS})
+  check_c_source_compiles(
+     "__thread int x;
+     int main(int argc, char** argv) 
+     { x = argc; return x; }"
+     LIBOMP_HAVE___THREAD)
+  check_c_source_compiles(
+     "int main(int argc, char** argv) 
+     { unsigned long long t = __builtin_readcyclecounter(); return 0; }"
+     LIBOMP_HAVE___BUILTIN_READCYCLECOUNTER)
+  if(NOT LIBOMP_HAVE___BUILTIN_READCYCLECOUNTER)
+    if(${IA32} OR ${INTEL64})
+      check_include_file(x86intrin.h LIBOMP_HAVE_X86INTRIN_H)
+      libomp_append(CMAKE_REQUIRED_DEFINITIONS -DLIBOMP_HAVE_X86INTRIN_H LIBOMP_HAVE_X86INTRIN_H)
+      check_c_source_compiles(
+        "#ifdef LIBOMP_HAVE_X86INTRIN_H
+         # include <x86intrin.h>
+         #endif
+         int main(int argc, char** argv) { unsigned long long t = __rdtsc(); return 0; }" LIBOMP_HAVE___RDTSC)
+      set(CMAKE_REQUIRED_DEFINITIONS)
+    endif()
+  endif()
+  if(LIBOMP_HAVE___THREAD AND (LIBOMP_HAVE___RDTSC OR LIBOMP_HAVE___BUILTIN_READCYCLECOUNTER))
+    set(LIBOMP_HAVE_STATS TRUE)
+  else()
+    set(LIBOMP_HAVE_STATS FALSE)
+  endif()
 endif()
 
 # Check if OMPT support is available
-if(NOT WIN32)
-  set(LIBOMP_HAVE_OMPT_SUPPORT TRUE)
-else()
-  set(LIBOMP_HAVE_OMPT_SUPPORT FALSE)
+# Currently, __builtin_frame_address() is required for OMPT
+# Weak attribute is required for Unices, LIBPSAPI is used for Windows
+check_c_source_compiles("int main(int argc, char** argv) {
+  void* p = __builtin_frame_address(0);
+  return 0;}" LIBOMP_HAVE___BUILTIN_FRAME_ADDRESS)
+check_c_source_compiles("__attribute__ ((weak)) int foo(int a) { return a*a; }
+  int main(int argc, char** argv) {
+  return foo(argc);}" LIBOMP_HAVE_WEAK_ATTRIBUTE)
+check_include_files("windows.h;psapi.h" LIBOMP_HAVE_PSAPI_H)
+check_library_exists(psapi EnumProcessModules "" LIBOMP_HAVE_LIBPSAPI)
+if(LIBOMP_HAVE_PSAPI_H AND LIBOMP_HAVE_LIBPSAPI)
+  set(LIBOMP_HAVE_PSAPI TRUE)
 endif()
+if(NOT LIBOMP_HAVE___BUILTIN_FRAME_ADDRESS)
+  set(LIBOMP_HAVE_OMPT_SUPPORT FALSE)
+else()
+  if(LIBOMP_HAVE_WEAK_ATTRIBUTE OR LIBOMP_HAVE_PSAPI)
+    set(LIBOMP_HAVE_OMPT_SUPPORT TRUE)
+  else()
+    set(LIBOMP_HAVE_OMPT_SUPPORT FALSE)
+  endif()
+endif()
+
+# Check if HWLOC support is available
+if(${LIBOMP_USE_HWLOC})
+  if(WIN32)
+    set(LIBOMP_HAVE_HWLOC FALSE)
+    libomp_say("Using hwloc not supported on Windows yet")
+  else()
+    set(CMAKE_REQUIRED_INCLUDES ${LIBOMP_HWLOC_INSTALL_DIR}/include)
+    check_include_file(hwloc.h LIBOMP_HAVE_HWLOC_H)
+    set(CMAKE_REQUIRED_INCLUDES)
+    check_library_exists(hwloc hwloc_topology_init 
+      ${LIBOMP_HWLOC_INSTALL_DIR}/lib LIBOMP_HAVE_LIBHWLOC)
+    find_library(LIBOMP_HWLOC_LIBRARY hwloc ${LIBOMP_HWLOC_INSTALL_DIR}/lib)
+    get_filename_component(LIBOMP_HWLOC_LIBRARY_DIR ${LIBOMP_HWLOC_LIBRARY} PATH)
+    if(LIBOMP_HAVE_HWLOC_H AND LIBOMP_HAVE_LIBHWLOC AND LIBOMP_HWLOC_LIBRARY)
+      set(LIBOMP_HAVE_HWLOC TRUE)
+    else()
+      set(LIBOMP_HAVE_HWLOC FALSE)
+      libomp_say("Could not find hwloc")
+    endif()
+  endif()
+endif()
+

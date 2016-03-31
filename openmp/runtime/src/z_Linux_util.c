@@ -22,7 +22,7 @@
 #include "kmp_stats.h"
 #include "kmp_wait_release.h"
 
-#if !KMP_OS_FREEBSD
+#if !KMP_OS_FREEBSD && !KMP_OS_NETBSD
 # include <alloca.h>
 #endif
 #include <unistd.h>
@@ -51,7 +51,6 @@
 # include <sys/sysctl.h>
 # include <mach/mach.h>
 #elif KMP_OS_FREEBSD
-# include <sys/sysctl.h>
 # include <pthread_np.h>
 #endif
 
@@ -59,12 +58,6 @@
 #include <dirent.h>
 #include <ctype.h>
 #include <fcntl.h>
-
-// For non-x86 architecture
-#if KMP_COMPILER_GCC && !(KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_PPC64 || KMP_ARCH_AARCH64)
-# include <stdbool.h>
-# include <ffi.h>
-#endif
 
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
@@ -182,8 +175,11 @@ __kmp_set_system_affinity( kmp_affin_mask_t const *mask, int abort_on_error )
 {
     KMP_ASSERT2(KMP_AFFINITY_CAPABLE(),
       "Illegal set affinity operation when not capable");
-
+#if KMP_USE_HWLOC
+    int retval = hwloc_set_cpubind(__kmp_hwloc_topology, (hwloc_cpuset_t)mask, HWLOC_CPUBIND_THREAD);
+#else
     int retval = syscall( __NR_sched_setaffinity, 0, __kmp_affin_mask_size, mask );
+#endif
     if (retval >= 0) {
         return 0;
     }
@@ -205,7 +201,11 @@ __kmp_get_system_affinity( kmp_affin_mask_t *mask, int abort_on_error )
     KMP_ASSERT2(KMP_AFFINITY_CAPABLE(),
       "Illegal get affinity operation when not capable");
 
+#if KMP_USE_HWLOC
+    int retval = hwloc_get_cpubind(__kmp_hwloc_topology, (hwloc_cpuset_t)mask, HWLOC_CPUBIND_THREAD);
+#else
     int retval = syscall( __NR_sched_getaffinity, 0, __kmp_affin_mask_size, mask );
+#endif
     if (retval >= 0) {
         return 0;
     }
@@ -227,10 +227,12 @@ __kmp_affinity_bind_thread( int which )
     KMP_ASSERT2(KMP_AFFINITY_CAPABLE(),
       "Illegal set affinity operation when not capable");
 
-    kmp_affin_mask_t *mask = (kmp_affin_mask_t *)KMP_ALLOCA(__kmp_affin_mask_size);
+    kmp_affin_mask_t *mask;
+    KMP_CPU_ALLOC_ON_STACK(mask);
     KMP_CPU_ZERO(mask);
     KMP_CPU_SET(which, mask);
     __kmp_set_system_affinity(mask, TRUE);
+    KMP_CPU_FREE_FROM_STACK(mask);
 }
 
 /*
@@ -628,7 +630,7 @@ static kmp_int32
 __kmp_set_stack_info( int gtid, kmp_info_t *th )
 {
     int            stack_data;
-#if KMP_OS_LINUX || KMP_OS_FREEBSD
+#if KMP_OS_LINUX || KMP_OS_FREEBSD || KMP_OS_NETBSD
     /* Linux* OS only -- no pthread_getattr_np support on OS X* */
     pthread_attr_t attr;
     int            status;
@@ -643,7 +645,7 @@ __kmp_set_stack_info( int gtid, kmp_info_t *th )
         /* Fetch the real thread attributes */
         status = pthread_attr_init( &attr );
         KMP_CHECK_SYSFAIL( "pthread_attr_init", status );
-#if KMP_OS_FREEBSD
+#if KMP_OS_FREEBSD || KMP_OS_NETBSD
         status = pthread_attr_get_np( pthread_self(), &attr );
         KMP_CHECK_SYSFAIL( "pthread_attr_get_np", status );
 #else
@@ -667,7 +669,7 @@ __kmp_set_stack_info( int gtid, kmp_info_t *th )
         TCW_4(th->th.th_info.ds.ds_stackgrow, FALSE);
         return TRUE;
     }
-#endif /* KMP_OS_LINUX || KMP_OS_FREEBSD */
+#endif /* KMP_OS_LINUX || KMP_OS_FREEBSD || KMP_OS_NETBSD */
     /* Use incremental refinement starting from initial conservative estimate */
     TCW_PTR(th->th.th_info.ds.ds_stacksize, 0);
     TCW_PTR(th -> th.th_info.ds.ds_stackbase, &stack_data);
@@ -683,8 +685,8 @@ __kmp_launch_worker( void *thr )
     sigset_t    new_set, old_set;
 #endif /* KMP_BLOCK_SIGNALS */
     void *exit_val;
-#if KMP_OS_LINUX || KMP_OS_FREEBSD
-    void *padding = 0;
+#if KMP_OS_LINUX || KMP_OS_FREEBSD || KMP_OS_NETBSD
+    void * volatile padding = 0;
 #endif
     int gtid;
 
@@ -731,7 +733,7 @@ __kmp_launch_worker( void *thr )
     KMP_CHECK_SYSFAIL( "pthread_sigmask", status );
 #endif /* KMP_BLOCK_SIGNALS */
 
-#if KMP_OS_LINUX || KMP_OS_FREEBSD
+#if KMP_OS_LINUX || KMP_OS_FREEBSD || KMP_OS_NETBSD
     if ( __kmp_stkoffset > 0 && gtid > 0 ) {
         padding = KMP_ALLOCA( gtid * __kmp_stkoffset );
     }
@@ -1012,8 +1014,13 @@ __kmp_create_worker( int gtid, kmp_info_t *th, size_t stack_size )
                           );
             }; // if
 
-            /* Set stack size for this thread now. */
-            stack_size += gtid * __kmp_stkoffset;
+            /* Set stack size for this thread now. 
+             * The multiple of 2 is there because on some machines, requesting an unusual stacksize
+             * causes the thread to have an offset before the dummy alloca() takes place to create the
+             * offset.  Since we want the user to have a sufficient stacksize AND support a stack offset, we 
+             * alloca() twice the offset so that the upcoming alloca() does not eliminate any premade
+             * offset, and also gives the user the stack space they requested for all threads */
+            stack_size += gtid * __kmp_stkoffset * 2;
 
             KA_TRACE( 10, ( "__kmp_create_worker: T#%d, default stacksize = %lu bytes, "
                             "__kmp_stksize = %lu bytes, final stacksize = %lu bytes\n",
@@ -1114,11 +1121,15 @@ __kmp_create_monitor( kmp_info_t *th )
     pthread_attr_t      thread_attr;
     size_t              size;
     int                 status;
-    int                 caller_gtid;
     int                 auto_adj_size = FALSE;
 
-    caller_gtid = __kmp_get_gtid();
-
+    if( __kmp_dflt_blocktime == KMP_MAX_BLOCKTIME ) {
+        // We don't need monitor thread in case of MAX_BLOCKTIME
+        KA_TRACE( 10, ("__kmp_create_monitor: skipping monitor thread because of MAX blocktime\n" ) );
+        th->th.th_info.ds.ds_tid  = 0; // this makes reap_monitor no-op
+        th->th.th_info.ds.ds_gtid = 0;
+        return;
+    }
     KA_TRACE( 10, ("__kmp_create_monitor: try to create monitor\n" ) );
 
     KMP_MB();       /* Flush all pending memory write invalidates.  */
@@ -1287,6 +1298,7 @@ __kmp_reap_monitor( kmp_info_t *th )
     // If both tid and gtid are KMP_GTID_DNE, the monitor has been shut down.
     KMP_DEBUG_ASSERT( th->th.th_info.ds.ds_tid == th->th.th_info.ds.ds_gtid );
     if ( th->th.th_info.ds.ds_gtid != KMP_GTID_MONITOR ) {
+        KA_TRACE( 10, ("__kmp_reap_monitor: monitor did not start, returning\n") );
         return;
     }; // if
 
@@ -1689,7 +1701,7 @@ __kmp_suspend_uninitialize_thread( kmp_info_t *th )
 template <class C>
 static inline void __kmp_suspend_template( int th_gtid, C *flag )
 {
-    KMP_TIME_BLOCK(USER_suspend);
+    KMP_TIME_DEVELOPER_BLOCK(USER_suspend);
     kmp_info_t *th = __kmp_threads[th_gtid];
     int status;
     typename C::flag_t old_spin;
@@ -1709,8 +1721,8 @@ static inline void __kmp_suspend_template( int th_gtid, C *flag )
     */
     old_spin = flag->set_sleeping();
 
-    KF_TRACE( 5, ( "__kmp_suspend_template: T#%d set sleep bit for spin(%p)==%d\n",
-                   th_gtid, flag->get(), *(flag->get()) ) );
+    KF_TRACE( 5, ( "__kmp_suspend_template: T#%d set sleep bit for spin(%p)==%x, was %x\n",
+                   th_gtid, flag->get(), *(flag->get()), old_spin ) );
 
     if ( flag->done_check_val(old_spin) ) {
         old_spin = flag->unset_sleeping();
@@ -1762,8 +1774,7 @@ static inline void __kmp_suspend_template( int th_gtid, C *flag )
             status = pthread_cond_timedwait( &th->th.th_suspend_cv.c_cond, &th->th.th_suspend_mx.m_mutex, & now );
 #else
             KF_TRACE( 15, ( "__kmp_suspend_template: T#%d about to perform pthread_cond_wait\n",
-                               th_gtid ) );
-
+                            th_gtid ) );
             status = pthread_cond_wait( &th->th.th_suspend_cv.c_cond, &th->th.th_suspend_mx.m_mutex );
 #endif
 
@@ -1827,6 +1838,7 @@ void __kmp_suspend_oncore(int th_gtid, kmp_flag_oncore *flag) {
 template <class C>
 static inline void __kmp_resume_template( int target_gtid, C *flag )
 {
+    KMP_TIME_DEVELOPER_BLOCK(USER_resume);
     kmp_info_t *th = __kmp_threads[target_gtid];
     int status;
 
@@ -1842,18 +1854,19 @@ static inline void __kmp_resume_template( int target_gtid, C *flag )
     status = pthread_mutex_lock( &th->th.th_suspend_mx.m_mutex );
     KMP_CHECK_SYSFAIL( "pthread_mutex_lock", status );
 
-    if (!flag) {
+    if (!flag) { // coming from __kmp_null_resume_wrapper
         flag = (C *)th->th.th_sleep_loc;
     }
 
-    if (!flag) {
+    // First, check if the flag is null or its type has changed. If so, someone else woke it up.
+    if (!flag || flag->get_type() != flag->get_ptr_type()) { // get_ptr_type simply shows what flag was cast to
         KF_TRACE( 5, ( "__kmp_resume_template: T#%d exiting, thread T#%d already awake: flag(%p)\n",
                        gtid, target_gtid, NULL ) );
         status = pthread_mutex_unlock( &th->th.th_suspend_mx.m_mutex );
         KMP_CHECK_SYSFAIL( "pthread_mutex_unlock", status );
         return;
     }
-    else {
+    else { // if multiple threads are sleeping, flag should be internally referring to a specific thread here
         typename C::flag_t old_spin = flag->unset_sleeping();
         if ( ! flag->is_sleeping_val(old_spin) ) {
             KF_TRACE( 5, ( "__kmp_resume_template: T#%d exiting, thread T#%d already awake: flag(%p): "
@@ -1901,7 +1914,6 @@ void __kmp_resume_oncore(int target_gtid, kmp_flag_oncore *flag) {
 void
 __kmp_resume_monitor()
 {
-    KMP_TIME_BLOCK(USER_resume);
     int status;
 #ifdef KMP_DEBUG
     int gtid = TCR_4(__kmp_init_gtid) ? __kmp_get_gtid() : -1;
@@ -2009,7 +2021,6 @@ __kmp_read_system_info( struct kmp_sys_info *info )
 /* ------------------------------------------------------------------------ */
 /* ------------------------------------------------------------------------ */
 
-
 void
 __kmp_read_system_time( double *delta )
 {
@@ -2071,7 +2082,7 @@ __kmp_get_xproc( void ) {
 
     int r = 0;
 
-    #if KMP_OS_LINUX
+    #if KMP_OS_LINUX || KMP_OS_FREEBSD || KMP_OS_NETBSD
 
         r = sysconf( _SC_NPROCESSORS_ONLN );
 
@@ -2092,16 +2103,6 @@ __kmp_get_xproc( void ) {
             KMP_WARNING( CantGetNumAvailCPU );
             KMP_INFORM( AssumedNumCPU );
         }; // if
-
-    #elif KMP_OS_FREEBSD
-
-        int mib[] = { CTL_HW, HW_NCPU };
-        size_t len = sizeof( r );
-        if ( sysctl( mib, 2, &r, &len, NULL, 0 ) < 0 ) {
-             r = 0;
-             KMP_WARNING( CantGetNumAvailCPU );
-             KMP_INFORM( AssumedNumCPU );
-        }
 
     #else
 
@@ -2170,7 +2171,6 @@ __kmp_runtime_initialize( void )
 
     /* Set up minimum number of threads to switch to TLS gtid */
     __kmp_tls_gtid_min = KMP_TLS_GTID_MIN;
-
 
     #ifdef BUILD_TV
         {
@@ -2279,7 +2279,7 @@ __kmp_is_address_mapped( void * addr ) {
     int found = 0;
     int rc;
 
-    #if KMP_OS_LINUX
+    #if KMP_OS_LINUX || KMP_OS_FREEBSD
 
         /*
             On Linux* OS, read the /proc/<pid>/maps pseudo-file to get all the address ranges mapped
@@ -2342,9 +2342,9 @@ __kmp_is_address_mapped( void * addr ) {
             found = 1;
         }; // if
 
-    #elif KMP_OS_FREEBSD
+    #elif KMP_OS_FREEBSD || KMP_OS_NETBSD
 
-        // FIXME(FreeBSD*): Implement this
+        // FIXME(FreeBSD, NetBSD): Implement this
         found = 1;
 
     #else
@@ -2615,55 +2615,7 @@ __kmp_get_load_balance( int max )
 
 #endif // USE_LOAD_BALANCE
 
-
-#if KMP_COMPILER_GCC && !(KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_PPC64 || KMP_ARCH_AARCH64)
-
-int __kmp_invoke_microtask( microtask_t pkfn, int gtid, int tid, int argc,
-        void *p_argv[] 
-#if OMPT_SUPPORT
-        , void **exit_frame_ptr
-#endif
-)
-{
-    int argc_full = argc + 2;
-    int i;
-    ffi_cif cif;
-    ffi_type *types[argc_full];
-    void *args[argc_full];
-    void *idp[2];
-
-#if OMPT_SUPPORT
-    *exit_frame_ptr = __builtin_frame_address(0);
-#endif
-    /* We're only passing pointers to the target. */
-    for (i = 0; i < argc_full; i++)
-        types[i] = &ffi_type_pointer;
-
-    /* Ugly double-indirection, but that's how it goes... */
-    idp[0] = &gtid;
-    idp[1] = &tid;
-    args[0] = &idp[0];
-    args[1] = &idp[1];
-
-    for (i = 0; i < argc; i++)
-        args[2 + i] = &p_argv[i];
-
-    if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, argc_full,
-                &ffi_type_void, types) != FFI_OK)
-        abort();
-
-    ffi_call(&cif, (void (*)(void))pkfn, NULL, args);
-
-#if OMPT_SUPPORT
-    *exit_frame_ptr = 0;
-#endif
-
-    return 1;
-}
-
-#endif // KMP_COMPILER_GCC && !(KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_PPC64)
-
-#if KMP_ARCH_PPC64 || KMP_ARCH_AARCH64
+#if !(KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_MIC)
 
 // we really only need the case with 1 argument, because CLANG always build
 // a struct of pointers to shared variables referenced in the outlined function

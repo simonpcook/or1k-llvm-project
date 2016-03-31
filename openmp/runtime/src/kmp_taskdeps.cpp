@@ -233,7 +233,7 @@ __kmp_process_deps ( kmp_int32 gtid, kmp_depnode_t *node, kmp_dephash_t *hash,
                     if ( indep->dn.task ) {
                         __kmp_track_dependence(indep,node);
                         indep->dn.successors = __kmp_add_node(thread, indep->dn.successors, node);
-                        KA_TRACE(40,("__kmp_process_deps<%d>: T#%d adding dependence from %p to %p",
+                        KA_TRACE(40,("__kmp_process_deps<%d>: T#%d adding dependence from %p to %p\n",
                                  filter,gtid, KMP_TASK_TO_TASKDATA(indep->dn.task), KMP_TASK_TO_TASKDATA(node->dn.task)));
                         npredecessors++;
                     }
@@ -249,7 +249,7 @@ __kmp_process_deps ( kmp_int32 gtid, kmp_depnode_t *node, kmp_dephash_t *hash,
             if ( last_out->dn.task ) {
                 __kmp_track_dependence(last_out,node);
                 last_out->dn.successors = __kmp_add_node(thread, last_out->dn.successors, node);
-                KA_TRACE(40,("__kmp_process_deps<%d>: T#%d adding dependence from %p to %p", 
+                KA_TRACE(40,("__kmp_process_deps<%d>: T#%d adding dependence from %p to %p\n", 
                              filter,gtid, KMP_TASK_TO_TASKDATA(last_out->dn.task), KMP_TASK_TO_TASKDATA(node->dn.task)));
                 
                 npredecessors++;
@@ -287,9 +287,10 @@ __kmp_check_deps ( kmp_int32 gtid, kmp_depnode_t *node, kmp_task_t *task, kmp_de
                    kmp_int32 ndeps_noalias, kmp_depend_info_t *noalias_dep_list )
 {
     int i;
-    kmp_taskdata_t * taskdata;
 
-    taskdata = KMP_TASK_TO_TASKDATA(task);
+#if KMP_DEBUG
+    kmp_taskdata_t * taskdata = KMP_TASK_TO_TASKDATA(task);
+#endif
     KA_TRACE(20, ("__kmp_check_deps: T#%d checking dependencies for task %p : %d possibly aliased dependencies, %d non-aliased depedencies : dep_barrier=%d .\n", gtid, taskdata, ndeps, ndeps_noalias, dep_barrier ) );
 
     // Filter deps in dep_list

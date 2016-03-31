@@ -455,11 +455,12 @@ static inline void __kmp_resume_template( int target_gtid, C *flag )
     __kmp_suspend_initialize_thread( th );
     __kmp_win32_mutex_lock( &th->th.th_suspend_mx );
 
-    if (!flag) {
+    if (!flag) { // coming from __kmp_null_resume_wrapper
         flag = (C *)th->th.th_sleep_loc;
     }
 
-    if (!flag) {
+    // First, check if the flag is null or its type has changed. If so, someone else woke it up.
+    if (!flag || flag->get_type() != flag->get_ptr_type()) { // get_ptr_type simply shows what flag was cast to
         KF_TRACE( 5, ( "__kmp_resume_template: T#%d exiting, thread T#%d already awake: flag's loc(%p)\n",
                        gtid, target_gtid, NULL ) );
         __kmp_win32_mutex_unlock( &th->th.th_suspend_mx );
@@ -1427,8 +1428,15 @@ __kmp_create_monitor( kmp_info_t *th )
     kmp_thread_t        handle;
     DWORD               idThread;
     int                 ideal, new_ideal;
-    int     caller_gtid = __kmp_get_gtid();
 
+    if( __kmp_dflt_blocktime == KMP_MAX_BLOCKTIME ) {
+        // We don't need monitor thread in case of MAX_BLOCKTIME
+        KA_TRACE( 10, ("__kmp_create_monitor: skipping monitor thread because of MAX blocktime\n" ) );
+        th->th.th_info.ds.ds_tid  = 0; // this makes reap_monitor no-op
+        th->th.th_info.ds.ds_gtid = 0;
+        TCW_4( __kmp_init_monitor, 2 ); // Signal to stop waiting for monitor creation
+        return;
+    }
     KA_TRACE( 10, ("__kmp_create_monitor: try to create monitor\n" ) );
 
     KMP_MB();       /* Flush all pending memory write invalidates.  */
@@ -1613,6 +1621,7 @@ __kmp_reap_monitor( kmp_info_t *th )
     // If both tid and gtid are KMP_GTID_DNE, the monitor has been shut down.
     KMP_DEBUG_ASSERT( th->th.th_info.ds.ds_tid == th->th.th_info.ds.ds_gtid );
     if ( th->th.th_info.ds.ds_gtid != KMP_GTID_MONITOR ) {
+        KA_TRACE( 10, ("__kmp_reap_monitor: monitor did not start, returning\n") );
         return;
     }; // if
 

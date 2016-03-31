@@ -1,13 +1,13 @@
 ; This test checks that we do not accidently mutate the debug info when
 ; inserting loop parallel metadata.
-; RUN: opt %loadPolly -polly-detect-unprofitable < %s  -S -polly -polly-codegen -polly-ast-detect-parallel | FileCheck %s
+; RUN: opt %loadPolly < %s  -S -polly -polly-codegen -polly-ast-detect-parallel | FileCheck %s
 ; CHECK-NOT: !7 = !{!7}
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
 @A = common global i32* null, align 8
 
 ; Function Attrs: nounwind uwtable
-define void @foo() {
+define void @foo() !dbg !4 {
 entry:
   tail call void @llvm.dbg.value(metadata i32 0, i64 0, metadata !9, metadata !19), !dbg !20
   %0 = load i32*, i32** @A, align 8, !dbg !21, !tbaa !23
@@ -35,16 +35,16 @@ declare void @llvm.dbg.value(metadata, i64, metadata, metadata)
 !llvm.module.flags = !{!15, !16}
 !llvm.ident = !{!17}
 
-!0 = !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.6.0 ", isOptimized: true, emissionKind: 1, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !12, imports: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.6.0 ", isOptimized: true, emissionKind: 1, file: !1, enums: !2, retainedTypes: !2, subprograms: !3, globals: !12, imports: !2)
 !1 = !DIFile(filename: "t2.c", directory: "/local/mnt/workspace/build/tip-Release")
 !2 = !{}
 !3 = !{!4}
-!4 = !DISubprogram(name: "foo", line: 3, isLocal: false, isDefinition: true, isOptimized: true, scopeLine: 3, file: !1, scope: !5, type: !6, function: void ()* @foo, variables: !8)
+!4 = distinct !DISubprogram(name: "foo", line: 3, isLocal: false, isDefinition: true, isOptimized: true, scopeLine: 3, file: !1, scope: !5, type: !6, variables: !8)
 !5 = !DIFile(filename: "t2.c", directory: "/local/mnt/workspace/build/tip-Release")
 !6 = !DISubroutineType(types: !7)
 !7 = !{null}
 !8 = !{!9}
-!9 = !DILocalVariable(tag: DW_TAG_auto_variable, name: "i", line: 4, scope: !10, file: !5, type: !11)
+!9 = !DILocalVariable(name: "i", line: 4, scope: !10, file: !5, type: !11)
 !10 = distinct !DILexicalBlock(line: 4, column: 3, file: !1, scope: !4)
 !11 = !DIBasicType(tag: DW_TAG_base_type, name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
 !12 = !{!13}

@@ -43,7 +43,7 @@ static const uint8_t mipsBePlt0AtomContent[] = {
   0x8f, 0x99, 0x00, 0x00, // lw    $25, %lo(&GOTPLT[0])($28)
   0x27, 0x9c, 0x00, 0x00, // addiu $28, $28, %lo(&GOTPLT[0])
   0x03, 0x1c, 0xc0, 0x23, // subu  $24, $24, $28
-  0x03, 0xe0, 0x78, 0x21, // move  $15, $31
+  0x03, 0xe0, 0x78, 0x25, // move  $15, $31
   0x00, 0x18, 0xc0, 0x82, // srl   $24, $24, 2
   0x03, 0x20, 0xf8, 0x09, // jalr  $25
   0x27, 0x18, 0xff, 0xfe  // subu  $24, $24, 2
@@ -55,7 +55,31 @@ static const uint8_t mipsLePlt0AtomContent[] = {
   0x00, 0x00, 0x99, 0x8f, // lw    $25, %lo(&GOTPLT[0])($28)
   0x00, 0x00, 0x9c, 0x27, // addiu $28, $28, %lo(&GOTPLT[0])
   0x23, 0xc0, 0x1c, 0x03, // subu  $24, $24, $28
-  0x21, 0x78, 0xe0, 0x03, // move  $15, $31
+  0x25, 0x78, 0xe0, 0x03, // move  $15, $31
+  0x82, 0xc0, 0x18, 0x00, // srl   $24, $24, 2
+  0x09, 0xf8, 0x20, 0x03, // jalr  $25
+  0xfe, 0xff, 0x18, 0x27  // subu  $24, $24, 2
+};
+
+// N32 big-endian PLT0 entry
+static const uint8_t mipsN32BePlt0AtomContent[] = {
+  0x3c, 0x0e, 0x00, 0x00, // lui   $14, %hi(&GOTPLT[0])
+  0x8d, 0xd9, 0x00, 0x00, // lw    $25, %lo(&GOTPLT[0])($14)
+  0x25, 0xce, 0x00, 0x00, // addiu $14, $14, %lo(&GOTPLT[0])
+  0x03, 0x0e, 0xc0, 0x23, // subu  $24, $24, $14
+  0x03, 0xe0, 0x78, 0x25, // move  $15, $31
+  0x00, 0x18, 0xc0, 0x82, // srl   $24, $24, 2
+  0x03, 0x20, 0xf8, 0x09, // jalr  $25
+  0x27, 0x18, 0xff, 0xfe  // subu  $24, $24, 2
+};
+
+// N32 little-endian PLT0 entry
+static const uint8_t mipsN32LePlt0AtomContent[] = {
+  0x00, 0x00, 0x0e, 0x3c, // lui   $14, %hi(&GOTPLT[0])
+  0x00, 0x00, 0xd9, 0x8d, // lw    $25, %lo(&GOTPLT[0])($14)
+  0x00, 0x00, 0xce, 0x25, // addiu $14, $14, %lo(&GOTPLT[0])
+  0x23, 0xc0, 0x0e, 0x03, // subu  $24, $24, $14
+  0x25, 0x78, 0xe0, 0x03, // move  $15, $31
   0x82, 0xc0, 0x18, 0x00, // srl   $24, $24, 2
   0x09, 0xf8, 0x20, 0x03, // jalr  $25
   0xfe, 0xff, 0x18, 0x27  // subu  $24, $24, 2
@@ -285,6 +309,27 @@ template <> ArrayRef<uint8_t> PLT0Atom<ELF32LE>::rawContent() const {
   return llvm::makeArrayRef(mipsLePlt0AtomContent);
 }
 
+template <class ELFT> class PLT0N32Atom : public PLTAtom {
+public:
+  PLT0N32Atom(const Atom *got, const File &f) : PLTAtom(f, ".plt") {
+    // Setup reference to fixup the PLT0 entry.
+    addReferenceELF_Mips(R_MIPS_HI16, 0, got, 0);
+    addReferenceELF_Mips(R_MIPS_LO16, 4, got, 0);
+    addReferenceELF_Mips(R_MIPS_LO16, 8, got, 0);
+  }
+
+  ArrayRef<uint8_t> rawContent() const override {
+    llvm_unreachable("PLT0 is not applicable for this target");
+  }
+};
+
+template <> ArrayRef<uint8_t> PLT0N32Atom<ELF32BE>::rawContent() const {
+  return llvm::makeArrayRef(mipsN32BePlt0AtomContent);
+}
+template <> ArrayRef<uint8_t> PLT0N32Atom<ELF32LE>::rawContent() const {
+  return llvm::makeArrayRef(mipsN32LePlt0AtomContent);
+}
+
 template <class ELFT> class PLT0MicroAtom : public PLTAtom {
 public:
   PLT0MicroAtom(const Atom *got, const File &f) : PLTAtom(f, ".plt") {
@@ -424,6 +469,24 @@ public:
   MipsGlobalOffsetTableAtom(const File &f) : GlobalOffsetTableAtom(f) {}
 
   StringRef customSectionName() const override { return ".got"; }
+};
+
+template <typename ELFT> class MipsRldAtom : public SimpleELFDefinedAtom {
+public:
+  MipsRldAtom(const File &f) : SimpleELFDefinedAtom(f) {}
+
+  Scope scope() const override { return scopeGlobal; }
+  SectionChoice sectionChoice() const override { return sectionCustomRequired; }
+  StringRef customSectionName() const override { return ".rld_map"; }
+  ContentType contentType() const override { return typeData; }
+  uint64_t size() const override { return rawContent().size(); }
+  ContentPermissions permissions() const override { return permRW_; }
+  Alignment alignment() const override { return rawContent().size(); }
+  StringRef name() const override { return "__RLD_MAP"; }
+  ArrayRef<uint8_t> rawContent() const override {
+    return llvm::makeArrayRef(mipsGot0AtomContent)
+        .slice(ELFT::Is64Bits ? 0 : 4);
+  }
 };
 
 class RelocationPassFile : public SimpleFile {
@@ -586,7 +649,8 @@ std::error_code RelocationPass<ELFT>::perform(SimpleFile &mf) {
 
   // Create R_MIPS_REL32 relocations.
   for (auto *ref : _rel32Candidates) {
-    if (!isDynamic(ref->target()) || hasPLTEntry(ref->target()))
+    bool forceRel = isLocal(ref->target()) && _ctx.getOutputELFType() == ET_DYN;
+    if (!forceRel && (!isDynamic(ref->target()) || hasPLTEntry(ref->target())))
       continue;
     ref->setKindValue(R_MIPS_REL32);
     if (ELFT::Is64Bits)
@@ -596,6 +660,12 @@ std::error_code RelocationPass<ELFT>::perform(SimpleFile &mf) {
   }
 
   uint64_t ordinal = 0;
+
+  if (_ctx.isDynamic() && _ctx.getOutputELFType() == ET_EXEC) {
+    auto rlda = new (_file._alloc) MipsRldAtom<ELFT>(_file);
+    rlda->setOrdinal(ordinal++);
+    mf.addAtom(*rlda);
+  }
 
   if (!_localGotVector.empty() || !_globalGotVector.empty() ||
       !_tlsGotVector.empty()) {
@@ -771,6 +841,10 @@ void RelocationPass<ELFT>::handleReference(const MipsELFDefinedAtom<ELFT> &atom,
     ref.setTarget(getTLSGOTEntry(ref.target(), ref.addend()));
   else if (kind == R_MIPS_GPREL32 || (isLocal(ref.target()) && isGpRelReloc(kind)))
     ref.setAddend(ref.addend() + atom.file().getGP0());
+  else if (kind == R_MIPS_JALR) {
+    if (_ctx.getOutputELFType() != ET_EXEC || !isLocalCall(ref.target()))
+      ref.setKindValue(R_MIPS_NONE);
+  }
 }
 
 template <typename ELFT>
@@ -813,10 +887,10 @@ RelocationPass<ELFT>::collectReferenceInfo(const MipsELFDefinedAtom<ELFT> &atom,
   if (!isConstrainSym(atom, refKind))
     return std::error_code();
 
-  if (mightBeDynamic(atom, refKind))
-    _rel32Candidates.push_back(&ref);
-  else
+  if (!mightBeDynamic(atom, refKind))
     _hasStaticRelocations.insert(ref.target());
+  else if (refKind == R_MIPS_32 || refKind == R_MIPS_64)
+    _rel32Candidates.push_back(&ref);
 
   if (!isBranchReloc(refKind) && !isAllCallReloc(refKind) &&
       refKind != R_MIPS_EH)
@@ -841,16 +915,6 @@ make_reject_for_shared_lib_reloc_error(const ELFLinkingContext &ctx,
 }
 
 static std::error_code
-make_external_gprel32_reloc_error(const ELFLinkingContext &ctx,
-                                  const DefinedAtom &atom,
-                                  const Reference &ref) {
-  return make_dynamic_error_code(
-      "R_MIPS_GPREL32 (12) relocation cannot be used "
-      "against external symbol " +
-      ref.target()->name() + " in file " + atom.file().path());
-}
-
-static std::error_code
 make_local_call16_reloc_error(const ELFLinkingContext &ctx,
                               const DefinedAtom &atom, const Reference &ref) {
   return make_dynamic_error_code("R_MIPS_CALL16 (11) relocation cannot be used "
@@ -865,9 +929,6 @@ RelocationPass<ELFT>::validateRelocation(const DefinedAtom &atom,
                                          const Reference &ref) const {
   if (!ref.target())
     return std::error_code();
-
-  if (ref.kindValue() == R_MIPS_GPREL32 && !isLocal(ref.target()))
-    return make_external_gprel32_reloc_error(this->_ctx, atom, ref);
 
   if (isCallReloc(ref.kindValue()) && isLocal(ref.target()))
     return make_local_call16_reloc_error(this->_ctx, atom, ref);
@@ -1224,6 +1285,8 @@ PLTAtom *RelocationPass<ELFT>::createPLTHeader(bool isMicroMips) {
 
   if (isMicroMips)
     return new (_file._alloc) PLT0MicroAtom<ELFT>(ga0, _file);
+  if (_ctx.getAbi() == MipsAbi::N32)
+    return new (_file._alloc) PLT0N32Atom<ELFT>(ga0, _file);
   return new (_file._alloc) PLT0Atom<ELFT>(ga0, _file);
 }
 

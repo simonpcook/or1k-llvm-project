@@ -8,6 +8,7 @@
 #include <vector>
 
 using namespace llvm;
+using namespace polly;
 
 #define DEBUG_TYPE "polly-scev-validator"
 
@@ -125,10 +126,12 @@ private:
   const Region *R;
   ScalarEvolution &SE;
   const Value *BaseAddress;
+  InvariantLoadsSetTy *ILS;
 
 public:
-  SCEVValidator(const Region *R, ScalarEvolution &SE, const Value *BaseAddress)
-      : R(R), SE(SE), BaseAddress(BaseAddress) {}
+  SCEVValidator(const Region *R, ScalarEvolution &SE, const Value *BaseAddress,
+                InvariantLoadsSetTy *ILS)
+      : R(R), SE(SE), BaseAddress(BaseAddress), ILS(ILS) {}
 
   class ValidatorResult visitConstant(const SCEVConstant *Constant) {
     return ValidatorResult(SCEVType::INT);
@@ -335,6 +338,15 @@ public:
     return ValidatorResult(SCEVType::PARAM, S);
   }
 
+  ValidatorResult visitLoadInstruction(Instruction *I, const SCEV *S) {
+    if (R->contains(I) && ILS) {
+      ILS->insert(cast<LoadInst>(I));
+      return ValidatorResult(SCEVType::PARAM, S);
+    }
+
+    return visitGenericInst(I, S);
+  }
+
   ValidatorResult visitSDivInstruction(Instruction *SDiv, const SCEV *S) {
     assert(SDiv->getOpcode() == Instruction::SDiv &&
            "Assumed SDiv instruction!");
@@ -366,8 +378,16 @@ public:
   ValidatorResult visitUnknown(const SCEVUnknown *Expr) {
     Value *V = Expr->getValue();
 
-    if (!(Expr->getType()->isIntegerTy() || Expr->getType()->isPointerTy())) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer or pointer type");
+    // TODO: FIXME: IslExprBuilder is not capable of producing valid code
+    //              for arbitrary pointer expressions at the moment. Until
+    //              this is fixed we disallow pointer expressions completely.
+    if (Expr->getType()->isPointerTy()) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr is a pointer type [FIXME]");
+      return ValidatorResult(SCEVType::INVALID);
+    }
+
+    if (!Expr->getType()->isIntegerTy()) {
+      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -383,6 +403,8 @@ public:
 
     if (Instruction *I = dyn_cast<Instruction>(Expr->getValue())) {
       switch (I->getOpcode()) {
+      case Instruction::Load:
+        return visitLoadInstruction(I, Expr);
       case Instruction::SDiv:
         return visitSDivInstruction(I, Expr);
       case Instruction::SRem:
@@ -542,11 +564,11 @@ bool hasScalarDepsInsideRegion(const SCEV *Expr, const Region *R) {
 }
 
 bool isAffineExpr(const Region *R, const SCEV *Expr, ScalarEvolution &SE,
-                  const Value *BaseAddress) {
+                  const Value *BaseAddress, InvariantLoadsSetTy *ILS) {
   if (isa<SCEVCouldNotCompute>(Expr))
     return false;
 
-  SCEVValidator Validator(R, SE, BaseAddress);
+  SCEVValidator Validator(R, SE, BaseAddress, ILS);
   DEBUG({
     dbgs() << "\n";
     dbgs() << "Expr: " << *Expr << "\n";
@@ -565,6 +587,44 @@ bool isAffineExpr(const Region *R, const SCEV *Expr, ScalarEvolution &SE,
   return Result.isValid();
 }
 
+static bool isAffineParamExpr(Value *V, const Region *R, ScalarEvolution &SE,
+                              std::vector<const SCEV *> &Params) {
+  auto *E = SE.getSCEV(V);
+  if (isa<SCEVCouldNotCompute>(E))
+    return false;
+
+  SCEVValidator Validator(R, SE, nullptr, nullptr);
+  ValidatorResult Result = Validator.visit(E);
+  if (!Result.isConstant())
+    return false;
+
+  auto ResultParams = Result.getParameters();
+  Params.insert(Params.end(), ResultParams.begin(), ResultParams.end());
+
+  return true;
+}
+
+bool isAffineParamConstraint(Value *V, const Region *R, ScalarEvolution &SE,
+                             std::vector<const SCEV *> &Params, bool OrExpr) {
+  if (auto *ICmp = dyn_cast<ICmpInst>(V)) {
+    return isAffineParamConstraint(ICmp->getOperand(0), R, SE, Params, true) &&
+           isAffineParamConstraint(ICmp->getOperand(1), R, SE, Params, true);
+  } else if (auto *BinOp = dyn_cast<BinaryOperator>(V)) {
+    auto Opcode = BinOp->getOpcode();
+    if (Opcode == Instruction::And || Opcode == Instruction::Or)
+      return isAffineParamConstraint(BinOp->getOperand(0), R, SE, Params,
+                                     false) &&
+             isAffineParamConstraint(BinOp->getOperand(1), R, SE, Params,
+                                     false);
+    /* Fall through */
+  }
+
+  if (!OrExpr)
+    return false;
+
+  return isAffineParamExpr(V, R, SE, Params);
+}
+
 std::vector<const SCEV *> getParamsInAffineExpr(const Region *R,
                                                 const SCEV *Expr,
                                                 ScalarEvolution &SE,
@@ -572,7 +632,8 @@ std::vector<const SCEV *> getParamsInAffineExpr(const Region *R,
   if (isa<SCEVCouldNotCompute>(Expr))
     return std::vector<const SCEV *>();
 
-  SCEVValidator Validator(R, SE, BaseAddress);
+  InvariantLoadsSetTy ILS;
+  SCEVValidator Validator(R, SE, BaseAddress, &ILS);
   ValidatorResult Result = Validator.visit(Expr);
   assert(Result.isValid() && "Requested parameters for an invalid SCEV!");
 

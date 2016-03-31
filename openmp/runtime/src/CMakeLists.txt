@@ -9,36 +9,12 @@
 #//===----------------------------------------------------------------------===//
 #
 
-# Using expand-vars.pl to generate files
-# - 'file' is generated using expand-vars.pl and 'file'.var
-# - Any .var file should use this recipe
-# TODO: Use CMake's configure_file() instead
-macro(libomp_expand_vars_recipe file_dir filename)
-  get_source_file_property(libomp_extra_evflags ${filename} EV_COMPILE_DEFINITIONS)
-  if("${libomp_extra_evflags}" MATCHES "NOTFOUND")
-    set(libomp_extra_evflags)
-  else()
-    libomp_string_to_list("${libomp_extra_evflags}" libomp_extra_evflags)
-  endif()
-  if(NOT "${filename}" STREQUAL "")
-    add_custom_command(
-      OUTPUT  ${filename}
-      COMMAND ${PERL_EXECUTABLE} ${LIBOMP_TOOLS_DIR}/expand-vars.pl
-        --strict ${LIBOMP_EVFLAGS} ${libomp_extra_evflags} ${file_dir}/${filename}.var ${filename}
-      DEPENDS ${file_dir}/${filename}.var kmp_version.c ${LIBOMP_TOOLS_DIR}/expand-vars.pl
-    )
-  endif()
-endmacro()
-libomp_get_evflags(LIBOMP_EVFLAGS)
-libomp_string_to_list("${LIBOMP_EVFLAGS}" LIBOMP_EVFLAGS)
-set_source_files_properties(omp_lib.h PROPERTIES EV_COMPILE_DEFINITIONS "-D KMP_INT_PTR_KIND=\"int_ptr_kind()\"")
-set_source_files_properties(libomp.rc PROPERTIES EV_COMPILE_DEFINITIONS "-D KMP_FILE=${LIBOMP_LIB_FILE}" GENERATED TRUE)
-libomp_expand_vars_recipe(${LIBOMP_INC_DIR} omp.h)
-libomp_expand_vars_recipe(${LIBOMP_INC_DIR} ompt.h)
-libomp_expand_vars_recipe(${LIBOMP_INC_DIR} omp_lib.h)
-libomp_expand_vars_recipe(${LIBOMP_INC_DIR} omp_lib.f)
-libomp_expand_vars_recipe(${LIBOMP_INC_DIR} omp_lib.f90)
-libomp_expand_vars_recipe(${LIBOMP_SRC_DIR} libomp.rc)
+# Configure omp.h, kmp_config.h and ompt.h if necessary
+configure_file(${LIBOMP_INC_DIR}/omp.h.var omp.h @ONLY)
+configure_file(kmp_config.h.cmake kmp_config.h @ONLY)
+if(${LIBOMP_OMPT_SUPPORT})
+  configure_file(${LIBOMP_INC_DIR}/ompt.h.var ompt.h @ONLY)
+endif()
 
 # Generate message catalog files: kmp_i18n_id.inc and kmp_i18n_default.inc
 add_custom_command(
@@ -66,6 +42,9 @@ include_directories(
   ${LIBOMP_INC_DIR}
   ${LIBOMP_SRC_DIR}/thirdparty/ittnotify
 )
+if(${LIBOMP_USE_HWLOC})
+  include_directories(${LIBOMP_HWLOC_INSTALL_DIR}/include)
+endif()
 
 # Getting correct source files to build library
 set(LIBOMP_CFILES)
@@ -149,7 +128,10 @@ endif()
 # Remove any cmake-automatic linking of the standard C++ library.
 # We neither need (nor want) the standard C++ library dependency even though we compile c++ files.
 if(NOT ${LIBOMP_USE_STDCPPLIB})
+  set(LIBOMP_LINKER_LANGUAGE C)
   set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
+else()
+  set(LIBOMP_LINKER_LANGUAGE CXX)
 endif()
 
 # Add the OpenMP library
@@ -158,33 +140,51 @@ add_library(omp SHARED ${LIBOMP_SOURCE_FILES})
 set_target_properties(omp PROPERTIES
   PREFIX "" SUFFIX "" OUTPUT_NAME "${LIBOMP_LIB_FILE}"
   LINK_FLAGS "${LIBOMP_CONFIGURED_LDFLAGS}"
-  LINKER_LANGUAGE C # use C Compiler for linking step
-  SKIP_BUILD_RPATH true # have Mac linker -install_name just be "-install_name libomp.dylib"
+  LINKER_LANGUAGE ${LIBOMP_LINKER_LANGUAGE}
 )
+
+# Get the library's location within the build tree for the unit tester
+get_target_property(LIBOMP_LIBRARY_DIR omp LIBRARY_OUTPUT_DIRECTORY)
+if(NOT LIBOMP_LIBRARY_DIR)
+  set(LIBOMP_LIBRARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+  set(LIBOMP_LIBRARY_DIR ${CMAKE_CURRENT_BINARY_DIR} PARENT_SCOPE)
+else()
+  set(LIBOMP_LIBRARY_DIR ${LIBOMP_LIBRARY_DIR} PARENT_SCOPE)
+endif()
+
+# Add symbolic links to libomp
+if(NOT WIN32)
+  add_custom_command(TARGET omp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink ${LIBOMP_LIB_FILE}
+      libgomp${CMAKE_SHARED_LIBRARY_SUFFIX}
+    COMMAND ${CMAKE_COMMAND} -E create_symlink ${LIBOMP_LIB_FILE}
+      libiomp5${CMAKE_SHARED_LIBRARY_SUFFIX}
+    WORKING_DIRECTORY ${LIBOMP_LIBRARY_DIR}
+  )
+endif()
 
 # Linking command will include libraries in LIBOMP_CONFIGURED_LIBFLAGS
 libomp_get_libflags(LIBOMP_CONFIGURED_LIBFLAGS)
 target_link_libraries(omp ${LIBOMP_CONFIGURED_LIBFLAGS} ${CMAKE_DL_LIBS})
 
-# Create *.inc and omp.h before compiling any sources
-# objects depend on : .inc files and omp.h (and ompt.h if LIBOMP_OMPT_SUPPORT is on)
-# This way the *.inc and omp.h are generated before any compilations take place
-set(LIBOMP_NEEDED_HEADERS kmp_i18n_id.inc kmp_i18n_default.inc omp.h)
-libomp_append(LIBOMP_NEEDED_HEADERS ompt.h LIBOMP_OMPT_SUPPORT)
-add_custom_target(libomp-needed-headers DEPENDS ${LIBOMP_NEEDED_HEADERS})
+# Create *.inc before compiling any sources
+# objects depend on : .inc files
+add_custom_target(libomp-needed-headers DEPENDS kmp_i18n_id.inc kmp_i18n_default.inc)
 add_dependencies(omp libomp-needed-headers)
 
 # Windows specific build rules
 if(WIN32)
+  configure_file(libomp.rc.var libomp.rc @ONLY)
+
   # Create .def and .rc file before compiling any sources
-  add_custom_target(libomp-needed-windows-files DEPENDS ${LIBOMP_LIB_NAME}.def libomp.rc)
+  add_custom_target(libomp-needed-windows-files DEPENDS ${LIBOMP_LIB_NAME}.def)
   add_dependencies(omp libomp-needed-windows-files)
-  # z_Windows_NT-586_asm.asm (masm file) send it i386 or x86_64 architecture definition flag
-  if(${IA32})
-    set_source_files_properties(z_Windows_NT-586_asm.asm PROPERTIES COMPILE_DEFINITIONS "_M_IA32")
-  elseif(${INTEL64})
-    set_source_files_properties(z_Windows_NT-586_asm.asm PROPERTIES COMPILE_DEFINITIONS "_M_AMD64")
-  endif()
+  # z_Windows_NT-586_asm.asm requires definitions to be sent via command line
+  # It only needs the architecutre macro and OMPT_SUPPORT=0|1
+  libomp_append(LIBOMP_MASM_DEFINITIONS "_M_IA32" IF_TRUE IA32)
+  libomp_append(LIBOMP_MASM_DEFINITIONS "_M_AMD64" IF_TRUE INTEL64)
+  libomp_append(LIBOMP_MASM_DEFINITIONS "OMPT_SUPPORT" IF_TRUE_1_0 LIBOMP_OMPT_SUPPORT)
+  set_source_files_properties(z_Windows_NT-586_asm.asm PROPERTIES COMPILE_DEFINITIONS "${LIBOMP_MASM_DEFINITIONS}")
   set_source_files_properties(thirdparty/ittnotify/ittnotify_static.c PROPERTIES COMPILE_DEFINITIONS "UNICODE")
 
   # Create Windows import library
@@ -194,7 +194,7 @@ if(WIN32)
   set(LIBOMP_IMP_LIB_FILE ${LIBOMP_LIB_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX})
   set(LIBOMP_GENERATED_IMP_LIB_FILENAME ${LIBOMP_LIB_FILE}${CMAKE_STATIC_LIBRARY_SUFFIX})
   set_target_properties(omp PROPERTIES
-    VERSION ${LIBOMP_VERSION}.0 # uses /version flag
+    VERSION ${LIBOMP_VERSION_MAJOR}.${LIBOMP_VERSION_MINOR} # uses /version flag
     IMPORT_PREFIX "" IMPORT_SUFFIX "" # control generated import library name when building omp
     ARCHIVE_OUTPUT_NAME ${LIBOMP_GENERATED_IMP_LIB_FILENAME}
   )
@@ -211,7 +211,6 @@ if(WIN32)
   set_target_properties(ompimp PROPERTIES
     PREFIX "" SUFFIX "" OUTPUT_NAME "${LIBOMP_IMP_LIB_FILE}"
     LINKER_LANGUAGE C
-    SKIP_BUILD_RPATH true
   )
   add_dependencies(ompimp omp) # ensure generated import library is created first
 
@@ -229,6 +228,9 @@ endif()
 # Building the Fortran module files
 # One compilation step creates both omp_lib.mod and omp_lib_kinds.mod
 if(${LIBOMP_FORTRAN_MODULES})
+  configure_file(${LIBOMP_INC_DIR}/omp_lib.h.var omp_lib.h @ONLY)
+  configure_file(${LIBOMP_INC_DIR}/omp_lib.f.var omp_lib.f @ONLY)
+  configure_file(${LIBOMP_INC_DIR}/omp_lib.f90.var omp_lib.f90 @ONLY)
   add_custom_target(libomp-mod ALL DEPENDS omp_lib.mod omp_lib_kinds.mod)
   libomp_get_fflags(LIBOMP_CONFIGURED_FFLAGS)
   if(CMAKE_Fortran_COMPILER_SUPPORTS_F90)
@@ -239,7 +241,8 @@ if(${LIBOMP_FORTRAN_MODULES})
   add_custom_command(
     OUTPUT omp_lib.mod omp_lib_kinds.mod
     COMMAND ${CMAKE_Fortran_COMPILER} -c ${LIBOMP_CONFIGURED_FFLAGS} ${LIBOMP_FORTRAN_SOURCE_FILE}
-    DEPENDS ${LIBOMP_FORTRAN_SOURCE_FILE} omp_lib.h
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${LIBOMP_FORTRAN_SOURCE_FILE}
+      ${CMAKE_CURRENT_BINARY_DIR}/omp_lib.h
   )
   set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES omp_lib${CMAKE_C_OUTPUT_EXTENSION})
 endif()

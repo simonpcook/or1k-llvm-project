@@ -327,6 +327,9 @@ namespace
 #ifndef NT_X86_XSTATE
 #define NT_X86_XSTATE 0x202
 #endif
+#ifndef NT_PRXFPREG
+#define NT_PRXFPREG 0x46e62b7f
+#endif
 
 NativeRegisterContextLinux*
 NativeRegisterContextLinux::CreateHostNativeRegisterContextLinux(const ArchSpec& target_arch,
@@ -422,6 +425,10 @@ NativeRegisterContextLinux_x86_64::NativeRegisterContextLinux_x86_64 (const Arch
 
     // Clear out the FPR state.
     ::memset(&m_fpr, 0, sizeof(FPR));
+
+    // Store byte offset of fctrl (i.e. first register of FPR)
+    const RegisterInfo *reg_info_fctrl = GetRegisterInfoByName("fctrl");
+    m_fctrl_offset_in_userarea = reg_info_fctrl->byte_offset;
 }
 
 // CONSIDER after local and llgs debugging are merged, register set support can
@@ -559,10 +566,21 @@ NativeRegisterContextLinux_x86_64::ReadRegister (const RegisterInfo *reg_info, R
     }
 
     // Get pointer to m_fpr.xstate.fxsave variable and set the data from it.
-    assert (reg_info->byte_offset < sizeof(m_fpr));
-    uint8_t *src = (uint8_t *)&m_fpr + reg_info->byte_offset;
+
+    // Byte offsets of all registers are calculated wrt 'UserArea' structure.
+    // However, ReadFPR() reads fpu registers {using ptrace(PTRACE_GETFPREGS,..)}
+    // and stores them in 'm_fpr' (of type FPR structure). To extract values of fpu
+    // registers, m_fpr should be read at byte offsets calculated wrt to FPR structure.
+
+    // Since, FPR structure is also one of the member of UserArea structure.
+    // byte_offset(fpu wrt FPR) = byte_offset(fpu wrt UserArea) - byte_offset(fctrl wrt UserArea)
+    assert ( (reg_info->byte_offset - m_fctrl_offset_in_userarea) < sizeof(m_fpr));
+    uint8_t *src = (uint8_t *)&m_fpr + reg_info->byte_offset - m_fctrl_offset_in_userarea;
     switch (reg_info->byte_size)
     {
+        case 1:
+            reg_value.SetUInt8(*(uint8_t *)src);
+            break;
         case 2:
             reg_value.SetUInt16(*(uint16_t *)src);
             break;
@@ -620,10 +638,21 @@ NativeRegisterContextLinux_x86_64::WriteRegister (const RegisterInfo *reg_info, 
         else
         {
             // Get pointer to m_fpr.xstate.fxsave variable and set the data to it.
-            assert (reg_info->byte_offset < sizeof(m_fpr));
-            uint8_t *dst = (uint8_t *)&m_fpr + reg_info->byte_offset;
+
+            // Byte offsets of all registers are calculated wrt 'UserArea' structure.
+            // However, WriteFPR() takes m_fpr (of type FPR structure) and writes only fpu
+            // registers using ptrace(PTRACE_SETFPREGS,..) API. Hence fpu registers should
+            // be written in m_fpr at byte offsets calculated wrt FPR structure.
+
+            // Since, FPR structure is also one of the member of UserArea structure.
+            // byte_offset(fpu wrt FPR) = byte_offset(fpu wrt UserArea) - byte_offset(fctrl wrt UserArea)
+            assert ( (reg_info->byte_offset - m_fctrl_offset_in_userarea) < sizeof(m_fpr));
+            uint8_t *dst = (uint8_t *)&m_fpr + reg_info->byte_offset - m_fctrl_offset_in_userarea;
             switch (reg_info->byte_size)
             {
+                case 1:
+                    *(uint8_t *)dst = reg_value.GetAsUInt8();
+                    break;
                 case 2:
                     *(uint16_t *)dst = reg_value.GetAsUInt16();
                     break;
@@ -706,6 +735,20 @@ NativeRegisterContextLinux_x86_64::ReadAllRegisterValues (lldb::DataBufferSP &da
         assert (false && "how do we save the floating point registers?");
         error.SetErrorString ("unsure how to save the floating point registers");
     }
+    /** The following code is specific to Linux x86 based architectures,
+     *  where the register orig_eax (32 bit)/orig_rax (64 bit) is set to
+     *  -1 to solve the bug 23659, such a setting prevents the automatic
+     *  decrement of the instruction pointer which was causing the SIGILL
+     *  exception.
+     * **/
+
+    RegisterValue value((uint64_t) -1);
+    const RegisterInfo *reg_info = GetRegisterInfoInterface().GetDynamicRegisterInfo("orig_eax");
+    if (reg_info == nullptr)
+        reg_info = GetRegisterInfoInterface().GetDynamicRegisterInfo("orig_rax");
+
+    if (reg_info != nullptr)
+        return DoWriteRegisterValue(reg_info->byte_offset,reg_info->name,value);
 
     return error;
 }
@@ -792,6 +835,7 @@ NativeRegisterContextLinux_x86_64::IsGPR(uint32_t reg_index) const
 NativeRegisterContextLinux_x86_64::FPRType
 NativeRegisterContextLinux_x86_64::GetFPRType () const
 {
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PROCESS));
     if (m_fpr_type == eFPRTypeNotValid)
     {
         // TODO: Use assembly to call cpuid on the inferior and query ebx or ecx.
@@ -802,9 +846,15 @@ NativeRegisterContextLinux_x86_64::GetFPRType () const
         {
             // Fall back to general floating point with no AVX support.
             m_fpr_type = eFPRTypeFXSAVE;
+
+            // Check if FXSAVE area can be read.
+            if (const_cast<NativeRegisterContextLinux_x86_64*>(this)->ReadFPR().Fail())
+            {
+                if (log)
+                    log->Printf("NativeRegisterContextLinux_x86_64::%s ptrace APIs failed to read XSAVE/FXSAVE area", __FUNCTION__);
+            }
         }
     }
-
     return m_fpr_type;
 }
 
@@ -828,10 +878,24 @@ Error
 NativeRegisterContextLinux_x86_64::WriteFPR()
 {
     const FPRType fpr_type = GetFPRType ();
+    const lldb_private::ArchSpec& target_arch = GetRegisterInfoInterface().GetTargetArchitecture();
     switch (fpr_type)
     {
     case FPRType::eFPRTypeFXSAVE:
-        return NativeRegisterContextLinux::WriteFPR();
+        // For 32-bit inferiors on x86_32/x86_64 architectures,
+        // FXSAVE area can be written using PTRACE_SETREGSET ptrace api
+        // For 64-bit inferiors on x86_64 architectures,
+        // FXSAVE area can be written using PTRACE_SETFPREGS ptrace api
+        switch (target_arch.GetMachine ())
+        {
+            case llvm::Triple::x86:
+                return WriteRegisterSet(&m_iovec, sizeof(m_fpr.xstate.xsave), NT_PRXFPREG);
+            case llvm::Triple::x86_64:
+                return NativeRegisterContextLinux::WriteFPR();
+            default:
+                assert(false && "Unhandled target architecture.");
+                break;
+        }
     case FPRType::eFPRTypeXSAVE:
         return WriteRegisterSet(&m_iovec, sizeof(m_fpr.xstate.xsave), NT_X86_XSTATE);
     default:
@@ -940,10 +1004,24 @@ Error
 NativeRegisterContextLinux_x86_64::ReadFPR ()
 {
     const FPRType fpr_type = GetFPRType ();
+    const lldb_private::ArchSpec& target_arch = GetRegisterInfoInterface().GetTargetArchitecture();
     switch (fpr_type)
     {
     case FPRType::eFPRTypeFXSAVE:
-        return NativeRegisterContextLinux::ReadFPR();
+        // For 32-bit inferiors on x86_32/x86_64 architectures,
+        // FXSAVE area can be read using PTRACE_GETREGSET ptrace api
+        // For 64-bit inferiors on x86_64 architectures,
+        // FXSAVE area can be read using PTRACE_GETFPREGS ptrace api
+        switch (target_arch.GetMachine ())
+        {
+            case llvm::Triple::x86:
+                return ReadRegisterSet(&m_iovec, sizeof(m_fpr.xstate.xsave), NT_PRXFPREG);
+            case llvm::Triple::x86_64:
+                return NativeRegisterContextLinux::ReadFPR();
+            default:
+                assert(false && "Unhandled target architecture.");
+                break;
+        }
     case FPRType::eFPRTypeXSAVE:
         return ReadRegisterSet(&m_iovec, sizeof(m_fpr.xstate.xsave), NT_X86_XSTATE);
     default:
@@ -1017,6 +1095,11 @@ NativeRegisterContextLinux_x86_64::SetHardwareWatchpointWithIndex(
 
     if (wp_index >= NumSupportedHardwareWatchpoints())
         return Error ("Watchpoint index out of range");
+
+    // Read only watchpoints aren't supported on x86_64. Fall back to read/write waitchpoints instead.
+    // TODO: Add logic to detect when a write happens and ignore that watchpoint hit.
+    if (watch_flags == 0x2)
+        watch_flags = 0x3;
 
     if (watch_flags != 0x1 && watch_flags != 0x3)
         return Error ("Invalid read/write bits for watchpoint");

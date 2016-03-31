@@ -21,6 +21,11 @@ namespace runtime {
 
 void StringReferenceMemberCheck::registerMatchers(
     ast_matchers::MatchFinder *Finder) {
+  // Only register the matchers for C++; the functionality currently does not
+  // provide any benefit to other languages, despite being benign.
+  if (!getLangOpts().CPlusPlus)
+    return;
+
   // Look for const references to std::string or ::string.
   auto String = anyOf(recordDecl(hasName("::std::basic_string")),
                       recordDecl(hasName("::string")));
@@ -35,9 +40,9 @@ void StringReferenceMemberCheck::registerMatchers(
 void
 StringReferenceMemberCheck::check(const MatchFinder::MatchResult &Result) {
   const auto *Member = Result.Nodes.getNodeAs<FieldDecl>("member");
-  diag(Member->getLocStart(), "const string& members are dangerous. It is much "
+  diag(Member->getLocStart(), "const string& members are dangerous; it is much "
                               "better to use alternatives, such as pointers or "
-                              "simple constants.");
+                              "simple constants");
 }
 
 } // namespace runtime

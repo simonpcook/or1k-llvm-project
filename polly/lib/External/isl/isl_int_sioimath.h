@@ -20,6 +20,14 @@
 
 #define ARRAY_SIZE(array) (sizeof(array)/sizeof(*array))
 
+/* Visual Studio before VS2015 does not support the inline keyword when
+ * compiling in C mode because it was introduced in C99 which it does not
+ * officially support.  Instead, it has a proprietary extension using __inline.
+ */
+#if defined(_MSC_VER) && (_MSC_VER < 1900)
+#define inline __inline
+#endif
+
 /* The type to represent integers optimized for small values. It is either a
  * pointer to an mp_int ( = mpz_t*; big representation) or an int32_t (small
  * represenation) with a discriminator at the least significant bit. In big
@@ -522,7 +530,7 @@ inline double isl_sioimath_get_d(isl_sioimath_src val)
 /* Format a number as decimal string.
  *
  * The largest possible string from small representation is 12 characters
- *("-2147483647").
+ * ("-2147483647").
  */
 inline char *isl_sioimath_get_str(isl_sioimath_src val)
 {
@@ -719,7 +727,7 @@ inline void isl_sioimath_mul_si(isl_sioimath_ptr dst, isl_sioimath lhs,
 	isl_sioimath_try_demote(dst);
 }
 
-/* Multiply an isl_int and an unsigned long
+/* Multiply an isl_int and an unsigned long.
  */
 inline void isl_sioimath_mul_ui(isl_sioimath_ptr dst, isl_sioimath lhs,
 	unsigned long rhs)
@@ -739,9 +747,8 @@ inline void isl_sioimath_mul_ui(isl_sioimath_ptr dst, isl_sioimath lhs,
 }
 
 /* Compute the power of an isl_int to an unsigned long.
- * Always let IMath do it; the result is unlikely to be small except some
- * special
- * cases.
+ * Always let IMath do it; the result is unlikely to be small except in some
+ * special cases.
  * Note: 0^0 == 1
  */
 inline void isl_sioimath_pow_ui(isl_sioimath_ptr dst, isl_sioimath_src lhs,
@@ -1149,68 +1156,68 @@ inline size_t isl_sioimath_sizeinbase(isl_sioimath_src arg, int base)
 void isl_sioimath_print(FILE *out, isl_sioimath_src i, int width);
 void isl_sioimath_dump(isl_sioimath_src arg);
 
-typedef isl_sioimath isl_int;
-#define isl_int_init(i)			isl_sioimath_init(&(i))
-#define isl_int_clear(i)		isl_sioimath_clear(&(i))
+typedef isl_sioimath isl_int[1];
+#define isl_int_init(i)			isl_sioimath_init((i))
+#define isl_int_clear(i)		isl_sioimath_clear((i))
 
-#define isl_int_set(r, i)		isl_sioimath_set(&(r), i)
-#define isl_int_set_si(r, i)		isl_sioimath_set_si(&(r), i)
-#define isl_int_set_ui(r, i)		isl_sioimath_set_ui(&(r), i)
-#define isl_int_fits_slong(r)		isl_sioimath_fits_slong(r)
-#define isl_int_get_si(r)		isl_sioimath_get_si(r)
-#define isl_int_fits_ulong(r)		isl_sioimath_fits_ulong(r)
-#define isl_int_get_ui(r)		isl_sioimath_get_ui(r)
-#define isl_int_get_d(r)		isl_sioimath_get_d(r)
-#define isl_int_get_str(r)		isl_sioimath_get_str(r)
-#define isl_int_abs(r, i)		isl_sioimath_abs(&(r), i)
-#define isl_int_neg(r, i)		isl_sioimath_neg(&(r), i)
-#define isl_int_swap(i, j)		isl_sioimath_swap(&(i), &(j))
-#define isl_int_swap_or_set(i, j)	isl_sioimath_swap(&(i), &(j))
-#define isl_int_add_ui(r, i, j)		isl_sioimath_add_ui(&(r), i, j)
-#define isl_int_sub_ui(r, i, j)		isl_sioimath_sub_ui(&(r), i, j)
+#define isl_int_set(r, i)		isl_sioimath_set((r), *(i))
+#define isl_int_set_si(r, i)		isl_sioimath_set_si((r), i)
+#define isl_int_set_ui(r, i)		isl_sioimath_set_ui((r), i)
+#define isl_int_fits_slong(r)		isl_sioimath_fits_slong(*(r))
+#define isl_int_get_si(r)		isl_sioimath_get_si(*(r))
+#define isl_int_fits_ulong(r)		isl_sioimath_fits_ulong(*(r))
+#define isl_int_get_ui(r)		isl_sioimath_get_ui(*(r))
+#define isl_int_get_d(r)		isl_sioimath_get_d(*(r))
+#define isl_int_get_str(r)		isl_sioimath_get_str(*(r))
+#define isl_int_abs(r, i)		isl_sioimath_abs((r), *(i))
+#define isl_int_neg(r, i)		isl_sioimath_neg((r), *(i))
+#define isl_int_swap(i, j)		isl_sioimath_swap((i), (j))
+#define isl_int_swap_or_set(i, j)	isl_sioimath_swap((i), (j))
+#define isl_int_add_ui(r, i, j)		isl_sioimath_add_ui((r), *(i), j)
+#define isl_int_sub_ui(r, i, j)		isl_sioimath_sub_ui((r), *(i), j)
 
-#define isl_int_add(r, i, j)		isl_sioimath_add(&(r), i, j)
-#define isl_int_sub(r, i, j)		isl_sioimath_sub(&(r), i, j)
-#define isl_int_mul(r, i, j)		isl_sioimath_mul(&(r), i, j)
-#define isl_int_mul_2exp(r, i, j)	isl_sioimath_mul_2exp(&(r), i, j)
-#define isl_int_mul_si(r, i, j)		isl_sioimath_mul_si(&(r), i, j)
-#define isl_int_mul_ui(r, i, j)		isl_sioimath_mul_ui(&(r), i, j)
-#define isl_int_pow_ui(r, i, j)		isl_sioimath_pow_ui(&(r), i, j)
-#define isl_int_addmul(r, i, j)		isl_sioimath_addmul(&(r), i, j)
-#define isl_int_addmul_ui(r, i, j)	isl_sioimath_addmul_ui(&(r), i, j)
-#define isl_int_submul(r, i, j)		isl_sioimath_submul(&(r), i, j)
-#define isl_int_submul_ui(r, i, j)	isl_sioimath_submul_ui(&(r), i, j)
+#define isl_int_add(r, i, j)		isl_sioimath_add((r), *(i), *(j))
+#define isl_int_sub(r, i, j)		isl_sioimath_sub((r), *(i), *(j))
+#define isl_int_mul(r, i, j)		isl_sioimath_mul((r), *(i), *(j))
+#define isl_int_mul_2exp(r, i, j)	isl_sioimath_mul_2exp((r), *(i), j)
+#define isl_int_mul_si(r, i, j)		isl_sioimath_mul_si((r), *(i), j)
+#define isl_int_mul_ui(r, i, j)		isl_sioimath_mul_ui((r), *(i), j)
+#define isl_int_pow_ui(r, i, j)		isl_sioimath_pow_ui((r), *(i), j)
+#define isl_int_addmul(r, i, j)		isl_sioimath_addmul((r), *(i), *(j))
+#define isl_int_addmul_ui(r, i, j)	isl_sioimath_addmul_ui((r), *(i), j)
+#define isl_int_submul(r, i, j)		isl_sioimath_submul((r), *(i), *(j))
+#define isl_int_submul_ui(r, i, j)	isl_sioimath_submul_ui((r), *(i), j)
 
-#define isl_int_gcd(r, i, j)		isl_sioimath_gcd(&(r), i, j)
-#define isl_int_lcm(r, i, j)		isl_sioimath_lcm(&(r), i, j)
-#define isl_int_divexact(r, i, j)	isl_sioimath_tdiv_q(&(r), i, j)
-#define isl_int_divexact_ui(r, i, j)	isl_sioimath_tdiv_q_ui(&(r), i, j)
-#define isl_int_tdiv_q(r, i, j)		isl_sioimath_tdiv_q(&(r), i, j)
-#define isl_int_cdiv_q(r, i, j)		isl_sioimath_cdiv_q(&(r), i, j)
-#define isl_int_fdiv_q(r, i, j)		isl_sioimath_fdiv_q(&(r), i, j)
-#define isl_int_fdiv_r(r, i, j)		isl_sioimath_fdiv_r(&(r), i, j)
-#define isl_int_fdiv_q_ui(r, i, j)	isl_sioimath_fdiv_q_ui(&(r), i, j)
+#define isl_int_gcd(r, i, j)		isl_sioimath_gcd((r), *(i), *(j))
+#define isl_int_lcm(r, i, j)		isl_sioimath_lcm((r), *(i), *(j))
+#define isl_int_divexact(r, i, j)	isl_sioimath_tdiv_q((r), *(i), *(j))
+#define isl_int_divexact_ui(r, i, j)	isl_sioimath_tdiv_q_ui((r), *(i), j)
+#define isl_int_tdiv_q(r, i, j)		isl_sioimath_tdiv_q((r), *(i), *(j))
+#define isl_int_cdiv_q(r, i, j)		isl_sioimath_cdiv_q((r), *(i), *(j))
+#define isl_int_fdiv_q(r, i, j)		isl_sioimath_fdiv_q((r), *(i), *(j))
+#define isl_int_fdiv_r(r, i, j)		isl_sioimath_fdiv_r((r), *(i), *(j))
+#define isl_int_fdiv_q_ui(r, i, j)	isl_sioimath_fdiv_q_ui((r), *(i), j)
 
-#define isl_int_read(r, s)		isl_sioimath_read(&(r), s)
-#define isl_int_sgn(i)			isl_sioimath_sgn(i)
-#define isl_int_cmp(i, j)		isl_sioimath_cmp(i, j)
-#define isl_int_cmp_si(i, si)		isl_sioimath_cmp_si(i, si)
-#define isl_int_eq(i, j)		(isl_sioimath_cmp(i, j) == 0)
-#define isl_int_ne(i, j)		(isl_sioimath_cmp(i, j) != 0)
-#define isl_int_lt(i, j)		(isl_sioimath_cmp(i, j) < 0)
-#define isl_int_le(i, j)		(isl_sioimath_cmp(i, j) <= 0)
-#define isl_int_gt(i, j)		(isl_sioimath_cmp(i, j) > 0)
-#define isl_int_ge(i, j)		(isl_sioimath_cmp(i, j) >= 0)
-#define isl_int_abs_cmp(i, j)		isl_sioimath_abs_cmp(i, j)
-#define isl_int_abs_eq(i, j)		(isl_sioimath_abs_cmp(i, j) == 0)
-#define isl_int_abs_ne(i, j)		(isl_sioimath_abs_cmp(i, j) != 0)
-#define isl_int_abs_lt(i, j)		(isl_sioimath_abs_cmp(i, j) < 0)
-#define isl_int_abs_gt(i, j)		(isl_sioimath_abs_cmp(i, j) > 0)
-#define isl_int_abs_ge(i, j)		(isl_sioimath_abs_cmp(i, j) >= 0)
-#define isl_int_is_divisible_by(i, j)	isl_sioimath_is_divisible_by(i, j)
+#define isl_int_read(r, s)		isl_sioimath_read((r), s)
+#define isl_int_sgn(i)			isl_sioimath_sgn(*(i))
+#define isl_int_cmp(i, j)		isl_sioimath_cmp(*(i), *(j))
+#define isl_int_cmp_si(i, si)		isl_sioimath_cmp_si(*(i), si)
+#define isl_int_eq(i, j)		(isl_sioimath_cmp(*(i), *(j)) == 0)
+#define isl_int_ne(i, j)		(isl_sioimath_cmp(*(i), *(j)) != 0)
+#define isl_int_lt(i, j)		(isl_sioimath_cmp(*(i), *(j)) < 0)
+#define isl_int_le(i, j)		(isl_sioimath_cmp(*(i), *(j)) <= 0)
+#define isl_int_gt(i, j)		(isl_sioimath_cmp(*(i), *(j)) > 0)
+#define isl_int_ge(i, j)		(isl_sioimath_cmp(*(i), *(j)) >= 0)
+#define isl_int_abs_cmp(i, j)		isl_sioimath_abs_cmp(*(i), *(j))
+#define isl_int_abs_eq(i, j)		(isl_sioimath_abs_cmp(*(i), *(j)) == 0)
+#define isl_int_abs_ne(i, j)		(isl_sioimath_abs_cmp(*(i), *(j)) != 0)
+#define isl_int_abs_lt(i, j)		(isl_sioimath_abs_cmp(*(i), *(j)) < 0)
+#define isl_int_abs_gt(i, j)		(isl_sioimath_abs_cmp(*(i), *(j)) > 0)
+#define isl_int_abs_ge(i, j)		(isl_sioimath_abs_cmp(*(i), *(j)) >= 0)
+#define isl_int_is_divisible_by(i, j)	isl_sioimath_is_divisible_by(*(i), *(j))
 
-#define isl_int_hash(v, h)		isl_sioimath_hash(v, h)
+#define isl_int_hash(v, h)		isl_sioimath_hash(*(v), h)
 #define isl_int_free_str(s)		free(s)
-#define isl_int_print(out, i, width)	isl_sioimath_print(out, i, width)
+#define isl_int_print(out, i, width)	isl_sioimath_print(out, *(i), width)
 
 #endif /* ISL_INT_SIOIMATH_H */

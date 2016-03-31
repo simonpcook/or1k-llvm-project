@@ -45,8 +45,15 @@ public:
 
     assert(!_file->hasAtoms() && "The file shouldn't have atoms yet");
     _resolver(sym, *_file);
-    // If atoms were added - release the file to the caller.
-    return _file->hasAtoms() ? _file.release() : nullptr;
+
+    if (!_file->hasAtoms())
+      return nullptr;
+
+    // If atoms were added - return the file but also store it for later
+    // destruction.
+    File *result = _file.get();
+    _returnedFiles.push_back(std::move(_file));
+    return result;
   }
 
 private:
@@ -57,6 +64,7 @@ private:
   // reversed destruction order.
   llvm::BumpPtrAllocator _alloc;
   unique_bump_ptr<SymbolFile<ELFT>> _file;
+  std::vector<unique_bump_ptr<SymbolFile<ELFT>>> _returnedFiles;
 };
 
 } // end anon namespace
@@ -422,11 +430,14 @@ template <class ELFT> uint64_t OutputELFWriter<ELFT>::outputFileSize() const {
 template <class ELFT>
 std::error_code OutputELFWriter<ELFT>::writeOutput(const File &file,
                                                    StringRef path) {
-  std::unique_ptr<FileOutputBuffer> buffer;
+
   ScopedTask createOutputTask(getDefaultDomain(), "ELF Writer Create Output");
-  if (std::error_code ec = FileOutputBuffer::create(
-          path, outputFileSize(), buffer, FileOutputBuffer::F_executable))
+  ErrorOr<std::unique_ptr<FileOutputBuffer>> bufferOrErr =
+      FileOutputBuffer::create(path, outputFileSize(),
+                               FileOutputBuffer::F_executable);
+  if (std::error_code ec = bufferOrErr.getError())
     return ec;
+  std::unique_ptr<FileOutputBuffer> &buffer = *bufferOrErr;
   createOutputTask.end();
 
   ScopedTask writeTask(getDefaultDomain(), "ELF Writer write to memory");

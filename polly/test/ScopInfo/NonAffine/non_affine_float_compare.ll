@@ -1,4 +1,5 @@
-; RUN: opt %loadPolly -polly-scops -polly-allow-nonaffine-branches -analyze < %s | FileCheck %s
+; RUN: opt %loadPolly -polly-scops -polly-allow-nonaffine-branches \
+; RUN:                -analyze < %s | FileCheck %s
 ;
 ;    void f(float *A) {
 ;      for (int i = 0; i < 1024; i++)
@@ -12,7 +13,11 @@
 ; CHECK:    Statements {
 ; CHECK:      Stmt_bb2__TO__bb12
 ; CHECK:            Domain :=
-; CHECK:                { Stmt_bb2__TO__bb12[i0] : i0 >= 0 and i0 <= 1023 };
+; CHECK:                { Stmt_bb2__TO__bb12[i0] :
+; CHECK-DAG:               i0 >= 0
+; CHECK-DAG:             and
+; CHECK-DAG:               i0 <= 1023
+; CHECK:                }
 ; CHECK:            Schedule :=
 ; CHECK:                { Stmt_bb2__TO__bb12[i0] -> [i0] };
 ; CHECK:            ReadAccess := [Reduction Type: NONE] [Scalar: 0]

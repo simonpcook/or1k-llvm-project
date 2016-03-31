@@ -9,6 +9,9 @@
 
 #include "AppleObjCClassDescriptorV2.h"
 
+#include "lldb/Core/Log.h"
+#include "lldb/Expression/FunctionCaller.h"
+
 using namespace lldb;
 using namespace lldb_private;
 
@@ -250,16 +253,17 @@ ClassDescriptorV2::method_t::Read(Process *process, lldb::addr_t addr)
     m_types_ptr  = extractor.GetAddress_unchecked(&cursor);
     m_imp_ptr    = extractor.GetAddress_unchecked(&cursor);
     
-    const size_t buffer_size = 1024;
-    size_t count;
+    process->ReadCStringFromMemory(m_name_ptr, m_name, error);
+    if (error.Fail())
+    {
+        return false;
+    }
     
-    DataBufferHeap string_buf(buffer_size, 0);
-    
-    count = process->ReadCStringFromMemory(m_name_ptr, (char*)string_buf.GetBytes(), buffer_size, error);
-    m_name.assign((char*)string_buf.GetBytes(), count);
-    
-    count = process->ReadCStringFromMemory(m_types_ptr, (char*)string_buf.GetBytes(), buffer_size, error);
-    m_types.assign((char*)string_buf.GetBytes(), count);
+    process->ReadCStringFromMemory(m_types_ptr, m_types, error);
+    if (error.Fail())
+    {
+        return false;
+    }
     
     return true;
 }
@@ -314,16 +318,17 @@ ClassDescriptorV2::ivar_t::Read(Process *process, lldb::addr_t addr)
     m_alignment  = extractor.GetU32_unchecked(&cursor);
     m_size       = extractor.GetU32_unchecked(&cursor);
     
-    const size_t buffer_size = 1024;
-    size_t count;
+    process->ReadCStringFromMemory(m_name_ptr, m_name, error);
+    if (error.Fail())
+    {
+        return false;
+    }
     
-    DataBufferHeap string_buf(buffer_size, 0);
-    
-    count = process->ReadCStringFromMemory(m_name_ptr, (char*)string_buf.GetBytes(), buffer_size, error);
-    m_name.assign((char*)string_buf.GetBytes(), count);
-    
-    count = process->ReadCStringFromMemory(m_type_ptr, (char*)string_buf.GetBytes(), buffer_size, error);
-    m_type.assign((char*)string_buf.GetBytes(), count);
+    process->ReadCStringFromMemory(m_type_ptr, m_type, error);
+    if (error.Fail())
+    {
+        return false;
+    }
     
     return true;
 }
@@ -518,6 +523,9 @@ ClassDescriptorV2::iVarsStorage::fill (AppleObjCRuntimeV2& runtime, ClassDescrip
     if (m_filled)
         return;
     Mutex::Locker lock(m_mutex);
+    Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_TYPES | LIBLLDB_LOG_VERBOSE));
+    if (log)
+        log->Printf("[ClassDescriptorV2::iVarsStorage::fill] class_name = %s", descriptor.GetClassName().AsCString("<unknown"));
     m_filled = true;
     ObjCLanguageRuntime::EncodingToTypeSP encoding_to_type_sp(runtime.GetEncodingToType());
     Process* process(runtime.GetProcess());
@@ -526,17 +534,33 @@ ClassDescriptorV2::iVarsStorage::fill (AppleObjCRuntimeV2& runtime, ClassDescrip
     descriptor.Describe(nullptr,
                         nullptr,
                         nullptr,
-                        [this,process,encoding_to_type_sp](const char * name, const char * type, lldb::addr_t offset_ptr, uint64_t size) -> bool {
+                        [this,process,encoding_to_type_sp,log](const char * name, const char * type, lldb::addr_t offset_ptr, uint64_t size) -> bool {
                  const bool for_expression = false;
                  const bool stop_loop = false;
-                 ClangASTType ivar_type = encoding_to_type_sp->RealizeType(type, for_expression);
+                 if (log)
+                     log->Printf("[ClassDescriptorV2::iVarsStorage::fill] name = %s, encoding = %s, offset_ptr = %" PRIx64 ", size = %" PRIu64,
+                                 name,type,offset_ptr,size);
+                 CompilerType ivar_type = encoding_to_type_sp->RealizeType(type, for_expression);
                  if (ivar_type)
                  {
+                     if (log)
+                         log->Printf("[ClassDescriptorV2::iVarsStorage::fill] name = %s, encoding = %s, offset_ptr = %" PRIx64 ", size = %" PRIu64 " , type_size = %" PRIu64,
+                                     name,type,offset_ptr,size,ivar_type.GetByteSize(nullptr));
                      Scalar offset_scalar;
                      Error error;
-                     size_t read = process->ReadScalarIntegerFromMemory(offset_ptr, 4, true, offset_scalar, error);
+                     const int offset_ptr_size = 4;
+                     const bool is_signed = false;
+                     size_t read = process->ReadScalarIntegerFromMemory(offset_ptr, offset_ptr_size, is_signed, offset_scalar, error);
                      if (error.Success() && 4 == read)
+                     {
+                         if (log)
+                             log->Printf("[ClassDescriptorV2::iVarsStorage::fill] offset_ptr = %" PRIx64 " --> %" PRIu32,
+                                         offset_ptr, offset_scalar.SInt());
                          m_ivars.push_back({ ConstString(name), ivar_type, size, offset_scalar.SInt() });
+                     }
+                     else if (log)
+                         log->Printf("[ClassDescriptorV2::iVarsStorage::fill] offset_ptr = %" PRIx64 " --> read fail, read = %zu",
+                                     offset_ptr, read);
                  }
                  return stop_loop;
              });

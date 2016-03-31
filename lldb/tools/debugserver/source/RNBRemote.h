@@ -161,7 +161,7 @@ public:
 
     nub_thread_t    GetCurrentThread () const
                     {
-                        if (m_thread == 0 || m_thread == -1)
+                        if (m_thread == 0 || m_thread == (nub_thread_t)-1)
                             return DNBProcessGetCurrentThread (m_ctx.ProcessID());
                         return m_thread;
                     }
@@ -373,6 +373,7 @@ protected:
         void
         GetThreadQueueInfo (nub_process_t pid,
                             nub_addr_t dispatch_qaddr,
+                            nub_addr_t &dispatch_queue_t,
                             std::string &queue_name,
                             uint64_t &queue_width,
                             uint64_t &queue_serialnum) const;
@@ -396,6 +397,9 @@ protected:
 
     const DispatchQueueOffsets *
     GetDispatchQueueOffsets();
+
+    JSONGenerator::ObjectSP
+    GetJSONThreadsInfo (bool threads_with_valid_stop_info_only);
 
     RNBContext      m_ctx;              // process context
     RNBSocket       m_comm;             // communication port

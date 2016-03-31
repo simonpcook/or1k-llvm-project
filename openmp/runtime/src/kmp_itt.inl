@@ -483,7 +483,7 @@ __kmp_itt_barrier_object(
 
         // Master thread increases b_arrived by KMP_BARRIER_STATE_BUMP each time. Divide b_arrived
         // by KMP_BARRIER_STATE_BUMP to get plain barrier counter.
-        kmp_uint counter = team->t.t_bar[ bt ].b_arrived / KMP_BARRIER_STATE_BUMP + delta;
+        kmp_uint64 counter = team->t.t_bar[ bt ].b_arrived / KMP_BARRIER_STATE_BUMP + delta;
         // Now form the barrier id. Encode barrier type (bt) in barrier id too, so barriers of
         // different types do not have the same ids.
         KMP_BUILD_ASSERT( sizeof( kmp_team_t ) >= bs_last_barrier );
@@ -498,7 +498,7 @@ __kmp_itt_barrier_object(
                     + bt
             );
         KMP_ITT_DEBUG_LOCK();
-        KMP_ITT_DEBUG_PRINT( "[bar obj] type=%d, counter=%d, object=%p\n", bt, counter, object );
+        KMP_ITT_DEBUG_PRINT( "[bar obj] type=%d, counter=%lld, object=%p\n", bt, counter, object );
 
         if ( set_name ) {
             ident_t const * loc  = NULL;
@@ -798,8 +798,8 @@ __kmp_itt_lock_acquiring( kmp_user_lock_p lock ) {
 #if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
     // postpone lock object access
     if ( __itt_sync_prepare_ptr ) {
-        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
-            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+        if ( KMP_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = KMP_LOOKUP_I_LOCK(lock);
             __itt_sync_prepare( ilk->lock );
         } else {
             __itt_sync_prepare( lock );
@@ -815,8 +815,8 @@ __kmp_itt_lock_acquired( kmp_user_lock_p lock ) {
 #if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
     // postpone lock object access
     if ( __itt_sync_acquired_ptr ) {
-        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
-            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+        if ( KMP_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = KMP_LOOKUP_I_LOCK(lock);
             __itt_sync_acquired( ilk->lock );
         } else {
             __itt_sync_acquired( lock );
@@ -831,8 +831,8 @@ void
 __kmp_itt_lock_releasing( kmp_user_lock_p lock ) {
 #if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
     if ( __itt_sync_releasing_ptr ) {
-        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
-            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+        if ( KMP_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = KMP_LOOKUP_I_LOCK(lock);
             __itt_sync_releasing( ilk->lock );
         } else {
             __itt_sync_releasing( lock );
@@ -847,8 +847,8 @@ void
 __kmp_itt_lock_cancelled( kmp_user_lock_p lock ) {
 #if KMP_USE_DYNAMIC_LOCK && USE_ITT_NOTIFY
     if ( __itt_sync_cancel_ptr ) {
-        if ( DYNA_EXTRACT_D_TAG(lock) == 0 ) {
-            kmp_indirect_lock_t *ilk = DYNA_LOOKUP_I_LOCK(lock);
+        if ( KMP_EXTRACT_D_TAG(lock) == 0 ) {
+            kmp_indirect_lock_t *ilk = KMP_LOOKUP_I_LOCK(lock);
             __itt_sync_cancel( ilk->lock );
         } else {
             __itt_sync_cancel( lock );

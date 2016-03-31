@@ -8,19 +8,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "Config.h"
+#include "DLL.h"
+#include "Error.h"
+#include "InputFiles.h"
+#include "SymbolTable.h"
+#include "Symbols.h"
 #include "Writer.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringSwitch.h"
+#include "lld/Core/Parallel.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/FileOutputBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cstdio>
-#include <functional>
 #include <map>
-#include <unordered_set>
+#include <memory>
 #include <utility>
 
 using namespace llvm;
@@ -28,40 +33,116 @@ using namespace llvm::COFF;
 using namespace llvm::object;
 using namespace llvm::support;
 using namespace llvm::support::endian;
+using namespace lld;
+using namespace lld::coff;
 
 static const int PageSize = 4096;
-static const int FileAlignment = 512;
-static const int SectionAlignment = 4096;
+static const int SectorSize = 512;
 static const int DOSStubSize = 64;
 static const int NumberfOfDataDirectory = 16;
+
+namespace {
+// The writer writes a SymbolTable result to a file.
+class Writer {
+public:
+  Writer(SymbolTable *T) : Symtab(T) {}
+  void run();
+
+private:
+  void createSections();
+  void createMiscChunks();
+  void createImportTables();
+  void createExportTable();
+  void assignAddresses();
+  void removeEmptySections();
+  void createSymbolAndStringTable();
+  void openFile(StringRef OutputPath);
+  template <typename PEHeaderTy> void writeHeader();
+  void fixSafeSEHSymbols();
+  void writeSections();
+  void sortExceptionTable();
+  void applyRelocations();
+
+  llvm::Optional<coff_symbol16> createSymbol(Defined *D);
+  size_t addEntryToStringTable(StringRef Str);
+
+  OutputSection *findSection(StringRef Name);
+  OutputSection *createSection(StringRef Name);
+  void addBaserels(OutputSection *Dest);
+  void addBaserelBlocks(OutputSection *Dest, std::vector<Baserel> &V);
+
+  uint32_t getSizeOfInitializedData();
+  std::map<StringRef, std::vector<DefinedImportData *>> binImports();
+
+  SymbolTable *Symtab;
+  std::unique_ptr<llvm::FileOutputBuffer> Buffer;
+  llvm::SpecificBumpPtrAllocator<OutputSection> CAlloc;
+  llvm::SpecificBumpPtrAllocator<BaserelChunk> BAlloc;
+  std::vector<OutputSection *> OutputSections;
+  std::vector<char> Strtab;
+  std::vector<llvm::object::coff_symbol16> OutputSymtab;
+  IdataContents Idata;
+  DelayLoadContents DelayIdata;
+  EdataContents Edata;
+  std::unique_ptr<SEHTableChunk> SEHTable;
+
+  uint64_t FileSize;
+  uint32_t PointerToSymbolTable = 0;
+  uint64_t SizeOfImage;
+  uint64_t SizeOfHeaders;
+
+  std::vector<std::unique_ptr<Chunk>> Chunks;
+};
+} // anonymous namespace
 
 namespace lld {
 namespace coff {
 
-// The main function of the writer.
-std::error_code Writer::write(StringRef OutputPath) {
-  markLive();
-  dedupCOMDATs();
-  createSections();
-  createMiscChunks();
-  createImportTables();
-  createExportTable();
-  if (Config->Relocatable)
-    createSection(".reloc");
-  assignAddresses();
-  removeEmptySections();
-  createSymbolAndStringTable();
-  if (auto EC = openFile(OutputPath))
-    return EC;
-  if (Config->is64()) {
-    writeHeader<pe32plus_header>();
-  } else {
-    writeHeader<pe32_header>();
-  }
-  writeSections();
-  sortExceptionTable();
-  return Buffer->commit();
-}
+void writeResult(SymbolTable *T) { Writer(T).run(); }
+
+// OutputSection represents a section in an output file. It's a
+// container of chunks. OutputSection and Chunk are 1:N relationship.
+// Chunks cannot belong to more than one OutputSections. The writer
+// creates multiple OutputSections and assign them unique,
+// non-overlapping file offsets and RVAs.
+class OutputSection {
+public:
+  OutputSection(StringRef N) : Name(N), Header({}) {}
+  void setRVA(uint64_t);
+  void setFileOffset(uint64_t);
+  void addChunk(Chunk *C);
+  StringRef getName() { return Name; }
+  std::vector<Chunk *> &getChunks() { return Chunks; }
+  void addPermissions(uint32_t C);
+  uint32_t getPermissions() { return Header.Characteristics & PermMask; }
+  uint32_t getCharacteristics() { return Header.Characteristics; }
+  uint64_t getRVA() { return Header.VirtualAddress; }
+  uint64_t getFileOff() { return Header.PointerToRawData; }
+  void writeHeaderTo(uint8_t *Buf);
+
+  // Returns the size of this section in an executable memory image.
+  // This may be smaller than the raw size (the raw size is multiple
+  // of disk sector size, so there may be padding at end), or may be
+  // larger (if that's the case, the loader reserves spaces after end
+  // of raw data).
+  uint64_t getVirtualSize() { return Header.VirtualSize; }
+
+  // Returns the size of the section in the output file.
+  uint64_t getRawSize() { return Header.SizeOfRawData; }
+
+  // Set offset into the string table storing this section name.
+  // Used only when the name is longer than 8 bytes.
+  void setStringTableOff(uint32_t V) { StringTableOff = V; }
+
+  // N.B. The section index is one based.
+  uint32_t SectionIndex = 0;
+
+private:
+  StringRef Name;
+  coff_section Header;
+  uint32_t StringTableOff = 0;
+  std::vector<Chunk *> Chunks;
+};
 
 void OutputSection::setRVA(uint64_t RVA) {
   Header.VirtualAddress = RVA;
@@ -76,21 +157,19 @@ void OutputSection::setFileOffset(uint64_t Off) {
   if (Header.SizeOfRawData == 0)
     return;
   Header.PointerToRawData = Off;
-  for (Chunk *C : Chunks)
-    C->setFileOff(C->getFileOff() + Off);
 }
 
 void OutputSection::addChunk(Chunk *C) {
   Chunks.push_back(C);
   C->setOutputSection(this);
   uint64_t Off = Header.VirtualSize;
-  Off = RoundUpToAlignment(Off, C->getAlign());
+  Off = align(Off, C->getAlign());
   C->setRVA(Off);
-  C->setFileOff(Off);
+  C->setOutputSectionOff(Off);
   Off += C->getSize();
   Header.VirtualSize = Off;
   if (C->hasData())
-    Header.SizeOfRawData = RoundUpToAlignment(Off, FileAlignment);
+    Header.SizeOfRawData = align(Off, SectorSize);
 }
 
 void OutputSection::addPermissions(uint32_t C) {
@@ -111,63 +190,53 @@ void OutputSection::writeHeaderTo(uint8_t *Buf) {
   }
 }
 
-// Set live bit on for each reachable chunk. Unmarked (unreachable)
-// COMDAT chunks will be ignored in the next step, so that they don't
-// come to the final output file.
-void Writer::markLive() {
-  if (!Config->DoGC)
-    return;
-
-  // We build up a worklist of sections which have been marked as live. We only
-  // push into the worklist when we discover an unmarked section, and we mark
-  // as we push, so sections never appear twice in the list.
-  SmallVector<SectionChunk *, 256> Worklist;
-
-  for (Undefined *U : Config->GCRoot) {
-    auto *D = dyn_cast<DefinedRegular>(U->repl());
-    if (!D || D->isLive())
-      continue;
-    D->markLive();
-    Worklist.push_back(D->getChunk());
-  }
-  for (Chunk *C : Symtab->getChunks()) {
-    auto *SC = dyn_cast<SectionChunk>(C);
-    if (!SC || !SC->isRoot() || SC->isLive())
-      continue;
-    SC->markLive();
-    Worklist.push_back(SC);
-  }
-  while (!Worklist.empty()) {
-    SectionChunk *SC = Worklist.pop_back_val();
-    assert(SC->isLive() && "We mark as live when pushing onto the worklist!");
-
-    // Mark all symbols listed in the relocation table for this section.
-    for (SymbolBody *S : SC->symbols())
-      if (auto *D = dyn_cast<DefinedRegular>(S->repl()))
-        if (!D->isLive()) {
-          D->markLive();
-          Worklist.push_back(D->getChunk());
-        }
-
-    // Mark associative sections if any.
-    for (SectionChunk *ChildSC : SC->children())
-      if (!ChildSC->isLive()) {
-        ChildSC->markLive();
-        Worklist.push_back(ChildSC);
-      }
-  }
+uint64_t Defined::getSecrel() {
+  if (auto *D = dyn_cast<DefinedRegular>(this))
+    return getRVA() - D->getChunk()->getOutputSection()->getRVA();
+  error("SECREL relocation points to a non-regular symbol");
 }
 
-// Merge identical COMDAT sections.
-void Writer::dedupCOMDATs() {
-  if (Config->ICF)
-    doICF(Symtab->getChunks());
+uint64_t Defined::getSectionIndex() {
+  if (auto *D = dyn_cast<DefinedRegular>(this))
+    return D->getChunk()->getOutputSection()->SectionIndex;
+  error("SECTION relocation points to a non-regular symbol");
+}
+
+bool Defined::isExecutable() {
+  const auto X = IMAGE_SCN_MEM_EXECUTE;
+  if (auto *D = dyn_cast<DefinedRegular>(this))
+    return D->getChunk()->getOutputSection()->getPermissions() & X;
+  return isa<DefinedImportThunk>(this);
+}
+
+} // namespace coff
+} // namespace lld
+
+// The main function of the writer.
+void Writer::run() {
+  createSections();
+  createMiscChunks();
+  createImportTables();
+  createExportTable();
+  if (Config->Relocatable)
+    createSection(".reloc");
+  assignAddresses();
+  removeEmptySections();
+  createSymbolAndStringTable();
+  openFile(Config->OutputFile);
+  if (Config->is64()) {
+    writeHeader<pe32plus_header>();
+  } else {
+    writeHeader<pe32_header>();
+  }
+  fixSafeSEHSymbols();
+  writeSections();
+  sortExceptionTable();
+  error(Buffer->commit(), "Failed to write the output file");
 }
 
 static StringRef getOutputSection(StringRef Name) {
   StringRef S = Name.split('$').first;
-  if (Config->Debug)
-    return S;
   auto It = Config->Merge.find(S);
   if (It == Config->Merge.end())
     return S;
@@ -179,13 +248,11 @@ void Writer::createSections() {
   // First, bin chunks by name.
   std::map<StringRef, std::vector<Chunk *>> Map;
   for (Chunk *C : Symtab->getChunks()) {
-    if (Config->DoGC) {
-      auto *SC = dyn_cast<SectionChunk>(C);
-      if (SC && !SC->isLive()) {
-        if (Config->Verbose)
-          SC->printDiscardedMessage();
-        continue;
-      }
+    auto *SC = dyn_cast<SectionChunk>(C);
+    if (SC && !SC->isLive()) {
+      if (Config->Verbose)
+        SC->printDiscardedMessage();
+      continue;
     }
     Map[C->getSectionName()].push_back(C);
   }
@@ -194,7 +261,7 @@ void Writer::createSections() {
   // '$' and all following characters in input section names are
   // discarded when determining output section. So, .text$foo
   // contributes to .text, for example. See PE/COFF spec 3.2.
-  std::map<StringRef, OutputSection *> Sections;
+  SmallDenseMap<StringRef, OutputSection *> Sections;
   for (auto Pair : Map) {
     StringRef Name = getOutputSection(Pair.first);
     OutputSection *&Sec = Sections[Name];
@@ -211,11 +278,25 @@ void Writer::createSections() {
 }
 
 void Writer::createMiscChunks() {
-  if (Symtab->LocalImportChunks.empty())
+  // Create thunks for locally-dllimported symbols.
+  if (!Symtab->LocalImportChunks.empty()) {
+    OutputSection *Sec = createSection(".rdata");
+    for (Chunk *C : Symtab->LocalImportChunks)
+      Sec->addChunk(C);
+  }
+
+  // Create SEH table. x86-only.
+  if (Config->Machine != I386)
     return;
-  OutputSection *Sec = createSection(".rdata");
-  for (Chunk *C : Symtab->LocalImportChunks)
-    Sec->addChunk(C);
+  std::set<Defined *> Handlers;
+  for (lld::coff::ObjectFile *File : Symtab->ObjectFiles) {
+    if (!File->SEHCompat)
+      return;
+    for (SymbolBody *B : File->SEHandlers)
+      Handlers.insert(cast<Defined>(B->repl()));
+  }
+  SEHTable.reset(new SEHTableChunk(Handlers));
+  createSection(".rdata")->addChunk(SEHTable.get());
 }
 
 // Create .idata section for the DLL-imported symbol table.
@@ -225,21 +306,24 @@ void Writer::createMiscChunks() {
 void Writer::createImportTables() {
   if (Symtab->ImportFiles.empty())
     return;
+
+  // Initialize DLLOrder so that import entries are ordered in
+  // the same order as in the command line. (That affects DLL
+  // initialization order, and this ordering is MSVC-compatible.)
+  for (ImportFile *File : Symtab->ImportFiles) {
+    std::string DLL = StringRef(File->DLLName).lower();
+    if (Config->DLLOrder.count(DLL) == 0)
+      Config->DLLOrder[DLL] = Config->DLLOrder.size();
+  }
+
   OutputSection *Text = createSection(".text");
   for (ImportFile *File : Symtab->ImportFiles) {
-    for (SymbolBody *B : File->getSymbols()) {
-      auto *Import = dyn_cast<DefinedImportData>(B);
-      if (!Import) {
-        // Linker-created function thunks for DLL symbols are added to
-        // .text section.
-        Text->addChunk(cast<DefinedImportThunk>(B)->getChunk());
-        continue;
-      }
-      if (Config->DelayLoads.count(Import->getDLLName().lower())) {
-        DelayIdata.add(Import);
-      } else {
-        Idata.add(Import);
-      }
+    if (DefinedImportThunk *Thunk = File->ThunkSym)
+      Text->addChunk(Thunk->getChunk());
+    if (Config->DelayLoads.count(StringRef(File->DLLName).lower())) {
+      DelayIdata.add(File->ImpSym);
+    } else {
+      Idata.add(File->ImpSym);
     }
   }
   if (!Idata.empty()) {
@@ -290,17 +374,13 @@ size_t Writer::addEntryToStringTable(StringRef Str) {
   return OffsetOfEntry;
 }
 
-coff_symbol16 Writer::createSymbol(DefinedRegular *D) {
-  uint64_t RVA = D->getRVA();
-  OutputSection *Sec = nullptr;
-  for (OutputSection *S : OutputSections) {
-    if (S->getRVA() > RVA)
-      break;
-    Sec = S;
-  }
+Optional<coff_symbol16> Writer::createSymbol(Defined *Def) {
+  if (auto *D = dyn_cast<DefinedRegular>(Def))
+    if (!D->getChunk()->isLive())
+      return None;
 
   coff_symbol16 Sym;
-  StringRef Name = D->getName();
+  StringRef Name = Def->getName();
   if (Name.size() > COFF::NameSize) {
     Sym.Name.Offset.Zeroes = 0;
     Sym.Name.Offset.Offset = addEntryToStringTable(Name);
@@ -308,18 +388,43 @@ coff_symbol16 Writer::createSymbol(DefinedRegular *D) {
     memset(Sym.Name.ShortName, 0, COFF::NameSize);
     memcpy(Sym.Name.ShortName, Name.data(), Name.size());
   }
-  COFFSymbolRef DSymRef = D->getCOFFSymbol();
-  Sym.Value = RVA - Sec->getRVA();
-  Sym.SectionNumber = Sec->SectionIndex;
-  Sym.Type = DSymRef.getType();
-  Sym.StorageClass = DSymRef.getStorageClass();
+
+  if (auto *D = dyn_cast<DefinedCOFF>(Def)) {
+    COFFSymbolRef Ref = D->getCOFFSymbol();
+    Sym.Type = Ref.getType();
+    Sym.StorageClass = Ref.getStorageClass();
+  } else {
+    Sym.Type = IMAGE_SYM_TYPE_NULL;
+    Sym.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
+  }
   Sym.NumberOfAuxSymbols = 0;
+
+  switch (Def->kind()) {
+  case SymbolBody::DefinedAbsoluteKind:
+  case SymbolBody::DefinedRelativeKind:
+    Sym.Value = Def->getRVA();
+    Sym.SectionNumber = IMAGE_SYM_ABSOLUTE;
+    break;
+  default: {
+    uint64_t RVA = Def->getRVA();
+    OutputSection *Sec = nullptr;
+    for (OutputSection *S : OutputSections) {
+      if (S->getRVA() > RVA)
+        break;
+      Sec = S;
+    }
+    Sym.Value = RVA - Sec->getRVA();
+    Sym.SectionNumber = Sec->SectionIndex;
+    break;
+  }
+  }
   return Sym;
 }
 
 void Writer::createSymbolAndStringTable() {
-  if (!Config->Debug)
+  if (!Config->Debug || !Config->WriteSymtab)
     return;
+
   // Name field in the section table is 8 byte long. Longer names need
   // to be written to the string table. First, construct string table.
   for (OutputSection *Sec : OutputSections) {
@@ -329,25 +434,28 @@ void Writer::createSymbolAndStringTable() {
     Sec->setStringTableOff(addEntryToStringTable(Name));
   }
 
-  for (ObjectFile *File : Symtab->ObjectFiles)
+  for (lld::coff::ObjectFile *File : Symtab->ObjectFiles)
     for (SymbolBody *B : File->getSymbols())
-      if (auto *D = dyn_cast<DefinedRegular>(B))
-        if (D->isLive())
-          OutputSymtab.push_back(createSymbol(D));
+      if (auto *D = dyn_cast<Defined>(B))
+        if (Optional<coff_symbol16> Sym = createSymbol(D))
+          OutputSymtab.push_back(*Sym);
+
+  for (ImportFile *File : Symtab->ImportFiles)
+    for (SymbolBody *B : File->getSymbols())
+      if (Optional<coff_symbol16> Sym = createSymbol(cast<Defined>(B)))
+        OutputSymtab.push_back(*Sym);
 
   OutputSection *LastSection = OutputSections.back();
   // We position the symbol table to be adjacent to the end of the last section.
   uint64_t FileOff =
-      LastSection->getFileOff() +
-      RoundUpToAlignment(LastSection->getRawSize(), FileAlignment);
+      LastSection->getFileOff() + align(LastSection->getRawSize(), SectorSize);
   if (!OutputSymtab.empty()) {
     PointerToSymbolTable = FileOff;
     FileOff += OutputSymtab.size() * sizeof(coff_symbol16);
   }
   if (!Strtab.empty())
     FileOff += Strtab.size() + 4;
-  FileSize = SizeOfHeaders +
-             RoundUpToAlignment(FileOff - SizeOfHeaders, FileAlignment);
+  FileSize = align(FileOff, SectorSize);
 }
 
 // Visits all sections to assign incremental, non-overlapping RVAs and
@@ -358,20 +466,24 @@ void Writer::assignAddresses() {
                   sizeof(coff_section) * OutputSections.size();
   SizeOfHeaders +=
       Config->is64() ? sizeof(pe32plus_header) : sizeof(pe32_header);
-  SizeOfHeaders = RoundUpToAlignment(SizeOfHeaders, PageSize);
+  SizeOfHeaders = align(SizeOfHeaders, SectorSize);
   uint64_t RVA = 0x1000; // The first page is kept unmapped.
-  uint64_t FileOff = SizeOfHeaders;
+  FileSize = SizeOfHeaders;
+  // Move DISCARDABLE (or non-memory-mapped) sections to the end of file because
+  // the loader cannot handle holes.
+  std::stable_partition(
+      OutputSections.begin(), OutputSections.end(), [](OutputSection *S) {
+        return (S->getPermissions() & IMAGE_SCN_MEM_DISCARDABLE) == 0;
+      });
   for (OutputSection *Sec : OutputSections) {
     if (Sec->getName() == ".reloc")
       addBaserels(Sec);
     Sec->setRVA(RVA);
-    Sec->setFileOffset(FileOff);
-    RVA += RoundUpToAlignment(Sec->getVirtualSize(), PageSize);
-    FileOff += RoundUpToAlignment(Sec->getRawSize(), FileAlignment);
+    Sec->setFileOffset(FileSize);
+    RVA += align(Sec->getVirtualSize(), PageSize);
+    FileSize += align(Sec->getRawSize(), SectorSize);
   }
-  SizeOfImage = SizeOfHeaders + RoundUpToAlignment(RVA - 0x1000, PageSize);
-  FileSize = SizeOfHeaders +
-             RoundUpToAlignment(FileOff - SizeOfHeaders, FileAlignment);
+  SizeOfImage = SizeOfHeaders + align(RVA - 0x1000, PageSize);
 }
 
 template <typename PEHeaderTy> void Writer::writeHeader() {
@@ -391,14 +503,13 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   // Write COFF header
   auto *COFF = reinterpret_cast<coff_file_header *>(Buf);
   Buf += sizeof(*COFF);
-  COFF->Machine = Config->MachineType;
+  COFF->Machine = Config->Machine;
   COFF->NumberOfSections = OutputSections.size();
   COFF->Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
-  if (Config->is64()) {
+  if (Config->LargeAddressAware)
     COFF->Characteristics |= IMAGE_FILE_LARGE_ADDRESS_AWARE;
-  } else {
+  if (!Config->is64())
     COFF->Characteristics |= IMAGE_FILE_32BIT_MACHINE;
-  }
   if (Config->DLL)
     COFF->Characteristics |= IMAGE_FILE_DLL;
   if (!Config->Relocatable)
@@ -411,8 +522,8 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   Buf += sizeof(*PE);
   PE->Magic = Config->is64() ? PE32Header::PE32_PLUS : PE32Header::PE32;
   PE->ImageBase = Config->ImageBase;
-  PE->SectionAlignment = SectionAlignment;
-  PE->FileAlignment = FileAlignment;
+  PE->SectionAlignment = PageSize;
+  PE->FileAlignment = SectorSize;
   PE->MajorImageVersion = Config->MajorImageVersion;
   PE->MinorImageVersion = Config->MinorImageVersion;
   PE->MajorOperatingSystemVersion = Config->MajorOSVersion;
@@ -425,6 +536,9 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   if (!Config->NoEntry) {
     Defined *Entry = cast<Defined>(Config->Entry->repl());
     PE->AddressOfEntryPoint = Entry->getRVA();
+    // Pointer to thumb code must have the LSB set, so adjust it.
+    if (Config->Machine == ARMNT)
+      PE->AddressOfEntryPoint |= 1;
   }
   PE->SizeOfStackReserve = Config->StackReserve;
   PE->SizeOfStackCommit = Config->StackCommit;
@@ -479,10 +593,16 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     Dir[EXCEPTION_TABLE].RelativeVirtualAddress = Sec->getRVA();
     Dir[EXCEPTION_TABLE].Size = Sec->getVirtualSize();
   }
-  if (Symbol *Sym = Symtab->find("_tls_used")) {
+  if (Symbol *Sym = Symtab->findUnderscore("_tls_used")) {
     if (Defined *B = dyn_cast<Defined>(Sym->Body)) {
       Dir[TLS_TABLE].RelativeVirtualAddress = B->getRVA();
       Dir[TLS_TABLE].Size = 40;
+    }
+  }
+  if (Symbol *Sym = Symtab->findUnderscore("_load_config_used")) {
+    if (Defined *B = dyn_cast<Defined>(Sym->Body)) {
+      Dir[LOAD_CONFIG_TABLE].RelativeVirtualAddress = B->getRVA();
+      Dir[LOAD_CONFIG_TABLE].Size = Config->is64() ? 112 : 64;
     }
   }
 
@@ -509,39 +629,58 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   memcpy(Buf + 4, Strtab.data(), Strtab.size());
 }
 
-std::error_code Writer::openFile(StringRef Path) {
-  if (auto EC = FileOutputBuffer::create(Path, FileSize, Buffer,
-                                         FileOutputBuffer::F_executable)) {
-    llvm::errs() << "failed to open " << Path << ": " << EC.message() << "\n";
-    return EC;
-  }
-  return std::error_code();
+void Writer::openFile(StringRef Path) {
+  ErrorOr<std::unique_ptr<FileOutputBuffer>> BufferOrErr =
+      FileOutputBuffer::create(Path, FileSize, FileOutputBuffer::F_executable);
+  error(BufferOrErr, Twine("failed to open ") + Path);
+  Buffer = std::move(*BufferOrErr);
+}
+
+void Writer::fixSafeSEHSymbols() {
+  if (!SEHTable)
+    return;
+  Config->SEHTable->setRVA(SEHTable->getRVA());
+  Config->SEHCount->setVA(SEHTable->getSize() / 4);
 }
 
 // Write section contents to a mmap'ed file.
 void Writer::writeSections() {
   uint8_t *Buf = Buffer->getBufferStart();
   for (OutputSection *Sec : OutputSections) {
+    uint8_t *SecBuf = Buf + Sec->getFileOff();
     // Fill gaps between functions in .text with INT3 instructions
     // instead of leaving as NUL bytes (which can be interpreted as
     // ADD instructions).
     if (Sec->getPermissions() & IMAGE_SCN_CNT_CODE)
-      memset(Buf + Sec->getFileOff(), 0xCC, Sec->getRawSize());
-    for (Chunk *C : Sec->getChunks())
-      C->writeTo(Buf);
+      memset(SecBuf, 0xCC, Sec->getRawSize());
+    parallel_for_each(Sec->getChunks().begin(), Sec->getChunks().end(),
+                      [&](Chunk *C) { C->writeTo(SecBuf); });
   }
 }
 
 // Sort .pdata section contents according to PE/COFF spec 5.5.
 void Writer::sortExceptionTable() {
-  if (auto *Sec = findSection(".pdata")) {
-    // We assume .pdata contains function table entries only.
+  OutputSection *Sec = findSection(".pdata");
+  if (!Sec)
+    return;
+  // We assume .pdata contains function table entries only.
+  uint8_t *Begin = Buffer->getBufferStart() + Sec->getFileOff();
+  uint8_t *End = Begin + Sec->getVirtualSize();
+  if (Config->Machine == AMD64) {
     struct Entry { ulittle32_t Begin, End, Unwind; };
-    uint8_t *Buf = Buffer->getBufferStart() + Sec->getFileOff();
-    std::sort(reinterpret_cast<Entry *>(Buf),
-              reinterpret_cast<Entry *>(Buf + Sec->getVirtualSize()),
-              [](const Entry &A, const Entry &B) { return A.Begin < B.Begin; });
+    parallel_sort(
+        (Entry *)Begin, (Entry *)End,
+        [](const Entry &A, const Entry &B) { return A.Begin < B.Begin; });
+    return;
   }
+  if (Config->Machine == ARMNT) {
+    struct Entry { ulittle32_t Begin, Unwind; };
+    parallel_sort(
+        (Entry *)Begin, (Entry *)End,
+        [](const Entry &A, const Entry &B) { return A.Begin < B.Begin; });
+    return;
+  }
+  errs() << "warning: don't know how to handle .pdata.\n";
 }
 
 OutputSection *Writer::findSection(StringRef Name) {
@@ -590,15 +729,13 @@ OutputSection *Writer::createSection(StringRef Name) {
 
 // Dest is .reloc section. Add contents to that section.
 void Writer::addBaserels(OutputSection *Dest) {
-  std::vector<uint32_t> V;
-  StringRef Name = Config->is64() ? "__ImageBase" : "___ImageBase";
-  Defined *ImageBase = cast<Defined>(Symtab->find(Name)->Body);
+  std::vector<Baserel> V;
   for (OutputSection *Sec : OutputSections) {
     if (Sec == Dest)
       continue;
     // Collect all locations for base relocations.
     for (Chunk *C : Sec->getChunks())
-      C->getBaserels(&V, ImageBase);
+      C->getBaserels(&V);
     // Add the addresses to .reloc section.
     if (!V.empty())
       addBaserelBlocks(Dest, V);
@@ -607,12 +744,12 @@ void Writer::addBaserels(OutputSection *Dest) {
 }
 
 // Add addresses to .reloc section. Note that addresses are grouped by page.
-void Writer::addBaserelBlocks(OutputSection *Dest, std::vector<uint32_t> &V) {
+void Writer::addBaserelBlocks(OutputSection *Dest, std::vector<Baserel> &V) {
   const uint32_t Mask = ~uint32_t(PageSize - 1);
-  uint32_t Page = V[0] & Mask;
+  uint32_t Page = V[0].RVA & Mask;
   size_t I = 0, J = 1;
   for (size_t E = V.size(); J < E; ++J) {
-    uint32_t P = V[J] & Mask;
+    uint32_t P = V[J].RVA & Mask;
     if (P == Page)
       continue;
     BaserelChunk *Buf = BAlloc.Allocate();
@@ -625,6 +762,3 @@ void Writer::addBaserelBlocks(OutputSection *Dest, std::vector<uint32_t> &V) {
   BaserelChunk *Buf = BAlloc.Allocate();
   Dest->addChunk(new (Buf) BaserelChunk(Page, &V[I], &V[0] + J));
 }
-
-} // namespace coff
-} // namespace lld

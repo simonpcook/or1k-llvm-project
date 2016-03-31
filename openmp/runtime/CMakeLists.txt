@@ -23,6 +23,10 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}" OR
   set(LIBOMP_STANDALONE_BUILD TRUE)
 endif()
 
+# Set libomp version
+set(LIBOMP_VERSION_MAJOR 5)
+set(LIBOMP_VERSION_MINOR 0)
+
 # These include files are in the cmake/ subdirectory
 include(LibompUtils)
 include(LibompGetArchitecture)
@@ -82,11 +86,17 @@ libomp_check_variable(LIBOMP_ARCH 32e x86_64 32 i386 arm ppc64 ppc64le aarch64 m
 set(LIBOMP_LIB_TYPE normal CACHE STRING
   "Performance,Profiling,Stubs library (normal/profile/stubs)")
 libomp_check_variable(LIBOMP_LIB_TYPE normal profile stubs)
-set(LIBOMP_VERSION 5 CACHE STRING
-  "Produce libguide (version 4) or libomp (version 5)")
 set(LIBOMP_OMP_VERSION 41 CACHE STRING
   "The OpenMP version (41/40/30)")
 libomp_check_variable(LIBOMP_OMP_VERSION 41 40 30)
+# Set the OpenMP Year and Month assiociated with version
+if(${LIBOMP_OMP_VERSION} GREATER 40 OR ${LIBOMP_OMP_VERSION} EQUAL 40)
+  set(LIBOMP_OMP_YEAR_MONTH 201307)
+elseif(${LIBOMP_OMP_VERSION} GREATER 30 OR ${LIBOMP_OMP_VERSION} EQUAL 30)
+  set(LIBOMP_OMP_YEAR_MONTH 201107)
+else()
+  set(LIBOMP_OMP_YEAR_MONTH 200505)
+endif()
 set(LIBOMP_MIC_ARCH knc CACHE STRING
   "Intel(R) Many Integrated Core Architecture (Intel(R) MIC Architecture) (knf/knc).  Ignored if not Intel(R) MIC Architecture build.")
 if("${LIBOMP_ARCH}" STREQUAL "mic")
@@ -125,11 +135,19 @@ set(LIBOMP_FFLAGS "" CACHE STRING
 set(LIBOMP_COPY_EXPORTS TRUE CACHE STRING
   "Should exports be copied into source exports/ directory?")
 
+# HWLOC-support
+set(LIBOMP_USE_HWLOC FALSE CACHE BOOL
+  "Use Hwloc (http://www.open-mpi.org/projects/hwloc/) library for affinity?")
+set(LIBOMP_HWLOC_INSTALL_DIR /usr/local CACHE PATH
+  "Install path for hwloc library")
+
 # Get the build number from kmp_version.c
-libomp_get_build_number("${CMAKE_CURRENT_SOURCE_DIR}" LIBOMP_BUILD_NUMBER)
+libomp_get_build_number("${CMAKE_CURRENT_SOURCE_DIR}" LIBOMP_VERSION_BUILD)
+math(EXPR LIBOMP_VERSION_BUILD_YEAR "${LIBOMP_VERSION_BUILD}/10000")
+math(EXPR LIBOMP_VERSION_BUILD_MONTH_DAY "${LIBOMP_VERSION_BUILD}%10000")
 
 # Currently don't record any timestamps
-set(LIBOMP_DATE "No_Timestamp")
+set(LIBOMP_BUILD_DATE "No_Timestamp")
 
 # Architecture
 set(IA32 FALSE)
@@ -194,6 +212,7 @@ set(LIBOMP_BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(LIBOMP_SRC_DIR ${LIBOMP_BASE_DIR}/src)
 set(LIBOMP_TOOLS_DIR ${LIBOMP_BASE_DIR}/tools)
 set(LIBOMP_INC_DIR ${LIBOMP_SRC_DIR}/include/${LIBOMP_OMP_VERSION})
+set(LIBOMP_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
 # Enabling Fortran if it is needed
 if(${LIBOMP_FORTRAN_MODULES})
@@ -248,15 +267,19 @@ endif()
 
 # - stats-gathering enables OpenMP stats where things like the number of
 # parallel regions, clock ticks spent in particular openmp regions are recorded.
-# TODO: Make this a real feature check
 set(LIBOMP_STATS FALSE CACHE BOOL
   "Stats-Gathering functionality?")
 if(LIBOMP_STATS AND (NOT LIBOMP_HAVE_STATS))
   libomp_error_say("Stats-gathering functionality requested but not available")
 endif()
+# The stats functionality requires the std c++ library
+if(LIBOMP_STATS)
+  set(LIBOMP_USE_STDCPPLIB TRUE)
+endif()
 
 # OMPT-support
-# TODO: Make this a real feature check
+set(LIBOMP_OMPT_DEBUG FALSE CACHE BOOL
+  "Trace OMPT initialization?")
 set(LIBOMP_OMPT_SUPPORT FALSE CACHE BOOL
   "OMPT-support?")
 set(LIBOMP_OMPT_BLAME TRUE CACHE BOOL
@@ -265,6 +288,11 @@ set(LIBOMP_OMPT_TRACE TRUE CACHE BOOL
   "OMPT-trace?")
 if(LIBOMP_OMPT_SUPPORT AND (NOT LIBOMP_HAVE_OMPT_SUPPORT))
   libomp_error_say("OpenMP Tools Interface requested but not available")
+endif()
+
+# Error check hwloc support after config-ix has run
+if(LIBOMP_USE_HWLOC AND (NOT LIBOMP_HAVE_HWLOC))
+  libomp_error_say("Hwloc requested but not available")
 endif()
 
 # Setting final library name
@@ -290,10 +318,10 @@ if(${LIBOMP_STANDALONE_BUILD})
   libomp_say("Lib Type             -- ${LIBOMP_LIB_TYPE}")
   libomp_say("Fortran Modules      -- ${LIBOMP_FORTRAN_MODULES}")
   # will say development if all zeros
-  if(${LIBOMP_BUILD_NUMBER} STREQUAL 00000000)
+  if(${LIBOMP_VERSION_BUILD} STREQUAL 00000000)
     set(LIBOMP_BUILD Development)
   else()
-    set(LIBOMP_BUILD ${LIBOMP_BUILD_NUMBER})
+    set(LIBOMP_BUILD ${LIBOMP_VERSION_BUILD})
   endif()
   libomp_say("Build                -- ${LIBOMP_BUILD}")
   libomp_say("Use Stats-gathering  -- ${LIBOMP_STATS}")
@@ -305,7 +333,9 @@ if(${LIBOMP_STANDALONE_BUILD})
   endif()
   libomp_say("Use Adaptive locks   -- ${LIBOMP_USE_ADAPTIVE_LOCKS}")
   libomp_say("Use quad precision   -- ${LIBOMP_USE_QUAD_PRECISION}")
+  libomp_say("Use Hwloc library    -- ${LIBOMP_USE_HWLOC}")
 endif()
 
 add_subdirectory(src)
+add_subdirectory(test)
 

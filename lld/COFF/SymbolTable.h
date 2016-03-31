@@ -1,4 +1,4 @@
-//===- SymbolTable.h ------------------------------------------------------===//
+//===- SymbolTable.h --------------------------------------------*- C++ -*-===//
 //
 //                             The LLVM Linker
 //
@@ -15,6 +15,13 @@
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/raw_ostream.h"
+
+#ifdef _MSC_VER
+// <future> depends on <eh.h> for __uncaught_exception.
+#include <eh.h>
+#endif
+
+#include <future>
 
 namespace llvm {
 struct LTOCodeGenerator;
@@ -43,19 +50,20 @@ class SymbolTable {
 public:
   void addFile(std::unique_ptr<InputFile> File);
   std::vector<std::unique_ptr<InputFile>> &getFiles() { return Files; }
-  std::error_code step();
-  std::error_code run();
+  void step();
+  void run();
   bool queueEmpty();
 
   // Print an error message on undefined symbols. If Resolve is true, try to
   // resolve any undefined symbols and update the symbol table accordingly.
-  bool reportRemainingUndefines(bool Resolve);
+  void reportRemainingUndefines(bool Resolve);
 
   // Returns a list of chunks of selected symbols.
   std::vector<Chunk *> getChunks();
 
   // Returns a symbol for a given name. Returns a nullptr if not found.
   Symbol *find(StringRef Name);
+  Symbol *findUnderscore(StringRef Name);
 
   // Occasionally we have to resolve an undefined symbol to its
   // mangled symbol. This function tries to find a mangled name
@@ -67,10 +75,10 @@ public:
   // Print a layout map to OS.
   void printMap(llvm::raw_ostream &OS);
 
-  // Build a COFF object representing the combined contents of BitcodeFiles
-  // and add it to the symbol table. Called after all files are added and
-  // before the writer writes results to a file.
-  std::error_code addCombinedLTOObject();
+  // Build a set of COFF objects representing the combined contents of
+  // BitcodeFiles and add them to the symbol table. Called after all files are
+  // added and before the writer writes results to a file.
+  void addCombinedLTOObjects();
 
   // The writer needs to handle DLL import libraries specially in
   // order to create the import descriptor table.
@@ -81,31 +89,33 @@ public:
 
   // Creates an Undefined symbol for a given name.
   Undefined *addUndefined(StringRef Name);
-  void addAbsolute(StringRef Name, uint64_t VA);
+  DefinedRelative *addRelative(StringRef Name, uint64_t VA);
+  DefinedAbsolute *addAbsolute(StringRef Name, uint64_t VA);
 
   // A list of chunks which to be added to .rdata.
   std::vector<Chunk *> LocalImportChunks;
 
 private:
-  std::error_code readArchives();
-  std::error_code readObjects();
+  void readArchives();
+  void readObjects();
 
-  std::error_code addSymbol(SymbolBody *New);
+  void addSymbol(SymbolBody *New);
   void addLazy(Lazy *New, std::vector<Symbol *> *Accum);
   Symbol *insert(SymbolBody *New);
   StringRef findByPrefix(StringRef Prefix);
 
-  std::error_code addMemberFile(Lazy *Body);
-  ErrorOr<ObjectFile *> createLTOObject(llvm::LTOCodeGenerator *CG);
+  void addMemberFile(Lazy *Body);
+  void addCombinedLTOObject(ObjectFile *Obj);
+  std::vector<ObjectFile *> createLTOObjects(llvm::LTOCodeGenerator *CG);
 
   llvm::DenseMap<StringRef, Symbol *> Symtab;
 
   std::vector<std::unique_ptr<InputFile>> Files;
-  std::vector<ArchiveFile *> ArchiveQueue;
-  std::vector<InputFile *> ObjectQueue;
+  std::vector<std::future<ArchiveFile *>> ArchiveQueue;
+  std::vector<std::future<InputFile *>> ObjectQueue;
 
   std::vector<BitcodeFile *> BitcodeFiles;
-  std::unique_ptr<MemoryBuffer> LTOMB;
+  std::vector<SmallVector<char, 0>> Objs;
   llvm::BumpPtrAllocator Alloc;
 };
 

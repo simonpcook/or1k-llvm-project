@@ -21,7 +21,11 @@ VERSION {
         # "Normal" symbols.
         #
         omp_*;     # Standard OpenMP functions.
-        ompt_initialize;     # OMPT initialization interface
+
+        #
+        # OMPT API
+        #
+        ompt_tool;           # OMPT initialization interface
         ompt_control;        # OMPT control interface
         
         #
@@ -92,7 +96,6 @@ VERSION {
         __kmp_wait_64;
         __kmp_wait_oncore;
         __kmp_wait_yield_4;
-        __kmp_wait_yield_8;
 
         # ittnotify symbols to be used by debugger
         __kmp_itt_fini_ittlib;

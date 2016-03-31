@@ -10,6 +10,7 @@
 #include "lldb/Breakpoint/StoppointCallbackContext.h"
 #include "lldb/Core/DataBuffer.h"
 #include "lldb/Core/DataBufferHeap.h"
+#include "lldb/Core/Debugger.h"
 #include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
@@ -118,6 +119,8 @@ DynamicLoaderMacOSXDYLD::CreateInstance (Process* process, bool force)
                 case llvm::Triple::Darwin:
                 case llvm::Triple::MacOSX:
                 case llvm::Triple::IOS:
+                case llvm::Triple::TvOS:
+                case llvm::Triple::WatchOS:
                     create = triple_ref.getVendor() == llvm::Triple::Apple;
                     break;
                 default:
@@ -627,14 +630,14 @@ DynamicLoaderMacOSXDYLD::NotifyBreakpointHit (void *baton,
         ValueList argument_values;
         Value input_value;
         
-        ClangASTType clang_void_ptr_type = clang_ast_context->GetBasicType(eBasicTypeVoid).GetPointerType();
-        ClangASTType clang_uint32_type = clang_ast_context->GetBuiltinTypeForEncodingAndBitSize(lldb::eEncodingUint, 32);
+        CompilerType clang_void_ptr_type = clang_ast_context->GetBasicType(eBasicTypeVoid).GetPointerType();
+        CompilerType clang_uint32_type = clang_ast_context->GetBuiltinTypeForEncodingAndBitSize(lldb::eEncodingUint, 32);
         input_value.SetValueType (Value::eValueTypeScalar);
-        input_value.SetClangType (clang_uint32_type);
+        input_value.SetCompilerType (clang_uint32_type);
 //        input_value.SetContext (Value::eContextTypeClangType, clang_uint32_type);
         argument_values.PushValue (input_value);
         argument_values.PushValue (input_value);
-        input_value.SetClangType (clang_void_ptr_type);
+        input_value.SetCompilerType (clang_void_ptr_type);
         //        input_value.SetContext (Value::eContextTypeClangType, clang_void_ptr_type);
         argument_values.PushValue (input_value);
         
@@ -667,6 +670,10 @@ DynamicLoaderMacOSXDYLD::NotifyBreakpointHit (void *baton,
                 }
             }
         }
+    }
+    else
+    {
+        process->GetTarget().GetDebugger().GetAsyncErrorStream()->Printf("No ABI plugin located for triple %s -- shared libraries will not be registered!\n", process->GetTarget().GetArchitecture().GetTriple().getTriple().c_str());
     }
     
     // Return true to stop the target, false to just let the target run
@@ -718,7 +725,7 @@ DynamicLoaderMacOSXDYLD::ReadAllImageInfosStructure ()
         const size_t count_v13 = count_v11 +
                                  addr_size +         // sharedCacheSlide
                                  sizeof (uuid_t);    // sharedCacheUUID
-        (void) count_v13; // Avoid warnings when assertions are off.
+        UNUSED_IF_ASSERT_DISABLED(count_v13);
         assert (sizeof (buf) >= count_v13);
 
         Error error;
@@ -1318,7 +1325,7 @@ DynamicLoaderMacOSXDYLD::ReadMachHeader (lldb::addr_t addr, llvm::MachO::mach_he
         ::memset (header, 0, sizeof(llvm::MachO::mach_header));
 
         // Get the magic byte unswapped so we can figure out what we are dealing with
-        DataExtractor data(header_bytes.GetBytes(), header_bytes.GetByteSize(), lldb::endian::InlHostByteOrder(), 4);
+        DataExtractor data(header_bytes.GetBytes(), header_bytes.GetByteSize(), endian::InlHostByteOrder(), 4);
         header->magic = data.GetU32(&offset);
         lldb::addr_t load_cmd_addr = addr;
         data.SetByteOrder(DynamicLoaderMacOSXDYLD::GetByteOrderFromMagic(header->magic));
@@ -2045,11 +2052,11 @@ DynamicLoaderMacOSXDYLD::GetByteOrderFromMagic (uint32_t magic)
     {
         case llvm::MachO::MH_MAGIC:
         case llvm::MachO::MH_MAGIC_64:
-            return lldb::endian::InlHostByteOrder();
+            return endian::InlHostByteOrder();
             
         case llvm::MachO::MH_CIGAM:
         case llvm::MachO::MH_CIGAM_64:
-            if (lldb::endian::InlHostByteOrder() == lldb::eByteOrderBig)
+            if (endian::InlHostByteOrder() == lldb::eByteOrderBig)
                 return lldb::eByteOrderLittle;
             else
                 return lldb::eByteOrderBig;

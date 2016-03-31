@@ -132,7 +132,7 @@ int SymbolBody::compare(SymbolBody *Other) {
     auto *RHS = cast<Undefined>(Other);
     // Tie if both undefined symbols have different weak aliases.
     if (LHS->WeakAlias && RHS->WeakAlias) {
-      if (LHS->WeakAlias->repl() != RHS->WeakAlias->repl())
+      if (LHS->WeakAlias->getName() != RHS->WeakAlias->getName())
         return 0;
       return uintptr_t(LHS) < uintptr_t(RHS) ? 1 : -1;
     }
@@ -143,6 +143,7 @@ int SymbolBody::compare(SymbolBody *Other) {
   case DefinedImportThunkKind:
   case DefinedImportDataKind:
   case DefinedAbsoluteKind:
+  case DefinedRelativeKind:
     // These all simply tie.
     return 0;
   }
@@ -178,6 +179,8 @@ uint64_t Defined::getFileOff() {
     llvm_unreachable("There is no file offset for a bitcode symbol.");
   case DefinedAbsoluteKind:
     llvm_unreachable("Cannot get a file offset for an absolute symbol.");
+  case DefinedRelativeKind:
+    llvm_unreachable("Cannot get a file offset for a relative symbol.");
   case LazyKind:
   case UndefinedKind:
     llvm_unreachable("Cannot get a file offset for an undefined symbol.");
@@ -193,11 +196,19 @@ COFFSymbolRef DefinedCOFF::getCOFFSymbol() {
   return COFFSymbolRef(reinterpret_cast<const coff_symbol32 *>(Sym));
 }
 
-ErrorOr<std::unique_ptr<InputFile>> Lazy::getMember() {
-  auto MBRefOrErr = File->getMember(&Sym);
-  if (auto EC = MBRefOrErr.getError())
-    return EC;
-  MemoryBufferRef MBRef = MBRefOrErr.get();
+DefinedImportThunk::DefinedImportThunk(StringRef Name, DefinedImportData *S,
+                                       uint16_t Machine)
+    : Defined(DefinedImportThunkKind, Name) {
+  switch (Machine) {
+  case AMD64: Data.reset(new ImportThunkChunkX64(S)); return;
+  case I386:  Data.reset(new ImportThunkChunkX86(S)); return;
+  case ARMNT: Data.reset(new ImportThunkChunkARM(S)); return;
+  default:    llvm_unreachable("unknown machine type");
+  }
+}
+
+std::unique_ptr<InputFile> Lazy::getMember() {
+  MemoryBufferRef MBRef = File->getMember(&Sym);
 
   // getMember returns an empty buffer if the member was already
   // read from the library.
@@ -209,17 +220,15 @@ ErrorOr<std::unique_ptr<InputFile>> Lazy::getMember() {
     return std::unique_ptr<InputFile>(new ImportFile(MBRef));
 
   std::unique_ptr<InputFile> Obj;
-  if (Magic == file_magic::coff_object) {
+  if (Magic == file_magic::coff_object)
     Obj.reset(new ObjectFile(MBRef));
-  } else if (Magic == file_magic::bitcode) {
+  else if (Magic == file_magic::bitcode)
     Obj.reset(new BitcodeFile(MBRef));
-  } else {
-    llvm::errs() << File->getName() << ": unknown file type\n";
-    return make_error_code(LLDError::InvalidFile);
-  }
+  else
+    error(Twine(File->getName()) + ": unknown file type");
 
   Obj->setParentName(File->getName());
-  return std::move(Obj);
+  return Obj;
 }
 
 Defined *Undefined::getWeakAlias() {

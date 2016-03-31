@@ -191,6 +191,24 @@ read packet: OK
 This packet must be sent  _prior_ to sending a "A" packet.
 
 //----------------------------------------------------------------------
+// QListThreadsInStopReply
+//
+// BRIEF
+//  Enable the threads: and thread-pcs: data in the question-mark packet
+//  ("T packet") responses when the stub reports that a program has 
+//  stopped executing.
+//
+// PRIORITY TO IMPLEMENT
+//  Performance.  This is a performance benefit to lldb if the thread id's
+//  and thread pc values are provided to lldb in the T stop packet -- if
+//  they are not provided to lldb, lldb will likely need to send one to
+//  two packets per thread to fetch the data at every private stop.
+//----------------------------------------------------------------------
+
+send packet: QListThreadsInStopReply
+read packet: OK
+
+//----------------------------------------------------------------------
 // "qRegisterInfo<hex-reg-id>"
 //
 // BRIEF
@@ -201,6 +219,12 @@ This packet must be sent  _prior_ to sending a "A" packet.
 //  This means if new registers are ever added to a remote target, they
 //  will get picked up automatically, and allows registers to change
 //  depending on the actual CPU type that is used.
+//
+//  NB: As of summer 2015, lldb can get register information from the 
+//  "qXfer:features:read:target.xml" FSF gdb standard register packet
+//  where the stub provides register definitions in an XML file.
+//  If qXfer:features:read:target.xml is supported, qRegisterInfo does
+//  not need to be implemented.
 //----------------------------------------------------------------------
 
 With LLDB, for register information, remote GDB servers can add
@@ -569,7 +593,7 @@ cputype: is a number that is the mach-o CPU type that is being debugged (base 10
 cpusubtype: is a number that is the mach-o CPU subtype type that is being debugged (base 10)
 triple: a string for the target triple (x86_64-apple-macosx) that can be used to specify arch + vendor + os in one entry
 vendor: a string for the vendor (apple), not needed if "triple" is specified
-ostype: a string for the OS being debugged (darwin, linux, freebsd), not needed if "triple" is specified
+ostype: a string for the OS being debugged (macosx, linux, freebsd, ios, watchos), not needed if "triple" is specified
 endian: is one of "little", "big", or "pdp"
 ptrsize: an unsigned number that represents how big pointers are in bytes on the debug target
 hostname: the hostname of the host that is running the GDB server if available
@@ -579,6 +603,9 @@ os_version: a version string that represents the current OS version (10.8.2)
 watchpoint_exceptions_received: one of "before" or "after" to specify if a watchpoint is triggered before or after the pc when it stops
 default_packet_timeout: an unsigned number that specifies the default timeout in seconds
 distribution_id: optional. For linux, specifies distribution id (e.g. ubuntu, fedora, etc.)
+osmajor: optional, specifies the major version number of the OS (e.g. for Mac OS X 10.11.2, it would be 10)
+osminor: optional, specifies the minor version number of the OS (e.g. for Mac OS X 10.11.2, it would be 11)
+ospatch: optional, specifies the patch level number of the OS (e.g. for Mac OS X 10.11.2, it would be 2)
 
 //----------------------------------------------------------------------
 // "qGDBServerVersion"
@@ -1114,6 +1141,32 @@ for this region.
 //                          if none of the key/value pairs are enough to
 //                          describe why something stopped.
 //
+//  "threads"     comma-sep-base16  A list of thread ids for all threads (including
+//                                  the thread that we're reporting as stopped) that
+//                                  are live in the process right now.  lldb may
+//                                  request that this be included in the T packet via
+//                                  the QListThreadsInStopReply packet earlier in
+//                                  the debug session.
+//                                  
+//                                  Example:
+//                                  threads:63387,633b2,63424,63462,63486;
+//
+//  "thread-pcs"  comma-sep-base16  A list of pc values for all threads that currently
+//                                  exist in the process, including the thread that
+//                                  this T packet is reporting as stopped.
+//                                  This key-value pair will only be emitted when the
+//                                  "threads" key is already included in the T packet.
+//                                  The pc values correspond to the threads reported
+//                                  in the "threads" list.  The number of pcs in the
+//                                  "thread-pcs" list will be the same as the number of 
+//                                  threads in the "threads" list.
+//                                  lldb may request that this be included in the T 
+//                                  packet via the QListThreadsInStopReply packet 
+//                                  earlier in the debug session.
+//                                  
+//                                  Example:
+//                                  thread-pcs:dec14,2cf872b0,2cf8681c,2d02d68c,2cf716a8;
+//
 // BEST PRACTICES:
 //  Since register values can be supplied with this packet, it is often useful
 //  to return the PC, SP, FP, LR (if any), and FLAGS registers so that separate
@@ -1530,3 +1583,93 @@ for this region.
 //  Low.  If this packet is absent, lldb will read the Mach-O headers/load
 //  commands out of memory.
 //----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+// "jThreadsInfo"
+//
+// BRIEF
+//  Ask for the server for thread stop information of all threads.
+//
+// PRIORITY TO IMPLEMENT
+//  Low. This is a performance optimization, which speeds up debugging by avoiding
+//  multiple round-trips for retrieving thread information. The information from this
+//  packet can be retrieved using a combination of qThreadStopInfo and m packets.
+//----------------------------------------------------------------------
+
+The data in this packet is very similar to the stop reply packets, but is packaged in
+JSON and uses JSON arrays where applicable. The JSON output looks like:
+    [
+      { "tid":1580681,
+        "metype":6,
+        "medata":[2,0],
+        "reason":"exception",
+        "qaddr":140735118423168,
+        "registers": {
+          "0":"8000000000000000",
+          "1":"0000000000000000",
+          "2":"20fabf5fff7f0000",
+          "3":"e8f8bf5fff7f0000",
+          "4":"0100000000000000",
+          "5":"d8f8bf5fff7f0000",
+          "6":"b0f8bf5fff7f0000",
+          "7":"20f4bf5fff7f0000",
+          "8":"8000000000000000",
+          "9":"61a8db78a61500db",
+          "10":"3200000000000000",
+          "11":"4602000000000000",
+          "12":"0000000000000000",
+          "13":"0000000000000000",
+          "14":"0000000000000000",
+          "15":"0000000000000000",
+          "16":"960b000001000000",
+          "17":"0202000000000000",
+          "18":"2b00000000000000",
+          "19":"0000000000000000",
+          "20":"0000000000000000"
+        },
+        "memory":[
+          {"address":140734799804592,"bytes":"c8f8bf5fff7f0000c9a59e8cff7f0000"},
+          {"address":140734799804616,"bytes":"00000000000000000100000000000000"}
+        ]
+      }
+    ]
+
+It contains an array of dictionaries with all of the key value pairs that are
+normally in the stop reply packet, including the expedited registers. The registers are
+passed as hex-encoded JSON string in debuggee-endian byte order. Note that the register
+numbers are decimal numbers, unlike the stop-reply packet, where they are written in
+hex. The packet also contains expedited memory in the "memory" key.  This allows the
+server to expedite memory that the client is likely to use (e.g., areas around the
+stack pointer, which are needed for computing backtraces) and it reduces the packet
+count.
+
+On MacOSX with debugserver, we expedite the frame pointer backchain for a thread
+(up to 256 entries) by reading 2 pointers worth of bytes at the frame pointer (for
+the previous FP and PC), and follow the backchain. Most backtraces on MacOSX and
+iOS now don't require us to read any memory!
+
+//----------------------------------------------------------------------
+// "qQueryGDBServer"
+//
+// BRIEF
+//  Ask the platform for the list of gdbservers we have to connect
+//
+// PRIORITY TO IMPLEMENT
+//  Low. The packet is required to support connecting to gdbserver started
+//  by the platform instance automatically.
+//----------------------------------------------------------------------
+
+If the remote platform automatically started one or more gdbserver instance (without
+lldb asking it) then it have to return the list of port number or socket name for
+each of them what can be used by lldb to connect to those instances.
+
+The data in this packet is a JSON array of JSON objects with the following keys:
+"port":        <the port number to connect>        (optional)
+"socket_name": <the name of the socket to connect> (optional)
+
+Example packet:
+[
+    { "port": 1234 },
+    { "port": 5432 },
+    { "socket_name": "foo" }
+]

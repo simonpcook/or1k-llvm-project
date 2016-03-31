@@ -1,4 +1,4 @@
-//===- Symbols.h ----------------------------------------------------------===//
+//===- Symbols.h ------------------------------------------------*- C++ -*-===//
 //
 //                             The LLVM Linker
 //
@@ -27,8 +27,6 @@ using llvm::object::Archive;
 using llvm::object::COFFSymbolRef;
 using llvm::object::coff_import_header;
 using llvm::object::coff_symbol_generic;
-using llvm::object::coff_symbol16;
-using llvm::object::coff_symbol32;
 
 class ArchiveFile;
 class BitcodeFile;
@@ -41,7 +39,7 @@ class SymbolBody;
 // The resolver updates SymbolBody pointers as it resolves symbols.
 struct Symbol {
   explicit Symbol(SymbolBody *P) : Body(P) {}
-  std::atomic<SymbolBody *> Body;
+  SymbolBody *Body;
 };
 
 // The base class for real symbol classes.
@@ -59,6 +57,7 @@ public:
     DefinedImportThunkKind,
     DefinedImportDataKind,
     DefinedAbsoluteKind,
+    DefinedRelativeKind,
     DefinedBitcodeKind,
 
     UndefinedKind,
@@ -83,7 +82,7 @@ public:
   // has chosen the object among other objects having the same name,
   // you can access P->Backref->Body to get the resolver's result.
   void setBackref(Symbol *P) { Backref = P; }
-  SymbolBody *repl() { return Backref ? Backref->Body.load() : this; }
+  SymbolBody *repl() { return Backref ? Backref->Body : this; }
 
   // Decides which symbol should "win" in the symbol table, this or
   // the Other. Returns 1 if this wins, -1 if the Other wins, or 0 if
@@ -129,6 +128,18 @@ public:
   // Returns the file offset of this symbol in the final executable.
   // The writer uses this information to apply relocations.
   uint64_t getFileOff();
+
+  // Returns the RVA relative to the beginning of the output section.
+  // Used to implement SECREL relocation type.
+  uint64_t getSecrel();
+
+  // Returns the output section index.
+  // Used to implement SECTION relocation type.
+  uint64_t getSectionIndex();
+
+  // Returns true if this symbol points to an executable (e.g. .text) section.
+  // Used to implement ARM relocations.
+  bool isExecutable();
 };
 
 // Symbols defined via a COFF object file.
@@ -155,7 +166,7 @@ protected:
 class DefinedRegular : public DefinedCOFF {
 public:
   DefinedRegular(ObjectFile *F, COFFSymbolRef S, SectionChunk *C)
-      : DefinedCOFF(DefinedRegularKind, F, S), Data(&C->Ptr) {
+      : DefinedCOFF(DefinedRegularKind, F, S), Data(&C->Repl) {
     IsExternal = S.isExternal();
     IsCOMDAT = C->isCOMDAT();
   }
@@ -164,14 +175,8 @@ public:
     return S->kind() == DefinedRegularKind;
   }
 
-  uint64_t getFileOff() {
-    return (*Data)->getFileOff() + Sym->Value;
-  }
-
   uint64_t getRVA() { return (*Data)->getRVA() + Sym->Value; }
   bool isCOMDAT() { return IsCOMDAT; }
-  bool isLive() const { return (*Data)->isLive(); }
-  void markLive() { (*Data)->markLive(); }
   SectionChunk *getChunk() { return *Data; }
   uint32_t getValue() { return Sym->Value; }
 
@@ -191,13 +196,10 @@ public:
   }
 
   uint64_t getRVA() { return Data->getRVA(); }
-  uint64_t getFileOff() { return Data->getFileOff(); }
 
 private:
   friend SymbolBody;
-
   uint64_t getSize() { return Sym->Value; }
-
   CommonChunk *Data;
 };
 
@@ -217,9 +219,30 @@ public:
   }
 
   uint64_t getRVA() { return VA - Config->ImageBase; }
+  void setVA(uint64_t V) { VA = V; }
 
 private:
   uint64_t VA;
+};
+
+// This is a kind of absolute symbol but relative to the image base.
+// Unlike absolute symbols, relocations referring this kind of symbols
+// are subject of the base relocation. This type is used rarely --
+// mainly for __ImageBase.
+class DefinedRelative : public Defined {
+public:
+  explicit DefinedRelative(StringRef Name, uint64_t V = 0)
+      : Defined(DefinedRelativeKind, Name), RVA(V) {}
+
+  static bool classof(const SymbolBody *S) {
+    return S->kind() == DefinedRelativeKind;
+  }
+
+  uint64_t getRVA() { return RVA; }
+  void setRVA(uint64_t V) { RVA = V; }
+
+private:
+  uint64_t RVA;
 };
 
 // This class represents a symbol defined in an archive file. It is
@@ -236,7 +259,7 @@ public:
 
   // Returns an object file for this symbol, or a nullptr if the file
   // was already returned.
-  ErrorOr<std::unique_ptr<InputFile>> getMember();
+  std::unique_ptr<InputFile> getMember();
 
   int getFileIndex() { return File->Index; }
 
@@ -284,8 +307,6 @@ public:
   }
 
   uint64_t getRVA() { return Location->getRVA(); }
-  uint64_t getFileOff() { return Location->getFileOff(); }
-
   StringRef getDLLName() { return DLLName; }
   StringRef getExternalName() { return ExternalName; }
   void setLocation(Chunk *AddressTable) { Location = AddressTable; }
@@ -305,20 +326,17 @@ private:
 // a regular name. A function pointer is given as a DefinedImportData.
 class DefinedImportThunk : public Defined {
 public:
-  DefinedImportThunk(StringRef N, DefinedImportData *S)
-      : Defined(DefinedImportThunkKind, N), Data(S) {}
+  DefinedImportThunk(StringRef Name, DefinedImportData *S, uint16_t Machine);
 
   static bool classof(const SymbolBody *S) {
     return S->kind() == DefinedImportThunkKind;
   }
 
-  uint64_t getRVA() { return Data.getRVA(); }
-  uint64_t getFileOff() { return Data.getFileOff(); }
-
-  Chunk *getChunk() { return &Data; }
+  uint64_t getRVA() { return Data->getRVA(); }
+  Chunk *getChunk() { return Data.get(); }
 
 private:
-  ImportThunkChunk Data;
+  std::unique_ptr<Chunk> Data;
 };
 
 // If you have a symbol "__imp_foo" in your object file, a symbol name
@@ -336,8 +354,6 @@ public:
   }
 
   uint64_t getRVA() { return Data.getRVA(); }
-  uint64_t getFileOff() { return Data.getFileOff(); }
-
   Chunk *getChunk() { return &Data; }
 
 private:
@@ -364,6 +380,8 @@ inline uint64_t Defined::getRVA() {
   switch (kind()) {
   case DefinedAbsoluteKind:
     return cast<DefinedAbsolute>(this)->getRVA();
+  case DefinedRelativeKind:
+    return cast<DefinedRelative>(this)->getRVA();
   case DefinedImportDataKind:
     return cast<DefinedImportData>(this)->getRVA();
   case DefinedImportThunkKind:
@@ -385,14 +403,5 @@ inline uint64_t Defined::getRVA() {
 
 } // namespace coff
 } // namespace lld
-
-// Support isa<>, cast<> and dyn_cast<> for Symbol::Body.
-namespace llvm {
-template <typename T>
-struct simplify_type<std::atomic<T *>> {
-  typedef T *SimpleType;
-  static T *getSimplifiedValue(std::atomic<T *> &A) { return A.load(); }
-};
-}
 
 #endif

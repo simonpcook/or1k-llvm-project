@@ -1,5 +1,4 @@
 add_subdirectory(clang-apply-replacements)
-add_subdirectory(clang-modernize)
 add_subdirectory(clang-rename)
 add_subdirectory(modularize)
 if(CLANG_ENABLE_STATIC_ANALYZER)
@@ -12,7 +11,14 @@ add_subdirectory(tool-template)
 
 # Add the common testsuite after all the tools.
 # TODO: Support tests with more granularity when features are off?
-if(CLANG_ENABLE_STATIC_ANALYZER)
+if(CLANG_ENABLE_STATIC_ANALYZER AND CLANG_INCLUDE_TESTS)
 add_subdirectory(test)
 add_subdirectory(unittests)
 endif()
+
+option(CLANG_TOOLS_EXTRA_INCLUDE_DOCS "Generate build targets for the Clang Extra Tools docs."
+  ${LLVM_INCLUDE_DOCS})
+if( CLANG_TOOLS_EXTRA_INCLUDE_DOCS )
+  add_subdirectory(docs)
+endif()
+

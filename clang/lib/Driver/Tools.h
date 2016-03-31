@@ -439,32 +439,33 @@ public:
 
 /// or1klinux -- Directly call GNU Binutils assembler and linker
 namespace or1klinux {
-  class LLVM_LIBRARY_VISIBILITY Assemble : public Tool  {
-  public:
-    Assemble(const ToolChain &TC) : Tool("or1klinux::Assemble", "assembler",
-                                         TC) {}
+class LLVM_LIBRARY_VISIBILITY Assemble : public Tool  {
+public:
+  Assemble(const ToolChain &TC)
+    : Tool("or1klinux::Assemble", "assembler", TC) {}
 
-    virtual bool hasIntegratedCPP() const { return false; }
+  bool hasIntegratedCPP() const override { return false; }
 
-    virtual void ConstructJob(Compilation &C, const JobAction &JA,
-                              const InputInfo &Output,
-                              const InputInfoList &Inputs,
-                              const ArgList &TCArgs,
-                              const char *LinkingOutput) const;
-  };
-  class LLVM_LIBRARY_VISIBILITY Link : public Tool  {
-  public:
-    Link(const ToolChain &TC) : Tool("or1klinux::Link", "linker", TC) {}
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output,
+                    const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+class LLVM_LIBRARY_VISIBILITY Link : public Tool  {
+public:
+  Link(const ToolChain &TC)
+    : Tool("or1klinux::Link", "linker", TC) {}
 
-    virtual bool hasIntegratedCPP() const { return false; }
-    virtual bool isLinkJob() const { return true; }
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
 
-    virtual void ConstructJob(Compilation &C, const JobAction &JA,
-                              const InputInfo &Output,
-                              const InputInfoList &Inputs,
-                              const ArgList &TCArgs,
-                              const char *LinkingOutput) const;
-  };
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output,
+                    const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
 } // end namespace or1klinux
 
 /// freebsd -- Directly call GNU Binutils assembler and linker

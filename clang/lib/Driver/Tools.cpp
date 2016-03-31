@@ -7925,7 +7925,7 @@ void or1klinux::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
 
   const char *Exec =
     Args.MakeArgString(getToolChain().GetProgramPath("as"));
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
+  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
 }
 
 void or1klinux::Link::ConstructJob(Compilation &C, const JobAction &JA,
@@ -7988,7 +7988,7 @@ void or1klinux::Link::ConstructJob(Compilation &C, const JobAction &JA,
 
   const char *Exec =
     Args.MakeArgString(getToolChain().GetProgramPath("ld"));
-  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
+  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
 }
 
 void freebsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,

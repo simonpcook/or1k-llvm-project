@@ -7512,35 +7512,29 @@ public:
 
 // OR1K abstract base class
 class OR1KTargetInfo : public TargetInfo {
-  static const char * const GCCRegNames[];
-
 public:
   OR1KTargetInfo(const llvm::Triple &Triple) : TargetInfo(Triple) {
     LongLongAlign = 32;
     DoubleAlign = 32;
     LongDoubleAlign = 32;
     SuitableAlign = 32;
-    DescriptionString = "E-m:e-p:32:32-i8:8:8-i16:16:16-i64:32:32-"
-                        "f64:32:32-v64:32:32-v128:32:32-a0:0:32-n32";
+    DataLayoutString = "E-m:e-p:32:32-i8:8:8-i16:16:16-i64:32:32-"
+                       "f64:32:32-v64:32:32-v128:32:32-a0:0:32-n32";
     UserLabelPrefix = "";
   }
 
-  void getTargetBuiltins(const Builtin::Info *&Records,
-                                 unsigned &NumRecords) const override {
-    // FIXME: Implement.
-    Records = 0;
-    NumRecords = 0;
+  ArrayRef<Builtin::Info> getTargetBuiltins() const override {
+    return None;
   }
 
   void getTargetDefines(const LangOptions &Opts,
-                                MacroBuilder &Builder) const override;
+                        MacroBuilder &Builder) const override;
 
   bool hasFeature(StringRef Feature) const override {
     return Feature == "or1k";
   }
   void setFeatureEnabled(llvm::StringMap<bool> &Features,
-                                 StringRef Name,
-                                 bool Enabled) const override {
+                         StringRef Name, bool Enabled) const override {
     if (Name == "mul" ||
         Name == "div" ||
         Name == "ror" ||
@@ -7555,10 +7549,8 @@ public:
     return TargetInfo::VoidPtrBuiltinVaList;
   }
 
-  void getGCCRegNames(const char * const *&Names,
-                      unsigned &NumNames) const override;
-  void getGCCRegAliases(const GCCRegAlias *&Aliases,
-                        unsigned &NumAliases) const override;
+  ArrayRef<const char *> getGCCRegNames() const override;
+  ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override;
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &Info) const override {
     switch (*Name) {
@@ -7617,22 +7609,18 @@ void OR1KTargetInfo::getTargetDefines(const LangOptions &Opts,
   Builder.defineMacro("__REGISTER_PREFIX__", "");
 }
 
-const char * const OR1KTargetInfo::GCCRegNames[] = {
-  "r0",   "r1",   "r2",   "r3",   "r4",   "r5",   "r6",   "r7",
-  "r8",   "r9",   "r10",  "r11",  "r12",  "r13",  "r14",  "r15",
-  "r16",  "r17",  "r18",  "r19",  "r20",  "r21",  "r22",  "r23",
-  "r24",  "r25",  "r26",  "r27",  "r28",  "r29",  "r30",  "r31"
-};
-void OR1KTargetInfo::getGCCRegNames(const char * const *&Names,
-                                    unsigned &NumNames) const {
-  Names = GCCRegNames;
-  NumNames = llvm::array_lengthof(GCCRegNames);
+ArrayRef<const char *> OR1KTargetInfo::getGCCRegNames() const {
+  static const char * const GCCRegNames[] = {
+    "r0",   "r1",   "r2",   "r3",   "r4",   "r5",   "r6",   "r7",
+    "r8",   "r9",   "r10",  "r11",  "r12",  "r13",  "r14",  "r15",
+    "r16",  "r17",  "r18",  "r19",  "r20",  "r21",  "r22",  "r23",
+    "r24",  "r25",  "r26",  "r27",  "r28",  "r29",  "r30",  "r31"
+  };
+  return llvm::makeArrayRef(GCCRegNames);
 }
 
-void OR1KTargetInfo::getGCCRegAliases(const GCCRegAlias *&Aliases,
-                                      unsigned &NumAliases) const {
-  Aliases = 0;
-  NumAliases = 0;
+ArrayRef<TargetInfo::GCCRegAlias> OR1KTargetInfo::getGCCRegAliases() const {
+  return None;
 }
 } // end anonymous namespace
 

@@ -5882,25 +5882,22 @@ public:
   ABIArgInfo classifyReturnType(QualType RetTy) const;
   ABIArgInfo classifyArgumentType(QualType Ty) const;
 
-  virtual void computeInfo(CGFunctionInfo &FI) const {
+  void computeInfo(CGFunctionInfo &FI) const override {
     FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
     for (CGFunctionInfo::arg_iterator it = FI.arg_begin(), ie = FI.arg_end();
          it != ie; ++it)
       it->info = classifyArgumentType(it->type);
   }
 
-  virtual llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
-                                 CodeGenFunction &CGF) const;
+  Address EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+                    QualType Ty) const override;
 };
 
 class OR1KTargetCodeGenInfo : public TargetCodeGenInfo {
 public:
   OR1KTargetCodeGenInfo(CodeGenTypes &CGT)
     : TargetCodeGenInfo(new OR1KABIInfo(CGT)) {}
-  void SetTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
-                           CodeGen::CodeGenModule &M) const;
 };
-
 }
 
 bool OR1KABIInfo::isPromotableIntegerType(QualType Ty) const {
@@ -5921,18 +5918,20 @@ bool OR1KABIInfo::isPromotableIntegerType(QualType Ty) const {
   return false;
 }
 
-llvm::Value *OR1KABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
-                                    CodeGenFunction &CGF) const {
-  // FIXME: Implement
-  return 0;
+Address OR1KABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
+                               QualType Ty) const {
+  llvm_unreachable("implement EmitVAArg"); // FIXME
+  return Address::invalid();
 }
-
 
 ABIArgInfo OR1KABIInfo::classifyReturnType(QualType RetTy) const {
   if (RetTy->isVoidType())
     return ABIArgInfo::getIgnore();
-  if (isAggregateTypeForABI(RetTy))
-    return ABIArgInfo::getIndirect(0);
+
+  if (isAggregateTypeForABI(RetTy)) {
+    auto TypeInfo = getContext().getTypeInfoInChars(RetTy);
+    return ABIArgInfo::getIndirect(/*Alignment=*/ TypeInfo.second);
+  }
 
   return (isPromotableIntegerType(RetTy) ?
           ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
@@ -5940,19 +5939,14 @@ ABIArgInfo OR1KABIInfo::classifyReturnType(QualType RetTy) const {
 
 ABIArgInfo OR1KABIInfo::classifyArgumentType(QualType Ty) const {
   Ty = getFirstFieldInTransparentUnion(Ty);
-  if (isAggregateTypeForABI(Ty))
-    return ABIArgInfo::getIndirect(0);
+  if (isAggregateTypeForABI(Ty)) {
+    auto TypeInfo = getContext().getTypeInfoInChars(Ty);
+    return ABIArgInfo::getIndirect(/*Alignment=*/ TypeInfo.second);
+  }
 
   return (isPromotableIntegerType(Ty) ?
           ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
 }
-
-void OR1KTargetCodeGenInfo::SetTargetAttributes(const Decl *D,
-                                                llvm::GlobalValue *GV,
-                                                CodeGen::CodeGenModule &M)
-                                                  const {
-}
-
 
 //===----------------------------------------------------------------------===//
 // MSP430 ABI Implementation

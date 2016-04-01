@@ -5920,8 +5920,10 @@ bool OR1KABIInfo::isPromotableIntegerType(QualType Ty) const {
 
 Address OR1KABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
                                QualType Ty) const {
-  llvm_unreachable("implement EmitVAArg"); // FIXME
-  return Address::invalid();
+  auto TypeInfo = getContext().getTypeInfoInChars(Ty);
+  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, /*Indirect=*/ false,
+                          TypeInfo, CharUnits::fromQuantity(4),
+                          /*AllowHigherAlign=*/ true);
 }
 
 ABIArgInfo OR1KABIInfo::classifyReturnType(QualType RetTy) const {

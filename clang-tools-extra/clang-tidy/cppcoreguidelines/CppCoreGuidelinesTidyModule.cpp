@@ -10,12 +10,14 @@
 #include "../ClangTidy.h"
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
-#include "../misc/AssignOperatorSignatureCheck.h"
+#include "../misc/UnconventionalAssignOperatorCheck.h"
+#include "InterfacesGlobalInitCheck.h"
 #include "ProBoundsArrayToPointerDecayCheck.h"
 #include "ProBoundsConstantArrayIndexCheck.h"
 #include "ProBoundsPointerArithmeticCheck.h"
 #include "ProTypeConstCastCheck.h"
 #include "ProTypeCstyleCastCheck.h"
+#include "ProTypeMemberInitCheck.h"
 #include "ProTypeReinterpretCastCheck.h"
 #include "ProTypeStaticCastDowncastCheck.h"
 #include "ProTypeUnionAccessCheck.h"
@@ -29,6 +31,8 @@ namespace cppcoreguidelines {
 class CppCoreGuidelinesModule : public ClangTidyModule {
 public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
+    CheckFactories.registerCheck<InterfacesGlobalInitCheck>(
+        "cppcoreguidelines-interfaces-global-init");
     CheckFactories.registerCheck<ProBoundsArrayToPointerDecayCheck>(
         "cppcoreguidelines-pro-bounds-array-to-pointer-decay");
     CheckFactories.registerCheck<ProBoundsConstantArrayIndexCheck>(
@@ -39,6 +43,8 @@ public:
         "cppcoreguidelines-pro-type-const-cast");
     CheckFactories.registerCheck<ProTypeCstyleCastCheck>(
         "cppcoreguidelines-pro-type-cstyle-cast");
+    CheckFactories.registerCheck<ProTypeMemberInitCheck>(
+        "cppcoreguidelines-pro-type-member-init");
     CheckFactories.registerCheck<ProTypeReinterpretCastCheck>(
         "cppcoreguidelines-pro-type-reinterpret-cast");
     CheckFactories.registerCheck<ProTypeStaticCastDowncastCheck>(
@@ -47,7 +53,7 @@ public:
         "cppcoreguidelines-pro-type-union-access");
     CheckFactories.registerCheck<ProTypeVarargCheck>(
         "cppcoreguidelines-pro-type-vararg");
-    CheckFactories.registerCheck<misc::AssignOperatorSignatureCheck>(
+    CheckFactories.registerCheck<misc::UnconventionalAssignOperatorCheck>(
         "cppcoreguidelines-c-copy-assignment-signature");
   }
 };

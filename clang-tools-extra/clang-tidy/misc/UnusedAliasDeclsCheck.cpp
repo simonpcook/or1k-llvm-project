@@ -16,6 +16,7 @@ using namespace clang::ast_matchers;
 
 namespace clang {
 namespace tidy {
+namespace misc {
 
 void UnusedAliasDeclsCheck::registerMatchers(MatchFinder *Finder) {
   // Only register the matchers for C++11; the functionality currently does not
@@ -53,11 +54,11 @@ void UnusedAliasDeclsCheck::onEndOfTranslationUnit() {
   for (const auto &FoundDecl : FoundDecls) {
     if (!FoundDecl.second.isValid())
       continue;
-    diag(FoundDecl.first->getLocation(), "namespace alias decl '%0' is unused")
-        << FoundDecl.first->getName()
-        << FixItHint::CreateRemoval(FoundDecl.second);
+    diag(FoundDecl.first->getLocation(), "namespace alias decl %0 is unused")
+        << FoundDecl.first << FixItHint::CreateRemoval(FoundDecl.second);
   }
 }
 
+} // namespace misc
 } // namespace tidy
 } // namespace clang

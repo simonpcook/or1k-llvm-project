@@ -156,7 +156,7 @@ bool DeclFinderASTVisitor::VisitTypeLoc(TypeLoc TL) {
 const Expr *digThroughConstructors(const Expr *E) {
   if (!E)
     return nullptr;
-  E = E->IgnoreParenImpCasts();
+  E = E->IgnoreImplicit();
   if (const auto *ConstructExpr = dyn_cast<CXXConstructExpr>(E)) {
     // The initial constructor must take exactly one parameter, but base class
     // and deferred constructors can take more.
@@ -391,8 +391,8 @@ static bool isAliasDecl(ASTContext *Context, const Decl *TheDecl,
     // This check is needed because getMethodDecl can return nullptr if the
     // callee is a member function pointer.
     const auto *MDecl = MemCall->getMethodDecl();
-    if (MDecl && !isa<CXXConversionDecl>(MDecl) && MDecl->getName() == "at") {
-      assert(MemCall->getNumArgs() == 1);
+    if (MDecl && !isa<CXXConversionDecl>(MDecl) &&
+        MDecl->getNameAsString() == "at" && MemCall->getNumArgs() == 1) {
       return isIndexInSubscriptExpr(MemCall->getArg(0), IndexVar);
     }
     return false;
@@ -557,7 +557,9 @@ bool ForLoopIndexUseVisitor::TraverseMemberExpr(MemberExpr *Member) {
     if (ExprType.isNull())
       ExprType = Obj->getType();
 
-    assert(ExprType->isPointerType() && "Operator-> returned non-pointer type");
+    if (!ExprType->isPointerType())
+      return false;
+
     // FIXME: This works around not having the location of the arrow operator.
     // Consider adding OperatorLoc to MemberExpr?
     SourceLocation ArrowLoc = Lexer::getLocForEndOfToken(
@@ -874,20 +876,6 @@ bool VariableNamer::declarationExists(StringRef Symbol) {
   // Finally, determine if the symbol was used in the loop or a child context.
   DeclFinderASTVisitor DeclFinder(Symbol, GeneratedDecls);
   return DeclFinder.findUsages(SourceStmt);
-}
-
-std::string VariableNamer::AppendWithStyle(StringRef Str,
-                                           StringRef Suffix) const {
-  std::string Name = Str;
-  if (!Suffix.empty()) {
-    if (Style == NS_LowerCase || Style == NS_UpperCase)
-      Name += "_";
-    int SuffixStart = Name.size();
-    Name += Suffix;
-    if (Style == NS_CamelBack)
-      Name[SuffixStart] = toupper(Name[SuffixStart]);
-  }
-  return Name;
 }
 
 } // namespace modernize

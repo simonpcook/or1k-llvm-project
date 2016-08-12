@@ -16,18 +16,9 @@ using namespace clang::ast_matchers;
 
 namespace clang {
 namespace tidy {
+namespace readability {
 
 namespace {
-
-const internal::VariadicDynCastAllOfMatcher<Stmt, ParenExpr> parenExpr;
-
-AST_MATCHER_P(CastExpr, hasCastKind, CastKind, Kind) {
-  return Node.getCastKind() == Kind;
-}
-
-AST_MATCHER(QualType, isBool) {
-  return !Node.isNull() && Node->isBooleanType();
-}
 
 AST_MATCHER(Stmt, isMacroExpansion) {
   SourceManager &SM = Finder->getASTContext().getSourceManager();
@@ -62,7 +53,7 @@ StatementMatcher createImplicitCastFromBoolMatcher() {
             allOf(anyOf(hasCastKind(CK_NullToPointer),
                         hasCastKind(CK_NullToMemberPointer)),
                   hasSourceExpression(cxxBoolLiteral()))),
-      hasSourceExpression(expr(hasType(qualType(isBool())))));
+      hasSourceExpression(expr(hasType(qualType(booleanType())))));
 }
 
 StringRef
@@ -421,5 +412,6 @@ void ImplicitBoolCastCheck::handleCastFromBool(
   }
 }
 
+} // namespace readability
 } // namespace tidy
 } // namespace clang

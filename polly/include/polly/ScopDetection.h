@@ -70,7 +70,8 @@ class SCEVUnknown;
 class CallInst;
 class Instruction;
 class Value;
-}
+class IntrinsicInst;
+} // namespace llvm
 
 namespace polly {
 typedef std::set<const SCEV *> ParamSetType;
@@ -109,6 +110,7 @@ extern bool PollyTrackFailures;
 extern bool PollyDelinearize;
 extern bool PollyUseRuntimeAliasChecks;
 extern bool PollyProcessUnprofitable;
+extern bool PollyInvariantLoadHoisting;
 
 /// @brief A function attribute which will cause Polly to skip the function
 extern llvm::StringRef PollySkipFnAttr;
@@ -123,17 +125,13 @@ public:
   // Remember the valid regions
   RegionSet ValidRegions;
 
-  /// @brief Set of loops (used to remember loops in non-affine subregions).
-  using BoxedLoopsSetTy = SetVector<const Loop *>;
-
-  /// @brief Set to remember non-affine branches in regions.
-  using NonAffineSubRegionSetTy = RegionSet;
-
   /// @brief Context variables for SCoP detection.
   struct DetectionContext {
     Region &CurRegion;   // The region to check.
     AliasSetTracker AST; // The AliasSetTracker to hold the alias information.
     bool Verifying;      // If we are in the verification phase?
+
+    /// @brief Container to remember rejection reasons for this region.
     RejectLog Log;
 
     /// @brief Map a base pointer to all access functions accessing it.
@@ -144,9 +142,9 @@ public:
 
     /// @brief The set of base pointers with non-affine accesses.
     ///
-    /// This set contains all base pointers which are used in memory accesses
-    /// that can not be detected as affine accesses.
-    SetVector<const SCEVUnknown *> NonAffineAccesses;
+    /// This set contains all base pointers and the locations where they are
+    /// used for memory accesses that can not be detected as affine accesses.
+    SetVector<std::pair<const SCEVUnknown *, Loop *>> NonAffineAccesses;
     BaseToElSize ElementSize;
 
     /// @brief The region has at least one load instruction.
@@ -155,8 +153,11 @@ public:
     /// @brief The region has at least one store instruction.
     bool hasStores;
 
+    /// @brief Flag to indicate the region has at least one unknown access.
+    bool HasUnknownAccess;
+
     /// @brief The set of non-affine subregions in the region we analyze.
-    NonAffineSubRegionSetTy NonAffineSubRegionSet;
+    RegionSet NonAffineSubRegionSet;
 
     /// @brief The set of loops contained in non-affine regions.
     BoxedLoopsSetTy BoxedLoopsSet;
@@ -164,10 +165,14 @@ public:
     /// @brief Loads that need to be invariant during execution.
     InvariantLoadsSetTy RequiredILS;
 
+    /// @brief Map to memory access description for the corresponding LLVM
+    ///        instructions.
+    MapInsnToMemAcc InsnToMemAcc;
+
     /// @brief Initialize a DetectionContext from scratch.
     DetectionContext(Region &R, AliasAnalysis &AA, bool Verify)
         : CurRegion(R), AST(AA), Verifying(Verify), Log(&R), hasLoads(false),
-          hasStores(false) {}
+          hasStores(false), HasUnknownAccess(false) {}
 
     /// @brief Initialize a DetectionContext with the data from @p DC.
     DetectionContext(const DetectionContext &&DC)
@@ -176,7 +181,7 @@ public:
           Accesses(std::move(DC.Accesses)),
           NonAffineAccesses(std::move(DC.NonAffineAccesses)),
           ElementSize(std::move(DC.ElementSize)), hasLoads(DC.hasLoads),
-          hasStores(DC.hasStores),
+          hasStores(DC.hasStores), HasUnknownAccess(DC.HasUnknownAccess),
           NonAffineSubRegionSet(std::move(DC.NonAffineSubRegionSet)),
           BoxedLoopsSet(std::move(DC.BoxedLoopsSet)),
           RequiredILS(std::move(DC.RequiredILS)) {
@@ -198,12 +203,9 @@ private:
   AliasAnalysis *AA;
   //@}
 
-  /// @brief Map to remember detection contexts for valid regions.
-  using DetectionContextMapTy = DenseMap<const Region *, DetectionContext>;
+  /// @brief Map to remember detection contexts for all regions.
+  using DetectionContextMapTy = DenseMap<BBPair, DetectionContext>;
   mutable DetectionContextMapTy DetectionContextMap;
-
-  // Remember a list of errors for every region.
-  mutable RejectLogsContainer RejectLogs;
 
   /// @brief Remove cached results for @p R.
   void removeCachedResults(const Region &R);
@@ -236,11 +238,12 @@ private:
   /// @param Context     The current detection context.
   /// @param Sizes       The sizes of the different array dimensions.
   /// @param BasePointer The base pointer we are interested in.
+  /// @param Scope       The location where @p BasePointer is being used.
   /// @returns True if one or more array sizes could be derived - meaning: we
   ///          see this array as multi-dimensional.
   bool hasValidArraySizes(DetectionContext &Context,
                           SmallVectorImpl<const SCEV *> &Sizes,
-                          const SCEVUnknown *BasePointer) const;
+                          const SCEVUnknown *BasePointer, Loop *Scope) const;
 
   /// @brief Derive access functions for a given base pointer.
   ///
@@ -260,10 +263,11 @@ private:
   ///
   /// @param Context     The current detection context.
   /// @param basepointer the base pointer we are interested in.
+  /// @param Scope       The location where @p BasePointer is being used.
   /// @param True if consistent (multi-dimensional) array accesses could be
   ///        derived for this array.
   bool hasBaseAffineAccesses(DetectionContext &Context,
-                             const SCEVUnknown *BasePointer) const;
+                             const SCEVUnknown *BasePointer, Loop *Scope) const;
 
   // Delinearize all non affine memory accesses and return false when there
   // exists a non affine memory access that cannot be delinearized. Return true
@@ -300,6 +304,17 @@ private:
   bool hasSufficientCompute(DetectionContext &Context,
                             int NumAffineLoops) const;
 
+  /// @brief Check if the unique affine loop might be amendable to distribution.
+  ///
+  /// This function checks if the number of non-trivial blocks in the unique
+  /// affine loop in Context.CurRegion is at least two, thus if the loop might
+  /// be amendable to distribution.
+  ///
+  /// @param Context  The context of scop detection.
+  ///
+  /// @return True only if the affine loop might be amendable to distributable.
+  bool hasPossiblyDistributableLoop(DetectionContext &Context) const;
+
   /// @brief Check if a region is profitable to optimize.
   ///
   /// Regions that are unlikely to expose interesting optimization opportunities
@@ -317,11 +332,21 @@ private:
   /// @return True if R is a Scop, false otherwise.
   bool isValidRegion(DetectionContext &Context) const;
 
+  /// @brief Check if an intrinsic call can be part of a Scop.
+  ///
+  /// @param II      The intrinsic call instruction to check.
+  /// @param Context The current detection context.
+  ///
+  /// @return True if the call instruction is valid, false otherwise.
+  bool isValidIntrinsicInst(IntrinsicInst &II, DetectionContext &Context) const;
+
   /// @brief Check if a call instruction can be part of a Scop.
   ///
-  /// @param CI The call instruction to check.
+  /// @param CI      The call instruction to check.
+  /// @param Context The current detection context.
+  ///
   /// @return True if the call instruction is valid, false otherwise.
-  static bool isValidCallInst(CallInst &CI);
+  bool isValidCallInst(CallInst &CI, DetectionContext &Context) const;
 
   /// @brief Check if the given loads could be invariant and can be hoisted.
   ///
@@ -344,13 +369,22 @@ private:
   ///         identified by Reg.
   bool isInvariant(const Value &Val, const Region &Reg) const;
 
+  /// @brief Check if the memory access caused by @p Inst is valid.
+  ///
+  /// @param Inst    The access instruction.
+  /// @param AF      The access function.
+  /// @param BP      The access base pointer.
+  /// @param Context The current detection context.
+  bool isValidAccess(Instruction *Inst, const SCEV *AF, const SCEVUnknown *BP,
+                     DetectionContext &Context) const;
+
   /// @brief Check if a memory access can be part of a Scop.
   ///
   /// @param Inst The instruction accessing the memory.
   /// @param Context The context of scop detection.
   ///
   /// @return True if the memory access is valid, false otherwise.
-  bool isValidMemoryAccess(Instruction &Inst, DetectionContext &Context) const;
+  bool isValidMemoryAccess(MemAccInst Inst, DetectionContext &Context) const;
 
   /// @brief Check if an instruction has any non trivial scalar dependencies
   ///        as part of a Scop.
@@ -401,10 +435,9 @@ private:
   /// non-affine.
   ///
   /// @param S           The expression to be checked.
+  /// @param Scope       The loop nest in which @p S is used.
   /// @param Context     The context of scop detection.
-  /// @param BaseAddress The base address of the expression @p S (if any).
-  bool isAffine(const SCEV *S, DetectionContext &Context,
-                Value *BaseAddress = nullptr) const;
+  bool isAffine(const SCEV *S, Loop *Scope, DetectionContext &Context) const;
 
   /// @brief Check if the control flow in a basic block is valid.
   ///
@@ -452,6 +485,15 @@ private:
   /// @brief Print the locations of all detected scops.
   void printLocations(llvm::Function &F);
 
+  /// @brief Check if a region is reducible or not.
+  ///
+  /// @param Region The region to check.
+  /// @param DbgLoc Parameter to save the location of instruction that
+  ///               causes irregular control flow if the region is irreducible.
+  ///
+  /// @return True if R is reducible, false otherwise.
+  bool isReducibleRegion(Region &R, DebugLoc &DbgLoc) const;
+
   /// @brief Track diagnostics for invalid scops.
   ///
   /// @param Context The context of scop detection.
@@ -470,6 +512,9 @@ public:
   /// This was added to give the DOT printer easy access to this information.
   RegionInfo *getRI() const { return RI; }
 
+  /// @brief Get the LoopInfo stored in this pass.
+  LoopInfo *getLI() const { return LI; }
+
   /// @brief Is the region is the maximum region of a Scop?
   ///
   /// @param R The Region to test if it is maximum.
@@ -480,13 +525,10 @@ public:
   bool isMaxRegionInScop(const Region &R, bool Verify = true) const;
 
   /// @brief Return the detection context for @p R, nullptr if @p R was invalid.
-  const DetectionContext *getDetectionContext(const Region *R) const;
+  DetectionContext *getDetectionContext(const Region *R) const;
 
-  /// @brief Return the set of loops in non-affine subregions for @p R.
-  const BoxedLoopsSetTy *getBoxedLoops(const Region *R) const;
-
-  /// @brief Return the set of required invariant loads for @p R.
-  const InvariantLoadsSetTy *getRequiredInvariantLoads(const Region *R) const;
+  /// @brief Return the set of rejection causes for @p R.
+  const RejectLog *lookupRejectionLog(const Region *R) const;
 
   /// @brief Return true if @p SubR is a non-affine subregion in @p ScopR.
   bool isNonAffineSubRegion(const Region *SubR, const Region *ScopR) const;
@@ -513,36 +555,10 @@ public:
   const_iterator end() const { return ValidRegions.end(); }
   //@}
 
-  /// @name Reject log iterators
-  ///
-  /// These iterators iterate over the logs of all rejected regions of this
-  //  function.
-  //@{
-  typedef std::map<const Region *, RejectLog>::iterator reject_iterator;
-  typedef std::map<const Region *, RejectLog>::const_iterator
-      const_reject_iterator;
-
-  reject_iterator reject_begin() { return RejectLogs.begin(); }
-  reject_iterator reject_end() { return RejectLogs.end(); }
-
-  const_reject_iterator reject_begin() const { return RejectLogs.begin(); }
-  const_reject_iterator reject_end() const { return RejectLogs.end(); }
-  //@}
-
-  /// @brief Emit rejection remarks for all smallest invalid regions.
+  /// @brief Emit rejection remarks for all rejected regions.
   ///
   /// @param F The function to emit remarks for.
-  /// @param R The region to start the region tree traversal for.
-  void emitMissedRemarksForLeaves(const Function &F, const Region *R);
-
-  /// @brief Emit rejection remarks for the parent regions of all valid regions.
-  ///
-  /// Emitting rejection remarks for the parent regions of all valid regions
-  /// may give the end-user clues about how to increase the size of the
-  /// detected Scops.
-  ///
-  /// @param F The function to emit remarks for.
-  void emitMissedRemarksForValidRegions(const Function &F);
+  void emitMissedRemarks(const Function &F);
 
   /// @brief Mark the function as invalid so we will not extract any scop from
   ///        the function.
@@ -574,6 +590,6 @@ public:
 namespace llvm {
 class PassRegistry;
 void initializeScopDetectionPass(llvm::PassRegistry &);
-}
+} // namespace llvm
 
 #endif

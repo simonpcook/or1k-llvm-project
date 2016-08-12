@@ -596,8 +596,12 @@ extern kmp_real64 __kmp_xchg_real64( volatile kmp_real64 *p, kmp_real64 v );
 
 #define TCR_4(a)            (a)
 #define TCW_4(a,b)          (a) = (b)
+#define TCI_4(a)            (++(a))
+#define TCD_4(a)            (--(a))
 #define TCR_8(a)            (a)
 #define TCW_8(a,b)          (a) = (b)
+#define TCI_8(a)            (++(a))
+#define TCD_8(a)            (--(a))
 #define TCR_SYNC_4(a)       (a)
 #define TCW_SYNC_4(a,b)     (a) = (b)
 #define TCX_SYNC_4(a,b,c)   KMP_COMPARE_AND_STORE_REL32((volatile kmp_int32 *)(volatile void *)&(a), (kmp_int32)(b), (kmp_int32)(c))
@@ -646,6 +650,7 @@ typedef void    (*microtask_t)( int *gtid, int *npr, ... );
 #endif
 
 #define KMP_WAIT_YIELD           __kmp_wait_yield_4
+#define KMP_WAIT_YIELD_PTR       __kmp_wait_yield_4_ptr
 #define KMP_EQ                   __kmp_eq_4
 #define KMP_NEQ                  __kmp_neq_4
 #define KMP_LT                   __kmp_lt_4
@@ -674,7 +679,7 @@ typedef void    (*microtask_t)( int *gtid, int *npr, ... );
 #endif
 
 // Enable dynamic user lock
-#if OMP_41_ENABLED
+#if OMP_45_ENABLED
 # define KMP_USE_DYNAMIC_LOCK 1
 #endif
 

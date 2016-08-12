@@ -24,20 +24,6 @@ namespace {
 
 const char CastSequence[] = "sequence";
 
-/// \brief Matches cast expressions that have a cast kind of CK_NullToPointer
-/// or CK_NullToMemberPointer.
-///
-/// Given
-/// \code
-///   int *p = 0;
-/// \endcode
-/// implicitCastExpr(isNullToPointer()) matches the implicit cast clang adds
-/// around \c 0.
-AST_MATCHER(CastExpr, isNullToPointer) {
-  return Node.getCastKind() == CK_NullToPointer ||
-         Node.getCastKind() == CK_NullToMemberPointer;
-}
-
 AST_MATCHER(Type, sugaredNullptrType) {
   const Type *DesugaredType = Node.getUnqualifiedDesugaredType();
   if (const BuiltinType *BT = dyn_cast<BuiltinType>(DesugaredType))
@@ -52,7 +38,8 @@ AST_MATCHER(Type, sugaredNullptrType) {
 /// can be replaced instead of just the inner-most implicit cast.
 StatementMatcher makeCastSequenceMatcher() {
   StatementMatcher ImplicitCastToNull = implicitCastExpr(
-      isNullToPointer(),
+      anyOf(hasCastKind(CK_NullToPointer),
+            hasCastKind(CK_NullToMemberPointer)),
       unless(hasSourceExpression(hasType(sugaredNullptrType()))));
 
   return castExpr(anyOf(ImplicitCastToNull,
@@ -226,6 +213,12 @@ public:
     if (SM.isMacroArgExpansion(StartLoc) && SM.isMacroArgExpansion(EndLoc)) {
       SourceLocation FileLocStart = SM.getFileLoc(StartLoc),
                      FileLocEnd = SM.getFileLoc(EndLoc);
+      SourceLocation ImmediateMarcoArgLoc, MacroLoc;
+      // Skip NULL macros used in macro.
+      if (!getMacroAndArgLocations(StartLoc, ImmediateMarcoArgLoc, MacroLoc) ||
+          ImmediateMarcoArgLoc != FileLocStart)
+        return skipSubTree();
+
       if (isReplaceableRange(FileLocStart, FileLocEnd, SM) &&
           allArgUsesValid(C)) {
         replaceWithNullptr(Check, SM, FileLocStart, FileLocEnd);
@@ -252,7 +245,7 @@ public:
     }
     replaceWithNullptr(Check, SM, StartLoc, EndLoc);
 
-    return skipSubTree();
+    return true;
   }
 
 private:
@@ -327,7 +320,7 @@ private:
                NullMacros.end();
       }
 
-      MacroLoc = SM.getImmediateExpansionRange(ArgLoc).first;
+      MacroLoc = SM.getExpansionRange(ArgLoc).first;
 
       ArgLoc = Expansion.getSpellingLoc().getLocWithOffset(LocInfo.second);
       if (ArgLoc.isFileID())

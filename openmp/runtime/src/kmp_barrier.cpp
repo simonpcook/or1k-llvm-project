@@ -1048,6 +1048,8 @@ __kmp_barrier(enum barrier_type bt, int gtid, int is_split, size_t reduce_size,
               void *reduce_data, void (*reduce)(void *, void *))
 {
     KMP_TIME_DEVELOPER_BLOCK(KMP_barrier);
+    KMP_SET_THREAD_STATE_BLOCK(PLAIN_BARRIER);
+    KMP_TIME_PARTITIONED_BLOCK(OMP_plain_barrier);
     register int tid = __kmp_tid_from_gtid(gtid);
     register kmp_info_t *this_thr = __kmp_threads[gtid];
     register kmp_team_t *team = this_thr->th.th_team;
@@ -1198,8 +1200,11 @@ __kmp_barrier(enum barrier_type bt, int gtid, int is_split, size_t reduce_size,
                     if( __itt_metadata_add_ptr ) {
                         // Initialize with master's wait time
                         kmp_uint64 delta = cur_time - this_thr->th.th_bar_arrive_time;
+                        // Set arrive time to zero to be able to check it in __kmp_invoke_task(); the same is done inside the loop below
+                        this_thr->th.th_bar_arrive_time = 0;
                         for (i=1; i<nproc; ++i) {
                             delta += ( cur_time - other_threads[i]->th.th_bar_arrive_time );
+                            other_threads[i]->th.th_bar_arrive_time = 0;
                         }
                         __kmp_itt_metadata_imbalance(gtid, this_thr->th.th_frame_time, cur_time, delta, (kmp_uint64)( reduce != NULL));
                     }
@@ -1255,7 +1260,7 @@ __kmp_barrier(enum barrier_type bt, int gtid, int is_split, size_t reduce_size,
     } else { // Team is serialized.
         status = 0;
         if (__kmp_tasking_mode != tskm_immediate_exec) {
-#if OMP_41_ENABLED
+#if OMP_45_ENABLED
             if ( this_thr->th.th_task_team != NULL ) {
                 void *itt_sync_obj = NULL;
 #if USE_ITT_NOTIFY
@@ -1345,6 +1350,8 @@ __kmp_end_split_barrier(enum barrier_type bt, int gtid)
 void
 __kmp_join_barrier(int gtid)
 {
+    KMP_TIME_PARTITIONED_BLOCK(OMP_fork_join_barrier);
+    KMP_SET_THREAD_STATE_BLOCK(FORK_JOIN_BARRIER);
     KMP_TIME_DEVELOPER_BLOCK(KMP_join_barrier);
     register kmp_info_t *this_thr = __kmp_threads[gtid];
     register kmp_team_t *team;
@@ -1388,7 +1395,7 @@ __kmp_join_barrier(int gtid)
     KMP_DEBUG_ASSERT(this_thr == team->t.t_threads[tid]);
     KA_TRACE(10, ("__kmp_join_barrier: T#%d(%d:%d) arrived at join barrier\n", gtid, team_id, tid));
 
-#if OMPT_SUPPORT 
+#if OMPT_SUPPORT
 #if OMPT_TRACE
     if (ompt_enabled &&
         ompt_callbacks.ompt_callback(ompt_event_barrier_begin)) {
@@ -1457,11 +1464,21 @@ __kmp_join_barrier(int gtid)
        the kmp_task_team_t structs.  */
     if (KMP_MASTER_TID(tid)) {
         if (__kmp_tasking_mode != tskm_immediate_exec) {
-            // Master shouldn't call decrease_load().         // TODO: enable master threads.
-            // Master should have th_may_decrease_load == 0.  // TODO: enable master threads.
             __kmp_task_team_wait(this_thr, team
                                  USE_ITT_BUILD_ARG(itt_sync_obj) );
         }
+#if KMP_STATS_ENABLED
+        // Have master thread flag the workers to indicate they are now waiting for
+        // next parallel region, Also wake them up so they switch their timers to idle.
+        for (int i=0; i<team->t.t_nproc; ++i) {
+            kmp_info_t* team_thread = team->t.t_threads[i];
+            if (team_thread == this_thr)
+                continue;
+            team_thread->th.th_stats->setIdleFlag();
+            if (__kmp_dflt_blocktime != KMP_MAX_BLOCKTIME && team_thread->th.th_sleep_loc != NULL)
+                __kmp_null_resume_wrapper(__kmp_gtid_from_thread(team_thread), team_thread->th.th_sleep_loc);
+        }
+#endif
 #if USE_ITT_BUILD
         if (__itt_sync_create_ptr || KMP_ITT_DEBUG)
             __kmp_itt_barrier_middle(gtid, itt_sync_obj);
@@ -1491,8 +1508,11 @@ __kmp_join_barrier(int gtid)
                 if( __itt_metadata_add_ptr ) {
                     // Initialize with master's wait time
                     kmp_uint64 delta = cur_time - this_thr->th.th_bar_arrive_time;
+                    // Set arrive time to zero to be able to check it in __kmp_invoke_task(); the same is done inside the loop below
+                    this_thr->th.th_bar_arrive_time = 0;
                     for (i=1; i<nproc; ++i) {
                         delta += ( cur_time - other_threads[i]->th.th_bar_arrive_time );
+                        other_threads[i]->th.th_bar_arrive_time = 0;
                     }
                     __kmp_itt_metadata_imbalance(gtid, this_thr->th.th_frame_time, cur_time, delta, 0);
                 }
@@ -1542,6 +1562,8 @@ __kmp_join_barrier(int gtid)
 void
 __kmp_fork_barrier(int gtid, int tid)
 {
+    KMP_TIME_PARTITIONED_BLOCK(OMP_fork_join_barrier);
+    KMP_SET_THREAD_STATE_BLOCK(FORK_JOIN_BARRIER);
     KMP_TIME_DEVELOPER_BLOCK(KMP_fork_barrier);
     kmp_info_t *this_thr = __kmp_threads[gtid];
     kmp_team_t *team = (tid == 0) ? this_thr->th.th_team : NULL;

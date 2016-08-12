@@ -25,9 +25,6 @@
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/Tooling.h"
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string>
 #include <vector>
 
@@ -71,7 +68,12 @@ struct NamedDeclFindingConsumer : public ASTConsumer {
         SourceMgr.getMainFileID()).getLocWithOffset(SymbolOffset);
     if (!Point.isValid())
       return;
-    const NamedDecl *FoundDecl = getNamedDeclAt(Context, Point);
+    const NamedDecl *FoundDecl = nullptr;
+    if (OldName.empty()) {
+      FoundDecl = getNamedDeclAt(Context, Point);
+    } else {
+      FoundDecl = getNamedDeclFor(Context, OldName);
+    }
     if (FoundDecl == nullptr) {
       FullSourceLoc FullLoc(Point, SourceMgr);
       errs() << "clang-rename: could not find symbol at "
@@ -99,6 +101,7 @@ struct NamedDeclFindingConsumer : public ASTConsumer {
   }
 
   unsigned SymbolOffset;
+  std::string OldName;
   std::string *SpellingName;
   std::vector<std::string> *USRs;
 };
@@ -109,6 +112,7 @@ USRFindingAction::newASTConsumer() {
       new NamedDeclFindingConsumer);
   SpellingName = "";
   Consumer->SymbolOffset = SymbolOffset;
+  Consumer->OldName = OldName;
   Consumer->USRs = &USRs;
   Consumer->SpellingName = &SpellingName;
   return std::move(Consumer);

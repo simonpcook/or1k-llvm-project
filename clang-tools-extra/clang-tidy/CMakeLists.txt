@@ -26,6 +26,8 @@ add_clang_library(clangTidy
   )
 
 add_subdirectory(tool)
+add_subdirectory(plugin)
+add_subdirectory(boost)
 add_subdirectory(cert)
 add_subdirectory(llvm)
 add_subdirectory(cppcoreguidelines)

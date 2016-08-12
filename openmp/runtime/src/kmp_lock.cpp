@@ -14,6 +14,7 @@
 
 
 #include <stddef.h>
+#include <atomic>
 
 #include "kmp.h"
 #include "kmp_itt.h"
@@ -21,7 +22,7 @@
 #include "kmp_lock.h"
 #include "kmp_io.h"
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
+#if KMP_USE_FUTEX
 # include <unistd.h>
 # include <sys/syscall.h>
 // We should really include <futex.h>, but that causes compatibility problems on different
@@ -90,7 +91,7 @@ __kmp_acquire_tas_lock_timed_template( kmp_tas_lock_t *lck, kmp_int32 gtid )
     KMP_MB();
 
 #ifdef USE_LOCK_PROFILE
-    kmp_uint32 curr = TCR_4( lck->lk.poll );
+    kmp_uint32 curr = KMP_LOCK_STRIP( TCR_4( lck->lk.poll ) );
     if ( ( curr != 0 ) && ( curr != gtid + 1 ) )
         __kmp_printf( "LOCK CONTENTION: %p\n", lck );
     /* else __kmp_printf( "." );*/
@@ -113,11 +114,11 @@ __kmp_acquire_tas_lock_timed_template( kmp_tas_lock_t *lck, kmp_int32 gtid )
         KMP_YIELD_SPIN( spins );
     }
 
+    kmp_backoff_t backoff = __kmp_spin_backoff_params;
     while ( ( lck->lk.poll != KMP_LOCK_FREE(tas) ) ||
       ( ! KMP_COMPARE_AND_STORE_ACQ32( & ( lck->lk.poll ), KMP_LOCK_FREE(tas), KMP_LOCK_BUSY(gtid+1, tas) ) ) ) {
-        //
-        // FIXME - use exponential backoff here
-        //
+
+        __kmp_spin_backoff(&backoff);
         if ( TCR_4( __kmp_nth ) > ( __kmp_avail_proc ? __kmp_avail_proc :
           __kmp_xproc ) ) {
             KMP_YIELD( TRUE );
@@ -362,7 +363,7 @@ __kmp_destroy_nested_tas_lock_with_checks( kmp_tas_lock_t *lck )
 }
 
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM || KMP_ARCH_AARCH64)
+#if KMP_USE_FUTEX
 
 /* ------------------------------------------------------------------------ */
 /* futex locks */
@@ -392,7 +393,7 @@ __kmp_acquire_futex_lock_timed_template( kmp_futex_lock_t *lck, kmp_int32 gtid )
     KMP_MB();
 
 #ifdef USE_LOCK_PROFILE
-    kmp_uint32 curr = TCR_4( lck->lk.poll );
+    kmp_uint32 curr = KMP_LOCK_STRIP( TCR_4( lck->lk.poll ) );
     if ( ( curr != 0 ) && ( curr != gtid_code ) )
         __kmp_printf( "LOCK CONTENTION: %p\n", lck );
     /* else __kmp_printf( "." );*/
@@ -486,7 +487,7 @@ __kmp_acquire_futex_lock_with_checks( kmp_futex_lock_t *lck, kmp_int32 gtid )
 int
 __kmp_test_futex_lock( kmp_futex_lock_t *lck, kmp_int32 gtid )
 {
-    if ( KMP_COMPARE_AND_STORE_ACQ32( & ( lck->lk.poll ), KMP_LOCK_FREE(futex), KMP_LOCK_BUSY(gtid+1, futex) << 1 ) ) {
+    if ( KMP_COMPARE_AND_STORE_ACQ32( & ( lck->lk.poll ), KMP_LOCK_FREE(futex), KMP_LOCK_BUSY((gtid+1) << 1, futex) ) ) {
         KMP_FSYNC_ACQUIRED( lck );
         return TRUE;
     }
@@ -710,7 +711,7 @@ __kmp_destroy_nested_futex_lock_with_checks( kmp_futex_lock_t *lck )
     __kmp_destroy_nested_futex_lock( lck );
 }
 
-#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#endif // KMP_USE_FUTEX
 
 
 /* ------------------------------------------------------------------------ */
@@ -719,47 +720,36 @@ __kmp_destroy_nested_futex_lock_with_checks( kmp_futex_lock_t *lck )
 static kmp_int32
 __kmp_get_ticket_lock_owner( kmp_ticket_lock_t *lck )
 {
-    return TCR_4( lck->lk.owner_id ) - 1;
+    return std::atomic_load_explicit( &lck->lk.owner_id, std::memory_order_relaxed ) - 1;
 }
 
 static inline bool
 __kmp_is_ticket_lock_nestable( kmp_ticket_lock_t *lck )
 {
-    return lck->lk.depth_locked != -1;
+    return std::atomic_load_explicit( &lck->lk.depth_locked, std::memory_order_relaxed ) != -1;
 }
 
 static kmp_uint32
-__kmp_bakery_check(kmp_uint32 value, kmp_uint32 checker)
+__kmp_bakery_check( void *now_serving, kmp_uint32 my_ticket )
 {
-    register kmp_uint32 pause;
-
-    if (value == checker) {
-        return TRUE;
-    }
-    for (pause = checker - value; pause != 0; --pause);
-    return FALSE;
+    return std::atomic_load_explicit( (std::atomic<unsigned> *)now_serving, std::memory_order_acquire ) == my_ticket;
 }
 
 __forceinline static int
 __kmp_acquire_ticket_lock_timed_template( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
-    kmp_uint32 my_ticket;
-    KMP_MB();
-
-    my_ticket = KMP_TEST_THEN_INC32( (kmp_int32 *) &lck->lk.next_ticket );
+    kmp_uint32 my_ticket = std::atomic_fetch_add_explicit( &lck->lk.next_ticket, 1U, std::memory_order_relaxed );
 
 #ifdef USE_LOCK_PROFILE
-    if ( TCR_4( lck->lk.now_serving ) != my_ticket )
+    if ( std::atomic_load_explicit( &lck->lk.now_serving, std::memory_order_relaxed ) != my_ticket )
         __kmp_printf( "LOCK CONTENTION: %p\n", lck );
     /* else __kmp_printf( "." );*/
 #endif /* USE_LOCK_PROFILE */
 
-    if ( TCR_4( lck->lk.now_serving ) == my_ticket ) {
-        KMP_FSYNC_ACQUIRED(lck);
+    if ( std::atomic_load_explicit( &lck->lk.now_serving, std::memory_order_acquire ) == my_ticket ) {
         return KMP_LOCK_ACQUIRED_FIRST;
     }
-    KMP_WAIT_YIELD( &lck->lk.now_serving, my_ticket, __kmp_bakery_check, lck );
-    KMP_FSYNC_ACQUIRED(lck);
+    KMP_WAIT_YIELD_PTR( &lck->lk.now_serving, my_ticket, __kmp_bakery_check, lck );
     return KMP_LOCK_ACQUIRED_FIRST;
 }
 
@@ -773,7 +763,11 @@ static int
 __kmp_acquire_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
     char const * const func = "omp_set_lock";
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -785,19 +779,19 @@ __kmp_acquire_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 
     __kmp_acquire_ticket_lock( lck, gtid );
 
-    lck->lk.owner_id = gtid + 1;
+    std::atomic_store_explicit( &lck->lk.owner_id, gtid + 1, std::memory_order_relaxed );
     return KMP_LOCK_ACQUIRED_FIRST;
 }
 
 int
 __kmp_test_ticket_lock( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
-    kmp_uint32 my_ticket = TCR_4( lck->lk.next_ticket );
-    if ( TCR_4( lck->lk.now_serving ) == my_ticket ) {
+    kmp_uint32 my_ticket = std::atomic_load_explicit( &lck->lk.next_ticket, std::memory_order_relaxed );
+
+    if ( std::atomic_load_explicit( &lck->lk.now_serving, std::memory_order_relaxed ) == my_ticket ) {
         kmp_uint32 next_ticket = my_ticket + 1;
-        if ( KMP_COMPARE_AND_STORE_ACQ32( (kmp_int32 *) &lck->lk.next_ticket,
-          my_ticket, next_ticket ) ) {
-            KMP_FSYNC_ACQUIRED( lck );
+        if ( std::atomic_compare_exchange_strong_explicit( &lck->lk.next_ticket,
+             &my_ticket, next_ticket, std::memory_order_acquire, std::memory_order_acquire )) {
             return TRUE;
         }
     }
@@ -808,7 +802,11 @@ static int
 __kmp_test_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
     char const * const func = "omp_test_lock";
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -818,7 +816,7 @@ __kmp_test_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
     int retval = __kmp_test_ticket_lock( lck, gtid );
 
     if ( retval ) {
-        lck->lk.owner_id = gtid + 1;
+        std::atomic_store_explicit( &lck->lk.owner_id, gtid + 1, std::memory_order_relaxed );
     }
     return retval;
 }
@@ -826,16 +824,9 @@ __kmp_test_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 int
 __kmp_release_ticket_lock( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
-    kmp_uint32  distance;
+    kmp_uint32 distance = std::atomic_load_explicit( &lck->lk.next_ticket, std::memory_order_relaxed ) - std::atomic_load_explicit( &lck->lk.now_serving, std::memory_order_relaxed );
 
-    KMP_MB();       /* Flush all pending memory write invalidates.  */
-
-    KMP_FSYNC_RELEASING(lck);
-    distance = ( TCR_4( lck->lk.next_ticket ) - TCR_4( lck->lk.now_serving ) );
-
-    KMP_ST_REL32( &(lck->lk.now_serving), lck->lk.now_serving + 1 );
-
-    KMP_MB();       /* Flush all pending memory write invalidates.  */
+    std::atomic_fetch_add_explicit( &lck->lk.now_serving, 1U, std::memory_order_release );
 
     KMP_YIELD( distance
       > (kmp_uint32) (__kmp_avail_proc ? __kmp_avail_proc : __kmp_xproc) );
@@ -846,8 +837,11 @@ static int
 __kmp_release_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
     char const * const func = "omp_unset_lock";
-    KMP_MB();  /* in case another processor initialized lock */
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -860,7 +854,7 @@ __kmp_release_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
       && ( __kmp_get_ticket_lock_owner( lck ) != gtid ) ) {
         KMP_FATAL( LockUnsettingSetByAnother, func );
     }
-    lck->lk.owner_id = 0;
+    std::atomic_store_explicit( &lck->lk.owner_id, 0, std::memory_order_relaxed );
     return __kmp_release_ticket_lock( lck, gtid );
 }
 
@@ -868,11 +862,12 @@ void
 __kmp_init_ticket_lock( kmp_ticket_lock_t * lck )
 {
     lck->lk.location = NULL;
-    TCW_4( lck->lk.next_ticket, 0 );
-    TCW_4( lck->lk.now_serving, 0 );
-    lck->lk.owner_id = 0;      // no thread owns the lock.
-    lck->lk.depth_locked = -1; // -1 => not a nested lock.
-    lck->lk.initialized = (kmp_ticket_lock *)lck;
+    lck->lk.self = lck;
+    std::atomic_store_explicit( &lck->lk.next_ticket, 0U, std::memory_order_relaxed );
+    std::atomic_store_explicit( &lck->lk.now_serving, 0U, std::memory_order_relaxed );
+    std::atomic_store_explicit( &lck->lk.owner_id, 0, std::memory_order_relaxed ); // no thread owns the lock.
+    std::atomic_store_explicit( &lck->lk.depth_locked, -1, std::memory_order_relaxed ); // -1 => not a nested lock.
+    std::atomic_store_explicit( &lck->lk.initialized, true, std::memory_order_release );
 }
 
 static void
@@ -884,19 +879,24 @@ __kmp_init_ticket_lock_with_checks( kmp_ticket_lock_t * lck )
 void
 __kmp_destroy_ticket_lock( kmp_ticket_lock_t *lck )
 {
-    lck->lk.initialized = NULL;
-    lck->lk.location    = NULL;
-    lck->lk.next_ticket = 0;
-    lck->lk.now_serving = 0;
-    lck->lk.owner_id = 0;
-    lck->lk.depth_locked = -1;
+    std::atomic_store_explicit( &lck->lk.initialized, false, std::memory_order_release );
+    lck->lk.self = NULL;
+    lck->lk.location = NULL;
+    std::atomic_store_explicit( &lck->lk.next_ticket, 0U, std::memory_order_relaxed );
+    std::atomic_store_explicit( &lck->lk.now_serving, 0U, std::memory_order_relaxed );
+    std::atomic_store_explicit( &lck->lk.owner_id, 0, std::memory_order_relaxed );
+    std::atomic_store_explicit( &lck->lk.depth_locked, -1, std::memory_order_relaxed );
 }
 
 static void
 __kmp_destroy_ticket_lock_with_checks( kmp_ticket_lock_t *lck )
 {
     char const * const func = "omp_destroy_lock";
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -919,15 +919,13 @@ __kmp_acquire_nested_ticket_lock( kmp_ticket_lock_t *lck, kmp_int32 gtid )
     KMP_DEBUG_ASSERT( gtid >= 0 );
 
     if ( __kmp_get_ticket_lock_owner( lck ) == gtid ) {
-        lck->lk.depth_locked += 1;
+        std::atomic_fetch_add_explicit( &lck->lk.depth_locked, 1, std::memory_order_relaxed );
         return KMP_LOCK_ACQUIRED_NEXT;
     }
     else {
         __kmp_acquire_ticket_lock_timed_template( lck, gtid );
-        KMP_MB();
-        lck->lk.depth_locked = 1;
-        KMP_MB();
-        lck->lk.owner_id = gtid + 1;
+        std::atomic_store_explicit( &lck->lk.depth_locked, 1, std::memory_order_relaxed );
+        std::atomic_store_explicit( &lck->lk.owner_id, gtid + 1, std::memory_order_relaxed );
         return KMP_LOCK_ACQUIRED_FIRST;
     }
 }
@@ -936,7 +934,11 @@ static int
 __kmp_acquire_nested_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
     char const * const func = "omp_set_nest_lock";
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( ! __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -953,16 +955,15 @@ __kmp_test_nested_ticket_lock( kmp_ticket_lock_t *lck, kmp_int32 gtid )
     KMP_DEBUG_ASSERT( gtid >= 0 );
 
     if ( __kmp_get_ticket_lock_owner( lck ) == gtid ) {
-        retval = ++lck->lk.depth_locked;
+        retval = std::atomic_fetch_add_explicit( &lck->lk.depth_locked, 1, std::memory_order_relaxed ) + 1;
     }
     else if ( !__kmp_test_ticket_lock( lck, gtid ) ) {
         retval = 0;
     }
     else {
-        KMP_MB();
-        retval = lck->lk.depth_locked = 1;
-        KMP_MB();
-        lck->lk.owner_id = gtid + 1;
+        std::atomic_store_explicit( &lck->lk.depth_locked, 1, std::memory_order_relaxed );
+        std::atomic_store_explicit( &lck->lk.owner_id, gtid + 1, std::memory_order_relaxed );
+        retval = 1;
     }
     return retval;
 }
@@ -972,7 +973,11 @@ __kmp_test_nested_ticket_lock_with_checks( kmp_ticket_lock_t *lck,
   kmp_int32 gtid )
 {
     char const * const func = "omp_test_nest_lock";
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( ! __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -986,10 +991,8 @@ __kmp_release_nested_ticket_lock( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
     KMP_DEBUG_ASSERT( gtid >= 0 );
 
-    KMP_MB();
-    if ( --(lck->lk.depth_locked) == 0 ) {
-        KMP_MB();
-        lck->lk.owner_id = 0;
+    if ( ( std::atomic_fetch_add_explicit( &lck->lk.depth_locked, -1, std::memory_order_relaxed ) - 1 ) == 0 ) {
+        std::atomic_store_explicit( &lck->lk.owner_id, 0, std::memory_order_relaxed );
         __kmp_release_ticket_lock( lck, gtid );
         return KMP_LOCK_RELEASED;
     }
@@ -1000,8 +1003,11 @@ static int
 __kmp_release_nested_ticket_lock_with_checks( kmp_ticket_lock_t *lck, kmp_int32 gtid )
 {
     char const * const func = "omp_unset_nest_lock";
-    KMP_MB();  /* in case another processor initialized lock */
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( ! __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -1020,7 +1026,7 @@ void
 __kmp_init_nested_ticket_lock( kmp_ticket_lock_t * lck )
 {
     __kmp_init_ticket_lock( lck );
-    lck->lk.depth_locked = 0; // >= 0 for nestable locks, -1 for simple locks
+    std::atomic_store_explicit( &lck->lk.depth_locked, 0, std::memory_order_relaxed ); // >= 0 for nestable locks, -1 for simple locks
 }
 
 static void
@@ -1033,14 +1039,18 @@ void
 __kmp_destroy_nested_ticket_lock( kmp_ticket_lock_t *lck )
 {
     __kmp_destroy_ticket_lock( lck );
-    lck->lk.depth_locked = 0;
+    std::atomic_store_explicit( &lck->lk.depth_locked, 0, std::memory_order_relaxed );
 }
 
 static void
 __kmp_destroy_nested_ticket_lock_with_checks( kmp_ticket_lock_t *lck )
 {
     char const * const func = "omp_destroy_nest_lock";
-    if ( lck->lk.initialized != lck ) {
+
+    if ( ! std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) ) {
+        KMP_FATAL( LockIsUninitialized, func );
+    }
+    if ( lck->lk.self != lck ) {
         KMP_FATAL( LockIsUninitialized, func );
     }
     if ( ! __kmp_is_ticket_lock_nestable( lck ) ) {
@@ -1060,7 +1070,7 @@ __kmp_destroy_nested_ticket_lock_with_checks( kmp_ticket_lock_t *lck )
 static int
 __kmp_is_ticket_lock_initialized( kmp_ticket_lock_t *lck )
 {
-    return lck == lck->lk.initialized;
+    return std::atomic_load_explicit( &lck->lk.initialized, std::memory_order_relaxed ) && ( lck->lk.self == lck);
 }
 
 static const ident_t *
@@ -2507,7 +2517,7 @@ __kmp_acquire_drdpa_lock_timed_template( kmp_drdpa_lock_t *lck, kmp_int32 gtid )
 
     KMP_FSYNC_PREPARE(lck);
     KMP_INIT_YIELD(spins);
-    while (TCR_8(polls[ticket & mask]).poll < ticket) { // volatile load
+    while (TCR_8(polls[ticket & mask].poll) < ticket) { // volatile load
         // If we are oversubscribed,
         // or have waited a bit (and KMP_LIBRARY=turnaround), then yield.
         // CPU Pause is in the macros for yield.
@@ -3008,6 +3018,46 @@ __kmp_set_drdpa_lock_flags( kmp_drdpa_lock_t *lck, kmp_lock_flags_t flags )
     lck->lk.flags = flags;
 }
 
+// Time stamp counter
+#if KMP_ARCH_X86 || KMP_ARCH_X86_64
+# define __kmp_tsc() __kmp_hardware_timestamp()
+// Runtime's default backoff parameters
+kmp_backoff_t __kmp_spin_backoff_params = { 1, 4096, 100 };
+#else
+// Use nanoseconds for other platforms
+extern kmp_uint64 __kmp_now_nsec();
+kmp_backoff_t __kmp_spin_backoff_params = { 1, 256, 100 };
+# define __kmp_tsc() __kmp_now_nsec()
+#endif
+
+// A useful predicate for dealing with timestamps that may wrap.
+// Is a before b?
+// Since the timestamps may wrap, this is asking whether it's
+// shorter to go clockwise from a to b around the clock-face, or anti-clockwise.
+// Times where going clockwise is less distance than going anti-clockwise
+// are in the future, others are in the past.
+// e.g.) a = MAX-1, b = MAX+1 (=0), then a > b (true) does not mean a reached b
+//       whereas signed(a) = -2, signed(b) = 0 captures the actual difference
+static inline bool before(kmp_uint64 a, kmp_uint64 b)
+{
+    return ((kmp_int64)b - (kmp_int64)a) > 0;
+}
+
+// Truncated binary exponential backoff function
+void
+__kmp_spin_backoff(kmp_backoff_t *boff)
+{
+    // We could flatten this loop, but making it a nested loop gives better result.
+    kmp_uint32 i;
+    for (i = boff->step; i > 0; i--) {
+        kmp_uint64 goal = __kmp_tsc() + boff->min_tick;
+        do {
+            KMP_CPU_PAUSE();
+        } while (before(__kmp_tsc(), goal));
+    }
+    boff->step = (boff->step<<1 | 1) & (boff->max_backoff-1);
+}
+
 #if KMP_USE_DYNAMIC_LOCK
 
 // Direct lock initializers. It simply writes a tag to the low 8 bits of the lock word.
@@ -3354,7 +3404,7 @@ __kmp_lookup_indirect_lock(void **user_lock, const char *func)
         if (lck == NULL) {
             KMP_FATAL(LockIsUninitialized, func);
         }
-        return lck; 
+        return lck;
     } else {
         if (OMP_LOCK_T_SIZE < sizeof(void *)) {
             return KMP_GET_I_LOCK(KMP_EXTRACT_I_INDEX(user_lock));
@@ -3456,7 +3506,7 @@ __kmp_get_user_lock_owner(kmp_user_lock_p lck, kmp_uint32 seq)
         case lockseq_tas:
         case lockseq_nested_tas:
             return __kmp_get_tas_lock_owner((kmp_tas_lock_t *)lck);
-#if KMP_HAS_FUTEX
+#if KMP_USE_FUTEX
         case lockseq_futex:
         case lockseq_nested_futex:
             return __kmp_get_futex_lock_owner((kmp_futex_lock_t *)lck);
@@ -3468,8 +3518,8 @@ __kmp_get_user_lock_owner(kmp_user_lock_p lck, kmp_uint32 seq)
         case lockseq_nested_queuing:
 #if KMP_USE_ADAPTIVE_LOCKS
         case lockseq_adaptive:
-            return __kmp_get_queuing_lock_owner((kmp_queuing_lock_t *)lck);
 #endif
+            return __kmp_get_queuing_lock_owner((kmp_queuing_lock_t *)lck);
         case lockseq_drdpa:
         case lockseq_nested_drdpa:
             return __kmp_get_drdpa_lock_owner((kmp_drdpa_lock_t *)lck);
@@ -3504,7 +3554,7 @@ __kmp_init_dynamic_user_locks()
     __kmp_i_lock_table.size = KMP_I_LOCK_CHUNK;
     __kmp_i_lock_table.table = (kmp_indirect_lock_t **)__kmp_allocate(sizeof(kmp_indirect_lock_t *));
     *(__kmp_i_lock_table.table) = (kmp_indirect_lock_t *)
-                                  __kmp_allocate(KMP_I_LOCK_CHUNK*sizeof(kmp_indirect_lock_t)); 
+                                  __kmp_allocate(KMP_I_LOCK_CHUNK*sizeof(kmp_indirect_lock_t));
     __kmp_i_lock_table.next = 0;
 
     // Indirect lock size
@@ -3681,7 +3731,7 @@ void __kmp_set_user_lock_vptrs( kmp_lock_kind_t user_lock_kind )
         }
         break;
 
-#if KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#if KMP_USE_FUTEX
 
         case lk_futex: {
             __kmp_base_user_lock_size = sizeof( kmp_base_futex_lock_t );
@@ -3721,7 +3771,7 @@ void __kmp_set_user_lock_vptrs( kmp_lock_kind_t user_lock_kind )
         }
         break;
 
-#endif // KMP_OS_LINUX && (KMP_ARCH_X86 || KMP_ARCH_X86_64 || KMP_ARCH_ARM)
+#endif // KMP_USE_FUTEX
 
         case lk_ticket: {
             __kmp_base_user_lock_size = sizeof( kmp_base_ticket_lock_t );

@@ -86,9 +86,13 @@ libomp_check_variable(LIBOMP_ARCH 32e x86_64 32 i386 arm ppc64 ppc64le aarch64 m
 set(LIBOMP_LIB_TYPE normal CACHE STRING
   "Performance,Profiling,Stubs library (normal/profile/stubs)")
 libomp_check_variable(LIBOMP_LIB_TYPE normal profile stubs)
-set(LIBOMP_OMP_VERSION 41 CACHE STRING
-  "The OpenMP version (41/40/30)")
-libomp_check_variable(LIBOMP_OMP_VERSION 41 40 30)
+set(LIBOMP_OMP_VERSION 45 CACHE STRING
+  "The OpenMP version (45/40/30)")
+if(LIBOMP_OMP_VERSION EQUAL 41)
+  libomp_warning_say("LIBOMP_OMP_VERSION=41 is deprecated and will be removed in a later version. Please use 45.")
+  set(LIBOMP_OMP_VERSION 45)
+endif()
+libomp_check_variable(LIBOMP_OMP_VERSION 45 40 30)
 # Set the OpenMP Year and Month assiociated with version
 if(${LIBOMP_OMP_VERSION} GREATER 40 OR ${LIBOMP_OMP_VERSION} EQUAL 40)
   set(LIBOMP_OMP_YEAR_MONTH 201307)
@@ -111,6 +115,14 @@ set(LIBOMP_FORTRAN_MODULES FALSE CACHE BOOL
 set(LIBOMP_OSX_ARCHITECTURES "${CMAKE_OSX_ARCHITECTURES}" CACHE STRING
   "For Mac builds, semicolon separated list of architectures to build for universal fat binary.")
 set(CMAKE_OSX_ARCHITECTURES ${LIBOMP_OSX_ARCHITECTURES})
+
+# Should @rpath be used for dynamic libraries on Mac?
+# The if(NOT DEFINED) is there to guard a cached value of the variable if one
+# exists so there is no interference with what the user wants.  Also, no cache entry
+# is created so there are no inadvertant effects on other parts of LLVM.
+if(NOT DEFINED CMAKE_MACOSX_RPATH)
+  set(CMAKE_MACOSX_RPATH TRUE)
+endif()
 
 # User specified flags.  These are appended to the configured flags.
 set(LIBOMP_CFLAGS "" CACHE STRING
@@ -192,8 +204,9 @@ elseif("${libomp_build_type_lowercase}" STREQUAL "minsizerel")
   set(MINSIZEREL_BUILD TRUE)
 endif()
 
-# Include itt notify interface? Right now, always.
-set(LIBOMP_USE_ITT_NOTIFY TRUE)
+# Include itt notify interface?
+set(LIBOMP_USE_ITT_NOTIFY TRUE CACHE BOOL
+  "Enable ITT notify?")
 
 # normal, profile, stubs library.
 set(NORMAL_LIBRARY FALSE)
@@ -277,6 +290,14 @@ if(LIBOMP_STATS)
   set(LIBOMP_USE_STDCPPLIB TRUE)
 endif()
 
+# Shared library can be switched to a static library
+set(LIBOMP_ENABLE_SHARED TRUE CACHE BOOL
+  "Shared library instead of static library?")
+
+if(WIN32 AND NOT LIBOMP_ENABLE_SHARED)
+  libomp_error_say("Static libraries requested but not available on Windows")
+endif()
+
 # OMPT-support
 set(LIBOMP_OMPT_DEBUG FALSE CACHE BOOL
   "Trace OMPT initialization?")
@@ -304,7 +325,18 @@ if(${STUBS_LIBRARY})
   set(LIBOMP_DEFAULT_LIB_NAME ${LIBOMP_DEFAULT_LIB_NAME}stubs)
 endif()
 set(LIBOMP_LIB_NAME ${LIBOMP_DEFAULT_LIB_NAME} CACHE STRING "Base OMP library name")
-set(LIBOMP_LIB_FILE ${LIBOMP_LIB_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX})
+
+if(${LIBOMP_ENABLE_SHARED})
+  set(LIBOMP_LIBRARY_SUFFIX ${CMAKE_SHARED_LIBRARY_SUFFIX})
+  set(LIBOMP_LIBRARY_KIND SHARED)
+  set(LIBOMP_INSTALL_KIND LIBRARY)
+else()
+  set(LIBOMP_LIBRARY_SUFFIX ${CMAKE_STATIC_LIBRARY_SUFFIX})
+  set(LIBOMP_LIBRARY_KIND STATIC)
+  set(LIBOMP_INSTALL_KIND ARCHIVE)
+endif()
+
+set(LIBOMP_LIB_FILE ${LIBOMP_LIB_NAME}${LIBOMP_LIBRARY_SUFFIX})
 
 # Print configuration after all variables are set.
 if(${LIBOMP_STANDALONE_BUILD})
@@ -315,7 +347,8 @@ if(${LIBOMP_STANDALONE_BUILD})
   endif()
   libomp_say("Build Type           -- ${CMAKE_BUILD_TYPE}")
   libomp_say("OpenMP Version       -- ${LIBOMP_OMP_VERSION}")
-  libomp_say("Lib Type             -- ${LIBOMP_LIB_TYPE}")
+  libomp_say("Library Kind         -- ${LIBOMP_LIBRARY_KIND}")
+  libomp_say("Library Type         -- ${LIBOMP_LIB_TYPE}")
   libomp_say("Fortran Modules      -- ${LIBOMP_FORTRAN_MODULES}")
   # will say development if all zeros
   if(${LIBOMP_VERSION_BUILD} STREQUAL 00000000)
@@ -326,6 +359,7 @@ if(${LIBOMP_STANDALONE_BUILD})
   libomp_say("Build                -- ${LIBOMP_BUILD}")
   libomp_say("Use Stats-gathering  -- ${LIBOMP_STATS}")
   libomp_say("Use Debugger-support -- ${LIBOMP_USE_DEBUGGER}")
+  libomp_say("Use ITT notify       -- ${LIBOMP_USE_ITT_NOTIFY}")
   libomp_say("Use OMPT-support     -- ${LIBOMP_OMPT_SUPPORT}")
   if(${LIBOMP_OMPT_SUPPORT})
     libomp_say("Use OMPT-blame       -- ${LIBOMP_OMPT_BLAME}")

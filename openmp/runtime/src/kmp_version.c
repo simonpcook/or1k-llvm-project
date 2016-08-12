@@ -48,6 +48,10 @@
         #define KMP_COMPILER "Intel C++ Compiler 15.0"
     #elif __INTEL_COMPILER == 1600
         #define KMP_COMPILER "Intel C++ Compiler 16.0"
+    #elif __INTEL_COMPILER == 1700
+        #define KMP_COMPILER "Intel C++ Compiler 17.0"
+    #elif __INTEL_COMPILER == 9998
+        #define KMP_COMPILER "Intel C++ Compiler mainline"
     #elif __INTEL_COMPILER == 9999
         #define KMP_COMPILER "Intel C++ Compiler mainline"
     #endif
@@ -203,9 +207,6 @@ __kmp_print_version_2( void ) {
         return;
     }; // if
     __kmp_version_2_printed = TRUE;
-
-    #ifndef KMP_STUB
-    #endif // KMP_STUB
 } // __kmp_print_version_2
 
 // end of file //

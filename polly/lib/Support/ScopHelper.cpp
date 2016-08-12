@@ -30,17 +30,6 @@ using namespace polly;
 
 #define DEBUG_TYPE "polly-scop-helper"
 
-Value *polly::getPointerOperand(Instruction &Inst) {
-  if (LoadInst *load = dyn_cast<LoadInst>(&Inst))
-    return load->getPointerOperand();
-  else if (StoreInst *store = dyn_cast<StoreInst>(&Inst))
-    return store->getPointerOperand();
-  else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(&Inst))
-    return gep->getPointerOperand();
-
-  return 0;
-}
-
 bool polly::hasInvokeEdge(const PHINode *PN) {
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i < e; ++i)
     if (InvokeInst *II = dyn_cast<InvokeInst>(PN->getIncomingValue(i)))
@@ -257,32 +246,65 @@ private:
   const Region &R;
   ValueMapT *VMap;
 
+  const SCEV *visitGenericInst(const SCEVUnknown *E, Instruction *Inst,
+                               Instruction *IP) {
+    if (!Inst || !R.contains(Inst))
+      return E;
+
+    assert(!Inst->mayThrow() && !Inst->mayReadOrWriteMemory() &&
+           !isa<PHINode>(Inst));
+
+    auto *InstClone = Inst->clone();
+    for (auto &Op : Inst->operands()) {
+      assert(SE.isSCEVable(Op->getType()));
+      auto *OpSCEV = SE.getSCEV(Op);
+      auto *OpClone = expandCodeFor(OpSCEV, Op->getType(), IP);
+      InstClone->replaceUsesOfWith(Op, OpClone);
+    }
+
+    InstClone->setName(Name + Inst->getName());
+    InstClone->insertBefore(IP);
+    return SE.getSCEV(InstClone);
+  }
+
   const SCEV *visitUnknown(const SCEVUnknown *E) {
 
     // If a value mapping was given try if the underlying value is remapped.
-    if (VMap)
-      if (Value *NewVal = VMap->lookup(E->getValue()))
-        if (NewVal != E->getValue())
-          return visit(SE.getSCEV(NewVal));
+    Value *NewVal = VMap ? VMap->lookup(E->getValue()) : nullptr;
+    if (NewVal) {
+      auto *NewE = SE.getSCEV(NewVal);
 
+      // While the mapped value might be different the SCEV representation might
+      // not be. To this end we will check before we go into recursion here.
+      if (E != NewE)
+        return visit(NewE);
+    }
+
+    auto *EnteringBB = R.getEnteringBlock();
     Instruction *Inst = dyn_cast<Instruction>(E->getValue());
+    Instruction *IP;
+    if (Inst && !R.contains(Inst))
+      IP = Inst;
+    else if (Inst && EnteringBB->getParent() == Inst->getFunction())
+      IP = EnteringBB->getTerminator();
+    else
+      IP = EnteringBB->getParent()->getEntryBlock().getTerminator();
+
     if (!Inst || (Inst->getOpcode() != Instruction::SRem &&
                   Inst->getOpcode() != Instruction::SDiv))
-      return E;
+      return visitGenericInst(E, Inst, IP);
 
-    if (!R.contains(Inst))
-      return E;
+    const SCEV *LHSScev = SE.getSCEV(Inst->getOperand(0));
+    const SCEV *RHSScev = SE.getSCEV(Inst->getOperand(1));
 
-    Instruction *StartIP = R.getEnteringBlock()->getTerminator();
+    if (!SE.isKnownNonZero(RHSScev))
+      RHSScev = SE.getUMaxExpr(RHSScev, SE.getConstant(E->getType(), 1));
 
-    const SCEV *LHSScev = visit(SE.getSCEV(Inst->getOperand(0)));
-    const SCEV *RHSScev = visit(SE.getSCEV(Inst->getOperand(1)));
-
-    Value *LHS = Expander.expandCodeFor(LHSScev, E->getType(), StartIP);
-    Value *RHS = Expander.expandCodeFor(RHSScev, E->getType(), StartIP);
+    Value *LHS = expandCodeFor(LHSScev, E->getType(), IP);
+    Value *RHS = expandCodeFor(RHSScev, E->getType(), IP);
 
     Inst = BinaryOperator::Create((Instruction::BinaryOps)Inst->getOpcode(),
-                                  LHS, RHS, Inst->getName() + Name, StartIP);
+                                  LHS, RHS, Inst->getName() + Name, IP);
     return SE.getSCEV(Inst);
   }
 
@@ -301,7 +323,10 @@ private:
     return SE.getSignExtendExpr(visit(E->getOperand()), E->getType());
   }
   const SCEV *visitUDivExpr(const SCEVUDivExpr *E) {
-    return SE.getUDivExpr(visit(E->getLHS()), visit(E->getRHS()));
+    auto *RHSScev = visit(E->getRHS());
+    if (!SE.isKnownNonZero(RHSScev))
+      RHSScev = SE.getUMaxExpr(RHSScev, SE.getConstant(E->getType(), 1));
+    return SE.getUDivExpr(visit(E->getLHS()), RHSScev);
   }
   const SCEV *visitAddExpr(const SCEVAddExpr *E) {
     SmallVector<const SCEV *, 4> NewOps;
@@ -441,15 +466,76 @@ bool polly::isIgnoredIntrinsic(const Value *V) {
   return false;
 }
 
-bool polly::canSynthesize(const Value *V, const llvm::LoopInfo *LI,
-                          ScalarEvolution *SE, const Region *R) {
+bool polly::canSynthesize(const Value *V, const Scop &S,
+                          const llvm::LoopInfo *LI, ScalarEvolution *SE,
+                          Loop *Scope) {
   if (!V || !SE->isSCEVable(V->getType()))
     return false;
 
-  if (const SCEV *Scev = SE->getSCEV(const_cast<Value *>(V)))
+  if (const SCEV *Scev = SE->getSCEVAtScope(const_cast<Value *>(V), Scope))
     if (!isa<SCEVCouldNotCompute>(Scev))
-      if (!hasScalarDepsInsideRegion(Scev, R))
+      if (!hasScalarDepsInsideRegion(Scev, &S.getRegion(), Scope, false))
         return true;
 
   return false;
+}
+
+llvm::BasicBlock *polly::getUseBlock(llvm::Use &U) {
+  Instruction *UI = dyn_cast<Instruction>(U.getUser());
+  if (!UI)
+    return nullptr;
+
+  if (PHINode *PHI = dyn_cast<PHINode>(UI))
+    return PHI->getIncomingBlock(U);
+
+  return UI->getParent();
+}
+
+std::tuple<std::vector<const SCEV *>, std::vector<int>>
+polly::getIndexExpressionsFromGEP(GetElementPtrInst *GEP, ScalarEvolution &SE) {
+  std::vector<const SCEV *> Subscripts;
+  std::vector<int> Sizes;
+
+  Type *Ty = GEP->getPointerOperandType();
+
+  bool DroppedFirstDim = false;
+
+  for (unsigned i = 1; i < GEP->getNumOperands(); i++) {
+
+    const SCEV *Expr = SE.getSCEV(GEP->getOperand(i));
+
+    if (i == 1) {
+      if (auto *PtrTy = dyn_cast<PointerType>(Ty)) {
+        Ty = PtrTy->getElementType();
+      } else if (auto *ArrayTy = dyn_cast<ArrayType>(Ty)) {
+        Ty = ArrayTy->getElementType();
+      } else {
+        Subscripts.clear();
+        Sizes.clear();
+        break;
+      }
+      if (auto *Const = dyn_cast<SCEVConstant>(Expr))
+        if (Const->getValue()->isZero()) {
+          DroppedFirstDim = true;
+          continue;
+        }
+      Subscripts.push_back(Expr);
+      continue;
+    }
+
+    auto *ArrayTy = dyn_cast<ArrayType>(Ty);
+    if (!ArrayTy) {
+      Subscripts.clear();
+      Sizes.clear();
+      break;
+    }
+
+    Subscripts.push_back(Expr);
+    if (!(DroppedFirstDim && i == 2))
+      Sizes.push_back(ArrayTy->getNumElements());
+
+    Ty = ArrayTy->getElementType();
+  }
+
+  return std::make_tuple(Subscripts, Sizes);
 }

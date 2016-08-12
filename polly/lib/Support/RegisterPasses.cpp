@@ -30,6 +30,7 @@
 #include "polly/ScopInfo.h"
 #include "llvm/Analysis/CFGPrinter.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Vectorize.h"
@@ -84,6 +85,16 @@ static cl::opt<CodeGenChoice> CodeGenerator(
                clEnumValN(CODEGEN_NONE, "none", "no code generation"),
                clEnumValEnd),
     cl::Hidden, cl::init(CODEGEN_ISL), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+enum TargetChoice { TARGET_CPU, TARGET_GPU };
+static cl::opt<TargetChoice>
+    Target("polly-target", cl::desc("The hardware to target"),
+           cl::values(clEnumValN(TARGET_CPU, "cpu", "generate CPU code"),
+#ifdef GPU_CODEGEN
+                      clEnumValN(TARGET_GPU, "gpu", "generate GPU code"),
+#endif
+                      clEnumValEnd),
+           cl::init(TARGET_CPU), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 VectorizerChoice polly::PollyVectorizerChoice;
 static cl::opt<polly::VectorizerChoice, true> Vectorizer(
@@ -144,16 +155,22 @@ static cl::opt<bool>
 namespace polly {
 void initializePollyPasses(PassRegistry &Registry) {
   initializeCodeGenerationPass(Registry);
+
+#ifdef GPU_CODEGEN
+  initializePPCGCodeGenerationPass(Registry);
+#endif
   initializeCodePreparationPass(Registry);
   initializeDeadCodeElimPass(Registry);
   initializeDependenceInfoPass(Registry);
+  initializeDependenceInfoWrapperPassPass(Registry);
   initializeJSONExporterPass(Registry);
   initializeJSONImporterPass(Registry);
   initializeIslAstInfoPass(Registry);
   initializeIslScheduleOptimizerPass(Registry);
   initializePollyCanonicalizePass(Registry);
   initializeScopDetectionPass(Registry);
-  initializeScopInfoPass(Registry);
+  initializeScopInfoRegionPassPass(Registry);
+  initializeScopInfoWrapperPassPass(Registry);
   initializeCodegenCleanupPass(Registry);
 }
 
@@ -198,7 +215,7 @@ void registerPollyPasses(llvm::legacy::PassManagerBase &PM) {
   if (PollyOnlyPrinter)
     PM.add(polly::createDOTOnlyPrinterPass());
 
-  PM.add(polly::createScopInfoPass());
+  PM.add(polly::createScopInfoRegionPassPass());
 
   if (ImportJScop)
     PM.add(polly::createJSONImporterPass());
@@ -206,25 +223,40 @@ void registerPollyPasses(llvm::legacy::PassManagerBase &PM) {
   if (DeadCodeElim)
     PM.add(polly::createDeadCodeElimPass());
 
-  switch (Optimizer) {
-  case OPTIMIZER_NONE:
-    break; /* Do nothing */
+  if (Target == TARGET_GPU) {
+    // GPU generation provides its own scheduling optimization strategy.
+  } else {
+    switch (Optimizer) {
+    case OPTIMIZER_NONE:
+      break; /* Do nothing */
 
-  case OPTIMIZER_ISL:
-    PM.add(polly::createIslScheduleOptimizerPass());
-    break;
+    case OPTIMIZER_ISL:
+      PM.add(polly::createIslScheduleOptimizerPass());
+      break;
+    }
   }
 
   if (ExportJScop)
     PM.add(polly::createJSONExporterPass());
 
-  switch (CodeGenerator) {
-  case CODEGEN_ISL:
-    PM.add(polly::createCodeGenerationPass());
-    break;
-  case CODEGEN_NONE:
-    break;
+  if (Target == TARGET_GPU) {
+#ifdef GPU_CODEGEN
+    PM.add(polly::createPPCGCodeGenerationPass());
+#endif
+  } else {
+    switch (CodeGenerator) {
+    case CODEGEN_ISL:
+      PM.add(polly::createCodeGenerationPass());
+      break;
+    case CODEGEN_NONE:
+      break;
+    }
   }
+
+  // FIXME: This dummy ModulePass keeps some programs from miscompiling,
+  // probably some not correctly preserved analyses. It acts as a barrier to
+  // force all analysis results to be recomputed.
+  PM.add(createBarrierNoopPass());
 
   if (CFGPrinter)
     PM.add(llvm::createCFGPrinterPass());
@@ -330,4 +362,4 @@ static llvm::RegisterStandardPasses
 static llvm::RegisterStandardPasses RegisterPollyOptimizerScalarLate(
     llvm::PassManagerBuilder::EP_VectorizerStart,
     registerPollyScalarOptimizerLatePasses);
-}
+} // namespace polly

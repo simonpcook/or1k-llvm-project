@@ -11,39 +11,11 @@
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/ADT/StringRef.h"
+#include "../utils/Matchers.h"
 
 using namespace clang::ast_matchers;
 
-static bool isContainer(llvm::StringRef ClassName) {
-  static const char *const ContainerNames[] = {"std::array",
-                                               "std::deque",
-                                               "std::forward_list",
-                                               "std::list",
-                                               "std::map",
-                                               "std::multimap",
-                                               "std::multiset",
-                                               "std::priority_queue",
-                                               "std::queue",
-                                               "std::set",
-                                               "std::stack",
-                                               "std::unordered_map",
-                                               "std::unordered_multimap",
-                                               "std::unordered_multiset",
-                                               "std::unordered_set",
-                                               "std::vector"};
-  return std::binary_search(std::begin(ContainerNames),
-                            std::end(ContainerNames), ClassName);
-}
-
 namespace clang {
-namespace {
-AST_MATCHER(QualType, isBoolType) { return Node->isBooleanType(); }
-
-AST_MATCHER(NamedDecl, stlContainer) {
-  return isContainer(Node.getQualifiedNameAsString());
-}
-} // namespace
-
 namespace tidy {
 namespace readability {
 
@@ -57,27 +29,30 @@ void ContainerSizeEmptyCheck::registerMatchers(MatchFinder *Finder) {
   if (!getLangOpts().CPlusPlus)
     return;
 
+  const auto stlContainer = hasAnyName(
+      "array", "basic_string", "deque", "forward_list", "list", "map",
+      "multimap", "multiset", "priority_queue", "queue", "set", "stack",
+      "unordered_map", "unordered_multimap", "unordered_multiset",
+      "unordered_set", "vector");
+
   const auto WrongUse = anyOf(
-      hasParent(
-          binaryOperator(
-              anyOf(has(integerLiteral(equals(0))),
-                    allOf(anyOf(hasOperatorName("<"), hasOperatorName(">="),
-                                hasOperatorName(">"), hasOperatorName("<=")),
-                          hasEitherOperand(
-                              ignoringImpCasts(integerLiteral(equals(1)))))))
-              .bind("SizeBinaryOp")),
+      hasParent(binaryOperator(
+                    matchers::isComparisonOperator(),
+                    hasEitherOperand(ignoringImpCasts(anyOf(
+                        integerLiteral(equals(1)), integerLiteral(equals(0))))))
+                    .bind("SizeBinaryOp")),
       hasParent(implicitCastExpr(
-          hasImplicitDestinationType(isBoolType()),
+          hasImplicitDestinationType(booleanType()),
           anyOf(
               hasParent(unaryOperator(hasOperatorName("!")).bind("NegOnSize")),
               anything()))),
-      hasParent(explicitCastExpr(hasDestinationType(isBoolType()))));
+      hasParent(explicitCastExpr(hasDestinationType(booleanType()))));
 
   Finder->addMatcher(
       cxxMemberCallExpr(
-          on(expr(anyOf(hasType(namedDecl(stlContainer())),
-                        hasType(pointsTo(namedDecl(stlContainer()))),
-                        hasType(references(namedDecl(stlContainer())))))
+          on(expr(anyOf(hasType(namedDecl(stlContainer)),
+                        hasType(pointsTo(namedDecl(stlContainer))),
+                        hasType(references(namedDecl(stlContainer)))))
                  .bind("STLObject")),
           callee(cxxMethodDecl(hasName("size"))), WrongUse)
           .bind("SizeCallExpr"),
@@ -119,6 +94,10 @@ void ContainerSizeEmptyCheck::check(const MatchFinder::MatchResult &Result) {
 
     // Constant that is not handled.
     if (Value > 1)
+      return;
+
+    if (Value == 1 && (OpCode == BinaryOperatorKind::BO_EQ ||
+                       OpCode == BinaryOperatorKind::BO_NE))
       return;
 
     // Always true, no warnings for that.

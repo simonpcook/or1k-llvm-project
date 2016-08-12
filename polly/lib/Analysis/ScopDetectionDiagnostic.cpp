@@ -36,11 +36,15 @@
 
 #include <string>
 
+using namespace llvm;
+
 #define BADSCOP_STAT(NAME, DESC)                                               \
   STATISTIC(Bad##NAME##ForScop, "Number of bad regions for Scop: " DESC)
 
 BADSCOP_STAT(CFG, "CFG too complex");
 BADSCOP_STAT(LoopBound, "Loop bounds can not be computed");
+BADSCOP_STAT(LoopOverlapWithNonAffineSubRegion,
+             "Loop overlap with nonaffine subregion");
 BADSCOP_STAT(FuncCall, "Function call with side effects appeared");
 BADSCOP_STAT(AffFunc, "Expression not affine");
 BADSCOP_STAT(Alias, "Found base address alias");
@@ -56,7 +60,7 @@ template <typename T> std::string operator+(Twine LHS, const T &RHS) {
 
   return LHS.concat(Buf).str();
 }
-}
+} // namespace polly
 
 namespace llvm {
 // @brief Lexicographic order on (line, col) of our debug locations.
@@ -64,11 +68,24 @@ static bool operator<(const llvm::DebugLoc &LHS, const llvm::DebugLoc &RHS) {
   return LHS.getLine() < RHS.getLine() ||
          (LHS.getLine() == RHS.getLine() && LHS.getCol() < RHS.getCol());
 }
-}
+} // namespace llvm
 
 namespace polly {
-void getDebugLocations(const Region *R, DebugLoc &Begin, DebugLoc &End) {
-  for (const BasicBlock *BB : R->blocks())
+BBPair getBBPairForRegion(const Region *R) {
+  return std::make_pair(R->getEntry(), R->getExit());
+}
+
+void getDebugLocations(const BBPair &P, DebugLoc &Begin, DebugLoc &End) {
+  SmallPtrSet<BasicBlock *, 32> Seen;
+  SmallVector<BasicBlock *, 32> Todo;
+  Todo.push_back(P.first);
+  while (!Todo.empty()) {
+    auto *BB = Todo.pop_back_val();
+    if (BB == P.second)
+      continue;
+    if (!Seen.insert(BB).second)
+      continue;
+    Todo.append(succ_begin(BB), succ_end(BB));
     for (const Instruction &Inst : *BB) {
       DebugLoc DL = Inst.getDebugLoc();
       if (!DL)
@@ -77,15 +94,15 @@ void getDebugLocations(const Region *R, DebugLoc &Begin, DebugLoc &End) {
       Begin = Begin ? std::min(Begin, DL) : DL;
       End = End ? std::max(End, DL) : DL;
     }
+  }
 }
 
-void emitRejectionRemarks(const llvm::Function &F, const RejectLog &Log) {
+void emitRejectionRemarks(const BBPair &P, const RejectLog &Log) {
+  Function &F = *P.first->getParent();
   LLVMContext &Ctx = F.getContext();
 
-  const Region *R = Log.region();
   DebugLoc Begin, End;
-
-  getDebugLocations(R, Begin, End);
+  getDebugLocations(P, Begin, End);
 
   emitOptimizationRemarkMissed(
       Ctx, DEBUG_TYPE, F, Begin,
@@ -144,6 +161,23 @@ bool ReportInvalidTerminator::classof(const RejectReason *RR) {
 }
 
 //===----------------------------------------------------------------------===//
+// ReportIrreducibleRegion.
+
+std::string ReportIrreducibleRegion::getMessage() const {
+  return "Irreducible region encountered: " + R->getNameStr();
+}
+
+const DebugLoc &ReportIrreducibleRegion::getDebugLoc() const { return DbgLoc; }
+
+std::string ReportIrreducibleRegion::getEndUserMessage() const {
+  return "Irreducible region encountered in control flow.";
+}
+
+bool ReportIrreducibleRegion::classof(const RejectReason *RR) {
+  return RR->getKind() == rrkIrreducibleRegion;
+}
+
+//===----------------------------------------------------------------------===//
 // ReportAffFunc.
 
 ReportAffFunc::ReportAffFunc(const RejectReasonKind K, const Instruction *Inst)
@@ -176,22 +210,6 @@ std::string ReportInvalidCond::getMessage() const {
 
 bool ReportInvalidCond::classof(const RejectReason *RR) {
   return RR->getKind() == rrkInvalidCond;
-}
-
-//===----------------------------------------------------------------------===//
-// ReportUnsignedCond.
-
-std::string ReportUnsignedCond::getMessage() const {
-  return ("Condition in BB '" + BB->getName()).str() +
-         "' performs a comparision on (not yet supported) unsigned integers.";
-}
-
-std::string ReportUnsignedCond::getEndUserMessage() const {
-  return "Unsupported comparision on unsigned integers encountered";
-}
-
-bool ReportUnsignedCond::classof(const RejectReason *RR) {
-  return RR->getKind() == rrkUnsignedCond;
 }
 
 //===----------------------------------------------------------------------===//
@@ -309,6 +327,33 @@ bool ReportLoopBound::classof(const RejectReason *RR) {
 
 std::string ReportLoopBound::getEndUserMessage() const {
   return "Failed to derive an affine function from the loop bounds.";
+}
+
+//===----------------------------------------------------------------------===//
+// ReportLoopOverlapWithNonAffineSubRegion.
+
+ReportLoopOverlapWithNonAffineSubRegion::
+    ReportLoopOverlapWithNonAffineSubRegion(Loop *L, Region *R)
+    : RejectReason(rrkLoopOverlapWithNonAffineSubRegion), L(L), R(R),
+      Loc(L->getStartLoc()) {
+  ++BadLoopOverlapWithNonAffineSubRegionForScop;
+}
+
+std::string ReportLoopOverlapWithNonAffineSubRegion::getMessage() const {
+  return "Non affine subregion: " + R->getNameStr() + " overlaps Loop " +
+         L->getHeader()->getName();
+}
+
+const DebugLoc &ReportLoopOverlapWithNonAffineSubRegion::getDebugLoc() const {
+  return Loc;
+}
+
+bool ReportLoopOverlapWithNonAffineSubRegion::classof(const RejectReason *RR) {
+  return RR->getKind() == rrkLoopOverlapWithNonAffineSubRegion;
+}
+
+std::string ReportLoopOverlapWithNonAffineSubRegion::getEndUserMessage() const {
+  return "Loop overlaps with nonaffine subregion.";
 }
 
 //===----------------------------------------------------------------------===//

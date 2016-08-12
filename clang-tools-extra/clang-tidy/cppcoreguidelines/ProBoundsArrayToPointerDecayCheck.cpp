@@ -15,11 +15,14 @@ using namespace clang::ast_matchers;
 
 namespace clang {
 namespace tidy {
+namespace cppcoreguidelines {
 
 AST_MATCHER_P(CXXForRangeStmt, hasRangeBeginEndStmt,
               ast_matchers::internal::Matcher<DeclStmt>, InnerMatcher) {
-  const DeclStmt *const Stmt = Node.getBeginEndStmt();
-  return (Stmt != nullptr && InnerMatcher.matches(*Stmt, Finder, Builder));
+  for (const DeclStmt *Stmt : {Node.getBeginStmt(), Node.getEndStmt()})
+    if (Stmt != nullptr && InnerMatcher.matches(*Stmt, Finder, Builder))
+      return true;
+  return false;
 }
 
 AST_MATCHER(Stmt, isInsideOfRangeBeginEndStmt) {
@@ -72,5 +75,6 @@ void ProBoundsArrayToPointerDecayCheck::check(
                                   "an explicit cast instead");
 }
 
+} // namespace cppcoreguidelines
 } // namespace tidy
 } // namespace clang

@@ -1637,6 +1637,9 @@ static int close_row(struct isl_tab *tab, struct isl_tab_var *var)
 
 /* Add a constraint to the tableau and allocate a row for it.
  * Return the index into the constraint array "con".
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
  */
 int isl_tab_allocate_con(struct isl_tab *tab)
 {
@@ -1766,6 +1769,9 @@ int isl_tab_allocate_var(struct isl_tab *tab)
  * of the original variables and needs to be expressed in terms of the
  * column variables.
  *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
+ *
  * We add each term in turn.
  * If r = n/d_r is the current sum and we need to add k x, then
  * 	if x is a column variable, we increase the numerator of
@@ -1860,6 +1866,9 @@ static int drop_col(struct isl_tab *tab, int col)
 
 /* Add inequality "ineq" and check if it conflicts with the
  * previously added constraints or if it is obviously redundant.
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
  */
 int isl_tab_add_ineq(struct isl_tab *tab, isl_int *ineq)
 {
@@ -1883,6 +1892,7 @@ int isl_tab_add_ineq(struct isl_tab *tab, isl_int *ineq)
 	}
 	if (tab->cone) {
 		isl_int_init(cst);
+		isl_int_set_si(cst, 0);
 		isl_int_swap(ineq[0], cst);
 	}
 	r = isl_tab_add_row(tab, ineq);
@@ -1949,6 +1959,9 @@ static int to_col(struct isl_tab *tab, struct isl_tab_var *var)
  * The equalities can therefore never conflict.
  * Adding the equalities is currently only really useful for a later call
  * to isl_tab_ineq_type.
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
  */
 static struct isl_tab *add_eq(struct isl_tab *tab, isl_int *eq)
 {
@@ -1991,6 +2004,9 @@ static int row_is_manifestly_zero(struct isl_tab *tab, int row)
 }
 
 /* Add an equality that is known to be valid for the given tableau.
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
  */
 int isl_tab_add_valid_eq(struct isl_tab *tab, isl_int *eq)
 {
@@ -2027,6 +2043,12 @@ int isl_tab_add_valid_eq(struct isl_tab *tab, isl_int *eq)
 	return 0;
 }
 
+/* Add a zero row to "tab" and return the corresponding index
+ * in the constraint array.
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
+ */
 static int add_zero_row(struct isl_tab *tab)
 {
 	int r;
@@ -2045,6 +2067,10 @@ static int add_zero_row(struct isl_tab *tab)
 
 /* Add equality "eq" and check if it conflicts with the
  * previously added constraints or if it is obviously redundant.
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
+ * If tab->bmap is set, then two rows are needed instead of one.
  */
 int isl_tab_add_eq(struct isl_tab *tab, isl_int *eq)
 {
@@ -2064,6 +2090,7 @@ int isl_tab_add_eq(struct isl_tab *tab, isl_int *eq)
 
 	if (tab->cone) {
 		isl_int_init(cst);
+		isl_int_set_si(cst, 0);
 		isl_int_swap(eq[0], cst);
 	}
 	r = isl_tab_add_row(tab, eq);
@@ -2169,6 +2196,9 @@ static struct isl_vec *ineq_for_div(struct isl_basic_map *bmap, unsigned div)
  *
  * If add_ineq is not NULL, then this function is used
  * instead of isl_tab_add_ineq to effectively add the inequalities.
+ *
+ * This function assumes that at least two more rows and at least
+ * two more elements in the constraint array are available in the tableau.
  */
 static int add_div_constraints(struct isl_tab *tab, unsigned div,
 	int (*add_ineq)(void *user, isl_int *), void *user)
@@ -2363,6 +2393,7 @@ struct isl_tab *isl_tab_from_recession_cone(__isl_keep isl_basic_set *bset,
 	tab->cone = 1;
 
 	isl_int_init(cst);
+	isl_int_set_si(cst, 0);
 	for (i = 0; i < bset->n_eq; ++i) {
 		isl_int_swap(bset->eq[i][offset], cst);
 		if (offset > 0) {
@@ -2538,9 +2569,9 @@ struct isl_basic_map *isl_basic_map_update_from_tab(struct isl_basic_map *bmap,
 				isl_basic_map_drop_inequality(bmap, i);
 		}
 	if (bmap->n_eq != n_eq)
-		isl_basic_map_gauss(bmap, NULL);
+		bmap = isl_basic_map_gauss(bmap, NULL);
 	if (!tab->rational &&
-	    !bmap->sample && isl_tab_sample_is_integer(tab))
+	    bmap && !bmap->sample && isl_tab_sample_is_integer(tab))
 		bmap->sample = extract_integer_sample(tab);
 	return bmap;
 }
@@ -2983,6 +3014,36 @@ static int con_is_redundant(struct isl_tab *tab, struct isl_tab_var *var)
 	}
 }
 
+/* Return an isl_tab_var that has been marked or NULL if no such
+ * variable can be found.
+ * The marked field has only been set for variables that
+ * appear in non-redundant rows or non-dead columns.
+ *
+ * Pick the last constraint variable that is marked and
+ * that appears in either a non-redundant row or a non-dead columns.
+ * Since the returned variable is tested for being a redundant constraint,
+ * there is no need to return any tab variable that corresponds to a variable.
+ */
+static struct isl_tab_var *select_marked(struct isl_tab *tab)
+{
+	int i;
+	struct isl_tab_var *var;
+
+	for (i = tab->n_con - 1; i >= 0; --i) {
+		var = &tab->con[i];
+		if (var->index < 0)
+			continue;
+		if (var->is_row && var->index < tab->n_redundant)
+			continue;
+		if (!var->is_row && var->index < tab->n_dead)
+			continue;
+		if (var->marked)
+			return var;
+	}
+
+	return NULL;
+}
+
 /* Check for (near) redundant constraints.
  * A constraint is redundant if it is non-negative and if
  * its minimal value (temporarily ignoring the non-negativity) is either
@@ -3025,20 +3086,9 @@ int isl_tab_detect_redundant(struct isl_tab *tab)
 	while (n_marked) {
 		struct isl_tab_var *var;
 		int red;
-		for (i = tab->n_redundant; i < tab->n_row; ++i) {
-			var = isl_tab_var_from_row(tab, i);
-			if (var->marked)
-				break;
-		}
-		if (i == tab->n_row) {
-			for (i = tab->n_dead; i < tab->n_col; ++i) {
-				var = var_from_col(tab, i);
-				if (var->marked)
-					break;
-			}
-			if (i == tab->n_col)
-				break;
-		}
+		var = select_marked(tab);
+		if (!var)
+			break;
 		var->marked = 0;
 		n_marked--;
 		red = con_is_redundant(tab, var);
@@ -3090,6 +3140,9 @@ int isl_tab_is_equality(struct isl_tab *tab, int con)
  * If opt_denom is NULL, then *opt is rounded up to the nearest integer.
  * The return value reflects the nature of the result (empty, unbounded,
  * minimal value returned in *opt).
+ *
+ * This function assumes that at least one more row and at least
+ * one more element in the constraint array are available in the tableau.
  */
 enum isl_lp_result isl_tab_min(struct isl_tab *tab,
 	isl_int *f, isl_int denom, isl_int *opt, isl_int *opt_denom,
@@ -3183,7 +3236,7 @@ int isl_tab_is_redundant(struct isl_tab *tab, int con)
 	return tab->con[con].is_row && tab->con[con].index < tab->n_redundant;
 }
 
-/* Take a snapshot of the tableau that can be restored by s call to
+/* Take a snapshot of the tableau that can be restored by a call to
  * isl_tab_rollback.
  */
 struct isl_tab_undo *isl_tab_snap(struct isl_tab *tab)
@@ -3192,6 +3245,31 @@ struct isl_tab_undo *isl_tab_snap(struct isl_tab *tab)
 		return NULL;
 	tab->need_undo = 1;
 	return tab->top;
+}
+
+/* Does "tab" need to keep track of undo information?
+ * That is, was a snapshot taken that may need to be restored?
+ */
+isl_bool isl_tab_need_undo(struct isl_tab *tab)
+{
+	if (!tab)
+		return isl_bool_error;
+
+	return tab->need_undo;
+}
+
+/* Remove all tracking of undo information from "tab", invalidating
+ * any snapshots that may have been taken of the tableau.
+ * Since all snapshots have been invalidated, there is also
+ * no need to start keeping track of undo information again.
+ */
+void isl_tab_clear_undo(struct isl_tab *tab)
+{
+	if (!tab)
+		return;
+
+	free_undo(tab);
+	tab->need_undo = 0;
 }
 
 /* Undo the operation performed by isl_tab_relax.

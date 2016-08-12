@@ -283,7 +283,9 @@ CLEANFILES = \
 	manual.out \
 	manual.blg \
 	manual.log \
-	manual.brf
+	manual.brf \
+	manual.bcf \
+	manual.run.xml
 
 all: all-am
 
@@ -484,10 +486,10 @@ uninstall-am:
 
 @GENERATE_DOC_TRUE@user.tex: user.pod
 @GENERATE_DOC_TRUE@	$(PERL) $(srcdir)/mypod2latex $< $@
-@GENERATE_DOC_TRUE@manual.pdf: manual.tex user.tex $(srcdir)/implementation.tex
+@GENERATE_DOC_TRUE@manual.pdf: manual.tex user.tex $(srcdir)/implementation.tex reading.tex
 @GENERATE_DOC_TRUE@	(cd ..; echo "@GIT_HEAD_VERSION@") > version.tex
 @GENERATE_DOC_TRUE@	$(PDFLATEX) $<
-@GENERATE_DOC_TRUE@	bibtex manual
+@GENERATE_DOC_TRUE@	biber manual
 @GENERATE_DOC_TRUE@	$(PDFLATEX) $<
 @GENERATE_DOC_TRUE@	$(PDFLATEX) $<
 @GENERATE_DOC_TRUE@user.html: user.pod

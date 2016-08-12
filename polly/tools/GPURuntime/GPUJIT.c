@@ -15,7 +15,21 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <dlfcn.h>
+#include <stdarg.h>
 #include <stdio.h>
+
+static int DebugMode;
+
+static void debug_print(const char *format, ...) {
+  if (!DebugMode)
+    return;
+
+  va_list args;
+  va_start(args, format);
+  vfprintf(stderr, format, args);
+  va_end(args);
+}
+#define dump_function() debug_print("-> %s\n", __func__)
 
 /* Define Polly's GPGPU data types. */
 struct PollyGPUContextT {
@@ -53,8 +67,8 @@ static CuMemAllocFcnTy *CuMemAllocFcnPtr;
 typedef CUresult CUDAAPI CuFuncSetBlockShapeFcnTy(CUfunction, int, int, int);
 static CuFuncSetBlockShapeFcnTy *CuFuncSetBlockShapeFcnPtr;
 
-typedef CUresult CUDAAPI
-CuParamSetvFcnTy(CUfunction, int, void *, unsigned int);
+typedef CUresult CUDAAPI CuParamSetvFcnTy(CUfunction, int, void *,
+                                          unsigned int);
 static CuParamSetvFcnTy *CuParamSetvFcnPtr;
 
 typedef CUresult CUDAAPI CuParamSetSizeFcnTy(CUfunction, unsigned int);
@@ -90,12 +104,13 @@ static CuCtxCreateFcnTy *CuCtxCreateFcnPtr;
 typedef CUresult CUDAAPI CuDeviceGetFcnTy(CUdevice *, int);
 static CuDeviceGetFcnTy *CuDeviceGetFcnPtr;
 
-typedef CUresult CUDAAPI CuModuleLoadDataExFcnTy(
-    CUmodule *, const void *, unsigned int, CUjit_option *, void **);
+typedef CUresult CUDAAPI CuModuleLoadDataExFcnTy(CUmodule *, const void *,
+                                                 unsigned int, CUjit_option *,
+                                                 void **);
 static CuModuleLoadDataExFcnTy *CuModuleLoadDataExFcnPtr;
 
-typedef CUresult CUDAAPI
-CuModuleGetFunctionFcnTy(CUfunction *, CUmodule, const char *);
+typedef CUresult CUDAAPI CuModuleGetFunctionFcnTy(CUfunction *, CUmodule,
+                                                  const char *);
 static CuModuleGetFunctionFcnTy *CuModuleGetFunctionFcnPtr;
 
 typedef CUresult CUDAAPI CuDeviceComputeCapabilityFcnTy(int *, int *, CUdevice);
@@ -114,8 +129,8 @@ static CudaEventRecordFcnTy *CudaEventRecordFcnPtr;
 typedef cudaError_t CUDARTAPI CudaEventSynchronizeFcnTy(cudaEvent_t);
 static CudaEventSynchronizeFcnTy *CudaEventSynchronizeFcnPtr;
 
-typedef cudaError_t CUDARTAPI
-CudaEventElapsedTimeFcnTy(float *, cudaEvent_t, cudaEvent_t);
+typedef cudaError_t CUDARTAPI CudaEventElapsedTimeFcnTy(float *, cudaEvent_t,
+                                                        cudaEvent_t);
 static CudaEventElapsedTimeFcnTy *CudaEventElapsedTimeFcnPtr;
 
 typedef cudaError_t CUDARTAPI CudaEventDestroyFcnTy(cudaEvent_t);
@@ -240,6 +255,8 @@ static int initialDeviceAPIs() {
 }
 
 void polly_initDevice(PollyGPUContext **Context, PollyGPUDevice **Device) {
+  dump_function();
+
   int Major = 0, Minor = 0, DeviceID = 0;
   char DeviceName[256];
   int DeviceCount = 0;
@@ -273,7 +290,7 @@ void polly_initDevice(PollyGPUContext **Context, PollyGPUDevice **Device) {
   /* Get compute capabilities and the device name. */
   CuDeviceComputeCapabilityFcnPtr(&Major, &Minor, (*Device)->Cuda);
   CuDeviceGetNameFcnPtr(DeviceName, 256, (*Device)->Cuda);
-  fprintf(stderr, "> Running on GPU device %d : %s.\n", DeviceID, DeviceName);
+  debug_print("> Running on GPU device %d : %s.\n", DeviceID, DeviceName);
 
   /* Create context on the device. */
   *Context = malloc(sizeof(PollyGPUContext));
@@ -282,9 +299,13 @@ void polly_initDevice(PollyGPUContext **Context, PollyGPUDevice **Device) {
     exit(-1);
   }
   CuCtxCreateFcnPtr(&((*Context)->Cuda), 0, (*Device)->Cuda);
+
+  DebugMode = getenv("POLLY_DEBUG") != 0;
 }
 
 void polly_getPTXModule(void *PTXBuffer, PollyGPUModule **Module) {
+  dump_function();
+
   *Module = malloc(sizeof(PollyGPUModule));
   if (*Module == 0) {
     fprintf(stdout, "Allocate memory for Polly GPU module failed.\n");
@@ -292,7 +313,7 @@ void polly_getPTXModule(void *PTXBuffer, PollyGPUModule **Module) {
   }
 
   if (CuModuleLoadDataExFcnPtr(&((*Module)->Cuda), PTXBuffer, 0, 0, 0) !=
-          CUDA_SUCCESS) {
+      CUDA_SUCCESS) {
     fprintf(stdout, "Loading ptx assembly text failed.\n");
     exit(-1);
   }
@@ -300,6 +321,8 @@ void polly_getPTXModule(void *PTXBuffer, PollyGPUModule **Module) {
 
 void polly_getPTXKernelEntry(const char *KernelName, PollyGPUModule *Module,
                              PollyGPUFunction **Kernel) {
+  dump_function();
+
   *Kernel = malloc(sizeof(PollyGPUFunction));
   if (*Kernel == 0) {
     fprintf(stdout, "Allocate memory for Polly GPU kernel failed.\n");
@@ -308,13 +331,15 @@ void polly_getPTXKernelEntry(const char *KernelName, PollyGPUModule *Module,
 
   /* Locate the kernel entry point. */
   if (CuModuleGetFunctionFcnPtr(&((*Kernel)->Cuda), Module->Cuda, KernelName) !=
-          CUDA_SUCCESS) {
+      CUDA_SUCCESS) {
     fprintf(stdout, "Loading kernel function failed.\n");
     exit(-1);
   }
 }
 
 void polly_startTimerByCudaEvent(PollyGPUEvent **Start, PollyGPUEvent **Stop) {
+  dump_function();
+
   *Start = malloc(sizeof(PollyGPUEvent));
   if (*Start == 0) {
     fprintf(stdout, "Allocate memory for Polly GPU start timer failed.\n");
@@ -335,6 +360,8 @@ void polly_startTimerByCudaEvent(PollyGPUEvent **Start, PollyGPUEvent **Stop) {
 
 void polly_stopTimerByCudaEvent(PollyGPUEvent *Start, PollyGPUEvent *Stop,
                                 float *ElapsedTimes) {
+  dump_function();
+
   /* Record the end time. */
   CudaEventRecordFcnPtr(Stop->Cuda, 0);
   CudaEventSynchronizeFcnPtr(Start->Cuda);
@@ -342,35 +369,24 @@ void polly_stopTimerByCudaEvent(PollyGPUEvent *Start, PollyGPUEvent *Stop,
   CudaEventElapsedTimeFcnPtr(ElapsedTimes, Start->Cuda, Stop->Cuda);
   CudaEventDestroyFcnPtr(Start->Cuda);
   CudaEventDestroyFcnPtr(Stop->Cuda);
-  fprintf(stderr, "Processing time: %f (ms).\n", *ElapsedTimes);
+  debug_print("Processing time: %f (ms).\n", *ElapsedTimes);
 
   free(Start);
   free(Stop);
 }
 
-void polly_allocateMemoryForHostAndDevice(
-    void **HostData, PollyGPUDevicePtr **DevData, int MemSize) {
-  if ((*HostData = (int *)malloc(MemSize)) == 0) {
-    fprintf(stdout, "Could not allocate host memory.\n");
-    exit(-1);
-  }
-
-  *DevData = malloc(sizeof(PollyGPUDevicePtr));
-  if (*DevData == 0) {
-    fprintf(stdout, "Allocate memory for GPU device memory pointer failed.\n");
-    exit(-1);
-  }
-  CuMemAllocFcnPtr(&((*DevData)->Cuda), MemSize);
-}
-
 void polly_copyFromHostToDevice(PollyGPUDevicePtr *DevData, void *HostData,
                                 int MemSize) {
+  dump_function();
+
   CUdeviceptr CuDevData = DevData->Cuda;
   CuMemcpyHtoDFcnPtr(CuDevData, HostData, MemSize);
 }
 
 void polly_copyFromDeviceToHost(void *HostData, PollyGPUDevicePtr *DevData,
                                 int MemSize) {
+  dump_function();
+
   if (CuMemcpyDtoHFcnPtr(HostData, DevData->Cuda, MemSize) != CUDA_SUCCESS) {
     fprintf(stdout, "Copying results from device to host memory failed.\n");
     exit(-1);
@@ -379,6 +395,8 @@ void polly_copyFromDeviceToHost(void *HostData, PollyGPUDevicePtr *DevData,
 
 void polly_setKernelParameters(PollyGPUFunction *Kernel, int BlockWidth,
                                int BlockHeight, PollyGPUDevicePtr *DevData) {
+  dump_function();
+
   int ParamOffset = 0;
 
   CuFuncSetBlockShapeFcnPtr(Kernel->Cuda, BlockWidth, BlockHeight, 1);
@@ -390,17 +408,22 @@ void polly_setKernelParameters(PollyGPUFunction *Kernel, int BlockWidth,
 
 void polly_launchKernel(PollyGPUFunction *Kernel, int GridWidth,
                         int GridHeight) {
+  dump_function();
+
   if (CuLaunchGridFcnPtr(Kernel->Cuda, GridWidth, GridHeight) != CUDA_SUCCESS) {
     fprintf(stdout, "Launching CUDA kernel failed.\n");
     exit(-1);
   }
   CudaThreadSynchronizeFcnPtr();
-  fprintf(stdout, "CUDA kernel launched.\n");
+  debug_print("CUDA kernel launched.\n");
 }
 
-void polly_cleanupGPGPUResources(
-    void *HostData, PollyGPUDevicePtr *DevData, PollyGPUModule *Module,
-    PollyGPUContext *Context, PollyGPUFunction *Kernel) {
+void polly_cleanupGPGPUResources(void *HostData, PollyGPUDevicePtr *DevData,
+                                 PollyGPUModule *Module,
+                                 PollyGPUContext *Context,
+                                 PollyGPUFunction *Kernel) {
+  dump_function();
+
   if (HostData) {
     free(HostData);
     HostData = 0;

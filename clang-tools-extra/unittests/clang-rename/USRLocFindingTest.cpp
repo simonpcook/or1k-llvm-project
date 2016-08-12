@@ -3,7 +3,6 @@
 #include "gtest/gtest.h"
 #include <map>
 #include <set>
-#include <stdio.h>
 #include <vector>
 
 namespace clang {
@@ -24,7 +23,7 @@ static void testOffsetGroups(const char *Code,
     // useful.
     std::string USR;
     for (const auto &Offset : Group) {
-      USRFindingAction Action(Offset);
+      USRFindingAction Action(Offset, std::string());
       auto Factory = tooling::newFrontendActionFactory(&Action);
       EXPECT_TRUE(tooling::runToolOnCode(Factory->create(), Code));
       const auto &USRs = Action.getUSRs();
@@ -79,6 +78,6 @@ void fun1() {\n\
   testOffsetGroups(VarTest, VarTestOffsets);
 }
 
-}
-}
-}
+} // namespace test
+} // namespace rename
+} // namespace clang

@@ -35,6 +35,13 @@
 #if defined( __cplusplus ) && ( KMP_OS_WINDOWS )
     // create shortcuts for c99 complex types
 
+    // Visual Studio cannot have function parameters that have the
+    // align __declspec attribute, so we must remove it. (Compiler Error C2719)
+    #if KMP_COMPILER_MSVC
+    # undef KMP_DO_ALIGN
+    # define KMP_DO_ALIGN(alignment) /* Nothing */
+    #endif
+
     #if (_MSC_VER < 1600) && defined(_DEBUG)
         // Workaround for the problem of _DebugHeapTag unresolved external.
         // This problem prevented to use our static debug library for C tests
@@ -211,7 +218,7 @@
 
 // Compiler 12.0 changed alignment of 16 and 32-byte arguments (like _Quad
 // and kmp_cmplx128) on IA-32 architecture. The following aligned structures
-// are implemented to support the old alignment in 10.1, 11.0, 11.1 and 
+// are implemented to support the old alignment in 10.1, 11.0, 11.1 and
 // introduce the new alignment in 12.0. See CQ88405.
 #if KMP_ARCH_X86 && KMP_HAVE_QUAD
 
@@ -219,7 +226,7 @@
 
     #pragma pack( push, 4 )
 
-    
+
     struct KMP_DO_ALIGN( 4 ) Quad_a4_t {
         _Quad q;
 
@@ -371,7 +378,7 @@ static inline void
 __kmp_acquire_atomic_lock( kmp_atomic_lock_t *lck, kmp_int32 gtid )
 {
 #if OMPT_SUPPORT && OMPT_TRACE
-    if (ompt_enabled && 
+    if (ompt_enabled &&
         ompt_callbacks.ompt_callback(ompt_event_wait_atomic)) {
         ompt_callbacks.ompt_callback(ompt_event_wait_atomic)(
             (ompt_wait_id_t) lck);
@@ -381,7 +388,7 @@ __kmp_acquire_atomic_lock( kmp_atomic_lock_t *lck, kmp_int32 gtid )
     __kmp_acquire_queuing_lock( lck, gtid );
 
 #if OMPT_SUPPORT && OMPT_TRACE
-    if (ompt_enabled && 
+    if (ompt_enabled &&
         ompt_callbacks.ompt_callback(ompt_event_acquired_atomic)) {
         ompt_callbacks.ompt_callback(ompt_event_acquired_atomic)(
             (ompt_wait_id_t) lck);

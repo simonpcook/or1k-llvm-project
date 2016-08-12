@@ -2,17 +2,55 @@
 
 namespace std {
 template <typename T> struct vector {
-  vector() {}
+  vector();
+  unsigned long size() const;
+  bool empty() const;
+};
+
+template <typename T> struct basic_string {
+  basic_string();
+  unsigned long size() const;
+  bool empty() const;
+};
+
+typedef basic_string<char> string;
+typedef basic_string<wchar_t> wstring;
+
+inline namespace __v2 {
+template <typename T> struct set {
+  set();
   unsigned long size() const;
   bool empty() const;
 };
 }
 
+
+}
+
 int main() {
+  std::set<int> intSet;
+  std::string str;
+  std::wstring wstr;
+  str.size() + 0;
+  str.size() - 0;
+  0 + str.size();
+  0 - str.size();
+  if (intSet.size() == 0)
+    ;
+  // CHECK-MESSAGES: :[[@LINE-2]]:7: warning: the 'empty' method should be used to check for emptiness instead of 'size' [readability-container-size-empty]
+  // CHECK-FIXES: {{^  }}if (intSet.empty()){{$}}
+  if (str.size() == 0)
+    ;
+  // CHECK-MESSAGES: :[[@LINE-2]]:7: warning: the 'empty' method should be used
+  // CHECK-FIXES: {{^  }}if (str.empty()){{$}}
+  if (wstr.size() == 0)
+    ;
+  // CHECK-MESSAGES: :[[@LINE-2]]:7: warning: the 'empty' method should be used
+  // CHECK-FIXES: {{^  }}if (wstr.empty()){{$}}
   std::vector<int> vect;
   if (vect.size() == 0)
     ;
-  // CHECK-MESSAGES: :[[@LINE-2]]:7: warning: the 'empty' method should be used to check for emptiness instead of 'size' [readability-container-size-empty]
+  // CHECK-MESSAGES: :[[@LINE-2]]:7: warning: the 'empty' method should be used
   // CHECK-FIXES: {{^  }}if (vect.empty()){{$}}
   if (vect.size() != 0)
     ;

@@ -15,6 +15,9 @@
 using namespace clang::ast_matchers;
 
 namespace clang {
+namespace tidy {
+namespace misc {
+
 namespace {
 // FIXME: it would be good to make a list that is also user-configurable so that
 // users can add their own elements to the list. However, it may require some
@@ -49,7 +52,6 @@ AST_MATCHER(NamedDecl, isPOSIXType) {
 }
 } // namespace
 
-namespace tidy {
 void NonCopyableObjectsCheck::registerMatchers(MatchFinder *Finder) {
   // There are two ways to get into trouble with objects like FILE *:
   // dereferencing the pointer type to be a non-pointer type, and declaring
@@ -81,16 +83,17 @@ void NonCopyableObjectsCheck::check(const MatchFinder::MatchResult &Result) {
   const auto *E = Result.Nodes.getNodeAs<Expr>("expr");
 
   if (D && BD)
-    diag(D->getLocation(), "'%0' declared as type '%1', which is unsafe to copy"
-         "; did you mean '%1 *'?")
-    << D->getName() << BD->getName();
+    diag(D->getLocation(), "%0 declared as type '%1', which is unsafe to copy"
+                           "; did you mean '%1 *'?")
+        << D << BD->getName();
   else if (E)
     diag(E->getExprLoc(),
-         "expression has opaque data structure type '%0'; type should only be "
+         "expression has opaque data structure type %0; type should only be "
          "used as a pointer and not dereferenced")
-        << BD->getName();
+        << BD;
 }
 
+} // namespace misc
 } // namespace tidy
 } // namespace clang
 

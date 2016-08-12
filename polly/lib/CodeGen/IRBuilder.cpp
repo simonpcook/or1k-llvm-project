@@ -131,10 +131,15 @@ void ScopAnnotator::annotate(Instruction *Inst) {
   if (!AliasScopeDomain)
     return;
 
-  if (!(isa<StoreInst>(Inst) || isa<LoadInst>(Inst)))
+  auto MemInst = MemAccInst::dyn_cast(Inst);
+  if (!MemInst)
     return;
 
-  auto *PtrSCEV = SE->getSCEV(getPointerOperand(*Inst));
+  auto *Ptr = MemInst.getPointerOperand();
+  if (!Ptr)
+    return;
+
+  auto *PtrSCEV = SE->getSCEV(Ptr);
   auto *BaseSCEV = SE->getPointerBase(PtrSCEV);
   auto *SU = dyn_cast<SCEVUnknown>(BaseSCEV);
 

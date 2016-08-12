@@ -19,11 +19,6 @@
 #include "kmp_io.h"
 #include "kmp_wait_release.h"
 
-
-
-/* ----------------------------------------------------------------------------------- */
-/* ----------------------------------------------------------------------------------- */
-
 /* This code is related to NtQuerySystemInformation() function. This function
    is used in the Load balance algorithm for OMP_DYNAMIC=true to find the
    number of running threads in the system. */
@@ -228,7 +223,6 @@ __kmp_win32_cond_wait( kmp_win32_cond_t *cv, kmp_win32_mutex_t *mx, kmp_info_t *
     __kmp_win32_mutex_unlock( &cv->waiters_count_lock_ );
     __kmp_win32_mutex_unlock( mx );
 
-
     for (;;) {
         int wait_done;
 
@@ -394,7 +388,6 @@ static inline void __kmp_suspend_template( int th_gtid, C *flag )
                 }
                 deactivated = TRUE;
 
-
                 __kmp_win32_cond_wait( &th->th.th_suspend_cv, &th->th.th_suspend_mx, 0, 0 );
             }
             else {
@@ -419,7 +412,6 @@ static inline void __kmp_suspend_template( int th_gtid, C *flag )
             }
         }
     }
-
 
     __kmp_win32_mutex_unlock( &th->th.th_suspend_mx );
 
@@ -481,7 +473,6 @@ static inline void __kmp_resume_template( int target_gtid, C *flag )
     KF_TRACE( 5, ( "__kmp_resume_template: T#%d about to wakeup T#%d, reset sleep bit for flag's loc(%p)\n",
                    gtid, target_gtid, flag->get() ) );
 
-
     __kmp_win32_cond_signal(  &th->th.th_suspend_cv );
     __kmp_win32_mutex_unlock( &th->th.th_suspend_mx );
 
@@ -516,19 +507,22 @@ __kmp_yield( int cond )
 void
 __kmp_gtid_set_specific( int gtid )
 {
-    KA_TRACE( 50, ("__kmp_gtid_set_specific: T#%d key:%d\n",
-                gtid, __kmp_gtid_threadprivate_key ));
-    KMP_ASSERT( __kmp_init_runtime );
-    if( ! TlsSetValue( __kmp_gtid_threadprivate_key, (LPVOID)(gtid+1)) )
-        KMP_FATAL( TLSSetValueFailed );
+    if( __kmp_init_gtid ) {
+        KA_TRACE( 50, ("__kmp_gtid_set_specific: T#%d key:%d\n",
+                    gtid, __kmp_gtid_threadprivate_key ));
+        if( ! TlsSetValue( __kmp_gtid_threadprivate_key, (LPVOID)(gtid+1)) )
+            KMP_FATAL( TLSSetValueFailed );
+    } else {
+        KA_TRACE( 50, ("__kmp_gtid_set_specific: runtime shutdown, returning\n" ) );
+    }
 }
 
 int
 __kmp_gtid_get_specific()
 {
     int gtid;
-    if( !__kmp_init_runtime ) {
-        KA_TRACE( 50, ("__kmp_get_specific: runtime shutdown, returning KMP_GTID_SHUTDOWN\n" ) );
+    if( !__kmp_init_gtid ) {
+        KA_TRACE( 50, ("__kmp_gtid_get_specific: runtime shutdown, returning KMP_GTID_SHUTDOWN\n" ) );
         return KMP_GTID_SHUTDOWN;
     }
     gtid = (int)(kmp_intptr_t)TlsGetValue( __kmp_gtid_threadprivate_key );
@@ -558,9 +552,18 @@ __kmp_get_proc_group( kmp_affin_mask_t const *mask )
     int i;
     int group = -1;
     for (i = 0; i < __kmp_num_proc_groups; i++) {
+#if KMP_USE_HWLOC
+        // On windows, the long type is always 32 bits
+        unsigned long first_32_bits = hwloc_bitmap_to_ith_ulong((hwloc_const_bitmap_t)mask, i*2);
+        unsigned long second_32_bits = hwloc_bitmap_to_ith_ulong((hwloc_const_bitmap_t)mask, i*2+1);
+        if (first_32_bits == 0 && second_32_bits == 0) {
+            continue;
+        }
+#else
         if (mask[i] == 0) {
             continue;
         }
+#endif
         if (group >= 0) {
             return -1;
         }
@@ -574,8 +577,23 @@ __kmp_get_proc_group( kmp_affin_mask_t const *mask )
 int
 __kmp_set_system_affinity( kmp_affin_mask_t const *mask, int abort_on_error )
 {
-
-#if KMP_GROUP_AFFINITY
+#if KMP_USE_HWLOC
+    int retval = hwloc_set_cpubind(__kmp_hwloc_topology, (hwloc_cpuset_t)mask, HWLOC_CPUBIND_THREAD);
+    if (retval >= 0) {
+        return 0;
+    }
+    int error = errno;
+    if (abort_on_error) {
+        __kmp_msg(
+            kmp_ms_fatal,
+            KMP_MSG( FatalSysError ),
+            KMP_ERR( error ),
+            __kmp_msg_null
+        );
+    }
+    return error;
+#else
+# if KMP_GROUP_AFFINITY
 
     if (__kmp_num_proc_groups > 1) {
         //
@@ -614,7 +632,7 @@ __kmp_set_system_affinity( kmp_affin_mask_t const *mask, int abort_on_error )
     }
     else
 
-#endif /* KMP_GROUP_AFFINITY */
+# endif /* KMP_GROUP_AFFINITY */
 
     {
         if (!SetThreadAffinityMask( GetCurrentThread(), *mask )) {
@@ -630,14 +648,30 @@ __kmp_set_system_affinity( kmp_affin_mask_t const *mask, int abort_on_error )
             return error;
         }
     }
+#endif /* KMP_USE_HWLOC */
     return 0;
 }
 
 int
 __kmp_get_system_affinity( kmp_affin_mask_t *mask, int abort_on_error )
 {
-
-#if KMP_GROUP_AFFINITY
+#if KMP_USE_HWLOC
+    int retval = hwloc_get_cpubind(__kmp_hwloc_topology, (hwloc_cpuset_t)mask, HWLOC_CPUBIND_THREAD);
+    if (retval >= 0) {
+        return 0;
+    }
+    int error = errno;
+    if (abort_on_error) {
+        __kmp_msg(
+            kmp_ms_fatal,
+            KMP_MSG( FatalSysError ),
+            KMP_ERR( error ),
+            __kmp_msg_null
+        );
+    }
+    return error;
+#else /* KMP_USE_HWLOC */
+# if KMP_GROUP_AFFINITY
 
     if (__kmp_num_proc_groups > 1) {
         KMP_CPU_ZERO(mask);
@@ -666,7 +700,7 @@ __kmp_get_system_affinity( kmp_affin_mask_t *mask, int abort_on_error )
     }
     else
 
-#endif /* KMP_GROUP_AFFINITY */
+# endif /* KMP_GROUP_AFFINITY */
 
     {
         kmp_affin_mask_t newMask, sysMask, retval;
@@ -710,14 +744,22 @@ __kmp_get_system_affinity( kmp_affin_mask_t *mask, int abort_on_error )
         }
         *mask = retval;
     }
+#endif /* KMP_USE_HWLOC */
     return 0;
 }
 
 void
 __kmp_affinity_bind_thread( int proc )
 {
-
-#if KMP_GROUP_AFFINITY
+#if KMP_USE_HWLOC
+    kmp_affin_mask_t *mask;
+    KMP_CPU_ALLOC_ON_STACK(mask);
+    KMP_CPU_ZERO(mask);
+    KMP_CPU_SET(proc, mask);
+    __kmp_set_system_affinity(mask, TRUE);
+    KMP_CPU_FREE_FROM_STACK(mask);
+#else /* KMP_USE_HWLOC */
+# if KMP_GROUP_AFFINITY
 
     if (__kmp_num_proc_groups > 1) {
         //
@@ -746,7 +788,7 @@ __kmp_affinity_bind_thread( int proc )
     }
     else
 
-#endif /* KMP_GROUP_AFFINITY */
+# endif /* KMP_GROUP_AFFINITY */
 
     {
         kmp_affin_mask_t mask;
@@ -754,6 +796,7 @@ __kmp_affinity_bind_thread( int proc )
         KMP_CPU_SET(proc, &mask);
         __kmp_set_system_affinity(&mask, TRUE);
     }
+#endif /* KMP_USE_HWLOC */
 }
 
 void
@@ -1141,7 +1184,6 @@ __kmp_elapsed_tick( double *t )
 void
 __kmp_read_system_time( double *delta )
 {
-
     if (delta != NULL) {
         BOOL status;
         LARGE_INTEGER now;
@@ -1210,7 +1252,6 @@ __kmp_launch_worker( void *arg )
     KMP_MB();
     return exit_val;
 }
-
 
 /* The monitor thread controls all of the threads in the complex */
 
@@ -1384,11 +1425,9 @@ __kmp_create_worker( int gtid, kmp_info_t *th, size_t stack_size )
                         (LPTHREAD_START_ROUTINE) & __kmp_launch_worker,
                         (LPVOID) th, &idThread ) );
 
-            {
-                handle = CreateThread( NULL, (SIZE_T) stack_size,
-                                       (LPTHREAD_START_ROUTINE) __kmp_launch_worker,
-                                       (LPVOID) th, STACK_SIZE_PARAM_IS_A_RESERVATION, &idThread );
-            }
+        handle = CreateThread( NULL, (SIZE_T) stack_size,
+                               (LPTHREAD_START_ROUTINE) __kmp_launch_worker,
+                               (LPVOID) th, STACK_SIZE_PARAM_IS_A_RESERVATION, &idThread );
 
         KA_TRACE( 10, ( "__kmp_create_worker: (after) stack_size = %"
                         KMP_SIZE_T_SPEC
@@ -1398,19 +1437,13 @@ __kmp_create_worker( int gtid, kmp_info_t *th, size_t stack_size )
                         (LPTHREAD_START_ROUTINE) & __kmp_launch_worker,
                         (LPVOID) th, idThread, handle ) );
 
-            {
-                if ( handle == 0 ) {
-                    DWORD error = GetLastError();
-                    __kmp_msg(
-                              kmp_ms_fatal,
-                              KMP_MSG( CantCreateThread ),
-                              KMP_ERR( error ),
-                              __kmp_msg_null
-                              );
-                } else {
-                    th->th.th_info.ds.ds_thread = handle;
-                }
-            }
+        if ( handle == 0 ) {
+            DWORD error = GetLastError();
+            __kmp_msg(kmp_ms_fatal, KMP_MSG( CantCreateThread ), KMP_ERR( error ), __kmp_msg_null);
+        } else {
+            th->th.th_info.ds.ds_thread = handle;
+        }
+
         KMP_MB();       /* Flush all pending memory write invalidates.  */
     }
 

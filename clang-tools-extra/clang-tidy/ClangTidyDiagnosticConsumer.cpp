@@ -115,8 +115,11 @@ ClangTidyMessage::ClangTidyMessage(StringRef Message,
 }
 
 ClangTidyError::ClangTidyError(StringRef CheckName,
-                               ClangTidyError::Level DiagLevel)
-    : CheckName(CheckName), DiagLevel(DiagLevel) {}
+                               ClangTidyError::Level DiagLevel,
+                               bool IsWarningAsError,
+                               StringRef BuildDirectory)
+    : CheckName(CheckName), BuildDirectory(BuildDirectory), DiagLevel(DiagLevel),
+      IsWarningAsError(IsWarningAsError) {}
 
 // Returns true if GlobList starts with the negative indicator ('-'), removes it
 // from the GlobList.
@@ -171,20 +174,6 @@ DiagnosticBuilder ClangTidyContext::diag(
     StringRef CheckName, SourceLocation Loc, StringRef Description,
     DiagnosticIDs::Level Level /* = DiagnosticIDs::Warning*/) {
   assert(Loc.isValid());
-  bool Invalid;
-  const char *CharacterData =
-      DiagEngine->getSourceManager().getCharacterData(Loc, &Invalid);
-  if (!Invalid) {
-    const char *P = CharacterData;
-    while (*P != '\0' && *P != '\r' && *P != '\n')
-      ++P;
-    StringRef RestOfLine(CharacterData, P - CharacterData + 1);
-    // FIXME: Handle /\bNOLINT\b(\([^)]*\))?/ as cpplint.py does.
-    if (RestOfLine.find("NOLINT") != StringRef::npos) {
-      Level = DiagnosticIDs::Ignored;
-      ++Stats.ErrorsIgnoredNOLINT;
-    }
-  }
   unsigned ID = DiagEngine->getDiagnosticIDs()->getCustomDiagID(
       Level, (Description + " [" + CheckName + "]").str());
   if (CheckNamesByDiagnosticID.count(ID) == 0)
@@ -204,6 +193,7 @@ void ClangTidyContext::setCurrentFile(StringRef File) {
   CurrentFile = File;
   CurrentOptions = getOptionsForFile(CurrentFile);
   CheckFilter.reset(new GlobList(*getOptions().Checks));
+  WarningAsErrorFilter.reset(new GlobList(*getOptions().WarningsAsErrors));
 }
 
 void ClangTidyContext::setASTContext(ASTContext *Context) {
@@ -223,7 +213,7 @@ ClangTidyOptions ClangTidyContext::getOptionsForFile(StringRef File) const {
   // Merge options on top of getDefaults() as a safeguard against options with
   // unset values.
   return ClangTidyOptions::getDefaults().mergeWith(
-      OptionsProvider->getOptions(CurrentFile));
+      OptionsProvider->getOptions(File));
 }
 
 void ClangTidyContext::setCheckProfileData(ProfileData *P) { Profile = P; }
@@ -233,8 +223,9 @@ GlobList &ClangTidyContext::getChecksFilter() {
   return *CheckFilter;
 }
 
-bool ClangTidyContext::isCheckEnabled(StringRef CheckName) const {
-  return CheckFilter->contains(CheckName);
+GlobList &ClangTidyContext::getWarningAsErrorFilter() {
+  assert(WarningAsErrorFilter != nullptr);
+  return *WarningAsErrorFilter;
 }
 
 /// \brief Store a \c ClangTidyError.
@@ -281,8 +272,31 @@ void ClangTidyDiagnosticConsumer::finalizeLastError() {
   LastErrorPassesLineFilter = false;
 }
 
+static bool LineIsMarkedWithNOLINT(SourceManager& SM, SourceLocation Loc) {
+  bool Invalid;
+  const char *CharacterData = SM.getCharacterData(Loc, &Invalid);
+  if (!Invalid) {
+    const char *P = CharacterData;
+    while (*P != '\0' && *P != '\r' && *P != '\n')
+      ++P;
+    StringRef RestOfLine(CharacterData, P - CharacterData + 1);
+    // FIXME: Handle /\bNOLINT\b(\([^)]*\))?/ as cpplint.py does.
+    if (RestOfLine.find("NOLINT") != StringRef::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void ClangTidyDiagnosticConsumer::HandleDiagnostic(
     DiagnosticsEngine::Level DiagLevel, const Diagnostic &Info) {
+  if (Info.getLocation().isValid() &&
+      DiagLevel != DiagnosticsEngine::Error &&
+      DiagLevel != DiagnosticsEngine::Fatal &&
+      LineIsMarkedWithNOLINT(Diags->getSourceManager(), Info.getLocation())) {
+    ++Context.Stats.ErrorsIgnoredNOLINT;
+    return;
+  }
   // Count warnings/errors.
   DiagnosticConsumer::HandleDiagnostic(DiagLevel, Info);
 
@@ -324,13 +338,16 @@ void ClangTidyDiagnosticConsumer::HandleDiagnostic(
       LastErrorRelatesToUserCode = true;
       LastErrorPassesLineFilter = true;
     }
-    Errors.push_back(ClangTidyError(CheckName, Level));
+    bool IsWarningAsError =
+        DiagLevel == DiagnosticsEngine::Warning &&
+        Context.getWarningAsErrorFilter().contains(CheckName);
+    Errors.push_back(ClangTidyError(CheckName, Level, IsWarningAsError,
+                                    Context.getCurrentBuildDirectory()));
   }
 
-  // FIXME: Provide correct LangOptions for each file.
-  LangOptions LangOpts;
   ClangTidyDiagnosticRenderer Converter(
-      LangOpts, &Context.DiagEngine->getDiagnosticOptions(), Errors.back());
+      Context.getLangOpts(), &Context.DiagEngine->getDiagnosticOptions(),
+      Errors.back());
   SmallString<100> Message;
   Info.FormatDiagnostic(Message);
   SourceManager *Sources = nullptr;

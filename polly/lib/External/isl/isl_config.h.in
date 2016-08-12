@@ -149,6 +149,9 @@
 /* Define to the version of this package. */
 #undef PACKAGE_VERSION
 
+/* Define if HeaderSearchOptions::AddPath takes 4 arguments */
+#undef SETLANGDEFAULTS_TAKES_5_ARGUMENTS
+
 /* The size of `char', as computed by sizeof. */
 #undef SIZEOF_CHAR
 
@@ -196,5 +199,8 @@
 
 /* Define to getResultType for older versions of clang */
 #undef getReturnType
+
+/* Define to InitializeBuiltins for older versions of clang */
+#undef initializeBuiltins
 
 #include <isl_config_post.h>

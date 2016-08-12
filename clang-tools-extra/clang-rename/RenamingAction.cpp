@@ -24,9 +24,6 @@
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/Tooling.h"
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string>
 #include <vector>
 
@@ -52,7 +49,8 @@ public:
     std::vector<SourceLocation> NewCandidates;
 
     for (const auto &USR : USRs) {
-      NewCandidates = getLocationsOfUSR(USR, Context.getTranslationUnitDecl());
+      NewCandidates = getLocationsOfUSR(USR, PrevName,
+                                        Context.getTranslationUnitDecl());
       RenamingCandidates.insert(RenamingCandidates.end(), NewCandidates.begin(),
                                 NewCandidates.end());
       NewCandidates.clear();
@@ -86,5 +84,5 @@ std::unique_ptr<ASTConsumer> RenamingAction::newASTConsumer() {
                                                 Replaces, PrintLocations);
 }
 
-}
-}
+} // namespace rename
+} // namespace clang

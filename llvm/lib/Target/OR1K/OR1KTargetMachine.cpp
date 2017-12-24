@@ -58,7 +58,7 @@ namespace {
 /// OR1K Code Generator Pass Configuration Options.
 class OR1KPassConfig : public TargetPassConfig {
 public:
-  OR1KPassConfig(OR1KTargetMachine *TM, PassManagerBase &PM)
+  OR1KPassConfig(OR1KTargetMachine &TM, PassManagerBase &PM)
     : TargetPassConfig(TM, PM) {}
 
   bool addInstSelector() override;
@@ -67,7 +67,7 @@ public:
 } // namespace
 
 TargetPassConfig *OR1KTargetMachine::createPassConfig(PassManagerBase &PM) {
-  return new OR1KPassConfig(this, PM);
+  return new OR1KPassConfig(*this, PM);
 }
 
 // Install an instruction selector pass using

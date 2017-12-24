@@ -627,10 +627,7 @@ OR1KTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
     ByValArgs.push_back(FIPtr);
   }
 
-  Chain = DAG.getCALLSEQ_START(Chain,
-                               DAG.getConstant(NumBytes, dl, PtrVT,
-                                               /*isTarget=*/true),
-                               dl);
+  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, dl);
 
   SmallVector<std::pair<unsigned, SDValue>, 4> RegsToPass;
   SmallVector<SDValue, 12> MemOpChains;

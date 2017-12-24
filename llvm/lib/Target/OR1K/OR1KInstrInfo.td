@@ -736,9 +736,9 @@ let usesCustomInserter = 1 in {
 // Pessimistically assume ADJCALLSTACKDOWN / ADJCALLSTACKUP will become
 // sub / add which can clobber R1.
 let Defs = [R1], Uses = [R1] in {
-def ADJCALLSTACKDOWN : Pseudo<(outs), (ins i32imm:$amt),
-                              "#ADJCALLSTACKDOWN $amt",
-                              [(callseq_start timm:$amt)]>;
+def ADJCALLSTACKDOWN : Pseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
+                              "#ADJCALLSTACKDOWN $amt1 $amt2",
+                              [(callseq_start timm:$amt1, timm:$amt2)]>;
 def ADJCALLSTACKUP   : Pseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
                               "#ADJCALLSTACKUP $amt1 $amt2",
                               [(callseq_end timm:$amt1, timm:$amt2)]>;

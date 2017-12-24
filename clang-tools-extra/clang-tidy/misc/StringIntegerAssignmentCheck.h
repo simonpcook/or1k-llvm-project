@@ -14,7 +14,7 @@
 
 namespace clang {
 namespace tidy {
-namespace misc {	
+namespace misc {
 
 /// Finds instances where an integer is assigned to a string.
 ///
@@ -33,4 +33,3 @@ public:
 } // namespace clang
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MISC_STRING_INTEGER_ASSIGNMENT_H
-

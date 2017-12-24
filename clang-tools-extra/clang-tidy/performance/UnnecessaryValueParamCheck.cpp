@@ -39,6 +39,25 @@ bool isSubset(const S &SubsetCandidate, const S &SupersetCandidate) {
   return true;
 }
 
+bool isReferencedOutsideOfCallExpr(const FunctionDecl &Function,
+                                   ASTContext &Context) {
+  auto Matches = match(declRefExpr(to(functionDecl(equalsNode(&Function))),
+                                   unless(hasAncestor(callExpr()))),
+                       Context);
+  return !Matches.empty();
+}
+
+bool hasLoopStmtAncestor(const DeclRefExpr &DeclRef, const Decl &Decl,
+                         ASTContext &Context) {
+  auto Matches =
+      match(decl(forEachDescendant(declRefExpr(
+                equalsNode(&DeclRef),
+                unless(hasAncestor(stmt(anyOf(forStmt(), cxxForRangeStmt(),
+                                              whileStmt(), doStmt()))))))),
+            Decl, Context);
+  return Matches.empty();
+}
+
 } // namespace
 
 UnnecessaryValueParamCheck::UnnecessaryValueParamCheck(
@@ -53,7 +72,8 @@ void UnnecessaryValueParamCheck::registerMatchers(MatchFinder *Finder) {
                                                  unless(referenceType())))),
                   decl().bind("param"));
   Finder->addMatcher(
-      functionDecl(isDefinition(), unless(cxxMethodDecl(isOverride())),
+      functionDecl(hasBody(stmt()), isDefinition(),
+                   unless(cxxMethodDecl(anyOf(isOverride(), isFinal()))),
                    unless(isInstantiated()),
                    has(typeLoc(forEach(ExpensiveValueParamDecl))),
                    decl().bind("functionDecl")),
@@ -69,22 +89,13 @@ void UnnecessaryValueParamCheck::check(const MatchFinder::MatchResult &Result) {
   bool IsConstQualified =
       Param->getType().getCanonicalType().isConstQualified();
 
-  // Skip declarations delayed by late template parsing without a body.
-  if (!Function->getBody())
-    return;
-
-  // Do not trigger on non-const value parameters when:
-  // 1. they are in a constructor definition since they can likely trigger
-  //    misc-move-constructor-init which will suggest to move the argument.
-  if (!IsConstQualified && (llvm::isa<CXXConstructorDecl>(Function) ||
-                            !Function->doesThisDeclarationHaveABody()))
-    return;
-
   auto AllDeclRefExprs = utils::decl_ref_expr::allDeclRefExprs(
-      *Param, *Function->getBody(), *Result.Context);
+      *Param, *Function, *Result.Context);
   auto ConstDeclRefExprs = utils::decl_ref_expr::constReferenceDeclRefExprs(
-      *Param, *Function->getBody(), *Result.Context);
-  // 2. they are not only used as const.
+      *Param, *Function, *Result.Context);
+
+  // Do not trigger on non-const value parameters when they are not only used as
+  // const.
   if (!isSubset(AllDeclRefExprs, ConstDeclRefExprs))
     return;
 
@@ -93,18 +104,18 @@ void UnnecessaryValueParamCheck::check(const MatchFinder::MatchResult &Result) {
   // move assignment operator and is only referenced once when copy-assigned.
   // In this case wrap DeclRefExpr with std::move() to avoid the unnecessary
   // copy.
-  if (!IsConstQualified) {
+  if (!IsConstQualified && AllDeclRefExprs.size() == 1) {
     auto CanonicalType = Param->getType().getCanonicalType();
-    if (AllDeclRefExprs.size() == 1 &&
+    const auto &DeclRefExpr  = **AllDeclRefExprs.begin();
+
+    if (!hasLoopStmtAncestor(DeclRefExpr, *Function, *Result.Context) &&
         ((utils::type_traits::hasNonTrivialMoveConstructor(CanonicalType) &&
           utils::decl_ref_expr::isCopyConstructorArgument(
-              **AllDeclRefExprs.begin(), *Function->getBody(),
-              *Result.Context)) ||
+              DeclRefExpr, *Function, *Result.Context)) ||
          (utils::type_traits::hasNonTrivialMoveAssignment(CanonicalType) &&
           utils::decl_ref_expr::isCopyAssignmentArgument(
-              **AllDeclRefExprs.begin(), *Function->getBody(),
-              *Result.Context)))) {
-      handleMoveFix(*Param, **AllDeclRefExprs.begin(), *Result.Context);
+              DeclRefExpr, *Function, *Result.Context)))) {
+      handleMoveFix(*Param, DeclRefExpr, *Result.Context);
       return;
     }
   }
@@ -118,17 +129,24 @@ void UnnecessaryValueParamCheck::check(const MatchFinder::MatchResult &Result) {
                               "invocation but only used as a const reference; "
                               "consider making it a const reference")
       << paramNameOrIndex(Param->getName(), Index);
-  // Do not propose fixes in macros since we cannot place them correctly, or if
-  // function is virtual as it might break overrides.
+  // Do not propose fixes when:
+  // 1. the ParmVarDecl is in a macro, since we cannot place them correctly
+  // 2. the function is virtual as it might break overrides
+  // 3. the function is referenced outside of a call expression within the
+  //    compilation unit as the signature change could introduce build errors.
   const auto *Method = llvm::dyn_cast<CXXMethodDecl>(Function);
-  if (Param->getLocStart().isMacroID() || (Method && Method->isVirtual()))
+  if (Param->getLocStart().isMacroID() || (Method && Method->isVirtual()) ||
+      isReferencedOutsideOfCallExpr(*Function, *Result.Context))
     return;
   for (const auto *FunctionDecl = Function; FunctionDecl != nullptr;
        FunctionDecl = FunctionDecl->getPreviousDecl()) {
     const auto &CurrentParam = *FunctionDecl->getParamDecl(Index);
     Diag << utils::fixit::changeVarDeclToReference(CurrentParam,
-                                                           *Result.Context);
-    if (!IsConstQualified)
+                                                   *Result.Context);
+    // The parameter of each declaration needs to be checked individually as to
+    // whether it is const or not as constness can differ between definition and
+    // declaration.
+    if (!CurrentParam.getType().getCanonicalType().isConstQualified())
       Diag << utils::fixit::changeVarDeclToConst(CurrentParam);
   }
 }
@@ -157,8 +175,8 @@ void UnnecessaryValueParamCheck::handleMoveFix(const ParmVarDecl &Var,
   if (CopyArgument.getLocStart().isMacroID())
     return;
   const auto &SM = Context.getSourceManager();
-  auto EndLoc = Lexer::getLocForEndOfToken(CopyArgument.getLocation(), 0, SM, 
-					   Context.getLangOpts());
+  auto EndLoc = Lexer::getLocForEndOfToken(CopyArgument.getLocation(), 0, SM,
+                                           Context.getLangOpts());
   Diag << FixItHint::CreateInsertion(CopyArgument.getLocStart(), "std::move(")
        << FixItHint::CreateInsertion(EndLoc, ")");
   if (auto IncludeFixit = Inserter->CreateIncludeInsertion(

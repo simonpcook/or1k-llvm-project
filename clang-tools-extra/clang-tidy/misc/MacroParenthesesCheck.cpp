@@ -79,7 +79,8 @@ static bool possibleVarDecl(const MacroInfo *MI, const Token *Tok) {
   if (Tok == MI->tokens_end())
     return false;
 
-  // If we see int/short/struct/etc., just assume this is a variable declaration.
+  // If we see int/short/struct/etc., just assume this is a variable
+  // declaration.
   if (isVarDeclKeyword(*Tok))
     return true;
 
@@ -88,10 +89,10 @@ static bool possibleVarDecl(const MacroInfo *MI, const Token *Tok) {
     return false;
 
   // Skip possible types, etc
-  while (
-      Tok != MI->tokens_end() &&
-      Tok->isOneOf(tok::identifier, tok::raw_identifier, tok::coloncolon,
-                    tok::star, tok::amp, tok::ampamp, tok::less, tok::greater))
+  while (Tok != MI->tokens_end() &&
+         Tok->isOneOf(tok::identifier, tok::raw_identifier, tok::coloncolon,
+                      tok::star, tok::amp, tok::ampamp, tok::less,
+                      tok::greater))
     Tok++;
 
   // Return true for possible variable declarations.
@@ -154,7 +155,7 @@ void MacroParenthesesPPCallbacks::replacementList(const Token &MacroNameTok,
 
 void MacroParenthesesPPCallbacks::argument(const Token &MacroNameTok,
                                            const MacroInfo *MI) {
-  
+
   // Skip variable declaration.
   bool VarDecl = possibleVarDecl(MI, MI->tokens_begin());
 

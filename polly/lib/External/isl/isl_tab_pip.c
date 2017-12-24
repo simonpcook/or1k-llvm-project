@@ -23,6 +23,8 @@
 #include <isl_options_private.h>
 #include <isl_config.h>
 
+#include <bset_to_bmap.c>
+
 /*
  * The implementation of parametric integer linear programming in this file
  * was inspired by the paper "Parametric Integer Programming" and the
@@ -91,8 +93,9 @@ struct isl_context_op {
 	/* return index of a div that corresponds to "div" */
 	int (*get_div)(struct isl_context *context, struct isl_tab *tab,
 			struct isl_vec *div);
-	/* add div "div" to context and return non-negativity */
-	int (*add_div)(struct isl_context *context, struct isl_vec *div);
+	/* insert div "div" to context at "pos" and return non-negativity */
+	isl_bool (*insert_div)(struct isl_context *context, int pos,
+		__isl_keep isl_vec *div);
 	int (*detect_equalities)(struct isl_context *context,
 			struct isl_tab *tab);
 	/* return row index of "best" split */
@@ -110,11 +113,17 @@ struct isl_context_op {
 	/* invalidate context */
 	void (*invalidate)(struct isl_context *context);
 	/* free context */
-	void (*free)(struct isl_context *context);
+	__isl_null struct isl_context *(*free)(struct isl_context *context);
 };
 
+/* Shared parts of context representation.
+ *
+ * "n_unknown" is the number of final unknown integer divisions
+ * in the input domain.
+ */
 struct isl_context {
 	struct isl_context_op *op;
+	int n_unknown;
 };
 
 struct isl_context_lex {
@@ -596,7 +605,7 @@ static void sol_map_add_empty_wrap(struct isl_sol *sol,
 	sol_map_add_empty((struct isl_sol_map *)sol, bset);
 }
 
-/* Given a basic map "dom" that represents the context and an affine
+/* Given a basic set "dom" that represents the context and an affine
  * matrix "M" that maps the dimensions of the context to the
  * output variables, construct a basic map with the same parameters
  * and divs as the context, the dimensions of the context as input
@@ -806,7 +815,8 @@ static void normalize_div(__isl_keep isl_vec *div)
 	isl_seq_scale_down(div->el + 2, div->el + 2, ctx->normalize_gcd, len);
 }
 
-/* Return a integer division for use in a parametric cut based on the given row.
+/* Return an integer division for use in a parametric cut based
+ * on the given row.
  * In particular, let the parametric constant of the row be
  *
  *		\sum_i a_i y_i
@@ -833,7 +843,7 @@ static struct isl_vec *get_row_parameter_div(struct isl_tab *tab, int row)
 	return div;
 }
 
-/* Return a integer division for use in transferring an integrality constraint
+/* Return an integer division for use in transferring an integrality constraint
  * to the context.
  * In particular, let the parametric constant of the row be
  *
@@ -1860,10 +1870,11 @@ static int tab_has_valid_sample(struct isl_tab *tab, isl_int *ineq, int eq)
 	return i < tab->n_sample;
 }
 
-/* Add a div specified by "div" to the tableau "tab" and return
- * 1 if the div is obviously non-negative.
+/* Insert a div specified by "div" to the tableau "tab" at position "pos" and
+ * return isl_bool_true if the div is obviously non-negative.
  */
-static int context_tab_add_div(struct isl_tab *tab, struct isl_vec *div,
+static isl_bool context_tab_insert_div(struct isl_tab *tab, int pos,
+	__isl_keep isl_vec *div,
 	int (*add_ineq)(void *user, isl_int *), void *user)
 {
 	int i;
@@ -1871,9 +1882,9 @@ static int context_tab_add_div(struct isl_tab *tab, struct isl_vec *div,
 	struct isl_mat *samples;
 	int nonneg;
 
-	r = isl_tab_add_div(tab, div, add_ineq, user);
+	r = isl_tab_insert_div(tab, pos, div, add_ineq, user);
 	if (r < 0)
-		return -1;
+		return isl_bool_error;
 	nonneg = tab->var[r].is_nonneg;
 	tab->var[r].frozen = 1;
 
@@ -1881,13 +1892,17 @@ static int context_tab_add_div(struct isl_tab *tab, struct isl_vec *div,
 			tab->n_sample, 1 + tab->n_var);
 	tab->samples = samples;
 	if (!samples)
-		return -1;
+		return isl_bool_error;
 	for (i = tab->n_outside; i < samples->n_row; ++i) {
 		isl_seq_inner_product(div->el + 1, samples->row[i],
 			div->size - 1, &samples->row[i][samples->n_col - 1]);
 		isl_int_fdiv_q(samples->row[i][samples->n_col - 1],
 			       samples->row[i][samples->n_col - 1], div->el[0]);
 	}
+	tab->samples = isl_mat_move_cols(tab->samples, 1 + pos,
+					1 + tab->n_var - 1, 1);
+	if (!tab->samples)
+		return isl_bool_error;
 
 	return nonneg;
 }
@@ -1897,22 +1912,34 @@ static int context_tab_add_div(struct isl_tab *tab, struct isl_vec *div,
  * need to add an extra div.  In the context tableau, we also
  * need to express the meaning of the div.
  * Return the index of the div or -1 if anything went wrong.
+ *
+ * The new integer division is added before any unknown integer
+ * divisions in the context to ensure that it does not get
+ * equated to some linear combination involving unknown integer
+ * divisions.
  */
 static int add_div(struct isl_tab *tab, struct isl_context *context,
-	struct isl_vec *div)
+	__isl_keep isl_vec *div)
 {
 	int r;
-	int nonneg;
+	int pos;
+	isl_bool nonneg;
+	struct isl_tab *context_tab = context->op->peek_tab(context);
 
-	if ((nonneg = context->op->add_div(context, div)) < 0)
+	if (!tab || !context_tab)
+		goto error;
+
+	pos = context_tab->n_var - context->n_unknown;
+	if ((nonneg = context->op->insert_div(context, pos, div)) < 0)
 		goto error;
 
 	if (!context->op->is_ok(context))
 		goto error;
 
+	pos = tab->n_var - context->n_unknown;
 	if (isl_tab_extend_vars(tab, 1) < 0)
 		goto error;
-	r = isl_tab_allocate_var(tab);
+	r = isl_tab_insert_var(tab, pos);
 	if (r < 0)
 		goto error;
 	if (nonneg)
@@ -1920,7 +1947,7 @@ static int add_div(struct isl_tab *tab, struct isl_context *context,
 	tab->var[r].frozen = 1;
 	tab->n_div++;
 
-	return tab->n_div - 1;
+	return tab->n_div - 1 - context->n_unknown;
 error:
 	context->op->invalidate(context);
 	return -1;
@@ -2002,7 +2029,7 @@ static int add_parametric_cut(struct isl_tab *tab, int row,
 	if (!div)
 		return -1;
 
-	n = tab->n_div;
+	n = tab->n_div - context->n_unknown;
 	d = context->op->get_div(context, tab, div);
 	isl_vec_free(div);
 	if (d < 0)
@@ -2395,24 +2422,25 @@ static int context_lex_get_div(struct isl_context *context, struct isl_tab *tab,
 	return get_div(tab, context, div);
 }
 
-/* Add a div specified by "div" to the context tableau and return
- * 1 if the div is obviously non-negative.
- * context_tab_add_div will always return 1, because all variables
+/* Insert a div specified by "div" to the context tableau at position "pos" and
+ * return isl_bool_true if the div is obviously non-negative.
+ * context_tab_add_div will always return isl_bool_true, because all variables
  * in a isl_context_lex tableau are non-negative.
  * However, if we are using a big parameter in the context, then this only
  * reflects the non-negativity of the variable used to _encode_ the
  * div, i.e., div' = M + div, so we can't draw any conclusions.
  */
-static int context_lex_add_div(struct isl_context *context, struct isl_vec *div)
+static isl_bool context_lex_insert_div(struct isl_context *context, int pos,
+	__isl_keep isl_vec *div)
 {
 	struct isl_context_lex *clex = (struct isl_context_lex *)context;
-	int nonneg;
-	nonneg = context_tab_add_div(clex->tab, div,
+	isl_bool nonneg;
+	nonneg = context_tab_insert_div(clex->tab, pos, div,
 					context_lex_add_ineq_wrap, context);
 	if (nonneg < 0)
-		return -1;
+		return isl_bool_error;
 	if (clex->tab->M)
-		return 0;
+		return isl_bool_false;
 	return nonneg;
 }
 
@@ -2571,11 +2599,14 @@ static void context_lex_invalidate(struct isl_context *context)
 	clex->tab = NULL;
 }
 
-static void context_lex_free(struct isl_context *context)
+static __isl_null struct isl_context *context_lex_free(
+	struct isl_context *context)
 {
 	struct isl_context_lex *clex = (struct isl_context_lex *)context;
 	isl_tab_free(clex->tab);
 	free(clex);
+
+	return NULL;
 }
 
 struct isl_context_op isl_context_lex_op = {
@@ -2587,7 +2618,7 @@ struct isl_context_op isl_context_lex_op = {
 	context_lex_ineq_sign,
 	context_lex_test_ineq,
 	context_lex_get_div,
-	context_lex_add_div,
+	context_lex_insert_div,
 	context_lex_detect_equalities,
 	context_lex_best_split,
 	context_lex_is_empty,
@@ -2605,7 +2636,7 @@ static struct isl_tab *context_tab_for_lexmin(struct isl_basic_set *bset)
 
 	if (!bset)
 		return NULL;
-	tab = tab_for_lexmin((struct isl_basic_map *)bset, NULL, 1, 0);
+	tab = tab_for_lexmin(bset_to_bmap(bset), NULL, 1, 0);
 	if (!tab)
 		goto error;
 	if (isl_tab_track_bset(tab, bset) < 0)
@@ -3199,29 +3230,32 @@ static int context_gbr_get_div(struct isl_context *context, struct isl_tab *tab,
 	return get_div(tab, context, div);
 }
 
-static int context_gbr_add_div(struct isl_context *context, struct isl_vec *div)
+static isl_bool context_gbr_insert_div(struct isl_context *context, int pos,
+	__isl_keep isl_vec *div)
 {
 	struct isl_context_gbr *cgbr = (struct isl_context_gbr *)context;
 	if (cgbr->cone) {
-		int k;
+		int r, n_div, o_div;
+
+		n_div = isl_basic_map_dim(cgbr->cone->bmap, isl_dim_div);
+		o_div = cgbr->cone->n_var - n_div;
 
 		if (isl_tab_extend_cons(cgbr->cone, 3) < 0)
-			return -1;
+			return isl_bool_error;
 		if (isl_tab_extend_vars(cgbr->cone, 1) < 0)
-			return -1;
-		if (isl_tab_allocate_var(cgbr->cone) <0)
-			return -1;
+			return isl_bool_error;
+		if ((r = isl_tab_insert_var(cgbr->cone, pos)) <0)
+			return isl_bool_error;
 
-		cgbr->cone->bmap = isl_basic_map_extend_space(cgbr->cone->bmap,
-			isl_basic_map_get_space(cgbr->cone->bmap), 1, 0, 2);
-		k = isl_basic_map_alloc_div(cgbr->cone->bmap);
-		if (k < 0)
-			return -1;
-		isl_seq_cpy(cgbr->cone->bmap->div[k], div->el, div->size);
-		if (isl_tab_push(cgbr->cone, isl_tab_undo_bmap_div) < 0)
-			return -1;
+		cgbr->cone->bmap = isl_basic_map_insert_div(cgbr->cone->bmap,
+						    r - o_div, div);
+		if (!cgbr->cone->bmap)
+			return isl_bool_error;
+		if (isl_tab_push_var(cgbr->cone, isl_tab_undo_bmap_div,
+				    &cgbr->cone->var[r]) < 0)
+			return isl_bool_error;
 	}
-	return context_tab_add_div(cgbr->tab, div,
+	return context_tab_insert_div(cgbr->tab, pos, div,
 					context_gbr_add_ineq_wrap, context);
 }
 
@@ -3340,13 +3374,16 @@ static void context_gbr_invalidate(struct isl_context *context)
 	cgbr->tab = NULL;
 }
 
-static void context_gbr_free(struct isl_context *context)
+static __isl_null struct isl_context *context_gbr_free(
+	struct isl_context *context)
 {
 	struct isl_context_gbr *cgbr = (struct isl_context_gbr *)context;
 	isl_tab_free(cgbr->tab);
 	isl_tab_free(cgbr->shifted);
 	isl_tab_free(cgbr->cone);
 	free(cgbr);
+
+	return NULL;
 }
 
 struct isl_context_op isl_context_gbr_op = {
@@ -3358,7 +3395,7 @@ struct isl_context_op isl_context_gbr_op = {
 	context_gbr_ineq_sign,
 	context_gbr_test_ineq,
 	context_gbr_get_div,
-	context_gbr_add_div,
+	context_gbr_insert_div,
 	context_gbr_detect_equalities,
 	context_gbr_best_split,
 	context_gbr_is_empty,
@@ -3397,15 +3434,34 @@ error:
 	return NULL;
 }
 
+/* Allocate a context corresponding to "dom".
+ * The representation specific fields are initialized by
+ * isl_context_lex_alloc or isl_context_gbr_alloc.
+ * The shared "n_unknown" field is initialized to the number
+ * of final unknown integer divisions in "dom".
+ */
 static struct isl_context *isl_context_alloc(__isl_keep isl_basic_set *dom)
 {
+	struct isl_context *context;
+	int first;
+
 	if (!dom)
 		return NULL;
 
 	if (dom->ctx->opt->context == ISL_CONTEXT_LEXMIN)
-		return isl_context_lex_alloc(dom);
+		context = isl_context_lex_alloc(dom);
 	else
-		return isl_context_gbr_alloc(dom);
+		context = isl_context_gbr_alloc(dom);
+
+	if (!context)
+		return NULL;
+
+	first = isl_basic_set_first_unknown_div(dom);
+	if (first < 0)
+		return context->op->free(context);
+	context->n_unknown = isl_basic_set_dim(dom, isl_dim_div) - first;
+
+	return context;
 }
 
 /* Construct an isl_sol_map structure for accumulating the solution.
@@ -4117,6 +4173,11 @@ error:
  * We make sure the divs in the domain are properly ordered,
  * because they will be added one by one in the given order
  * during the construction of the solution map.
+ * Furthermore, make sure that the known integer divisions
+ * appear before any unknown integer division because the solution
+ * may depend on the known integer divisions, while anything that
+ * depends on any variable starting from the first unknown integer
+ * division is ignored in sol_pma_add.
  */
 static struct isl_sol *basic_map_partial_lexopt_base_sol(
 	__isl_take isl_basic_map *bmap, __isl_take isl_basic_set *dom,
@@ -4129,7 +4190,7 @@ static struct isl_sol *basic_map_partial_lexopt_base_sol(
 	struct isl_context *context;
 
 	if (dom->n_div) {
-		dom = isl_basic_set_order_divs(dom);
+		dom = isl_basic_set_sort_divs(dom);
 		bmap = align_context_divs(bmap, dom);
 	}
 	sol = init(bmap, dom, !!empty, max);
@@ -4492,7 +4553,7 @@ static int need_split_basic_map(__isl_keep isl_basic_map *bmap,
 static int need_split_basic_set(__isl_keep isl_basic_set *bset,
 	__isl_keep isl_mat *cst)
 {
-	return need_split_basic_map((isl_basic_map *)bset, cst);
+	return need_split_basic_map(bset_to_bmap(bset), cst);
 }
 
 /* Given that the last set variable of "set" represents the minimum
@@ -5302,108 +5363,25 @@ error:
 	sol->sol.error = 1;
 }
 
-/* Return the equality constraint in "bset" that defines existentially
- * quantified variable "pos" in terms of earlier dimensions.
- * The equality constraint is guaranteed to exist by the caller.
- * If "c" is not NULL, then it is the result of a previous call
- * to this function for the same variable, so simply return the input "c"
- * in that case.
+/* Check that the final columns of "M", starting at "first", are zero.
  */
-static __isl_give isl_constraint *get_equality(__isl_keep isl_basic_set *bset,
-	int pos, __isl_take isl_constraint *c)
+static isl_stat check_final_columns_are_zero(__isl_keep isl_mat *M,
+	unsigned first)
 {
-	int r;
-
-	if (c)
-		return c;
-	r = isl_basic_set_has_defining_equality(bset, isl_dim_div, pos, &c);
-	if (r < 0)
-		return NULL;
-	if (!r)
-		isl_die(isl_basic_set_get_ctx(bset), isl_error_internal,
-			"unexpected missing equality", return NULL);
-	return c;
-}
-
-/* Given a set "dom", of which only the first "n_known" existentially
- * quantified variables have a known explicit representation, and
- * a matrix "M", the rows of which are defined in terms of the dimensions
- * of "dom", eliminate all references to the existentially quantified
- * variables without a known explicit representation from "M"
- * by exploiting the equality constraints of "dom".
- *
- * In particular, for each of those existentially quantified variables,
- * if there are non-zero entries in the corresponding column of "M",
- * then look for an equality constraint of "dom" that defines that variable
- * in terms of earlier variables and use it to clear the entries.
- *
- * In particular, if the equality is of the form
- *
- *	f() + a alpha = 0
- *
- * while the matrix entry is b/d (with d the global denominator of "M"),
- * then first scale the matrix such that the entry becomes b'/d' with
- * b' a multiple of a.  Do this by multiplying the entire matrix
- * by abs(a/gcd(a,b)).  Then subtract the equality multiplied by b'/a
- * from the row of "M" to clear the entry.
- */
-static __isl_give isl_mat *eliminate_unknown_divs(__isl_take isl_mat *M,
-	__isl_keep isl_basic_set *dom, int n_known)
-{
-	int i, j, n_div, off;
-	isl_int t;
-	isl_constraint *c = NULL;
+	int i;
+	unsigned rows, cols, n;
 
 	if (!M)
-		return NULL;
-
-	n_div = isl_basic_set_dim(dom, isl_dim_div);
-	off = M->n_col - n_div;
-
-	isl_int_init(t);
-	for (i = n_div - 1; i >= n_known; --i) {
-		for (j = 1; j < M->n_row; ++j) {
-			if (isl_int_is_zero(M->row[j][off + i]))
-				continue;
-			c = get_equality(dom, i, c);
-			if (!c)
-				goto error;
-			isl_int_gcd(t, M->row[j][off + i], c->v->el[off + i]);
-			isl_int_divexact(t, c->v->el[off + i], t);
-			isl_int_abs(t, t);
-			M = isl_mat_scale(M, t);
-			M = isl_mat_cow(M);
-			if (!M)
-				goto error;
-			isl_int_divexact(t,
-					M->row[j][off + i], c->v->el[off + i]);
-			isl_seq_submul(M->row[j], t, c->v->el, M->n_col);
-		}
-		c = isl_constraint_free(c);
-	}
-	isl_int_clear(t);
-
-	return M;
-error:
-	isl_int_clear(t);
-	isl_constraint_free(c);
-	isl_mat_free(M);
-	return NULL;
-}
-
-/* Return the index of the last known div of "bset" after "start" and
- * up to (but not including) "end".
- * Return "start" if there is no such known div.
- */
-static int last_known_div_after(__isl_keep isl_basic_set *bset,
-	int start, int end)
-{
-	for (end = end - 1; end > start; --end) {
-		if (isl_basic_set_div_is_known(bset, end))
-			return end;
-	}
-
-	return start;
+		return isl_stat_error;
+	rows = isl_mat_rows(M);
+	cols = isl_mat_cols(M);
+	n = cols - first;
+	for (i = 0; i < rows; ++i)
+		if (isl_seq_first_non_zero(M->row[i] + first, n) != -1)
+			isl_die(isl_mat_get_ctx(M), isl_error_internal,
+				"final columns should be zero",
+				return isl_stat_error);
+	return isl_stat_ok;
 }
 
 /* Set the affine expressions in "ma" according to the rows in "M", which
@@ -5418,7 +5396,12 @@ static __isl_give isl_multi_aff *set_from_affine_matrix(
 	int i, dim;
 	isl_aff *aff;
 
+	if (!ma || !ls || !M)
+		goto error;
+
 	dim = isl_local_space_dim(ls, isl_dim_all);
+	if (check_final_columns_are_zero(M, 1 + dim) < 0)
+		goto error;
 	for (i = 1; i < M->n_row; ++i) {
 		aff = isl_aff_alloc(isl_local_space_copy(ls));
 		if (aff) {
@@ -5432,9 +5415,14 @@ static __isl_give isl_multi_aff *set_from_affine_matrix(
 	isl_mat_free(M);
 
 	return ma;
+error:
+	isl_local_space_free(ls);
+	isl_mat_free(M);
+	isl_multi_aff_free(ma);
+	return NULL;
 }
 
-/* Given a basic map "dom" that represents the context and an affine
+/* Given a basic set "dom" that represents the context and an affine
  * matrix "M" that maps the dimensions of the context to the
  * output variables, construct an isl_pw_multi_aff with a single
  * cell corresponding to "dom" and affine expressions copied from "M".
@@ -5444,20 +5432,13 @@ static __isl_give isl_multi_aff *set_from_affine_matrix(
  * in "dom".  These need to be removed before creating the affine
  * expression because an affine expression cannot be defined in terms
  * of existentially quantified variables without a known representation.
- * In particular, they are first moved to the end in both "dom" and "M" and
- * then ignored in "M".  In principle, the final columns of "M"
- * (i.e., those that will be ignored) should be zero at this stage
+ * Since newly added integer divisions are inserted before these
+ * existentially quantified variables, they are still in the final
+ * positions and the corresponding final columns of "M" are zero
  * because align_context_divs adds the existentially quantified
- * variables of the context to the main tableau without any constraints.
- * The computed minimal value can therefore not depend on these variables.
- * However, additional integer divisions that get added for parametric cuts
- * get added to the end and they may happen to be equal to some affine
- * expression involving the original existentially quantified variables.
- * These equality constraints are then propagated to the main tableau
- * such that the computed minimum can in fact depend on those existentially
- * quantified variables.  This dependence can however be removed again
- * by exploiting the equality constraints in "dom".
- * eliminate_unknown_divs takes care of this.
+ * variables of the context to the main tableau without any constraints and
+ * any equality constraints that are added later on can only serve
+ * to eliminate these existentially quantified variables.
  */
 static void sol_pma_add(struct isl_sol_pma *sol,
 	__isl_take isl_basic_set *dom, __isl_take isl_mat *M)
@@ -5465,23 +5446,10 @@ static void sol_pma_add(struct isl_sol_pma *sol,
 	isl_local_space *ls;
 	isl_multi_aff *maff;
 	isl_pw_multi_aff *pma;
-	int n_div, n_known, end, off;
+	int n_div, n_known;
 
 	n_div = isl_basic_set_dim(dom, isl_dim_div);
-	off = M->n_col - n_div;
-	end = n_div;
-	for (n_known = 0; n_known < end; ++n_known) {
-		if (isl_basic_set_div_is_known(dom, n_known))
-			continue;
-		end = last_known_div_after(dom, n_known, end);
-		if (end == n_known)
-			break;
-		isl_basic_set_swap_div(dom, n_known, end);
-		M = isl_mat_swap_cols(M, off + n_known, off + end);
-	}
-	dom = isl_basic_set_gauss(dom, NULL);
-	if (n_known < n_div)
-		M = eliminate_unknown_divs(M, dom, n_known);
+	n_known = n_div - sol->sol.context->n_unknown;
 
 	maff = isl_multi_aff_alloc(isl_pw_multi_aff_get_space(sol->pma));
 	ls = isl_basic_set_get_local_space(dom);

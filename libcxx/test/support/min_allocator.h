@@ -42,6 +42,44 @@ public:
     friend bool operator!=(bare_allocator x, bare_allocator y) {return !(x == y);}
 };
 
+
+template <class T>
+class no_default_allocator
+{
+#if TEST_STD_VER >= 11
+    no_default_allocator() = delete;
+#else
+    no_default_allocator();
+#endif
+    struct construct_tag {};
+    explicit no_default_allocator(construct_tag) {}
+
+public:
+    static no_default_allocator create() {
+      construct_tag tag;
+      return no_default_allocator(tag);
+    }
+
+public:
+    typedef T value_type;
+
+    template <class U>
+    no_default_allocator(no_default_allocator<U>) TEST_NOEXCEPT {}
+
+    T* allocate(std::size_t n)
+    {
+        return static_cast<T*>(::operator new(n*sizeof(T)));
+    }
+
+    void deallocate(T* p, std::size_t)
+    {
+        return ::operator delete(static_cast<void*>(p));
+    }
+
+    friend bool operator==(no_default_allocator, no_default_allocator) {return true;}
+    friend bool operator!=(no_default_allocator x, no_default_allocator y) {return !(x == y);}
+};
+
 struct malloc_allocator_base {
     static size_t alloc_count;
     static size_t dealloc_count;
@@ -338,6 +376,31 @@ public:
 
     friend bool operator==(min_allocator, min_allocator) {return true;}
     friend bool operator!=(min_allocator x, min_allocator y) {return !(x == y);}
+};
+
+template <class T>
+class explicit_allocator
+{
+public:
+    typedef T value_type;
+
+    explicit_allocator() TEST_NOEXCEPT {}
+
+    template <class U>
+    explicit explicit_allocator(explicit_allocator<U>) TEST_NOEXCEPT {}
+
+    T* allocate(std::size_t n)
+    {
+        return static_cast<T*>(::operator new(n*sizeof(T)));
+    }
+
+    void deallocate(T* p, std::size_t)
+    {
+        return ::operator delete(static_cast<void*>(p));
+    }
+
+    friend bool operator==(explicit_allocator, explicit_allocator) {return true;}
+    friend bool operator!=(explicit_allocator x, explicit_allocator y) {return !(x == y);}
 };
 
 #endif  // TEST_STD_VER >= 11

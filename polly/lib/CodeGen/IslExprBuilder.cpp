@@ -20,7 +20,7 @@
 using namespace llvm;
 using namespace polly;
 
-/// @brief Different overflow tracking modes.
+/// Different overflow tracking modes.
 enum OverflowTrackingChoice {
   OT_NEVER,   ///< Never tack potential overflows.
   OT_REQUEST, ///< Track potential overflows if requested.
@@ -35,16 +35,16 @@ static cl::opt<OverflowTrackingChoice> OTMode(
                clEnumValN(OT_REQUEST, "request",
                           "Track the overflow bit if requested."),
                clEnumValN(OT_ALWAYS, "always",
-                          "Always track the overflow bit."),
-               clEnumValEnd),
+                          "Always track the overflow bit.")),
     cl::Hidden, cl::init(OT_REQUEST), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 IslExprBuilder::IslExprBuilder(Scop &S, PollyIRBuilder &Builder,
                                IDToValueTy &IDToValue, ValueMapT &GlobalMap,
                                const DataLayout &DL, ScalarEvolution &SE,
-                               DominatorTree &DT, LoopInfo &LI)
+                               DominatorTree &DT, LoopInfo &LI,
+                               BasicBlock *StartBlock)
     : S(S), Builder(Builder), IDToValue(IDToValue), GlobalMap(GlobalMap),
-      DL(DL), SE(SE), DT(DT), LI(LI) {
+      DL(DL), SE(SE), DT(DT), LI(LI), StartBlock(StartBlock) {
   OverflowState = (OTMode == OT_ALWAYS) ? Builder.getFalse() : nullptr;
 }
 
@@ -212,7 +212,7 @@ Value *IslExprBuilder::createAccessAddress(isl_ast_expr *Expr) {
          "isl ast expression not of type isl_ast_op");
   assert(isl_ast_expr_get_op_type(Expr) == isl_ast_op_access &&
          "not an access isl ast expression");
-  assert(isl_ast_expr_get_op_n_arg(Expr) >= 2 &&
+  assert(isl_ast_expr_get_op_n_arg(Expr) >= 1 &&
          "We need at least two operands to create a member access.");
 
   Value *Base, *IndexOp, *Access;
@@ -223,7 +223,18 @@ Value *IslExprBuilder::createAccessAddress(isl_ast_expr *Expr) {
   BaseId = isl_ast_expr_get_id(BaseExpr);
   isl_ast_expr_free(BaseExpr);
 
-  const ScopArrayInfo *SAI = ScopArrayInfo::getFromId(BaseId);
+  const ScopArrayInfo *SAI = nullptr;
+
+  if (IDToSAI)
+    SAI = (*IDToSAI)[BaseId];
+
+  if (!SAI)
+    SAI = ScopArrayInfo::getFromId(BaseId);
+  else
+    isl_id_free(BaseId);
+
+  assert(SAI && "No ScopArrayInfo found for this isl_id.");
+
   Base = SAI->getBasePtr();
 
   if (auto NewBase = GlobalMap.lookup(Base))
@@ -237,6 +248,11 @@ Value *IslExprBuilder::createAccessAddress(isl_ast_expr *Expr) {
   if (Base->getType() != PointerTy) {
     Base =
         Builder.CreateBitCast(Base, PointerTy, "polly.access.cast." + BaseName);
+  }
+
+  if (isl_ast_expr_get_op_n_arg(Expr) == 1) {
+    isl_ast_expr_free(Expr);
+    return Base;
   }
 
   IndexOp = nullptr;
@@ -269,7 +285,8 @@ Value *IslExprBuilder::createAccessAddress(isl_ast_expr *Expr) {
     DimSCEV = SCEVParameterRewriter::rewrite(DimSCEV, SE, Map);
     Value *DimSize =
         expandCodeFor(S, SE, DL, "polly", DimSCEV, DimSCEV->getType(),
-                      &*Builder.GetInsertPoint());
+                      &*Builder.GetInsertPoint(), nullptr,
+                      StartBlock->getSinglePredecessor());
 
     Type *Ty = getWidestType(DimSize->getType(), IndexOp->getType());
 

@@ -1,4 +1,5 @@
 ; RUN: opt %loadPolly -pass-remarks-analysis="polly-scops" -polly-scops \
+; RUN: -polly-invariant-load-hoisting=true \
 ; RUN:     < %s 2>&1 | FileCheck %s
 
 ; We build a scop from the region for.body->B13. The CFG is of the
@@ -384,7 +385,7 @@ if.entry:                             ; preds = %for.body
   %.reload153 = load i16, i16* %.reg2mem152
   %.reload151 = load i16, i16* %.reg2mem150
   %.reload = load i16, i16* %.reg2mem
-  %37 = load i16, i16* %Output, align 2
+  %37 = load i16, i16* %In1, align 2
   %cmp77 = icmp slt i16 %37, 128
   br i1 %cmp77, label %A0, label %B0
 

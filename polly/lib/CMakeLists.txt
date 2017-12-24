@@ -28,6 +28,7 @@ endif ()
 
 add_polly_library(Polly
   Analysis/DependenceInfo.cpp
+  Analysis/PolyhedralInfo.cpp
   Analysis/ScopDetection.cpp
   Analysis/ScopDetectionDiagnostic.cpp
   Analysis/ScopInfo.cpp
@@ -54,6 +55,9 @@ add_polly_library(Polly
   Transform/CodePreparation.cpp
   Transform/DeadCodeElimination.cpp
   Transform/ScheduleOptimizer.cpp
+  Transform/FlattenSchedule.cpp
+  Transform/FlattenAlgo.cpp
+  Transform/DeLICM.cpp
   ${POLLY_HEADER_FILES}
   )
 

@@ -15,8 +15,9 @@
 namespace clang {
 namespace tidy {
 namespace cppcoreguidelines {
-	
-/// Checks for usages of static_cast, where a base class is downcasted to a derived class.
+
+/// Checks for usages of static_cast, where a base class is downcasted to a
+/// derived class.
 ///
 /// For the user-facing documentation see:
 /// http://clang.llvm.org/extra/clang-tidy/checks/cppcoreguidelines-pro-type-static-cast-downcast.html

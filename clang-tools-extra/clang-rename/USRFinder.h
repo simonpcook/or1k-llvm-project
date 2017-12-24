@@ -12,12 +12,21 @@
 /// code.
 ///
 //===----------------------------------------------------------------------===//
+
 #ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_RENAME_USR_FINDER_H
 #define LLVM_CLANG_TOOLS_EXTRA_CLANG_RENAME_USR_FINDER_H
 
+#include "clang/AST/AST.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/ASTMatchers/ASTMatchFinder.h"
 #include <string>
+#include <vector>
+
+using namespace llvm;
+using namespace clang::ast_matchers;
 
 namespace clang {
+
 class ASTContext;
 class Decl;
 class SourceLocation;
@@ -39,7 +48,37 @@ const NamedDecl *getNamedDeclFor(const ASTContext &Context,
 // Converts a Decl into a USR.
 std::string getUSRForDecl(const Decl *Decl);
 
-}
-}
+// FIXME: Implement RecursiveASTVisitor<T>::VisitNestedNameSpecifier instead.
+class NestedNameSpecifierLocFinder : public MatchFinder::MatchCallback {
+public:
+  explicit NestedNameSpecifierLocFinder(ASTContext &Context)
+      : Context(Context) {}
+
+  std::vector<NestedNameSpecifierLoc> getNestedNameSpecifierLocations() {
+    addMatchers();
+    Finder.matchAST(Context);
+    return Locations;
+  }
+
+private:
+  void addMatchers() {
+    const auto NestedNameSpecifierLocMatcher =
+        nestedNameSpecifierLoc().bind("nestedNameSpecifierLoc");
+    Finder.addMatcher(NestedNameSpecifierLocMatcher, this);
+  }
+
+  void run(const MatchFinder::MatchResult &Result) override {
+    const auto *NNS = Result.Nodes.getNodeAs<NestedNameSpecifierLoc>(
+        "nestedNameSpecifierLoc");
+    Locations.push_back(*NNS);
+  }
+
+  ASTContext &Context;
+  std::vector<NestedNameSpecifierLoc> Locations;
+  MatchFinder Finder;
+};
+
+} // namespace rename
+} // namespace clang
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_RENAME_USR_FINDER_H

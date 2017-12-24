@@ -33,12 +33,18 @@ class Configuration(LibcxxConfiguration):
         self.libcxxabi_obj_root = self.get_lit_conf('libcxxabi_obj_root')
         super(Configuration, self).configure_obj_root()
 
+    def has_cpp_feature(self, feature, required_value):
+        return int(self.cxx.dumpMacros().get('__cpp_' + feature, 0)) >= required_value
+
     def configure_features(self):
         super(Configuration, self).configure_features()
         if not self.get_lit_bool('enable_exceptions', True):
             self.config.available_features.add('libcxxabi-no-exceptions')
-        if self.get_lit_bool('thread_atexit', True):
-            self.config.available_features.add('thread_atexit')
+        if not self.has_cpp_feature('noexcept_function_type', 201510):
+            self.config.available_features.add('libcxxabi-no-noexcept-function-type')
+        # test_exception_storage_nodynmem.pass.cpp fails under this specific configuration
+        if self.get_lit_bool('cxx_ext_threads', False) and self.get_lit_bool('libcxxabi_shared', False):
+            self.config.available_features.add('libcxxabi-shared-externally-threaded')
 
     def configure_compile_flags(self):
         self.cxx.compile_flags += ['-DLIBCXXABI_NO_TIMER']
@@ -47,14 +53,19 @@ class Configuration(LibcxxConfiguration):
         else:
             self.cxx.compile_flags += ['-fno-exceptions', '-DLIBCXXABI_HAS_NO_EXCEPTIONS']
         if not self.get_lit_bool('enable_threads', True):
-            self.cxx.compile_flags += ['-DLIBCXXABI_HAS_NO_THREADS=1']
-        super(Configuration, self).configure_compile_flags()    
+            self.cxx.compile_flags += ['-D_LIBCXXABI_HAS_NO_THREADS']
+            self.config.available_features.add('libcxxabi-no-threads')
+        super(Configuration, self).configure_compile_flags()
     
     def configure_compile_flags_header_includes(self):
         self.configure_config_site_header()
         cxx_headers = self.get_lit_conf(
             'cxx_headers',
             os.path.join(self.libcxx_src_root, '/include'))
+        if cxx_headers == '':
+            self.lit_config.note('using the systems c++ headers')
+        else:
+            self.cxx.compile_flags += ['-nostdinc++']
         if not os.path.isdir(cxx_headers):
             self.lit_config.fatal("cxx_headers='%s' is not a directory."
                                   % cxx_headers)

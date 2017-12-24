@@ -18,6 +18,7 @@ from lldbsuite.test import lldbutil
 class RegisterCommandsTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
+    NO_DEBUG_INFO_TESTCASE = True
 
     def setUp(self):
         TestBase.setUp(self)
@@ -139,17 +140,10 @@ class RegisterCommandsTestCase(TestBase):
         # This intentionally checks the host platform rather than the target
         # platform as logging is host side.
         self.platform = ""
-        if sys.platform.startswith("darwin"):
-            self.platform = ""  # TODO: add support for "log enable darwin registers"
-
-        if sys.platform.startswith("freebsd"):
-            self.platform = "freebsd"
-
-        if sys.platform.startswith("linux"):
-            self.platform = "linux"
-
-        if sys.platform.startswith("netbsd"):
-            self.platform = "netbsd"
+        if (sys.platform.startswith("freebsd") or
+                sys.platform.startswith("linux") or
+                sys.platform.startswith("netbsd")):
+            self.platform = "posix"
 
         if self.platform != "":
             self.log_file = os.path.join(os.getcwd(), 'TestRegisters.log')
@@ -262,7 +256,7 @@ class RegisterCommandsTestCase(TestBase):
             self.expect(
                 "register read ftag", substrs=[
                     'ftag' + ' = ', str(
-                        "0x%0.2x" %
+                        "0x%0.4x" %
                         (reg_value_ftag_initial | (
                             1 << fstat_top_pointer_initial)))])
             reg_value_ftag_initial = reg_value_ftag_initial | (

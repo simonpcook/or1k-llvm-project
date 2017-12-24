@@ -25,6 +25,7 @@ append_list_if(COMPILER_RT_HAS_WGLOBAL_CONSTRUCTORS_FLAG -Wglobal-constructors
 set(TSAN_SOURCES
   rtl/tsan_clock.cc
   rtl/tsan_debugging.cc
+  rtl/tsan_external.cc
   rtl/tsan_fd.cc
   rtl/tsan_flags.cc
   rtl/tsan_ignoreset.cc
@@ -99,7 +100,7 @@ set(TSAN_RUNTIME_LIBRARIES)
 add_compiler_rt_component(tsan)
 
 if(APPLE)
-  set(TSAN_ASM_SOURCES rtl/tsan_rtl_amd64.S)
+  set(TSAN_ASM_SOURCES rtl/tsan_rtl_amd64.S rtl/tsan_rtl_aarch64.S)
   # Xcode will try to compile this file as C ('clang -x c'), and that will fail.
   if (${CMAKE_GENERATOR} STREQUAL "Xcode")
     enable_language(ASM)

@@ -43,13 +43,13 @@ namespace {
   public:
     Filler() : MachineFunctionPass(ID) {}
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "OR1K Delay Slot Filler";
     }
 
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
     bool runOnMachineBasicBlock(MachineBasicBlock &MBB);
@@ -149,7 +149,7 @@ bool Filler::findDelayInstr(MachineBasicBlock &MBB,
       continue;
 
     // Convert to forward iterator.
-    MachineBasicBlock::instr_iterator FI(std::next(I).base());
+    MachineBasicBlock::instr_iterator FI(std::next(I));
 
     if (I->hasUnmodeledSideEffects() ||
         I->isInlineAsm()             ||

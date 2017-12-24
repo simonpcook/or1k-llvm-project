@@ -41,7 +41,7 @@ namespace {
     explicit OR1KAsmPrinter(TargetMachine &TM, std::unique_ptr<MCStreamer> Streamer)
       : AsmPrinter(TM, std::move(Streamer)) {}
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "OR1K Assembly Printer";
     }
 
@@ -152,7 +152,7 @@ bool OR1KAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
 
 //===----------------------------------------------------------------------===//
 void OR1KAsmPrinter::customEmitInstruction(const MachineInstr *MI) {
-  OR1KMCInstLower MCInstLowering(OutContext, *Mang, *this);
+  OR1KMCInstLower MCInstLowering(OutContext, getObjFileLowering().getMangler(), *this);
   unsigned Opcode = MI->getOpcode();
   MCSubtargetInfo STI = getSubtargetInfo();
 

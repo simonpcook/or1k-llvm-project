@@ -23,6 +23,7 @@ class MCContext;
 class MCInstrInfo;
 class MCObjectWriter;
 class MCRegisterInfo;
+class MCTargetOptions;
 class Target;
 class Triple;
 class StringRef;
@@ -35,7 +36,8 @@ MCCodeEmitter *createOR1KMCCodeEmitter(const MCInstrInfo &MII,
                                        MCContext &Ctx);
 
 MCAsmBackend *createOR1KAsmBackend(const Target &T, const MCRegisterInfo &MRI,
-                                   const Triple &TT, StringRef CPU);
+                                   const Triple &TT, StringRef CPU,
+                                   const MCTargetOptions &Options);
 
 MCObjectWriter *createOR1KELFObjectWriter(raw_pwrite_stream &OS, uint8_t OSABI);
 } // End llvm namespace

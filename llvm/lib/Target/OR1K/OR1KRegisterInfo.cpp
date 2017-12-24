@@ -70,17 +70,17 @@ OR1KRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   MachineInstr &MI = *II;
   MachineFunction &MF = *MI.getParent()->getParent();
-  MachineFrameInfo *MFI = MF.getFrameInfo();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
   const TargetFrameLowering *TFI = getFrameLowering(MF);
   bool HasFP = TFI->hasFP(MF);
   DebugLoc dl = MI.getDebugLoc();
 
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
 
-  int Offset = MF.getFrameInfo()->getObjectOffset(FrameIndex) +
+  int Offset = MFI.getObjectOffset(FrameIndex) +
                MI.getOperand(FIOperandNum+1).getImm();
 
-  const std::vector<CalleeSavedInfo> &CSI = MFI->getCalleeSavedInfo();
+  const std::vector<CalleeSavedInfo> &CSI = MFI.getCalleeSavedInfo();
   int MinCSFI = 0;
   int MaxCSFI = -1;
 
@@ -100,7 +100,7 @@ OR1KRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     // Addressable stack objects are addressed using neg. offsets from fp
     // or pos. offsets from sp/basepointer
     if (!HasFP || (needsStackRealignment(MF) && FrameIndex >= 0))
-      Offset += MF.getFrameInfo()->getStackSize();
+      Offset += MFI.getStackSize();
 
     FrameReg = getFrameRegister(MF);
     if (FrameIndex >= 0) {
@@ -145,10 +145,10 @@ OR1KRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 }
 
 bool OR1KRegisterInfo::hasBasePointer(const MachineFunction &MF) const {
-   const MachineFrameInfo *MFI = MF.getFrameInfo();
+   const MachineFrameInfo &MFI = MF.getFrameInfo();
    // When we need stack realignment and there are dynamic allocas, we can't
    // reference off of the stack pointer, so we reserve a base pointer.
-   if (needsStackRealignment(MF) && MFI->hasVarSizedObjects())
+   if (needsStackRealignment(MF) && MFI.hasVarSizedObjects())
      return true;
 
    return false;

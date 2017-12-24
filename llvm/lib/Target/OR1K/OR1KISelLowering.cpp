@@ -352,9 +352,9 @@ static bool CC_OR1K32_VarArg(unsigned ValNo, MVT ValVT,
 }
 
 static SDValue getGlobalReg(SelectionDAG &DAG, EVT Ty) {
-  OR1KMachineFunctionInfo *MFI =
-    DAG.getMachineFunction().getInfo<OR1KMachineFunctionInfo>();
-  return DAG.getRegister(MFI->getGlobalBaseReg(), Ty);
+  OR1KMachineFunctionInfo &OR1KMFI =
+    *DAG.getMachineFunction().getInfo<OR1KMachineFunctionInfo>();
+  return DAG.getRegister(OR1KMFI.getGlobalBaseReg(), Ty);
 }
 
 SDValue
@@ -416,9 +416,9 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
                                       SelectionDAG &DAG,
                                       SmallVectorImpl<SDValue> &InVals) const {
   MachineFunction &MF = DAG.getMachineFunction();
-  MachineFrameInfo *MFI = MF.getFrameInfo();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
-  OR1KMachineFunctionInfo *OR1KMFI = MF.getInfo<OR1KMachineFunctionInfo>();
+  OR1KMachineFunctionInfo &OR1KMFI = *MF.getInfo<OR1KMachineFunctionInfo>();
 
   // Assign locations to all of the incoming arguments.
   SmallVector<CCValAssign, 16> ArgLocs;
@@ -473,8 +473,8 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
              << "\n";
       }
       // Create the frame index object for this incoming parameter...
-      int FI = MFI->CreateFixedObject(ObjSize, VA.getLocMemOffset(),
-                                      /*Immutable=*/true);
+      int FI = MFI.CreateFixedObject(ObjSize, VA.getLocMemOffset(),
+                                     /*Immutable=*/true);
 
       // Create the SelectionDAG nodes corresponding to a load
       //from this parameter
@@ -488,10 +488,10 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
   // the sret argument into r11 for the return. Save the argument into
   // a virtual register so that we can access it from the return points.
   if (MF.getFunction()->hasStructRetAttr()) {
-    unsigned Reg = OR1KMFI->getSRetReturnReg();
+    unsigned Reg = OR1KMFI.getSRetReturnReg();
     if (!Reg) {
       Reg = MF.getRegInfo().createVirtualRegister(getRegClassFor(MVT::i32));
-      OR1KMFI->setSRetReturnReg(Reg);
+      OR1KMFI.setSRetReturnReg(Reg);
     }
     SDValue Copy = DAG.getCopyToReg(DAG.getEntryNode(), dl, Reg, InVals[0]);
     Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, Copy, Chain);
@@ -500,8 +500,8 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
   if (isVarArg) {
     // Record the frame index of the first variable argument
     // which is a value necessary to VASTART.
-    int FI = MFI->CreateFixedObject(4, CCInfo.getNextStackOffset(), true);
-    OR1KMFI->setVarArgsFrameIndex(FI);
+    int FI = MFI.CreateFixedObject(4, CCInfo.getNextStackOffset(), true);
+    OR1KMFI.setVarArgsFrameIndex(FI);
   }
 
   return Chain;
@@ -546,10 +546,10 @@ OR1KTargetLowering::LowerReturn(SDValue Chain,
   // and into r11.
   if (DAG.getMachineFunction().getFunction()->hasStructRetAttr()) {
     MachineFunction &MF = DAG.getMachineFunction();
-    OR1KMachineFunctionInfo *OR1KMFI = MF.getInfo<OR1KMachineFunctionInfo>();
+    OR1KMachineFunctionInfo &OR1KMFI = *MF.getInfo<OR1KMachineFunctionInfo>();
     auto PtrVT = getPointerTy(DAG.getDataLayout());
 
-    unsigned Reg = OR1KMFI->getSRetReturnReg();
+    unsigned Reg = OR1KMFI.getSRetReturnReg();
     assert(Reg &&
            "SRetReturnReg should have been set in LowerFormalArguments().");
     SDValue Val = DAG.getCopyFromReg(Chain, dl, Reg, PtrVT);
@@ -584,7 +584,7 @@ OR1KTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
   CCState CCInfo(CallConv, isVarArg, DAG.getMachineFunction(),
                  ArgLocs, *DAG.getContext());
   GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee);
-  MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
+  MachineFrameInfo &MFI = DAG.getMachineFunction().getFrameInfo();
   bool IsPIC = getTargetMachine().getRelocationModel() == Reloc::PIC_;
   auto PtrVT = getPointerTy(DAG.getDataLayout());
 
@@ -615,7 +615,7 @@ OR1KTargetLowering::LowerCCCCallTo(SDValue Chain, SDValue Callee,
     unsigned Size = Flags.getByValSize();
     unsigned Align = Flags.getByValAlign();
 
-    int FI = MFI->CreateStackObject(Size, Align, /*isSS=*/false);
+    int FI = MFI.CreateStackObject(Size, Align, /*isSS=*/false);
     SDValue FIPtr = DAG.getFrameIndex(FI, PtrVT);
     SDValue SizeNode = DAG.getConstant(Size, dl, MVT::i32);
 
@@ -1008,8 +1008,8 @@ SDValue
 OR1KTargetLowering::LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const {
   const TargetRegisterInfo *TRI = Subtarget.getRegisterInfo();
   MachineFunction &MF = DAG.getMachineFunction();
-  MachineFrameInfo *MFI = MF.getFrameInfo();
-  MFI->setReturnAddressIsTaken(true);
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  MFI.setReturnAddressIsTaken(true);
 
   EVT VT = Op.getValueType();
   SDLoc dl(Op);
@@ -1031,8 +1031,8 @@ OR1KTargetLowering::LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const {
 
 SDValue
 OR1KTargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
-  MachineFrameInfo *MFI = DAG.getMachineFunction().getFrameInfo();
-  MFI->setFrameAddressIsTaken(true);
+  MachineFrameInfo &MFI = DAG.getMachineFunction().getFrameInfo();
+  MFI.setFrameAddressIsTaken(true);
 
   EVT VT = Op.getValueType();
   SDLoc dl(Op);

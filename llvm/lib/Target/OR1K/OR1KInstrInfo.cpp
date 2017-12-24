@@ -138,10 +138,13 @@ bool OR1KInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
 }
 
 unsigned
-OR1KInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
+OR1KInstrInfo::insertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
                             MachineBasicBlock *FBB,
                             ArrayRef<MachineOperand> Cond,
-                            const DebugLoc &DL) const {
+                            const DebugLoc &DL,
+                            int *BytesAdded) const {
+  assert(!BytesAdded && "code size not handled");
+
   // Shouldn't be a fall through.
   assert(TBB && "InsertBranch must not be told to insert a fallthrough");
 
@@ -156,7 +159,10 @@ OR1KInstrInfo::InsertBranch(MachineBasicBlock &MBB, MachineBasicBlock *TBB,
   return 0;
 }
 
-unsigned OR1KInstrInfo::RemoveBranch(MachineBasicBlock &MBB) const {
+unsigned OR1KInstrInfo::removeBranch(MachineBasicBlock &MBB,
+                                     int *BytesRemoved) const {
+  assert(!BytesRemoved && "code size not handled");
+
   MachineBasicBlock::iterator I = MBB.end();
   unsigned Count = 0;
 
@@ -231,7 +237,7 @@ namespace {
       return true;
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "OR1K PIC Global Base Reg Initialization";
     }
 

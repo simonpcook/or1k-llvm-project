@@ -185,7 +185,8 @@ const MCFixupKindInfo &OR1KAsmBackend::getFixupKindInfo(MCFixupKind Kind) const{
 } // end anonymous namespace
 
 MCAsmBackend *llvm::createOR1KAsmBackend(const Target &T, const MCRegisterInfo &MRI,
-                                         const Triple &TT, StringRef CPU) {
+                                         const Triple &TT, StringRef CPU,
+                                         const MCTargetOptions &Options) {
   assert(TT.isOSBinFormatELF() && "OR1K only supports ELF targets!");
 
   return new OR1KAsmBackend(T, Triple(TT).getOS());

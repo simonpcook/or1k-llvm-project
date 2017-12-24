@@ -50,7 +50,7 @@ class OR1KDAGToDAGISel : public SelectionDAGISel {
 public:
   explicit OR1KDAGToDAGISel(OR1KTargetMachine &TM) : SelectionDAGISel(TM) {}
 
-  const char *getPassName() const override {
+  StringRef getPassName() const override {
     return "OR1K DAG->DAG Pattern Instruction Selection";
   }
 

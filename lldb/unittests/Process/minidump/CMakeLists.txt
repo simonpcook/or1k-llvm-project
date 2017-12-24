@@ -1,5 +1,15 @@
 add_lldb_unittest(LLDBMinidumpTests
   MinidumpParserTest.cpp
+
+  LINK_LIBS
+    lldbCore
+    lldbHost
+    lldbTarget
+    lldbPluginProcessUtility
+    lldbPluginProcessMinidump
+    lldbUtilityHelpers
+  LINK_COMPONENTS
+    Support
   )
 
 set(test_inputs

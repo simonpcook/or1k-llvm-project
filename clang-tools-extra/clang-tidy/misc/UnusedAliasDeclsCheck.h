@@ -15,7 +15,7 @@
 
 namespace clang {
 namespace tidy {
-namespace misc {	
+namespace misc {
 
 /// Finds unused namespace alias declarations.
 class UnusedAliasDeclsCheck : public ClangTidyCheck {
@@ -35,4 +35,3 @@ private:
 } // namespace clang
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MISC_UNUSED_ALIAS_DECLS_H
-

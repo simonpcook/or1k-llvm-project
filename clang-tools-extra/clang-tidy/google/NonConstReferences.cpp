@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "NonConstReferences.h"
+#include "../utils/OptionsUtils.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
@@ -19,7 +20,21 @@ namespace tidy {
 namespace google {
 namespace runtime {
 
+NonConstReferences::NonConstReferences(StringRef Name,
+                                       ClangTidyContext *Context)
+    : ClangTidyCheck(Name, Context),
+      WhiteListTypes(
+          utils::options::parseStringList(Options.get("WhiteListTypes", ""))) {}
+
+void NonConstReferences::storeOptions(ClangTidyOptions::OptionMap &Opts) {
+  Options.store(Opts, "WhiteListTypes",
+                utils::options::serializeStringList(WhiteListTypes));
+}
+
 void NonConstReferences::registerMatchers(MatchFinder *Finder) {
+  if (!getLangOpts().CPlusPlus)
+    return;
+
   Finder->addMatcher(
       parmVarDecl(
           unless(isInstantiated()),
@@ -41,7 +56,7 @@ void NonConstReferences::check(const MatchFinder::MatchResult &Result) {
   if (!Function->isCanonicalDecl())
     return;
 
-  if (const CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(Function)) {
+  if (const auto *Method = dyn_cast<CXXMethodDecl>(Function)) {
     // Don't warn on implementations of an interface using references.
     if (Method->begin_overridden_methods() != Method->end_overridden_methods())
       return;
@@ -52,6 +67,15 @@ void NonConstReferences::check(const MatchFinder::MatchResult &Result) {
   }
 
   auto ReferencedType = *Result.Nodes.getNodeAs<QualType>("referenced_type");
+
+  if (std::find_if(WhiteListTypes.begin(), WhiteListTypes.end(),
+                   [&](llvm::StringRef WhiteListType) {
+                     return ReferencedType.getCanonicalType().getAsString(
+                                Result.Context->getPrintingPolicy()) ==
+                            WhiteListType;
+                   }) != WhiteListTypes.end())
+    return;
+
   // Don't warn on function references, they shouldn't be constant.
   if (ReferencedType->isFunctionProtoType())
     return;
@@ -109,9 +133,8 @@ void NonConstReferences::check(const MatchFinder::MatchResult &Result) {
     return;
 
   if (Parameter->getName().empty()) {
-    diag(Parameter->getLocation(),
-         "non-const reference parameter at index %0, "
-         "make it const or use a pointer")
+    diag(Parameter->getLocation(), "non-const reference parameter at index %0, "
+                                   "make it const or use a pointer")
         << Parameter->getFunctionScopeIndex();
   } else {
     diag(Parameter->getLocation(),

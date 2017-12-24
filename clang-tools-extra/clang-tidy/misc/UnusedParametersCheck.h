@@ -14,7 +14,7 @@
 
 namespace clang {
 namespace tidy {
-namespace misc {	
+namespace misc {
 
 /// Finds unused parameters and fixes them, so that `-Wunused-parameter` can be
 /// turned on.
@@ -36,4 +36,3 @@ private:
 } // namespace clang
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MISC_UNUSED_PARAMETERS_H
-

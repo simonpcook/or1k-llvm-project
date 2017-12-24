@@ -766,13 +766,13 @@ static __isl_keep isl_space *nested(__isl_keep isl_space *dim,
 
 /* Are the two spaces the same, apart from positions and names of parameters?
  */
-static int isl_space_has_equal_tuples(__isl_keep isl_space *space1,
+isl_bool isl_space_has_equal_tuples(__isl_keep isl_space *space1,
 	__isl_keep isl_space *space2)
 {
 	if (!space1 || !space2)
-		return -1;
+		return isl_bool_error;
 	if (space1 == space2)
-		return 1;
+		return isl_bool_true;
 	return isl_space_tuple_is_equal(space1, isl_dim_in,
 					space2, isl_dim_in) &&
 	       isl_space_tuple_is_equal(space1, isl_dim_out,
@@ -1891,11 +1891,17 @@ isl_bool isl_space_is_range(__isl_keep isl_space *space1,
 	return isl_space_is_range_internal(space1, space2);
 }
 
-int isl_space_compatible(__isl_keep isl_space *dim1,
+int isl_space_compatible_internal(__isl_keep isl_space *dim1,
 	__isl_keep isl_space *dim2)
 {
 	return dim1->nparam == dim2->nparam &&
 	       dim1->n_in + dim1->n_out == dim2->n_in + dim2->n_out;
+}
+
+int isl_space_compatible(__isl_keep isl_space *space1,
+	__isl_keep isl_space *space2)
+{
+	return isl_space_compatible_internal(space1, space2);
 }
 
 /* Update "hash" by hashing in "space".

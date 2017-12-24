@@ -33,9 +33,10 @@ bool isLocationInMacroExpansion(const SourceManager &SM, SourceLocation Loc) {
 
 void RedundantControlFlowCheck::registerMatchers(MatchFinder *Finder) {
   Finder->addMatcher(
-      functionDecl(isDefinition(), returns(voidType()),
-                   has(compoundStmt(hasAnySubstatement(returnStmt(
-                                        unless(has(expr()))))).bind("return"))),
+      functionDecl(
+          isDefinition(), returns(voidType()),
+          has(compoundStmt(hasAnySubstatement(returnStmt(unless(has(expr())))))
+                  .bind("return"))),
       this);
   auto CompoundContinue =
       has(compoundStmt(hasAnySubstatement(continueStmt())).bind("continue"));
@@ -80,16 +81,14 @@ void RedundantControlFlowCheck::issueDiagnostic(
   SourceLocation Start;
   if (Previous != Block->body_rend())
     Start = Lexer::findLocationAfterToken(
-        dyn_cast<Stmt>(*Previous)->getLocEnd(), tok::semi, SM,
-        Result.Context->getLangOpts(),
+        dyn_cast<Stmt>(*Previous)->getLocEnd(), tok::semi, SM, getLangOpts(),
         /*SkipTrailingWhitespaceAndNewLine=*/true);
-  else
+  if (!Start.isValid())
     Start = StmtRange.getBegin();
   auto RemovedRange = CharSourceRange::getCharRange(
-      Start,
-      Lexer::findLocationAfterToken(StmtRange.getEnd(), tok::semi, SM,
-                                    Result.Context->getLangOpts(),
-                                    /*SkipTrailingWhitespaceAndNewLine=*/true));
+      Start, Lexer::findLocationAfterToken(
+                 StmtRange.getEnd(), tok::semi, SM, getLangOpts(),
+                 /*SkipTrailingWhitespaceAndNewLine=*/true));
 
   diag(StmtRange.getBegin(), Diag) << FixItHint::CreateRemoval(RemovedRange);
 }

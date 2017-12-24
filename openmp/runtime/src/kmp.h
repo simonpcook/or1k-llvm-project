@@ -55,6 +55,12 @@
 #define KMP_CANCEL_THREADS
 #define KMP_THREAD_ATTR
 
+// Android does not have pthread_cancel.  Undefine KMP_CANCEL_THREADS if being
+// built on Android
+#if defined(__ANDROID__)
+#undef KMP_CANCEL_THREADS
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -282,8 +288,10 @@ typedef enum kmp_sched {
     kmp_sched_upper_std         = 5,     // upper bound for standard schedules
     kmp_sched_lower_ext         = 100,   // lower bound of Intel extension schedules
     kmp_sched_trapezoidal       = 101,   // mapped to kmp_sch_trapezoidal              (39)
-//  kmp_sched_static_steal      = 102,   // mapped to kmp_sch_static_steal             (44)
-    kmp_sched_upper             = 102,
+#if KMP_STATIC_STEAL_ENABLED
+    kmp_sched_static_steal      = 102,   // mapped to kmp_sch_static_steal             (44)
+#endif
+    kmp_sched_upper,
     kmp_sched_default = kmp_sched_static // default scheduling
 } kmp_sched_t;
 #endif
@@ -520,8 +528,8 @@ typedef int PACKED_REDUCTION_METHOD_T;
  */
 #if KMP_AFFINITY_SUPPORTED
 
-# if KMP_GROUP_AFFINITY
 // GROUP_AFFINITY is already defined for _MSC_VER>=1600 (VS2010 and later).
+# if KMP_OS_WINDOWS
 #  if _MSC_VER < 1600
 typedef struct GROUP_AFFINITY {
     KAFFINITY Mask;
@@ -529,7 +537,11 @@ typedef struct GROUP_AFFINITY {
     WORD Reserved[3];
 } GROUP_AFFINITY;
 #  endif /* _MSC_VER < 1600 */
+#  if KMP_GROUP_AFFINITY
 extern int __kmp_num_proc_groups;
+#  else
+static const int __kmp_num_proc_groups = 1;
+#  endif /* KMP_GROUP_AFFINITY */
 typedef DWORD (*kmp_GetActiveProcessorCount_t)(WORD);
 extern kmp_GetActiveProcessorCount_t __kmp_GetActiveProcessorCount;
 
@@ -541,285 +553,107 @@ extern kmp_GetThreadGroupAffinity_t __kmp_GetThreadGroupAffinity;
 
 typedef BOOL (*kmp_SetThreadGroupAffinity_t)(HANDLE, const GROUP_AFFINITY *, GROUP_AFFINITY *);
 extern kmp_SetThreadGroupAffinity_t __kmp_SetThreadGroupAffinity;
-# endif /* KMP_GROUP_AFFINITY */
+# endif /* KMP_OS_WINDOWS */
+
+# if KMP_USE_HWLOC
+extern hwloc_topology_t __kmp_hwloc_topology;
+extern int __kmp_hwloc_error;
+# endif
 
 extern size_t __kmp_affin_mask_size;
 # define KMP_AFFINITY_CAPABLE() (__kmp_affin_mask_size > 0)
 # define KMP_AFFINITY_DISABLE() (__kmp_affin_mask_size = 0)
 # define KMP_AFFINITY_ENABLE(mask_size) (__kmp_affin_mask_size = mask_size)
-# if !KMP_USE_HWLOC
-#  define KMP_CPU_SETSIZE        (__kmp_affin_mask_size * CHAR_BIT)
-#  define KMP_CPU_SET_ITERATE(i,mask) \
-    for(i = 0; (size_t)i < KMP_CPU_SETSIZE; ++i)
-# endif
-
-#if KMP_USE_HWLOC
-
-extern hwloc_topology_t __kmp_hwloc_topology;
-extern int __kmp_hwloc_error;
-typedef hwloc_cpuset_t kmp_affin_mask_t;
-# define KMP_CPU_SET(i,mask)       hwloc_bitmap_set((hwloc_cpuset_t)mask, (unsigned)i)
-# define KMP_CPU_ISSET(i,mask)     hwloc_bitmap_isset((hwloc_cpuset_t)mask, (unsigned)i)
-# define KMP_CPU_CLR(i,mask)       hwloc_bitmap_clr((hwloc_cpuset_t)mask, (unsigned)i)
-# define KMP_CPU_ZERO(mask)        hwloc_bitmap_zero((hwloc_cpuset_t)mask)
-# define KMP_CPU_COPY(dest, src)   hwloc_bitmap_copy((hwloc_cpuset_t)dest, (hwloc_cpuset_t)src)
-# define KMP_CPU_AND(dest, src)    hwloc_bitmap_and((hwloc_cpuset_t)dest, (hwloc_cpuset_t)dest, (hwloc_cpuset_t)src)
-# define KMP_CPU_COMPLEMENT(max_bit_number, mask) \
-    { \
-        unsigned i; \
-        for(i=0;i<(unsigned)max_bit_number+1;i++) { \
-            if(hwloc_bitmap_isset((hwloc_cpuset_t)mask, i)) { \
-                hwloc_bitmap_clr((hwloc_cpuset_t)mask, i); \
-            } else { \
-                hwloc_bitmap_set((hwloc_cpuset_t)mask, i); \
-            } \
-        } \
-        hwloc_bitmap_and((hwloc_cpuset_t)mask, (hwloc_cpuset_t)mask, \
-            (hwloc_cpuset_t)__kmp_affin_fullMask); \
-    } \
-
-# define KMP_CPU_UNION(dest, src)  hwloc_bitmap_or((hwloc_cpuset_t)dest, (hwloc_cpuset_t)dest, (hwloc_cpuset_t)src)
 # define KMP_CPU_SET_ITERATE(i,mask) \
-    for(i = hwloc_bitmap_first((hwloc_cpuset_t)mask); (int)i != -1; i = hwloc_bitmap_next((hwloc_cpuset_t)mask, i))
-
-# define KMP_CPU_ALLOC(ptr) ptr = (kmp_affin_mask_t*)hwloc_bitmap_alloc()
-# define KMP_CPU_FREE(ptr) hwloc_bitmap_free((hwloc_bitmap_t)ptr);
+    for (i = (mask)->begin(); i != (mask)->end() ; i = (mask)->next(i))
+# define KMP_CPU_SET(i,mask) (mask)->set(i)
+# define KMP_CPU_ISSET(i,mask) (mask)->is_set(i)
+# define KMP_CPU_CLR(i,mask) (mask)->clear(i)
+# define KMP_CPU_ZERO(mask) (mask)->zero()
+# define KMP_CPU_COPY(dest, src) (dest)->copy(src)
+# define KMP_CPU_AND(dest, src) (dest)->bitwise_and(src)
+# define KMP_CPU_COMPLEMENT(max_bit_number, mask) (mask)->bitwise_not()
+# define KMP_CPU_UNION(dest, src) (dest)->bitwise_or(src)
+# define KMP_CPU_ALLOC(ptr) (ptr = __kmp_affinity_dispatch->allocate_mask())
+# define KMP_CPU_FREE(ptr) __kmp_affinity_dispatch->deallocate_mask(ptr)
 # define KMP_CPU_ALLOC_ON_STACK(ptr) KMP_CPU_ALLOC(ptr)
 # define KMP_CPU_FREE_FROM_STACK(ptr) KMP_CPU_FREE(ptr)
 # define KMP_CPU_INTERNAL_ALLOC(ptr) KMP_CPU_ALLOC(ptr)
 # define KMP_CPU_INTERNAL_FREE(ptr) KMP_CPU_FREE(ptr)
+# define KMP_CPU_INDEX(arr,i) __kmp_affinity_dispatch->index_mask_array(arr, i)
+# define KMP_CPU_ALLOC_ARRAY(arr, n) (arr = __kmp_affinity_dispatch->allocate_mask_array(n))
+# define KMP_CPU_FREE_ARRAY(arr, n) __kmp_affinity_dispatch->deallocate_mask_array(arr)
+# define KMP_CPU_INTERNAL_ALLOC_ARRAY(arr, n) KMP_CPU_ALLOC_ARRAY(arr, n)
+# define KMP_CPU_INTERNAL_FREE_ARRAY(arr, n) KMP_CPU_FREE_ARRAY(arr, n)
+# define __kmp_get_system_affinity(mask, abort_bool) (mask)->get_system_affinity(abort_bool)
+# define __kmp_set_system_affinity(mask, abort_bool) (mask)->set_system_affinity(abort_bool)
+# define __kmp_get_proc_group(mask) (mask)->get_proc_group()
 
-//
-// The following macro should be used to index an array of masks.
-// The array should be declared as "kmp_affinity_t *" and allocated with
-// size "__kmp_affinity_mask_size * len".  The macro takes care of the fact
-// that on Windows* OS, sizeof(kmp_affin_t) is really the size of the mask, but
-// on Linux* OS, sizeof(kmp_affin_t) is 1.
-//
-# define KMP_CPU_INDEX(array,i) ((kmp_affin_mask_t*)(array[i]))
-# define KMP_CPU_ALLOC_ARRAY(arr, n) {                                   \
-    arr = (kmp_affin_mask_t *)__kmp_allocate(n*sizeof(kmp_affin_mask_t)); \
-    unsigned i;                                                           \
-    for(i=0;i<(unsigned)n;i++) {                                          \
-        arr[i] = hwloc_bitmap_alloc();                                    \
-    }                                                                     \
-   }
-# define KMP_CPU_FREE_ARRAY(arr, n) { \
-    unsigned i;                        \
-    for(i=0;i<(unsigned)n;i++) {       \
-        hwloc_bitmap_free(arr[i]);     \
-    }                                  \
-    __kmp_free(arr);                   \
-   }
-# define KMP_CPU_INTERNAL_ALLOC_ARRAY(arr, n) {                               \
-    arr = (kmp_affin_mask_t *)KMP_INTERNAL_MALLOC(n*sizeof(kmp_affin_mask_t)); \
-    unsigned i;                                                                \
-    for(i=0;i<(unsigned)n;i++) {                                               \
-        arr[i] = hwloc_bitmap_alloc();                                         \
-    }                                                                          \
-   }
-# define KMP_CPU_INTERNAL_FREE_ARRAY(arr, n) { \
-    unsigned i;                                 \
-    for(i=0;i<(unsigned)n;i++) {                \
-        hwloc_bitmap_free(arr[i]);              \
-    }                                           \
-    KMP_INTERNAL_FREE(arr);                     \
-   }
-
-#else /* KMP_USE_HWLOC */
-# if KMP_OS_LINUX
-//
-// On Linux* OS, the mask is actually a vector of length __kmp_affin_mask_size
-// (in bytes).  It should be allocated on a word boundary.
-//
-// WARNING!!!  We have made the base type of the affinity mask unsigned char,
-// in order to eliminate a lot of checks that the true system mask size is
-// really a multiple of 4 bytes (on Linux* OS).
-//
-// THESE MACROS WON'T WORK PROPERLY ON BIG ENDIAN MACHINES!!!
-//
-
-typedef unsigned char kmp_affin_mask_t;
-
-#  define _KMP_CPU_SET(i,mask)   (mask[i/CHAR_BIT] |= (((kmp_affin_mask_t)1) << (i % CHAR_BIT)))
-#  define KMP_CPU_SET(i,mask)    _KMP_CPU_SET((i), ((kmp_affin_mask_t *)(mask)))
-#  define _KMP_CPU_ISSET(i,mask) (!!(mask[i/CHAR_BIT] & (((kmp_affin_mask_t)1) << (i % CHAR_BIT))))
-#  define KMP_CPU_ISSET(i,mask)  _KMP_CPU_ISSET((i), ((kmp_affin_mask_t *)(mask)))
-#  define _KMP_CPU_CLR(i,mask)   (mask[i/CHAR_BIT] &= ~(((kmp_affin_mask_t)1) << (i % CHAR_BIT)))
-#  define KMP_CPU_CLR(i,mask)    _KMP_CPU_CLR((i), ((kmp_affin_mask_t *)(mask)))
-
-#  define KMP_CPU_ZERO(mask) \
-        {                                                                    \
-            size_t __i;                                                      \
-            for (__i = 0; __i < __kmp_affin_mask_size; __i++) {              \
-                ((kmp_affin_mask_t *)(mask))[__i] = 0;                       \
-            }                                                                \
-        }
-
-#  define KMP_CPU_COPY(dest, src) \
-        {                                                                    \
-            size_t __i;                                                      \
-            for (__i = 0; __i < __kmp_affin_mask_size; __i++) {              \
-                ((kmp_affin_mask_t *)(dest))[__i]                            \
-                  = ((kmp_affin_mask_t *)(src))[__i];                        \
-            }                                                                \
-        }
-
-#  define KMP_CPU_AND(dest, src) \
-        {                                                                    \
-            size_t __i;                                                      \
-            for (__i = 0; __i < __kmp_affin_mask_size; __i++) {              \
-                ((kmp_affin_mask_t *)(dest))[__i]                            \
-                  &= ((kmp_affin_mask_t *)(src))[__i];                       \
-            }                                                                \
-        }
-
-#  define KMP_CPU_COMPLEMENT(max_bit_number, mask) \
-        {                                                                    \
-            size_t __i;                                                      \
-            for (__i = 0; __i < __kmp_affin_mask_size; __i++) {              \
-                ((kmp_affin_mask_t *)(mask))[__i]                            \
-                  = ~((kmp_affin_mask_t *)(mask))[__i];                      \
-            }                                                                \
-            KMP_CPU_AND(mask, __kmp_affin_fullMask);                                     \
-        }
-
-#  define KMP_CPU_UNION(dest, src) \
-        {                                                                    \
-            size_t __i;                                                      \
-            for (__i = 0; __i < __kmp_affin_mask_size; __i++) {              \
-                ((kmp_affin_mask_t *)(dest))[__i]                            \
-                  |= ((kmp_affin_mask_t *)(src))[__i];                       \
-            }                                                                \
-        }
-
-# endif /* KMP_OS_LINUX */
-
-# if KMP_OS_WINDOWS
-//
-// On Windows* OS, the mask size is 4 bytes for IA-32 architecture, and on
-// Intel(R) 64 it is 8 bytes times the number of processor groups.
-//
-
-#  if KMP_GROUP_AFFINITY
-typedef DWORD_PTR kmp_affin_mask_t;
-
-#   define _KMP_CPU_SET(i,mask) \
-        (mask[i/(CHAR_BIT * sizeof(kmp_affin_mask_t))] |=                    \
-        (((kmp_affin_mask_t)1) << (i % (CHAR_BIT * sizeof(kmp_affin_mask_t)))))
-
-#   define KMP_CPU_SET(i,mask) \
-        _KMP_CPU_SET((i), ((kmp_affin_mask_t *)(mask)))
-
-#   define _KMP_CPU_ISSET(i,mask) \
-        (!!(mask[i/(CHAR_BIT * sizeof(kmp_affin_mask_t))] &                  \
-        (((kmp_affin_mask_t)1) << (i % (CHAR_BIT * sizeof(kmp_affin_mask_t))))))
-
-#   define KMP_CPU_ISSET(i,mask) \
-        _KMP_CPU_ISSET((i), ((kmp_affin_mask_t *)(mask)))
-
-#   define _KMP_CPU_CLR(i,mask) \
-        (mask[i/(CHAR_BIT * sizeof(kmp_affin_mask_t))] &=                    \
-        ~(((kmp_affin_mask_t)1) << (i % (CHAR_BIT * sizeof(kmp_affin_mask_t)))))
-
-#   define KMP_CPU_CLR(i,mask) \
-        _KMP_CPU_CLR((i), ((kmp_affin_mask_t *)(mask)))
-
-#   define KMP_CPU_ZERO(mask) \
-        {                                                                    \
-            int __i;                                                         \
-            for (__i = 0; __i < __kmp_num_proc_groups; __i++) {              \
-                ((kmp_affin_mask_t *)(mask))[__i] = 0;                       \
-            }                                                                \
-        }
-
-#   define KMP_CPU_COPY(dest, src) \
-        {                                                                    \
-            int __i;                                                         \
-            for (__i = 0; __i < __kmp_num_proc_groups; __i++) {              \
-                ((kmp_affin_mask_t *)(dest))[__i]                            \
-                  = ((kmp_affin_mask_t *)(src))[__i];                        \
-            }                                                                \
-        }
-
-#   define KMP_CPU_AND(dest, src) \
-        {                                                                    \
-            int __i;                                                         \
-            for (__i = 0; __i < __kmp_num_proc_groups; __i++) {              \
-                ((kmp_affin_mask_t *)(dest))[__i]                            \
-                  &= ((kmp_affin_mask_t *)(src))[__i];                       \
-            }                                                                \
-        }
-
-#   define KMP_CPU_COMPLEMENT(max_bit_number, mask) \
-        {                                                                    \
-            int __i;                                                         \
-            for (__i = 0; __i < __kmp_num_proc_groups; __i++) {              \
-                ((kmp_affin_mask_t *)(mask))[__i]                            \
-                  = ~((kmp_affin_mask_t *)(mask))[__i];                      \
-            }                                                                \
-            KMP_CPU_AND(mask, __kmp_affin_fullMask);                                     \
-        }
-
-#   define KMP_CPU_UNION(dest, src) \
-        {                                                                    \
-            int __i;                                                         \
-            for (__i = 0; __i < __kmp_num_proc_groups; __i++) {              \
-                ((kmp_affin_mask_t *)(dest))[__i]                            \
-                  |= ((kmp_affin_mask_t *)(src))[__i];                       \
-            }                                                                \
-        }
-
-
-#  else /* KMP_GROUP_AFFINITY */
-
-typedef DWORD kmp_affin_mask_t; /* for compatibility with older winbase.h */
-
-#   define KMP_CPU_SET(i,mask)      (*(mask) |= (((kmp_affin_mask_t)1) << (i)))
-#   define KMP_CPU_ISSET(i,mask)    (!!(*(mask) & (((kmp_affin_mask_t)1) << (i))))
-#   define KMP_CPU_CLR(i,mask)      (*(mask) &= ~(((kmp_affin_mask_t)1) << (i)))
-#   define KMP_CPU_ZERO(mask)       (*(mask) = 0)
-#   define KMP_CPU_COPY(dest, src)  (*(dest) = *(src))
-#   define KMP_CPU_AND(dest, src)   (*(dest) &= *(src))
-#   define KMP_CPU_COMPLEMENT(max_bit_number, mask) (*(mask) = ~*(mask)); KMP_CPU_AND(mask, __kmp_affin_fullMask)
-#   define KMP_CPU_UNION(dest, src) (*(dest) |= *(src))
-
-#  endif /* KMP_GROUP_AFFINITY */
-
-# endif /* KMP_OS_WINDOWS */
-
-//
-// __kmp_allocate() will return memory allocated on a 4-bytes boundary.
-// after zeroing it - it takes care of those assumptions stated above.
-//
-# define KMP_CPU_ALLOC(ptr) \
-        (ptr = ((kmp_affin_mask_t *)__kmp_allocate(__kmp_affin_mask_size)))
-# define KMP_CPU_FREE(ptr) __kmp_free(ptr)
-# define KMP_CPU_ALLOC_ON_STACK(ptr) (ptr = ((kmp_affin_mask_t *)KMP_ALLOCA(__kmp_affin_mask_size)))
-# define KMP_CPU_FREE_FROM_STACK(ptr) /* Nothing */
-# define KMP_CPU_INTERNAL_ALLOC(ptr) (ptr = ((kmp_affin_mask_t *)KMP_INTERNAL_MALLOC(__kmp_affin_mask_size)))
-# define KMP_CPU_INTERNAL_FREE(ptr)  KMP_INTERNAL_FREE(ptr)
-
-//
-// The following macro should be used to index an array of masks.
-// The array should be declared as "kmp_affinity_t *" and allocated with
-// size "__kmp_affinity_mask_size * len".  The macro takes care of the fact
-// that on Windows* OS, sizeof(kmp_affin_t) is really the size of the mask, but
-// on Linux* OS, sizeof(kmp_affin_t) is 1.
-//
-# define KMP_CPU_INDEX(array,i) \
-        ((kmp_affin_mask_t *)(((char *)(array)) + (i) * __kmp_affin_mask_size))
-# define KMP_CPU_ALLOC_ARRAY(arr, n)  arr = (kmp_affin_mask_t *)__kmp_allocate(n * __kmp_affin_mask_size)
-# define KMP_CPU_FREE_ARRAY(arr, n) __kmp_free(arr);
-# define KMP_CPU_INTERNAL_ALLOC_ARRAY(arr, n)  arr = (kmp_affin_mask_t *)KMP_INTERNAL_MALLOC(n * __kmp_affin_mask_size)
-# define KMP_CPU_INTERNAL_FREE_ARRAY(arr, n) KMP_INTERNAL_FREE(arr);
-
-#endif /* KMP_USE_HWLOC */
-
-// prototype after typedef of kmp_affin_mask_t
-#if KMP_GROUP_AFFINITY
-extern int __kmp_get_proc_group(kmp_affin_mask_t const *mask);
+class KMPAffinity {
+public:
+    class Mask {
+    public:
+        void* operator new(size_t n);
+        void operator delete(void* p);
+        void* operator new[](size_t n);
+        void operator delete[](void* p);
+        virtual ~Mask() {}
+        // Set bit i to 1
+        virtual void set(int i) {}
+        // Return bit i
+        virtual bool is_set(int i) const { return false; }
+        // Set bit i to 0
+        virtual void clear(int i) {}
+        // Zero out entire mask
+        virtual void zero() {}
+        // Copy src into this mask
+        virtual void copy(const Mask* src) {}
+        // this &= rhs
+        virtual void bitwise_and(const Mask* rhs) {}
+        // this |= rhs
+        virtual void bitwise_or(const Mask* rhs) {}
+        // this = ~this
+        virtual void bitwise_not() {}
+        // API for iterating over an affinity mask
+        // for (int i = mask->begin(); i != mask->end(); i = mask->next(i))
+        virtual int begin() const { return 0; }
+        virtual int end() const { return 0; }
+        virtual int next(int previous) const { return 0; }
+        // Set the system's affinity to this affinity mask's value
+        virtual int set_system_affinity(bool abort_on_error) const { return -1; }
+        // Set this affinity mask to the current system affinity
+        virtual int get_system_affinity(bool abort_on_error) { return -1; }
+        // Only 1 DWORD in the mask should have any procs set.
+        // Return the appropriate index, or -1 for an invalid mask.
+        virtual int get_proc_group() const { return -1; }
+    };
+    void* operator new(size_t n);
+    void operator delete(void* p);
+    // Determine if affinity is capable
+    virtual void determine_capable(const char* env_var) {}
+    // Bind the current thread to os proc
+    virtual void bind_thread(int proc) {}
+    // Factory functions to allocate/deallocate a mask
+    virtual Mask* allocate_mask() { return nullptr; }
+    virtual void deallocate_mask(Mask* m) { }
+    virtual Mask* allocate_mask_array(int num) { return nullptr; }
+    virtual void deallocate_mask_array(Mask* m) { }
+    virtual Mask* index_mask_array(Mask* m, int index) { return nullptr; }
+    static void pick_api();
+    static void destroy_api();
+    enum api_type {
+        NATIVE_OS
+#if KMP_USE_HWLOC
+        , HWLOC
 #endif
+    };
+    virtual api_type get_api_type() const { KMP_ASSERT(0); return NATIVE_OS; };
+private:
+    static bool picked_api;
+};
+
+typedef KMPAffinity::Mask kmp_affin_mask_t;
+extern KMPAffinity* __kmp_affinity_dispatch;
 
 //
 // Declare local char buffers with this size for printing debug and info
@@ -887,8 +721,6 @@ extern int __kmp_affinity_respect_mask; /* Respect process' initial affinity mas
 extern char * __kmp_affinity_proclist; /* proc ID list */
 extern kmp_affin_mask_t *__kmp_affinity_masks;
 extern unsigned __kmp_affinity_num_masks;
-extern int __kmp_get_system_affinity(kmp_affin_mask_t *mask, int abort_on_error);
-extern int __kmp_set_system_affinity(kmp_affin_mask_t const *mask, int abort_on_error);
 extern void __kmp_affinity_bind_thread(int which);
 
 extern kmp_affin_mask_t *__kmp_affin_fullMask;
@@ -1020,8 +852,6 @@ extern int __kmp_place_num_threads_per_core;
 # define KMP_DEFAULT_STKSIZE     ((size_t)(1024 * 1024))
 #endif
 
-#define KMP_DEFAULT_MONITOR_STKSIZE     ((size_t)(64 * 1024))
-
 #define KMP_DEFAULT_MALLOC_POOL_INCR    ((size_t) (1024 * 1024))
 #define KMP_MIN_MALLOC_POOL_INCR        ((size_t) (4 * 1024))
 #define KMP_MAX_MALLOC_POOL_INCR        (~((size_t)1<<((sizeof(size_t)*(1<<3))-1)))
@@ -1037,12 +867,16 @@ extern int __kmp_place_num_threads_per_core;
 #define KMP_MIN_STKPADDING      (0)
 #define KMP_MAX_STKPADDING      (2 * 1024 * 1024)
 
-#define KMP_MIN_MONITOR_WAKEUPS      (1)       /* min number of times monitor wakes up per second */
-#define KMP_MAX_MONITOR_WAKEUPS      (1000)    /* maximum number of times monitor can wake up per second */
 #define KMP_BLOCKTIME_MULTIPLIER     (1000)    /* number of blocktime units per second */
 #define KMP_MIN_BLOCKTIME            (0)
 #define KMP_MAX_BLOCKTIME            (INT_MAX) /* Must be this for "infinite" setting the work */
 #define KMP_DEFAULT_BLOCKTIME        (200)     /*  __kmp_blocktime is in milliseconds  */
+
+#if KMP_USE_MONITOR
+#define KMP_DEFAULT_MONITOR_STKSIZE  ((size_t)(64 * 1024))
+#define KMP_MIN_MONITOR_WAKEUPS      (1)       /* min number of times monitor wakes up per second */
+#define KMP_MAX_MONITOR_WAKEUPS      (1000)    /* maximum number of times monitor can wake up per second */
+
 /* Calculate new number of monitor wakeups for a specific block time based on previous monitor_wakeups */
 /* Only allow increasing number of wakeups */
 #define KMP_WAKEUPS_FROM_BLOCKTIME(blocktime, monitor_wakeups) \
@@ -1055,6 +889,7 @@ extern int __kmp_place_num_threads_per_core;
 #define KMP_INTERVALS_FROM_BLOCKTIME(blocktime, monitor_wakeups)  \
                                  ( ( (blocktime) + (KMP_BLOCKTIME_MULTIPLIER / (monitor_wakeups)) - 1 ) /  \
                                    (KMP_BLOCKTIME_MULTIPLIER / (monitor_wakeups)) )
+#endif // KMP_USE_MONITOR
 
 #define KMP_MIN_STATSCOLS       40
 #define KMP_MAX_STATSCOLS       4096
@@ -1084,6 +919,8 @@ extern int __kmp_place_num_threads_per_core;
 #define KMP_MAX_BRANCH_BITS     31
 
 #define KMP_MAX_ACTIVE_LEVELS_LIMIT INT_MAX
+
+#define KMP_MAX_DEFAULT_DEVICE_LIMIT INT_MAX
 
 #define KMP_MAX_TASK_PRIORITY_LIMIT INT_MAX
 
@@ -1733,7 +1570,12 @@ typedef struct kmp_disp {
         kmp_lock_t          *th_steal_lock;       // lock used for chunk stealing (8-byte variable)
     };
 #else
+#if KMP_STATIC_STEAL_ENABLED
+    kmp_lock_t              *th_steal_lock;       // lock used for chunk stealing (8-byte variable)
+    void* dummy_padding[1]; // make it 64 bytes on Intel(R) 64
+#else
     void* dummy_padding[2]; // make it 64 bytes on Intel(R) 64
+#endif
 #endif
 #if KMP_USE_INTERNODE_ALIGNMENT
     char more_padding[INTERNODE_CACHE_LINE];
@@ -1800,12 +1642,15 @@ typedef struct kmp_internal_control {
     kmp_int8      dynamic;               /* internal control for dynamic adjustment of threads (per thread) */
     kmp_int8      bt_set;                /* internal control for whether blocktime is explicitly set */
     int           blocktime;             /* internal control for blocktime */
+#if KMP_USE_MONITOR
     int           bt_intervals;          /* internal control for blocktime intervals */
+#endif
     int           nproc;                 /* internal control for #threads for next parallel region (per thread) */
     int           max_active_levels;     /* internal control for max_active_levels */
     kmp_r_sched_t sched;                 /* internal control for runtime schedule {sched,chunk} pair */
 #if OMP_40_ENABLED
     kmp_proc_bind_t proc_bind;           /* internal control for affinity  */
+    kmp_int32       default_device;      /* internal control for default device */
 #endif // OMP_40_ENABLED
     struct kmp_internal_control *next;
 } kmp_internal_control_t;
@@ -1990,7 +1835,9 @@ typedef struct kmp_local {
 
 #define get__blocktime( xteam, xtid )     ((xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.blocktime)
 #define get__bt_set( xteam, xtid )        ((xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.bt_set)
+#if KMP_USE_MONITOR
 #define get__bt_intervals( xteam, xtid )  ((xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.bt_intervals)
+#endif
 
 #define get__nested_2(xteam,xtid)         ((xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.nested)
 #define get__dynamic_2(xteam,xtid)        ((xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.dynamic)
@@ -2000,8 +1847,10 @@ typedef struct kmp_local {
 #define set__blocktime_team( xteam, xtid, xval ) \
         ( ( (xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.blocktime )    = (xval) )
 
+#if KMP_USE_MONITOR
 #define set__bt_intervals_team( xteam, xtid, xval ) \
         ( ( (xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.bt_intervals ) = (xval) )
+#endif
 
 #define set__bt_set_team( xteam, xtid, xval ) \
         ( ( (xteam)->t.t_threads[(xtid)]->th.th_current_task->td_icvs.bt_set )       = (xval) )
@@ -2049,6 +1898,9 @@ typedef enum kmp_tasking_mode {
 
 extern kmp_tasking_mode_t __kmp_tasking_mode;         /* determines how/when to execute tasks */
 extern kmp_int32 __kmp_task_stealing_constraint;
+#if OMP_40_ENABLED
+    extern kmp_int32 __kmp_default_device; // Set via OMP_DEFAULT_DEVICE if specified, defaults to 0 otherwise
+#endif
 #if OMP_45_ENABLED
     extern kmp_int32 __kmp_max_task_priority; // Set via OMP_MAX_TASK_PRIORITY if specified, defaults to 0 otherwise
 #endif
@@ -2366,7 +2218,9 @@ typedef struct KMP_ALIGN_CACHE kmp_base_info {
     /* at the start of a barrier, and the values stored in the team are used */
     /* at points in the code where the team struct is no longer guaranteed   */
     /* to exist (from the POV of worker threads).                            */
+#if KMP_USE_MONITOR
     int               th_team_bt_intervals;
+#endif
     int               th_team_bt_set;
 
 
@@ -2576,7 +2430,7 @@ typedef struct KMP_ALIGN_CACHE kmp_base_team {
     int t_size_changed; // team size was changed?: 0: no, 1: yes, -1: changed via omp_set_num_threads() call
 
     // Read/write by workers as well -----------------------------------------------------------------------
-#if (KMP_ARCH_X86 || KMP_ARCH_X86_64) && !KMP_USE_HWLOC
+#if (KMP_ARCH_X86 || KMP_ARCH_X86_64)
     // Using CACHE_LINE=64 reduces memory footprint, but causes a big perf regression of epcc 'parallel'
     // and 'barrier' on fxe256lin01. This extra padding serves to fix the performance of epcc 'parallel'
     // and 'barrier' when CACHE_LINE=64. TODO: investigate more and get rid if this padding.
@@ -2721,7 +2575,9 @@ extern volatile int __kmp_init_gtid;
 extern volatile int __kmp_init_common;
 extern volatile int __kmp_init_middle;
 extern volatile int __kmp_init_parallel;
+#if KMP_USE_MONITOR
 extern volatile int __kmp_init_monitor;
+#endif
 extern volatile int __kmp_init_user_locks;
 extern int __kmp_init_counter;
 extern int __kmp_root_counter;
@@ -2748,7 +2604,9 @@ extern char const   *__kmp_barrier_pattern_name        [ bp_last_bar ];
 extern kmp_bootstrap_lock_t __kmp_initz_lock;     /* control initialization */
 extern kmp_bootstrap_lock_t __kmp_forkjoin_lock;  /* control fork/join access */
 extern kmp_bootstrap_lock_t __kmp_exit_lock;      /* exit() is not always thread-safe */
+#if KMP_USE_MONITOR
 extern kmp_bootstrap_lock_t __kmp_monitor_lock;   /* control monitor thread creation */
+#endif
 extern kmp_bootstrap_lock_t __kmp_tp_cached_lock; /* used for the hack to allow threadprivate cache and __kmp_threads expansion to co-exist */
 
 extern kmp_lock_t __kmp_global_lock;    /* control OS/global access  */
@@ -2768,7 +2626,9 @@ extern enum sched_type  __kmp_auto;     /* default auto scheduling method */
 extern int              __kmp_chunk;    /* default runtime chunk size */
 
 extern size_t     __kmp_stksize;        /* stack size per thread         */
+#if KMP_USE_MONITOR
 extern size_t     __kmp_monitor_stksize;/* stack size for monitor thread */
+#endif
 extern size_t     __kmp_stkoffset;      /* stack offset per thread       */
 extern int        __kmp_stkpadding;     /* Should we pad root thread(s) stack */
 
@@ -2790,10 +2650,13 @@ extern int        __kmp_suspend_count;  /* count inside __kmp_suspend_template()
 
 extern kmp_uint32 __kmp_yield_init;
 extern kmp_uint32 __kmp_yield_next;
+
+#if KMP_USE_MONITOR
 extern kmp_uint32 __kmp_yielding_on;
 extern kmp_uint32 __kmp_yield_cycle;
 extern kmp_int32  __kmp_yield_on_count;
 extern kmp_int32  __kmp_yield_off_count;
+#endif
 
 /* ------------------------------------------------------------------------- */
 extern int        __kmp_allThreadsSpecified;
@@ -2812,8 +2675,10 @@ extern int        __kmp_tp_capacity;    /* capacity of __kmp_threads if threadpr
 extern int        __kmp_tp_cached;      /* whether threadprivate cache has been created (__kmpc_threadprivate_cached()) */
 extern int        __kmp_dflt_nested;    /* nested parallelism enabled by default a la OMP_NESTED */
 extern int        __kmp_dflt_blocktime; /* number of milliseconds to wait before blocking (env setting) */
+#if KMP_USE_MONITOR
 extern int        __kmp_monitor_wakeups;/* number of times monitor wakes up per second */
 extern int        __kmp_bt_intervals;   /* number of monitor timestamp intervals before blocking */
+#endif
 #ifdef KMP_ADJUST_BLOCKTIME
 extern int        __kmp_zero_bt;        /* whether blocktime has been forced to zero */
 #endif /* KMP_ADJUST_BLOCKTIME */
@@ -3140,7 +3005,7 @@ extern void __kmp_check_stack_overlap( kmp_info_t *thr );
 extern void __kmp_expand_host_name( char *buffer, size_t size );
 extern void __kmp_expand_file_name( char *result, size_t rlen, char *pattern );
 
-#if KMP_OS_WINDOWS
+#if KMP_ARCH_X86 || KMP_ARCH_X86_64
 extern void __kmp_initialize_system_tick( void );  /* Initialize timer tick value */
 #endif
 
@@ -3158,6 +3023,7 @@ extern void __kmp_affinity_set_place(int gtid);
 extern void __kmp_affinity_determine_capable( const char *env_var );
 extern int __kmp_aux_set_affinity(void **mask);
 extern int __kmp_aux_get_affinity(void **mask);
+extern int __kmp_aux_get_affinity_max_proc();
 extern int __kmp_aux_set_affinity_mask_proc(int proc, void **mask);
 extern int __kmp_aux_unset_affinity_mask_proc(int proc, void **mask);
 extern int __kmp_aux_get_affinity_mask_proc(int proc, void **mask);
@@ -3180,7 +3046,9 @@ extern double __kmp_read_cpu_time( void );
 
 extern int  __kmp_read_system_info( struct kmp_sys_info *info );
 
+#if KMP_USE_MONITOR
 extern void __kmp_create_monitor( kmp_info_t *th );
+#endif
 
 extern void *__kmp_launch_thread( kmp_info_t *thr );
 
@@ -3192,7 +3060,9 @@ extern int  __kmp_is_thread_alive( kmp_info_t * th, DWORD *exit_val );
 extern void __kmp_free_handle( kmp_thread_t tHandle );
 #endif
 
+#if KMP_USE_MONITOR
 extern void __kmp_reap_monitor( kmp_info_t *th );
+#endif
 extern void __kmp_reap_worker( kmp_info_t *th );
 extern void __kmp_terminate_thread( int gtid );
 
@@ -3313,7 +3183,7 @@ extern void __kmp_aux_set_stacksize( size_t arg);
 extern void __kmp_aux_set_blocktime (int arg, kmp_info_t *thread, int tid);
 extern void __kmp_aux_set_defaults( char const * str, int len );
 
-/* Functions below put here to call them from __kmp_aux_env_initialize() in kmp_settings.c */
+/* Functions called from __kmp_aux_env_initialize() in kmp_settings.cpp */
 void kmpc_set_blocktime (int arg);
 void ompc_set_nested( int flag );
 void ompc_set_dynamic( int flag );
@@ -3327,6 +3197,8 @@ extern kmp_task_t* __kmp_task_alloc( ident_t *loc_ref, kmp_int32 gtid,
   kmp_routine_entry_t task_entry );
 extern void __kmp_init_implicit_task( ident_t *loc_ref, kmp_info_t *this_thr,
                   kmp_team_t *team, int tid, int set_curr_task );
+extern void __kmp_finish_implicit_task(kmp_info_t *this_thr);
+extern void __kmp_free_implicit_task(kmp_info_t *this_thr);
 
 int __kmp_execute_tasks_32(kmp_info_t *thread, kmp_int32 gtid, kmp_flag_32 *flag, int final_spin,
                            int *thread_finished,
@@ -3496,12 +3368,18 @@ void __kmpc_omp_task_complete( ident_t *loc_ref, kmp_int32 gtid, kmp_task_t *tas
 KMP_EXPORT void __kmpc_taskgroup( ident_t * loc, int gtid );
 KMP_EXPORT void __kmpc_end_taskgroup( ident_t * loc, int gtid );
 
-KMP_EXPORT kmp_int32 __kmpc_omp_task_with_deps ( ident_t *loc_ref, kmp_int32 gtid, kmp_task_t * new_task,
-                                                 kmp_int32 ndeps, kmp_depend_info_t *dep_list,
-                                                 kmp_int32 ndeps_noalias, kmp_depend_info_t *noalias_dep_list );
-KMP_EXPORT void __kmpc_omp_wait_deps ( ident_t *loc_ref, kmp_int32 gtid, kmp_int32 ndeps, kmp_depend_info_t *dep_list,
-                                          kmp_int32 ndeps_noalias, kmp_depend_info_t *noalias_dep_list );
-extern void __kmp_release_deps ( kmp_int32 gtid, kmp_taskdata_t *task );
+KMP_EXPORT kmp_int32 __kmpc_omp_task_with_deps(
+    ident_t *loc_ref, kmp_int32 gtid, kmp_task_t *new_task, kmp_int32 ndeps,
+    kmp_depend_info_t *dep_list, kmp_int32 ndeps_noalias,
+    kmp_depend_info_t *noalias_dep_list);
+KMP_EXPORT void __kmpc_omp_wait_deps(ident_t *loc_ref, kmp_int32 gtid,
+                                     kmp_int32 ndeps,
+                                     kmp_depend_info_t *dep_list,
+                                     kmp_int32 ndeps_noalias,
+                                     kmp_depend_info_t *noalias_dep_list);
+extern void __kmp_release_deps(kmp_int32 gtid, kmp_taskdata_t *task);
+extern void __kmp_dephash_free_entries(kmp_info_t *thread, kmp_dephash_t *h);
+extern void __kmp_dephash_free(kmp_info_t *thread, kmp_dephash_t *h);
 
 extern kmp_int32 __kmp_omp_task( kmp_int32 gtid, kmp_task_t * new_task, bool serialize_immediate );
 

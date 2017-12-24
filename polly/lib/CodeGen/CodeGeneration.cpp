@@ -53,7 +53,7 @@ public:
 
   CodeGeneration() : ScopPass(ID) {}
 
-  /// @brief The datalayout used
+  /// The datalayout used
   const DataLayout *DL;
 
   /// @name The analysis passes we need to generate code.
@@ -65,20 +65,6 @@ public:
   ScalarEvolution *SE;
   RegionInfo *RI;
   ///}
-
-  /// @brief Build the runtime condition.
-  ///
-  /// Build the condition that evaluates at run-time to true iff all
-  /// assumptions taken for the SCoP hold, and to false otherwise.
-  ///
-  /// @return A value evaluating to true/false if execution is save/unsafe.
-  Value *buildRTC(PollyIRBuilder &Builder, IslExprBuilder &ExprBuilder) {
-    Builder.SetInsertPoint(Builder.GetInsertBlock()->getTerminator());
-    Value *RTC = ExprBuilder.create(AI->getRunCondition());
-    if (!RTC->getType()->isIntegerTy(1))
-      RTC = Builder.CreateIsNotNull(RTC);
-    return RTC;
-  }
 
   void verifyGeneratedFunction(Scop &S, Function &F) {
     if (!verifyFunction(F, &errs()) || !Verify)
@@ -110,7 +96,7 @@ public:
     }
   }
 
-  /// @brief Mark a basic block unreachable.
+  /// Mark a basic block unreachable.
   ///
   /// Marks the basic block @p Block unreachable by equipping it with an
   /// UnreachableInst.
@@ -121,7 +107,7 @@ public:
     OrigTerminator->eraseFromParent();
   }
 
-  /// @brief Generate LLVM-IR for the SCoP @p S.
+  /// Generate LLVM-IR for the SCoP @p S.
   bool runOnScop(Scop &S) override {
     AI = &getAnalysis<IslAstInfo>();
 
@@ -147,9 +133,6 @@ public:
     assert(EnteringBB);
     PollyIRBuilder Builder = createPollyIRBuilder(EnteringBB, Annotator);
 
-    IslNodeBuilder NodeBuilder(Builder, Annotator, this, *DL, *LI, *SE, *DT, S);
-    IslExprBuilder &ExprBuilder = NodeBuilder.getExprBuilder();
-
     // Only build the run-time condition and parameters _after_ having
     // introduced the conditional branch. This is important as the conditional
     // branch will guard the original scop from new induction variables that
@@ -159,6 +142,9 @@ public:
     BasicBlock *StartBlock =
         executeScopConditionally(S, this, Builder.getTrue());
     auto *SplitBlock = StartBlock->getSinglePredecessor();
+
+    IslNodeBuilder NodeBuilder(Builder, Annotator, this, *DL, *LI, *SE, *DT, S,
+                               StartBlock);
 
     // First generate code for the hoisted invariant loads and transitively the
     // parameters they reference. Afterwards, for the remaining parameters that
@@ -189,22 +175,15 @@ public:
 
       isl_ast_node_free(AstRoot);
     } else {
-
+      NodeBuilder.allocateNewArrays();
       NodeBuilder.addParameters(S.getContext());
-
-      ExprBuilder.setTrackOverflow(true);
-      Value *RTC = buildRTC(Builder, ExprBuilder);
-      Value *OverflowHappened = Builder.CreateNot(
-          ExprBuilder.getOverflowState(), "polly.rtc.overflown");
-      RTC = Builder.CreateAnd(RTC, OverflowHappened, "polly.rtc.result");
-      ExprBuilder.setTrackOverflow(false);
+      Value *RTC = NodeBuilder.createRTC(AI->getRunCondition());
 
       Builder.GetInsertBlock()->getTerminator()->setOperand(0, RTC);
       Builder.SetInsertPoint(&StartBlock->front());
 
       NodeBuilder.create(AstRoot);
-
-      NodeBuilder.finalizeSCoP(S);
+      NodeBuilder.finalize();
       fixRegionInfo(EnteringBB->getParent(), R->getParent());
     }
 
@@ -220,7 +199,7 @@ public:
     return true;
   }
 
-  /// @brief Register all analyses and transformation required.
+  /// Register all analyses and transformation required.
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<DominatorTreeWrapperPass>();
     AU.addRequired<IslAstInfo>();

@@ -49,10 +49,9 @@ Configuration files:
 
 )");
 
-const char DefaultChecks[] =  // Enable these checks:
-    "clang-diagnostic-*,"     //   * compiler diagnostics
-    "clang-analyzer-*,"       //   * Static Analyzer checks
-    "-clang-analyzer-alpha*"; //   * but not alpha checks: many false positives
+const char DefaultChecks[] = // Enable these checks by default:
+    "clang-diagnostic-*,"    //   * compiler diagnostics
+    "clang-analyzer-*";      //   * Static Analyzer checks
 
 static cl::opt<std::string> Checks("checks", cl::desc(R"(
 Comma-separated list of globs with optional '-'
@@ -93,9 +92,7 @@ static cl::opt<bool>
     SystemHeaders("system-headers",
                   cl::desc("Display the errors from system headers."),
                   cl::init(false), cl::cat(ClangTidyCategory));
-static cl::opt<std::string>
-    LineFilter("line-filter",
-               cl::desc(R"(
+static cl::opt<std::string> LineFilter("line-filter", cl::desc(R"(
 List of files with line ranges to filter the
 warnings. Can be used together with
 -header-filter. The format of the list is a
@@ -105,7 +102,8 @@ JSON array of objects:
     {"name":"file2.h"}
   ]
 )"),
-               cl::init(""), cl::cat(ClangTidyCategory));
+                                       cl::init(""),
+                                       cl::cat(ClangTidyCategory));
 
 static cl::opt<bool> Fix("fix", cl::desc(R"(
 Apply suggested fixes. Without -fix-errors
@@ -122,6 +120,13 @@ well.
 )"),
                                cl::init(false), cl::cat(ClangTidyCategory));
 
+static cl::opt<std::string> FormatStyle("style", cl::desc(R"(
+Fallback style for reformatting after inserting fixes
+if there is no clang-format config file found.
+)"),
+                                        cl::init("llvm"),
+                                        cl::cat(ClangTidyCategory));
+
 static cl::opt<bool> ListChecks("list-checks", cl::desc(R"(
 List all enabled checks and exit. Use with
 -checks=* to list all available checks.
@@ -129,8 +134,9 @@ List all enabled checks and exit. Use with
                                 cl::init(false), cl::cat(ClangTidyCategory));
 
 static cl::opt<bool> ExplainConfig("explain-config", cl::desc(R"(
-for each enabled check explains, where it is enabled, i.e. in clang-tidy binary,
-command line or a specific configuration file.
+For each enabled check explains, where it is
+enabled, i.e. in clang-tidy binary, command
+line or a specific configuration file.
 )"),
                                    cl::init(false), cl::cat(ClangTidyCategory));
 
@@ -176,7 +182,7 @@ This option overrides the value read from a
 
 static cl::opt<std::string> ExportFixes("export-fixes", cl::desc(R"(
 YAML file to store suggested fixes in. The
-stored fixes can be applied to the input sorce
+stored fixes can be applied to the input source
 code with clang-apply-replacements.
 )"),
                                         cl::value_desc("filename"),
@@ -219,7 +225,7 @@ static void printProfileData(const ProfileData &Profile,
   std::vector<std::pair<llvm::TimeRecord, StringRef>> Timers;
   TimeRecord Total;
 
-  for (const auto& P : Profile.Records) {
+  for (const auto &P : Profile.Records) {
     Timers.emplace_back(P.getValue(), P.getKey());
     Total += P.getValue();
   }
@@ -323,7 +329,7 @@ static int clangTidyMain(int argc, const char **argv) {
   std::vector<std::string> EnabledChecks = getCheckNames(EffectiveOptions);
 
   if (ExplainConfig) {
-    //FIXME: Show other ClangTidyOptions' fields, like ExtraArg.
+    // FIXME: Show other ClangTidyOptions' fields, like ExtraArg.
     std::vector<clang::tidy::ClangTidyOptionsProvider::OptionsSource>
         RawOptions = OptionsProvider->getRawOptions(FilePath);
     for (const std::string &Check : EnabledChecks) {
@@ -376,8 +382,7 @@ static int clangTidyMain(int argc, const char **argv) {
   std::vector<ClangTidyError> Errors;
   ClangTidyStats Stats =
       runClangTidy(std::move(OptionsProvider), OptionsParser.getCompilations(),
-                   PathList, &Errors,
-                   EnableCheckProfile ? &Profile : nullptr);
+                   PathList, &Errors, EnableCheckProfile ? &Profile : nullptr);
   bool FoundErrors =
       std::find_if(Errors.begin(), Errors.end(), [](const ClangTidyError &E) {
         return E.DiagLevel == ClangTidyError::Error;
@@ -388,7 +393,8 @@ static int clangTidyMain(int argc, const char **argv) {
   unsigned WErrorCount = 0;
 
   // -fix-errors implies -fix.
-  handleErrors(Errors, (FixErrors || Fix) && !DisableFixes, WErrorCount);
+  handleErrors(Errors, (FixErrors || Fix) && !DisableFixes, FormatStyle,
+               WErrorCount);
 
   if (!ExportFixes.empty() && !Errors.empty()) {
     std::error_code EC;
@@ -397,7 +403,7 @@ static int clangTidyMain(int argc, const char **argv) {
       llvm::errs() << "Error opening output file: " << EC.message() << '\n';
       return 1;
     }
-    exportReplacements(Errors, OS);
+    exportReplacements(FilePath.str(), Errors, OS);
   }
 
   printStats(Stats);
@@ -453,6 +459,11 @@ static int LLVM_ATTRIBUTE_UNUSED MiscModuleAnchorDestination =
 extern volatile int ModernizeModuleAnchorSource;
 static int LLVM_ATTRIBUTE_UNUSED ModernizeModuleAnchorDestination =
     ModernizeModuleAnchorSource;
+
+// This anchor is used to force the linker to link the MPIModule.
+extern volatile int MPIModuleAnchorSource;
+static int LLVM_ATTRIBUTE_UNUSED MPIModuleAnchorDestination =
+    MPIModuleAnchorSource;
 
 // This anchor is used to force the linker to link the PerformanceModule.
 extern volatile int PerformanceModuleAnchorSource;

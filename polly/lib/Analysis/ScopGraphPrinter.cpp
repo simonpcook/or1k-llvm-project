@@ -36,7 +36,7 @@ static cl::opt<bool> ViewAll("polly-view-all",
 namespace llvm {
 template <>
 struct GraphTraits<ScopDetection *> : public GraphTraits<RegionInfo *> {
-  static NodeType *getEntryNode(ScopDetection *SD) {
+  static NodeRef getEntryNode(ScopDetection *SD) {
     return GraphTraits<RegionInfo *>::getEntryNode(SD->getRI());
   }
   static nodes_iterator nodes_begin(ScopDetection *SD) {
@@ -135,8 +135,8 @@ struct DOTGraphTraits<ScopDetection *> : public DOTGraphTraits<RegionNode *> {
 
     std::string ErrorMessage = SD->regionIsInvalidBecause(R);
     ErrorMessage = escapeString(ErrorMessage);
-    O.indent(2 * (depth + 1)) << "label = \"" << Location << ErrorMessage
-                              << "\";\n";
+    O.indent(2 * (depth + 1))
+        << "label = \"" << Location << ErrorMessage << "\";\n";
 
     if (SD->isMaxRegionInScop(*R)) {
       O.indent(2 * (depth + 1)) << "style = filled;\n";

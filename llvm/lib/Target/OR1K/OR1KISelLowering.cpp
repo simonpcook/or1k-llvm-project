@@ -507,6 +507,16 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
   return Chain;
 }
 
+bool
+OR1KTargetLowering::CanLowerReturn(CallingConv::ID CallConv,
+                                   MachineFunction &MF, bool isVarArg,
+                                   const SmallVectorImpl<ISD::OutputArg> &Outs,
+                                   LLVMContext &Context) const {
+  SmallVector<CCValAssign, 16> RVLocs;
+  CCState CCInfo(CallConv, isVarArg, MF, RVLocs, Context);
+  return CCInfo.CheckReturn(Outs, RetCC_OR1K32);
+}
+
 SDValue
 OR1KTargetLowering::LowerReturn(SDValue Chain,
                                 CallingConv::ID CallConv, bool isVarArg,

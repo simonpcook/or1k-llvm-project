@@ -357,7 +357,7 @@ const MCExpr *OR1KAsmParser::evaluateRelocExpr(const MCExpr *Expr,
     if (VK == MCSymbolRefExpr::VK_OR1K_ABS_LO) {
       short Val = MCE->getValue();
       return MCConstantExpr::create(Val, getContext());
-    } else if (MCSymbolRefExpr::VK_OR1K_ABS_HI) {
+    } else if (VK == MCSymbolRefExpr::VK_OR1K_ABS_HI) {
       int Val = MCE->getValue();
       int LoSign = Val & 0x8000;
       Val = (Val & 0xffff0000) >> 16;

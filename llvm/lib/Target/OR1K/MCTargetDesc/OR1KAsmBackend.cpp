@@ -69,7 +69,8 @@ public:
                   const MCValue &Target, MutableArrayRef<char> Data,
                   uint64_t Value, bool IsResolved) const override;
 
-  MCObjectWriter *createObjectWriter(raw_pwrite_stream &OS) const override ;
+  std::unique_ptr<MCObjectWriter>
+  createObjectWriter(raw_pwrite_stream &OS) const override;
 
   // No instruction requires relaxation
   bool fixupNeedsRelaxation(const MCFixup &Fixup, uint64_t Value,
@@ -141,7 +142,7 @@ void OR1KAsmBackend::applyFixup(const MCAssembler &Asm, const MCFixup &Fixup,
   }
 }
 
-MCObjectWriter *
+std::unique_ptr<MCObjectWriter>
 OR1KAsmBackend::createObjectWriter(raw_pwrite_stream &OS) const {
   uint8_t OSABI = MCELFObjectTargetWriter::getOSABI(OSType);
   return createOR1KELFObjectWriter(OS, OSABI);
@@ -185,10 +186,12 @@ const MCFixupKindInfo &OR1KAsmBackend::getFixupKindInfo(MCFixupKind Kind) const{
 
 } // end anonymous namespace
 
-MCAsmBackend *llvm::createOR1KAsmBackend(const Target &T, const MCRegisterInfo &MRI,
-                                         const Triple &TT, StringRef CPU,
+MCAsmBackend *llvm::createOR1KAsmBackend(const Target &T,
+                                         const MCSubtargetInfo &STI,
+                                         const MCRegisterInfo &MRI,
                                          const MCTargetOptions &Options) {
-  assert(TT.isOSBinFormatELF() && "OR1K only supports ELF targets!");
+  assert(STI.getTargetTriple().isOSBinFormatELF() &&
+         "OR1K only supports ELF targets!");
 
-  return new OR1KAsmBackend(T, Triple(TT).getOS());
+  return new OR1KAsmBackend(T, STI.getTargetTriple().getOS());
 }

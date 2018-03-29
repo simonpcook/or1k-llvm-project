@@ -14,5 +14,6 @@ using namespace llvm;
 Target llvm::TheOR1KTarget;
 
 extern "C" void LLVMInitializeOR1KTargetInfo() {
-  RegisterTarget<Triple::or1k> X(TheOR1KTarget, "or1k", "OR1K");
+  RegisterTarget<Triple::or1k> X(TheOR1KTarget,
+                                 "or1k", "OpenRISC 1000", "OR1K");
 }

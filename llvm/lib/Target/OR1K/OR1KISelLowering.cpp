@@ -487,7 +487,7 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
   // The OR1K ABI for returning structs by value requires that we copy
   // the sret argument into r11 for the return. Save the argument into
   // a virtual register so that we can access it from the return points.
-  if (MF.getFunction()->hasStructRetAttr()) {
+  if (MF.getFunction().hasStructRetAttr()) {
     unsigned Reg = OR1KMFI.getSRetReturnReg();
     if (!Reg) {
       Reg = MF.getRegInfo().createVirtualRegister(getRegClassFor(MVT::i32));
@@ -544,7 +544,7 @@ OR1KTargetLowering::LowerReturn(SDValue Chain,
   // the sret argument into r11 for the return. We saved the argument into
   // a virtual register in the entry block, so now we copy the value out
   // and into r11.
-  if (DAG.getMachineFunction().getFunction()->hasStructRetAttr()) {
+  if (DAG.getMachineFunction().getFunction().hasStructRetAttr()) {
     MachineFunction &MF = DAG.getMachineFunction();
     OR1KMachineFunctionInfo &OR1KMFI = *MF.getInfo<OR1KMachineFunctionInfo>();
     auto PtrVT = getPointerTy(DAG.getDataLayout());

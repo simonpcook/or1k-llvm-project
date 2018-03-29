@@ -27,10 +27,17 @@ extern "C" void LLVMInitializeOR1KTarget() {
   RegisterTargetMachine<OR1KTargetMachine> X(TheOR1KTarget);
 }
 
-static Reloc::Model getEffectiveRelocModel(Optional<Reloc::Model> RM) {
-  if (!RM.hasValue())
+static Reloc::Model getEffectiveRelocModel(bool JIT,
+                                           Optional<Reloc::Model> RM) {
+  if (!RM.hasValue() || JIT)
     return Reloc::Static;
   return *RM;
+}
+
+static CodeModel::Model getEffectiveCodeModel(Optional<CodeModel::Model> CM) {
+  if (CM)
+    return *CM;
+  return CodeModel::Small;
 }
 
 // DL --> Big-endian, 32-bit pointer/ABI/alignment
@@ -42,11 +49,13 @@ OR1KTargetMachine::OR1KTargetMachine(const Target &T, const Triple &TT,
                                      StringRef CPU, StringRef FS,
                                      const TargetOptions &Options,
                                      Optional<Reloc::Model> RM,
-                                     CodeModel::Model CM,
-                                     CodeGenOpt::Level OL)
+                                     Optional<CodeModel::Model> CM,
+                                     CodeGenOpt::Level OL,
+                                     bool JIT)
   : LLVMTargetMachine(T, "E-m:e-p:32:32-i8:8:8-i16:16:16-i64:32:32-"
                          "f64:32:32-v64:32:32-v128:32:32-a0:0:32-n32",
-                      TT, CPU, FS, Options, getEffectiveRelocModel(RM), CM, OL),
+                      TT, CPU, FS, Options, getEffectiveRelocModel(JIT, RM),
+                      getEffectiveCodeModel(CM), OL),
     Subtarget(TT, CPU, FS, *this),
     TLOF(make_unique<TargetLoweringObjectFileELF>()) {
   initAsmInfo();

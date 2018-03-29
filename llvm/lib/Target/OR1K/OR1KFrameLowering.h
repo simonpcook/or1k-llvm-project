@@ -15,7 +15,7 @@
 #define OR1K_FRAMEINFO_H
 
 #include "OR1K.h"
-#include "llvm/Target/TargetFrameLowering.h"
+#include "llvm/CodeGen/TargetFrameLowering.h"
 
 namespace llvm {
 class OR1KSubtarget;

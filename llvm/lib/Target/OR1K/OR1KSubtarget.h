@@ -18,7 +18,7 @@
 #include "OR1KISelLowering.h"
 #include "OR1KFrameLowering.h"
 #include "llvm/IR/DataLayout.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/SelectionDAGTargetInfo.h"
 #include "llvm/Target/TargetMachine.h"
 

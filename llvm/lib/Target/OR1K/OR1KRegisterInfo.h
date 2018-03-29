@@ -14,7 +14,7 @@
 #ifndef OR1KREGISTERINFO_H
 #define OR1KREGISTERINFO_H
 
-#include "llvm/Target/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 
 #define GET_REGINFO_HEADER
 #include "OR1KGenRegisterInfo.inc"

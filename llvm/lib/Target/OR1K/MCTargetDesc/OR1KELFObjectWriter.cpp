@@ -11,6 +11,7 @@
 #include "MCTargetDesc/OR1KFixupKinds.h"
 #include "MCTargetDesc/OR1KMCTargetDesc.h"
 #include "llvm/MC/MCELFObjectWriter.h"
+#include "llvm/MC/MCObjectWriter.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -126,8 +127,8 @@ OR1KELFObjectWriter::getRelocType(MCContext &Ctx, const MCValue &Target,
   return Type;
 }
 
-MCObjectWriter *
+std::unique_ptr<MCObjectWriter>
 llvm::createOR1KELFObjectWriter(raw_pwrite_stream &OS, uint8_t OSABI) {
-  MCELFObjectTargetWriter *MOTW = new OR1KELFObjectWriter(OSABI);
-  return createELFObjectWriter(MOTW, OS, /*IsLittleEndian=*/ false);
+  auto MOTW = llvm::make_unique<OR1KELFObjectWriter>(OSABI);
+  return createELFObjectWriter(std::move(MOTW), OS, /*IsLittleEndian=*/ false);
 }

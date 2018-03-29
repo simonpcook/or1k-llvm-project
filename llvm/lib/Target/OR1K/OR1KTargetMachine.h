@@ -16,7 +16,7 @@
 
 #include "OR1KSubtarget.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/CodeGen/TargetLoweringObjectFile.h"
 
 namespace llvm {
 class OR1KTargetMachine : public LLVMTargetMachine {
@@ -27,7 +27,9 @@ public:
                     StringRef CPU, StringRef FS,
                     const TargetOptions &Options,
                     Optional<Reloc::Model> RM,
-                    CodeModel::Model CM, CodeGenOpt::Level OL);
+                    Optional<CodeModel::Model> CM,
+                    CodeGenOpt::Level OL,
+                    bool JIT);
   ~OR1KTargetMachine() override;
 
   const OR1KSubtarget *getSubtargetImpl(const Function &F) const override {

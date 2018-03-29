@@ -16,6 +16,8 @@
 
 #include "llvm/Support/DataTypes.h"
 
+#include <memory>
+
 namespace llvm {
 class MCAsmBackend;
 class MCCodeEmitter;
@@ -23,6 +25,7 @@ class MCContext;
 class MCInstrInfo;
 class MCObjectWriter;
 class MCRegisterInfo;
+class MCSubtargetInfo;
 class MCTargetOptions;
 class Target;
 class Triple;
@@ -35,11 +38,12 @@ MCCodeEmitter *createOR1KMCCodeEmitter(const MCInstrInfo &MII,
                                        const MCRegisterInfo &MRI,
                                        MCContext &Ctx);
 
-MCAsmBackend *createOR1KAsmBackend(const Target &T, const MCRegisterInfo &MRI,
-                                   const Triple &TT, StringRef CPU,
+MCAsmBackend *createOR1KAsmBackend(const Target &T, const MCSubtargetInfo &STI,
+                                   const MCRegisterInfo &MRI,
                                    const MCTargetOptions &Options);
 
-MCObjectWriter *createOR1KELFObjectWriter(raw_pwrite_stream &OS, uint8_t OSABI);
+std::unique_ptr<MCObjectWriter>
+createOR1KELFObjectWriter(raw_pwrite_stream &OS, uint8_t OSABI);
 } // End llvm namespace
 
 // Defines symbolic names for OR1K registers.  This defines a mapping from

@@ -63,7 +63,7 @@ class OR1KAsmParser : public MCTargetAsmParser {
 public:
   OR1KAsmParser(const MCSubtargetInfo &_STI, MCAsmParser &_Parser,
                 const MCInstrInfo &MII, const MCTargetOptions &Options)
-      : MCTargetAsmParser(Options, _STI), STI(_STI), Parser(_Parser) {
+      : MCTargetAsmParser(Options, _STI, MII), STI(_STI), Parser(_Parser) {
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
     MCAsmParserExtension::Initialize(Parser);
   }

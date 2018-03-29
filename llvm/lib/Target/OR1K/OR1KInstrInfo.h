@@ -15,7 +15,7 @@
 #define OR1KINSTRUCTIONINFO_H
 
 #include "OR1KRegisterInfo.h"
-#include "llvm/Target/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 
 #define GET_INSTRINFO_HEADER
 #include "OR1KGenInstrInfo.inc"

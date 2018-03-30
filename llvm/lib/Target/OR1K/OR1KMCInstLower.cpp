@@ -98,7 +98,9 @@ void OR1KMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
     MCOperand MCOp;
     switch (MO.getType()) {
     default:
+#ifndef NDEBUG
       MI->dump();
+#endif
       llvm_unreachable("unknown operand type");
     case MachineOperand::MO_Register:
       // Ignore all implicit register operands.

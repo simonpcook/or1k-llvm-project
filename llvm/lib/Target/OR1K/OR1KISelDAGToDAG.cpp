@@ -143,6 +143,18 @@ SelectAddr(SDValue Addr, SDValue &Base, SDValue &Offset) {
     }
   }
 
+  // Fold the ORI in MOVHI->ORI->LW/SW chains into LW/SW, if possible.
+  if (ConstantSDNode *CN = dyn_cast<ConstantSDNode>(Addr.getNode())) {
+    uint64_t AddrImm = CN->getZExtValue();
+    // The LW/SW offset is sign-extended, and we want to avoid subtraction.
+    if((AddrImm & 0x8000) == 0) {
+      SDValue AddrHigh = CurDAG->getTargetConstant(AddrImm >> 16, dl, MVT::i32);
+      Base = SDValue(CurDAG->getMachineNode(OR1K::MOVHI, dl, MVT::i32, AddrHigh), 0);
+      Offset = CurDAG->getTargetConstant(AddrImm & 0x7FFF, dl, MVT::i32);
+      return true;
+    }
+  }
+
   Base   = Addr;
   Offset = CurDAG->getTargetConstant(0, dl, MVT::i32);
   return true;

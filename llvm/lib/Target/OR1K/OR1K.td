@@ -48,6 +48,9 @@ def FeatureFfl1  : SubtargetFeature<"ffl1", "HasFfl1", "true",
 def FeatureExt   : SubtargetFeature<"ext", "HasExt", "true",
                                     "Enable zero/sign extension instructions">;
 
+def FeatureInterrupts  : SubtargetFeature<"interrupts", "HasInterrupts", "true",
+                                          "Use l.lwa/l.swa for atomic RMW ops">;
+
 //===----------------------------------------------------------------------===//
 // OR1K processors supported.
 //===----------------------------------------------------------------------===//
@@ -55,8 +58,8 @@ def FeatureExt   : SubtargetFeature<"ext", "HasExt", "true",
 class Proc<string Name, list<SubtargetFeature> Features>
  : Processor<Name, NoItineraries, Features>;
 
-def : Proc<"generic", [FeatureMul, FeatureDiv]>;
-def : Proc<"or1200",  [FeatureMul, FeatureDiv]>;
+def : Proc<"generic", [FeatureMul, FeatureDiv, FeatureInterrupts]>;
+def : Proc<"or1200",  [FeatureMul, FeatureDiv, FeatureInterrupts]>;
 
 def OpenRISCInstPrinter : AsmWriter {
   string AsmWriterClassName  = "InstPrinter";

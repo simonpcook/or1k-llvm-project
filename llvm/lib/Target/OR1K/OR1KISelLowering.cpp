@@ -1248,6 +1248,14 @@ OR1KTargetLowering::emitSelect(MachineInstr &MI,
   return BB;
 }
 
+static unsigned getAtomicLoadOp(const OR1KSubtarget &Subtarget) {
+  return Subtarget.hasInterrupts() ? OR1K::LWA : OR1K::LWZ;
+}
+
+static unsigned getAtomicStoreOp(const OR1KSubtarget &Subtarget) {
+  return Subtarget.hasInterrupts() ? OR1K::SWA : OR1K::SW;
+}
+
 // This function also handles OR1K::ATOMIC_SWAP_I32 (when BinOpcode == 0), and
 // OR1K::ATOMIC_LOAD_NAND_I32 (when Nand == true)
 MachineBasicBlock *
@@ -1288,16 +1296,15 @@ OR1KTargetLowering::emitAtomicBinary(MachineInstr &MI, MachineBasicBlock *BB,
   loopMBB->addSuccessor(exitMBB);
 
   //  loopMBB:
-  //    l.lwa oldval, 0(ptr)
+  //    l.lw[a] oldval, 0(ptr)
   //    <binop> storeval, oldval, incr
-  //    l.swa success, storeval, 0(ptr)
-  //    l.bnf success, r0, loopMBB
   BB = loopMBB;
-  BuildMI(BB, DL, TII->get(OR1K::LWA), OldVal).addReg(Ptr).addImm(0);
+  BuildMI(BB, DL, TII->get(getAtomicLoadOp(Subtarget)), OldVal)
+      .addReg(Ptr).addImm(0);
   if (Nand) {
-    //  l.and andres, oldval, incr
-    //  l.addi allones, r0, -1
-    //  l.xor storeval, allones, andres
+    //  l.and   andres, oldval, incr
+    //  l.addi  allones, r0, -1
+    //  l.xor   storeval, allones, andres
     BuildMI(BB, DL, TII->get(OR1K::AND), AndRes).addReg(OldVal).addReg(Incr);
     BuildMI(BB, DL, TII->get(OR1K::ADDI), AllOnes).addReg(OR1K::R0).addImm(-1);
     BuildMI(BB, DL, TII->get(OR1K::XOR), StoreVal).addReg(AllOnes).addReg(AndRes);
@@ -1307,8 +1314,13 @@ OR1KTargetLowering::emitAtomicBinary(MachineInstr &MI, MachineBasicBlock *BB,
   } else {
     StoreVal = Incr;
   }
-  BuildMI(BB, DL, TII->get(OR1K::SWA)).addReg(StoreVal).addReg(Ptr).addImm(0);
-  BuildMI(BB, DL, TII->get(OR1K::BNF)).addMBB(loopMBB);
+  //    l.sw[a] success, storeval, 0(ptr)
+  //    [l.bnf  success, r0, loopMBB]
+  BuildMI(BB, DL, TII->get(getAtomicStoreOp(Subtarget)))
+      .addReg(StoreVal).addReg(Ptr).addImm(0);
+  if (Subtarget.hasInterrupts()) {
+    BuildMI(BB, DL, TII->get(OR1K::BNF)).addMBB(loopMBB);
+  }
 
   MI.eraseFromParent(); // The instruction is gone now.
 
@@ -1352,20 +1364,24 @@ OR1KTargetLowering::emitAtomicCmpSwap(MachineInstr &MI,
   loop2MBB->addSuccessor(exitMBB);
 
   // loop1MBB:
-  //   l.lwa  dest, 0(ptr)
-  //   l.sfeq dest, oldval
-  //   l.bnf  exitMBB
+  //   l.lw[a] dest, 0(ptr)
+  //   l.sfeq  dest, oldval
+  //   l.bnf   exitMBB
   BB = loop1MBB;
-  BuildMI(BB, DL, TII->get(OR1K::LWA), Dest).addReg(Ptr).addImm(0);
+  BuildMI(BB, DL, TII->get(getAtomicLoadOp(Subtarget)), Dest)
+      .addReg(Ptr).addImm(0);
   BuildMI(BB, DL, TII->get(OR1K::SFEQ)).addReg(Dest).addReg(OldVal);
   BuildMI(BB, DL, TII->get(OR1K::BNF)).addMBB(exitMBB);
 
   // loop2MBB:
-  //   l.swa  newval, 0(ptr)
-  //   l.bnf  loop1MBB
+  //   l.sw[a] newval, 0(ptr)
+  //   [l.bnf  loop1MBB]
   BB = loop2MBB;
-  BuildMI(BB, DL, TII->get(OR1K::SWA)).addReg(NewVal).addReg(Ptr).addImm(0);
-  BuildMI(BB, DL, TII->get(OR1K::BNF)).addMBB(loop1MBB);
+  BuildMI(BB, DL, TII->get(getAtomicStoreOp(Subtarget)))
+      .addReg(NewVal).addReg(Ptr).addImm(0);
+  if (Subtarget.hasInterrupts()) {
+    BuildMI(BB, DL, TII->get(OR1K::BNF)).addMBB(loop1MBB);
+  }
 
   MI.eraseFromParent(); // The instruction is gone now.
 

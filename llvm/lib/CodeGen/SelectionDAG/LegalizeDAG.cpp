@@ -3619,8 +3619,14 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
       }
       assert(Ret.getOpcode() == ISD::MERGE_VALUES &&
              "Ret value is a collection of constituent nodes holding result.");
-      BottomHalf = Ret.getOperand(0);
-      TopHalf = Ret.getOperand(1);
+      if(DAG.getDataLayout().isLittleEndian()) {
+        // Same as above.
+        BottomHalf = Ret.getOperand(0);
+        TopHalf = Ret.getOperand(1);
+      } else {
+        BottomHalf = Ret.getOperand(1);
+        TopHalf = Ret.getOperand(0);
+      }
     }
 
     if (isSigned) {

@@ -145,6 +145,8 @@ def m_hexagon_Features_HVX_Group : OptionGroup<"<hexagon features group>">,
                                    Group<m_Group>, DocName<"Hexagon">;
 def m_ppc_Features_Group : OptionGroup<"<ppc features group>">,
                            Group<m_Group>, DocName<"PowerPC">;
+def m_or1k_Features_Group : OptionGroup<"<m or1k features group>">,
+                            Group<m_Group>, DocName<"OpenRISC 1000">;
 def m_wasm_Features_Group : OptionGroup<"<wasm features group>">,
                             Group<m_Group>, DocName<"WebAssembly">;
 def m_x86_Features_Group : OptionGroup<"<x86 features group>">,
@@ -1785,6 +1787,8 @@ def mhwdiv_EQ : Joined<["-"], "mhwdiv=">, Group<m_Group>;
 def mglobal_merge : Flag<["-"], "mglobal-merge">, Group<m_Group>, Flags<[CC1Option]>,
   HelpText<"Enable merging of globals">;
 def mhard_float : Flag<["-"], "mhard-float">, Group<m_Group>;
+def mhard_div : Flag<["-"], "mhard-div">, Group<m_Group>;
+def mhard_mul : Flag<["-"], "mhard-mul">, Group<m_Group>;
 def miphoneos_version_min_EQ : Joined<["-"], "miphoneos-version-min=">, Group<m_Group>;
 def mios_version_min_EQ : Joined<["-"], "mios-version-min=">,
   Alias<miphoneos_version_min_EQ>, HelpText<"Set iOS deployment target">;
@@ -1873,6 +1877,19 @@ def mxnack : Flag<["-"], "mxnack">, Group<m_amdgpu_Features_Group>,
   HelpText<"Enable XNACK (AMDGPU only)">;
 def mno_xnack : Flag<["-"], "mno-xnack">, Group<m_amdgpu_Features_Group>,
   HelpText<"Disable XNACK (AMDGPU only)">;
+
+def maddc : Flag<["-"], "maddc">, Group<m_or1k_Features_Group>;
+def mno_addc : Flag<["-"], "mno-addc">, Group<m_or1k_Features_Group>;
+def mcmov : Flag<["-"], "mcmov">, Group<m_or1k_Features_Group>;
+def mno_cmov : Flag<["-"], "mno-cmov">, Group<m_or1k_Features_Group>;
+def mffl1 : Flag<["-"], "mffl1">, Group<m_or1k_Features_Group>;
+def mno_ffl1 : Flag<["-"], "mno-ffl1">, Group<m_or1k_Features_Group>;
+def mror : Flag<["-"], "mror">, Group<m_or1k_Features_Group>;
+def mno_ror : Flag<["-"], "mno-ror">, Group<m_or1k_Features_Group>;
+
+def mcompat_delay : Flag<["-"], "mcompat-delay">, Group<m_or1k_Features_Group>;
+def mno_delay : Flag<["-"], "mno-delay">, Group<m_or1k_Features_Group>;
+def mdelay : Flag<["-"], "mdelay">, Group<m_or1k_Features_Group>;
 
 def faltivec : Flag<["-"], "faltivec">, Group<f_Group>, Flags<[DriverOption]>;
 def fno_altivec : Flag<["-"], "fno-altivec">, Group<f_Group>, Flags<[DriverOption]>;
@@ -1963,6 +1980,8 @@ def msmall_data_threshold_EQ : Joined <["-"], "msmall-data-threshold=">,
   Group<m_Group>, Alias<G>;
 def msoft_float : Flag<["-"], "msoft-float">, Group<m_Group>, Flags<[CC1Option]>,
   HelpText<"Use software floating point">;
+def msoft_div : Flag<["-"], "msoft-div">, Group<m_Group>;
+def msoft_mul : Flag<["-"], "msoft-mul">, Group<m_Group>;
 def mno_implicit_float : Flag<["-"], "mno-implicit-float">, Group<m_Group>,
   HelpText<"Don't generate implicit floating point instructions">;
 def mimplicit_float : Flag<["-"], "mimplicit-float">, Group<m_Group>;

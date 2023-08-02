@@ -26,6 +26,7 @@
 #include "Targets/Mips.h"
 #include "Targets/NVPTX.h"
 #include "Targets/Nios2.h"
+#include "Targets/OR1K.h"
 #include "Targets/OSTargets.h"
 #include "Targets/PNaCl.h"
 #include "Targets/PPC.h"
@@ -316,6 +317,14 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::le64:
     return new Le64TargetInfo(Triple, Opts);
+
+  case llvm::Triple::or1k:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<OR1KTargetInfo>(Triple, Opts);
+    default:
+      return new OR1KTargetInfo(Triple, Opts);
+    }
 
   case llvm::Triple::ppc:
     if (Triple.isOSDarwin())

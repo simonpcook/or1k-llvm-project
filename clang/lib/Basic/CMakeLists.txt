@@ -80,6 +80,7 @@ add_clang_library(clangBasic
   Targets/Mips.cpp
   Targets/NVPTX.cpp
   Targets/Nios2.cpp
+  Targets/OR1K.cpp
   Targets/OSTargets.cpp
   Targets/PNaCl.cpp
   Targets/PPC.cpp

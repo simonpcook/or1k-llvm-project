@@ -39,7 +39,7 @@ entry:
 ; CHECK: l.sw    -8(r1), [[BASEREG:r[0-9]+]]
 ; CHECK: l.addi  r2, r1, 0
 ; check that the stack realigns to an 8 byte boundary
-; CHECK: l.addi  [[SCRATCHREG:r[0-9]+]], r1, -16
+; CHECK: l.addi  [[SCRATCHREG:r[0-9]+]], r1, -24
 ; CHECK: l.srli  [[SCRATCHREG]], [[SCRATCHREG]], 3
 ; CHECK: l.slli  r1, [[SCRATCHREG]], 3
 ; check that the realigned stack pointer is copied

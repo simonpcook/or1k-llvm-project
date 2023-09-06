@@ -5,7 +5,7 @@ entry:
   %retval = alloca i32, align 4
   %a.addr = alloca i32, align 4
   store i32 %a, i32* %a.addr, align 4
-  %0 = load i32* %a.addr, align 4
+  %0 = load i32, i32* %a.addr, align 4
   switch i32 %0, label %sw.default [
     i32 0, label %sw.bb
     i32 1, label %sw.bb1
@@ -74,7 +74,7 @@ sw.default:                                       ; preds = %entry
   br label %return
 
 return:                                           ; preds = %sw.default, %sw.bb11, %sw.bb10, %sw.bb9, %sw.bb8, %sw.bb7, %sw.bb6, %sw.bb5, %sw.bb4, %sw.bb3, %sw.bb2, %sw.bb1, %sw.bb
-  %1 = load i32* %retval
+  %1 = load i32, i32* %retval
   ret i32 %1
 }
 ; CHECK: jumptable:

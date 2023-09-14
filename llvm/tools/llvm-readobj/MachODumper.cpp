@@ -810,7 +810,7 @@ void MachODumper::printNeededLibraries() {
 
 void MachODumper::printMachODataInCode() {
   for (const auto &Load : Obj->load_commands()) {
-    if (Load.C.cmd  == MachO::LC_DATA_IN_CODE) {
+   if (Load.C.cmd  == MachO::LC_DATA_IN_CODE) {
       MachO::linkedit_data_command LLC = Obj->getLinkeditDataLoadCommand(Load);
       DictScope Group(W, "DataInCode");
       W.printNumber("Data offset", LLC.dataoff);

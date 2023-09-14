@@ -182,6 +182,8 @@ def m_mips_Features_Group : OptionGroup<"<mips features group>">,
                             Group<m_Group>, DocName<"MIPS">;
 def m_ppc_Features_Group : OptionGroup<"<ppc features group>">,
                            Group<m_Group>, DocName<"PowerPC">;
+def m_or1k_Features_Group : OptionGroup<"<m or1k features group>">,
+                            Group<m_Group>, DocName<"OpenRISC 1000">;
 def m_wasm_Features_Group : OptionGroup<"<wasm features group>">,
                             Group<m_Group>, DocName<"WebAssembly">;
 // The features added by this group will not be added to target features.
@@ -3619,6 +3621,25 @@ let Flags = [TargetSpecific] in {
 def mno_long_calls : Flag<["-"], "mno-long-calls">, Group<m_Group>,
   HelpText<"Restore the default behaviour of not generating long calls">;
 } // let Flags = [TargetSpecific]
+let Flags = [TargetSpecific] in {
+  def maddc : Flag<["-"], "maddc">, Group<m_or1k_Features_Group>;
+  def mno_addc : Flag<["-"], "mno-addc">, Group<m_or1k_Features_Group>;
+  def mcmov : Flag<["-"], "mcmov">, Group<m_or1k_Features_Group>;
+  def mno_cmov : Flag<["-"], "mno-cmov">, Group<m_or1k_Features_Group>;
+  def mffl1 : Flag<["-"], "mffl1">, Group<m_or1k_Features_Group>;
+  def mno_ffl1 : Flag<["-"], "mno-ffl1">, Group<m_or1k_Features_Group>;
+  def mror : Flag<["-"], "mror">, Group<m_or1k_Features_Group>;
+  def mno_ror : Flag<["-"], "mno-ror">, Group<m_or1k_Features_Group>;
+
+  def mcompat_delay : Flag<["-"], "mcompat-delay">, Group<m_or1k_Features_Group>;
+  def mno_delay : Flag<["-"], "mno-delay">, Group<m_or1k_Features_Group>;
+  def mdelay : Flag<["-"], "mdelay">, Group<m_or1k_Features_Group>;
+
+  def mhard_div : Flag<["-"], "mhard-div">, Group<m_or1k_Features_Group>;
+  def mhard_mul : Flag<["-"], "mhard-mul">, Group<m_or1k_Features_Group>;
+  def msoft_div : Flag<["-"], "msoft-div">, Group<m_or1k_Features_Group>;
+  def msoft_mul : Flag<["-"], "msoft-mul">, Group<m_or1k_Features_Group>;
+}
 def mexecute_only : Flag<["-"], "mexecute-only">, Group<m_arm_Features_Group>,
   HelpText<"Disallow generation of data access to code sections (ARM only)">;
 def mno_execute_only : Flag<["-"], "mno-execute-only">, Group<m_arm_Features_Group>,

@@ -455,6 +455,7 @@ set(LLVM_ALL_EXPERIMENTAL_TARGETS
   M68k
   SPIRV
   Xtensa
+  OR1K
 )
 
 # List of targets with JIT support:

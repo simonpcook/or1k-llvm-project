@@ -82,6 +82,7 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
   case wasm64:         return "wasm64";
   case x86:            return "i386";
   case x86_64:         return "x86_64";
+  case or1k:           return "or1k";
   case xcore:          return "xcore";
   case xtensa:         return "xtensa";
   }
@@ -135,6 +136,8 @@ StringRef Triple::getArchTypePrefix(ArchType Kind) {
 
   case x86:
   case x86_64:      return "x86";
+
+  case or1k:        return "or1k";
 
   case xcore:       return "xcore";
 
@@ -370,6 +373,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
     .Case("x86", x86)
     .Case("i386", x86)
     .Case("x86-64", x86_64)
+    .Case("or1k", or1k)
     .Case("xcore", xcore)
     .Case("nvptx", nvptx)
     .Case("nvptx64", nvptx64)
@@ -538,6 +542,7 @@ static Triple::ArchType parseArch(StringRef ArchName) {
     .Case("loongarch64", Triple::loongarch64)
     .Case("dxil", Triple::dxil)
     .Case("xtensa", Triple::xtensa)
+    .Case("or1k", Triple::or1k)
     .Default(Triple::UnknownArch);
 
   // Some architectures require special parsing logic just to compute the
@@ -830,6 +835,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::mips64el:
   case Triple::mips:
   case Triple::mipsel:
+  case Triple::or1k:
   case Triple::msp430:
   case Triple::nvptx64:
   case Triple::nvptx:
@@ -1431,6 +1437,7 @@ static unsigned getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::thumbeb:
   case llvm::Triple::wasm32:
   case llvm::Triple::x86:
+  case llvm::Triple::or1k:
   case llvm::Triple::xcore:
   case llvm::Triple::xtensa:
     return 32;
@@ -1524,6 +1531,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::x86:
   case Triple::xcore:
   case Triple::xtensa:
+  case Triple::or1k:
     // Already 32-bit.
     break;
 
@@ -1575,6 +1583,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::tcele:
   case Triple::xcore:
   case Triple::xtensa:
+  case Triple::or1k:
     T.setArch(UnknownArch);
     break;
 

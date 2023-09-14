@@ -112,8 +112,7 @@ MinGW Improvements
   errors if loaded too far away from the referenced DLL in the address
   space. (`D154777 <https://reviews.llvm.org/D154777>`_)
 
-MachO Improvements
-------------------
+* Initial support for the ARM64 architecture has been added.
 
 WebAssembly Improvements
 ------------------------

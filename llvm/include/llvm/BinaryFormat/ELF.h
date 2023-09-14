@@ -950,6 +950,11 @@ enum {
 #include "ELFRelocs/Xtensa.def"
 };
 
+// ELF Relocation types for OR1K
+enum {
+#include "ELFRelocs/OR1K.def"
+};
+
 #undef ELF_RELOC
 
 // Section header.

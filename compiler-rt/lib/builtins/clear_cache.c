@@ -42,6 +42,11 @@ uintptr_t GetCurrentProcess(void);
 // clang-format on
 #endif
 
+#if defined(__OpenBSD__) && defined(__mips__)
+  #include <sys/types.h>
+  #include <machine/sysarch.h>
+#endif
+
 #if defined(__linux__) && defined(__mips__)
 #include <sys/cachectl.h>
 #include <sys/syscall.h>

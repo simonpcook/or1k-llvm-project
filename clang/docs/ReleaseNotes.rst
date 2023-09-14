@@ -303,8 +303,10 @@ New Compiler Flags
   similarly to ``-pg`` by writing profile information, but targets the ``prof``
   tool as opposed to the ``gprof`` tool.
 
-Deprecated Compiler Flags
--------------------------
+- Added the ``-fexperimental-isel`` and ``-fno-experimental-isel`` flags to
+  enable/disable the new GlobalISel instruction selection framework. This
+  feature is enabled by default for AArch64 at the ``-O0`` optimization level.
+  Support for other targets or optimization levels is currently incomplete.
 
 - ``-fdouble-square-bracket-attributes`` has been deprecated. It is ignored now
   and will be removed in Clang 18.

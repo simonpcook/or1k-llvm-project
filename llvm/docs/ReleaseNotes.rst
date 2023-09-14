@@ -35,12 +35,12 @@ page <https://llvm.org/releases/>`_.
 
 Non-comprehensive list of changes in this release
 =================================================
-.. NOTE
-   For small 1-3 sentence descriptions, just add an entry at the end of
-   this list. If your description won't fit comfortably in one bullet
-   point (e.g. maybe you would like to give an example of the
-   functionality, or simply have a lot to talk about), see the `NOTE` below
-   for adding a new subsection.
+
+* Support for `retpolines <https://support.google.com/faqs/answer/7625886>`_
+  was added to help mitigate "branch target injection" (variant #2) of the
+  "Spectre" speculative side channels described by `Project Zero
+  <https://googleprojectzero.blogspot.com/2018/01/reading-privileged-memory-with-side.html>`_
+  and the `Spectre paper <https://spectreattack.com/spectre.pdf>`_.
 
 * ...
 
@@ -359,17 +359,16 @@ Changes to the X86 Backend
 * Support ISA of ``AVX-VNNI-INT16``.
 * ``-mcpu=graniterapids-d`` is now supported.
 
-Changes to the OCaml bindings
------------------------------
+* Added instruction scheduling information for Intel Sandy Bridge, Ivy Bridge, Haswell, Broadwell, and Skylake CPUs.
 
 Changes to the Python bindings
 ------------------------------
 
 * The python bindings have been removed.
 
+* Improved llvm-mc's disassembler for some EVEX encoded instructions.
 
-Changes to the C API
---------------------
+* Add support for i8 and i16 vector signed/unsigned min/max horizontal reductions.
 
 * ``LLVMContextSetOpaquePointers``, a temporary API to pin to legacy typed
   pointer, has been removed.
@@ -494,7 +493,8 @@ Other Changes
 External Open Source Projects Using LLVM 15
 ===========================================
 
-* A project...
+LDC - the LLVM-based D compiler
+-------------------------------
 
 Additional Information
 ======================

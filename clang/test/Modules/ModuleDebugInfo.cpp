@@ -164,4 +164,11 @@
 // CHECK-MOD: distinct !DICompileUnit(language: DW_LANG_ObjC_plus_plus,
 // CHECK-MOD-SAME:  splitDebugFilename: "{{.*}}dummy{{.*}}.pcm",
 
+// CHECK-MOD: !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: ![[DEBUGCXX]],
+// CHECK-MOD-SAME:              entity: ![[DUMMY:[0-9]+]],
+// CHECK-MOD-SAME:              line: 3)
+// CHECK-MOD: ![[DUMMY]] = !DIModule(scope: null, name: "dummy",
+// CHECK-MOD: distinct !DICompileUnit(language: DW_LANG_ObjC_plus_plus,
+// CHECK-MOD-SAME:  splitDebugFilename: "{{.*}}dummy{{.*}}.pcm",
+
 // CHECK-NEG-NOT: !DICompositeType(tag: DW_TAG_structure_type, name: "PureForwardDecl"

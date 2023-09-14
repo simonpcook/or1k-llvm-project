@@ -1,0 +1,19 @@
+# RUN: llvm-mc -arch=or1k -show-encoding %s | FileCheck %s
+
+    lf.sfeq.s r1, r2
+# CHECK: # encoding: [0xc8,0x01,0x10,0x08]
+
+    lf.sfge.s r1, r2
+# CHECK: # encoding: [0xc8,0x01,0x10,0x0b]
+
+    lf.sfgt.s r1, r2
+# CHECK: # encoding: [0xc8,0x01,0x10,0x0a]
+
+    lf.sfle.s r1, r2
+# CHECK: # encoding: [0xc8,0x01,0x10,0x0d]
+
+    lf.sflt.s r1, r2
+# CHECK: # encoding: [0xc8,0x01,0x10,0x0c]
+
+    lf.sfne.s r1, r2
+# CHECK: # encoding: [0xc8,0x01,0x10,0x09]

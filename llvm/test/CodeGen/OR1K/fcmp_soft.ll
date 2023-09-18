@@ -57,9 +57,9 @@ entry:
   ret float %a.b
 }
 ; CHECK: fone:
-; CHECK: l.jal __gtsf2
+; CHECK: l.jal __eqsf2
 ; CHECK: l.bf
-; CHECK: l.jal __ltsf2
+; CHECK: l.jal __unordsf2
 ; CHECK: l.bf
 
 define float @ford(float %a, float %b) {

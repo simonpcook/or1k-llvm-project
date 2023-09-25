@@ -46,10 +46,10 @@ static void printExpr(const MCExpr *Expr, raw_ostream &O, const MCAsmInfo &MAI) 
 
   MCSymbolRefExpr::VariantKind Kind = SRE->getKind();
 
-  if(Kind != MCSymbolRefExpr::VK_None)
-    O << MCSymbolRefExpr::getVariantKindName(Kind);
-
-  if (BE || Kind != MCSymbolRefExpr::VK_None) {
+  if(Kind != MCSymbolRefExpr::VK_None) {
+    O << MCSymbolRefExpr::getVariantKindName(Kind) << '('
+      << SRE->getSymbol() << ')';
+  } else if (BE) {
     O << "(";
     Expr->print(O, &MAI);
     O << ")";

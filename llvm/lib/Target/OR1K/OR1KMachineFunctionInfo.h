@@ -15,6 +15,7 @@
 #define OR1KMACHINEFUNCTIONINFO_H
 #include "OR1KRegisterInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 
 namespace llvm {
 class MachineFunction;
@@ -23,8 +24,6 @@ class MachineFunction;
 /// contains private OR1K target-specific information for each MachineFunction.
 class OR1KMachineFunctionInfo : public MachineFunctionInfo {
   virtual void anchor();
-
-  MachineFunction& MF;
 
   /// SRetReturnReg - OR1K ABI require that sret lowering includes
   /// returning the value of the returned struct in a register. This field
@@ -40,16 +39,12 @@ class OR1KMachineFunctionInfo : public MachineFunctionInfo {
   int VarArgsFrameIndex;
 
 public:
-  OR1KMachineFunctionInfo(MachineFunction &MF)
-    : MF(MF),
-      SRetReturnReg(0),
-      GlobalBaseReg(0),
-      VarArgsFrameIndex(0) {}
+  OR1KMachineFunctionInfo(const Function &F, const TargetSubtargetInfo *STI) {}
 
   unsigned getSRetReturnReg() const { return SRetReturnReg; }
   void setSRetReturnReg(unsigned Reg) { SRetReturnReg = Reg; }
 
-  unsigned getGlobalBaseReg();
+  unsigned getGlobalBaseReg(MachineFunction& MF);
 
   int getVarArgsFrameIndex() const { return VarArgsFrameIndex; }
   void setVarArgsFrameIndex(int Index) { VarArgsFrameIndex = Index; }

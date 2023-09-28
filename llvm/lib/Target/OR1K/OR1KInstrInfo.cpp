@@ -201,7 +201,7 @@ namespace {
         return false;
 
       OR1KMachineFunctionInfo *OR1KFI = MF.getInfo<OR1KMachineFunctionInfo>();
-      unsigned GlobalBaseReg = OR1KFI->getGlobalBaseReg();
+      unsigned GlobalBaseReg = OR1KFI->getGlobalBaseReg(MF);
 
       // If we didn't need a GlobalBaseReg, don't insert code.
       if (GlobalBaseReg == 0)

@@ -97,9 +97,9 @@ SelectAddr(SDValue Addr, SDValue &Base, SDValue &Offset) {
     if ((Addr.getOpcode() == ISD::TargetGlobalAddress) ||
         (Addr.getOpcode() == ISD::TargetConstantPool) ||
         (Addr.getOpcode() == ISD::TargetJumpTable)){
-      OR1KMachineFunctionInfo *MFI =
-        CurDAG->getMachineFunction().getInfo<OR1KMachineFunctionInfo>();
-      Base   = CurDAG->getRegister(MFI->getGlobalBaseReg(), MVT::i32);
+      MachineFunction& MF = CurDAG->getMachineFunction();
+      OR1KMachineFunctionInfo *MFI = MF.getInfo<OR1KMachineFunctionInfo>();
+      Base   = CurDAG->getRegister(MFI->getGlobalBaseReg(MF), MVT::i32);
       Offset = Addr;
       return true;
     }

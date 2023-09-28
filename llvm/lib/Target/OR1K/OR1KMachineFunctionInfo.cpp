@@ -14,7 +14,7 @@ using namespace llvm;
 
 void OR1KMachineFunctionInfo::anchor() { }
 
-unsigned OR1KMachineFunctionInfo::getGlobalBaseReg() {
+unsigned OR1KMachineFunctionInfo::getGlobalBaseReg(MachineFunction& MF) {
   // Return if it has already been initialized.
   if (GlobalBaseReg)
     return GlobalBaseReg;

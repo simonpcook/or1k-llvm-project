@@ -352,9 +352,9 @@ static bool CC_OR1K32_VarArg(unsigned ValNo, MVT ValVT,
 }
 
 static SDValue getGlobalReg(SelectionDAG &DAG, EVT Ty) {
-  OR1KMachineFunctionInfo &OR1KMFI =
-    *DAG.getMachineFunction().getInfo<OR1KMachineFunctionInfo>();
-  return DAG.getRegister(OR1KMFI.getGlobalBaseReg(), Ty);
+  MachineFunction& MF = DAG.getMachineFunction();
+  OR1KMachineFunctionInfo &OR1KMFI = *MF.getInfo<OR1KMachineFunctionInfo>();
+  return DAG.getRegister(OR1KMFI.getGlobalBaseReg(MF), Ty);
 }
 
 SDValue
@@ -418,7 +418,6 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
-  OR1KMachineFunctionInfo &OR1KMFI = *MF.getInfo<OR1KMachineFunctionInfo>();
 
   // Assign locations to all of the incoming arguments.
   SmallVector<CCValAssign, 16> ArgLocs;
@@ -483,6 +482,10 @@ OR1KTargetLowering::LowerCCCArguments(SDValue Chain,
                                    MachinePointerInfo::getFixedStack(MF, FI)));
     }
   }
+
+  assert (MF.getInfo<OR1KMachineFunctionInfo>() != nullptr);
+
+  OR1KMachineFunctionInfo &OR1KMFI = *MF.getInfo<OR1KMachineFunctionInfo>();
 
   // The OR1K ABI for returning structs by value requires that we copy
   // the sret argument into r11 for the return. Save the argument into

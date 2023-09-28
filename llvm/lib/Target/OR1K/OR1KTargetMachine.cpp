@@ -13,6 +13,7 @@
 
 #include "OR1K.h"
 #include "OR1KTargetMachine.h"
+#include "OR1KMachineFunctionInfo.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/Passes.h"
@@ -77,6 +78,13 @@ public:
 
 TargetPassConfig *OR1KTargetMachine::createPassConfig(PassManagerBase &PM) {
   return new OR1KPassConfig(*this, PM);
+}
+
+MachineFunctionInfo *OR1KTargetMachine::createMachineFunctionInfo(
+    BumpPtrAllocator &Allocator, const Function &F,
+    const TargetSubtargetInfo *STI) const {
+  return OR1KMachineFunctionInfo::create<OR1KMachineFunctionInfo>(Allocator,
+                                                                  F, STI);
 }
 
 // Install an instruction selector pass using

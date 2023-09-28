@@ -1,6 +1,10 @@
 ; RUN: llc -march=or1k < %s | FileCheck %s
 
-declare void @vararg(i32 , ...)
+define void @vararg(i32 , ...) {
+entry:
+  ret void
+}
+
 define void @foo() {
 entry:
   tail call void (i32 , ...) @vararg(i32 0, i32 1, i32 2)

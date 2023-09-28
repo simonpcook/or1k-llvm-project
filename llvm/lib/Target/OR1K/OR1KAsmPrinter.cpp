@@ -18,6 +18,7 @@
 #include "OR1KMCInstLower.h"
 #include "OR1KTargetMachine.h"
 #include "MCTargetDesc/OR1KInstPrinter.h"
+#include "MCTargetDesc/OR1KMCExpr.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -158,13 +159,13 @@ void OR1KAsmPrinter::customEmitInstruction(const MachineInstr *MI) {
   default: break;
   case OR1K::MOVHI:
   case OR1K::ORI: {
-    MCSymbolRefExpr::VariantKind Kind = MCSymbolRefExpr::VK_None;
+    auto Kind = OR1KMCExpr::VK_OR1K_None;
     if (Opcode == OR1K::MOVHI &&
         MI->getOperand(1).getTargetFlags() == OR1KII::MO_GOTPCHI)
-      Kind = MCSymbolRefExpr::VK_OR1K_GOTPCHI;
+      Kind = OR1KMCExpr::VK_OR1K_GOTPCHI;
     else if (Opcode == OR1K::ORI &&
              MI->getOperand(2).getTargetFlags() == OR1KII::MO_GOTPCLO)
-      Kind = MCSymbolRefExpr::VK_OR1K_GOTPCLO;
+      Kind = OR1KMCExpr::VK_OR1K_GOTPCLO;
     else
       break;
 
@@ -186,9 +187,11 @@ void OR1KAsmPrinter::customEmitInstruction(const MachineInstr *MI) {
 
     DotExpr = MCBinaryExpr::createSub(DotExpr, PICBase, OutContext);
 
-    DotExpr = MCBinaryExpr::createAdd(MCSymbolRefExpr::create(OpSym, Kind,
-                                                              OutContext),
-                                      DotExpr, OutContext);
+    const auto *Expr = OR1KMCExpr::create(
+      MCSymbolRefExpr::create(OpSym, MCSymbolRefExpr::VK_None, OutContext),
+      Kind, OutContext);
+
+    DotExpr = MCBinaryExpr::createAdd(Expr, DotExpr, OutContext);
 
     MCInst TmpInst;
     TmpInst.setOpcode(MI->getOpcode());

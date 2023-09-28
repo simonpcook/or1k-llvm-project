@@ -11,10 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/MC/MCExpr.h"
 #define DEBUG_TYPE "mccodeemitter"
 #include "MCTargetDesc/OR1KBaseInfo.h"
 #include "MCTargetDesc/OR1KFixupKinds.h"
 #include "MCTargetDesc/OR1KMCTargetDesc.h"
+#include "MCTargetDesc/OR1KMCExpr.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
@@ -115,14 +117,14 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
     Kind = Expr->getKind();
   }
 
-  assert (Kind == MCExpr::SymbolRef);
+  assert (Kind == MCExpr::Target);
 
   OR1K::Fixups FixupKind = OR1K::Fixups(0);
 
-  switch(cast<MCSymbolRefExpr>(Expr)->getKind()) {
+  switch(cast<OR1KMCExpr>(Expr)->getKind()) {
     default: llvm_unreachable("Unknown fixup kind!");
       break;
-    case MCSymbolRefExpr::VK_None:
+    case OR1KMCExpr::VK_OR1K_None:
       // This is an assembly expression without an explicit
       // relocation kind. Guess one based on instruction format.
       switch(InstrInfo.get(MI.getOpcode()).TSFlags) {
@@ -138,28 +140,28 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
         llvm_unreachable("Unsupported expression operand in assembly source");
       }
       break;
-    case MCSymbolRefExpr::VK_OR1K_ABS_HI:
+    case OR1KMCExpr::VK_OR1K_ABS_HI:
       FixupKind = OR1K::fixup_OR1K_HI16_INSN;
       break;
-    case MCSymbolRefExpr::VK_OR1K_ABS_LO:
+    case OR1KMCExpr::VK_OR1K_ABS_LO:
       FixupKind = OR1K::fixup_OR1K_LO16_INSN;
       break;
-    case MCSymbolRefExpr::VK_OR1K_PLT:
+    case OR1KMCExpr::VK_OR1K_PLT:
       FixupKind = OR1K::fixup_OR1K_PLT26;
       break;
-    case MCSymbolRefExpr::VK_OR1K_GOTPCHI:
+    case OR1KMCExpr::VK_OR1K_GOTPCHI:
       FixupKind = OR1K::fixup_OR1K_GOTPC_HI16;
       break;
-    case MCSymbolRefExpr::VK_OR1K_GOTPCLO:
+    case OR1KMCExpr::VK_OR1K_GOTPCLO:
       FixupKind = OR1K::fixup_OR1K_GOTPC_LO16;
       break;
-    case MCSymbolRefExpr::VK_OR1K_GOTOFFHI:
+    case OR1KMCExpr::VK_OR1K_GOTOFFHI:
       FixupKind = OR1K::fixup_OR1K_GOTOFF_HI16;
       break;
-    case MCSymbolRefExpr::VK_OR1K_GOTOFFLO:
+    case OR1KMCExpr::VK_OR1K_GOTOFFLO:
       FixupKind = OR1K::fixup_OR1K_GOTOFF_LO16;
       break;
-    case MCSymbolRefExpr::VK_OR1K_GOT:
+    case OR1KMCExpr::VK_OR1K_GOT:
       FixupKind = OR1K::fixup_OR1K_GOT16;
       break;
   }

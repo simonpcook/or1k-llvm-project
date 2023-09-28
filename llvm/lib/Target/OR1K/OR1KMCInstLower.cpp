@@ -14,6 +14,7 @@
 
 #include "OR1KMCInstLower.h"
 #include "MCTargetDesc/OR1KBaseInfo.h"
+#include "MCTargetDesc/OR1KMCExpr.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -65,27 +66,30 @@ GetConstantPoolIndexSymbol(const MachineOperand &MO) const {
 
 MCOperand OR1KMCInstLower::
 LowerSymbolOperand(const MachineOperand &MO, MCSymbol *Sym) const {
-  MCSymbolRefExpr::VariantKind Kind;
+  OR1KMCExpr::VariantKind Kind;
 
   switch (MO.getTargetFlags()) {
   default: llvm_unreachable("Unknown target flag on GV operand");
-  case OR1KII::MO_NO_FLAG:  Kind = MCSymbolRefExpr::VK_None; break;
-  case OR1KII::MO_ABS_HI:   Kind = MCSymbolRefExpr::VK_OR1K_ABS_HI; break;
-  case OR1KII::MO_ABS_LO:   Kind = MCSymbolRefExpr::VK_OR1K_ABS_LO; break;
-  case OR1KII::MO_PLT:      Kind = MCSymbolRefExpr::VK_OR1K_PLT; break;
-  case OR1KII::MO_GOTPCHI:  Kind = MCSymbolRefExpr::VK_OR1K_GOTPCHI; break;
-  case OR1KII::MO_GOTPCLO:  Kind = MCSymbolRefExpr::VK_OR1K_GOTPCLO; break;
-  case OR1KII::MO_GOTOFFHI: Kind = MCSymbolRefExpr::VK_OR1K_GOTOFFHI; break;
-  case OR1KII::MO_GOTOFFLO: Kind = MCSymbolRefExpr::VK_OR1K_GOTOFFLO; break;
-  case OR1KII::MO_GOT:      Kind = MCSymbolRefExpr::VK_OR1K_GOT; break;
+  case OR1KII::MO_NO_FLAG:  Kind = OR1KMCExpr::VK_OR1K_None; break;
+  case OR1KII::MO_ABS_HI:   Kind = OR1KMCExpr::VK_OR1K_ABS_HI; break;
+  case OR1KII::MO_ABS_LO:   Kind = OR1KMCExpr::VK_OR1K_ABS_LO; break;
+  case OR1KII::MO_PLT:      Kind = OR1KMCExpr::VK_OR1K_PLT; break;
+  case OR1KII::MO_GOTPCHI:  Kind = OR1KMCExpr::VK_OR1K_GOTPCHI; break;
+  case OR1KII::MO_GOTPCLO:  Kind = OR1KMCExpr::VK_OR1K_GOTPCLO; break;
+  case OR1KII::MO_GOTOFFHI: Kind = OR1KMCExpr::VK_OR1K_GOTOFFHI; break;
+  case OR1KII::MO_GOTOFFLO: Kind = OR1KMCExpr::VK_OR1K_GOTOFFLO; break;
+  case OR1KII::MO_GOT:      Kind = OR1KMCExpr::VK_OR1K_GOT; break;
   }
 
-  const MCExpr *Expr = MCSymbolRefExpr::create(Sym, Kind, Ctx);
+  const MCExpr *Expr = MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None, Ctx);
 
   if (!MO.isJTI() && MO.getOffset())
     Expr = MCBinaryExpr::createAdd(Expr,
                                    MCConstantExpr::create(MO.getOffset(), Ctx),
                                    Ctx);
+
+  Expr = OR1KMCExpr::create(Expr, Kind, Ctx);
+
   return MCOperand::createExpr(Expr);
 }
 
@@ -117,10 +121,13 @@ void OR1KMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
     case MachineOperand::MO_Immediate:
       MCOp = MCOperand::createImm(MO.getImm());
       break;
-    case MachineOperand::MO_MachineBasicBlock:
-      MCOp = MCOperand::createExpr(MCSymbolRefExpr::create(
-                                   MO.getMBB()->getSymbol(), Ctx));
+    case MachineOperand::MO_MachineBasicBlock: {
+      const auto* Expr = OR1KMCExpr::create(
+          MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), Ctx),
+          OR1KMCExpr::VK_OR1K_None, Ctx);
+      MCOp = MCOperand::createExpr(Expr);
       break;
+    }
     case MachineOperand::MO_RegisterMask:
       continue;
     case MachineOperand::MO_GlobalAddress:

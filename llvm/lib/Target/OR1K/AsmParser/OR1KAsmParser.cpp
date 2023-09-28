@@ -10,6 +10,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/STLExtras.h"
 #include "MCTargetDesc/OR1KMCTargetDesc.h"
+#include "MCTargetDesc/OR1KMCExpr.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCParser/MCAsmLexer.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
@@ -56,9 +57,8 @@ class OR1KAsmParser : public MCTargetAsmParser {
   bool ParseImmediate(OperandVector &Operands);
 
   const MCExpr *evaluateRelocExpr(const MCExpr *Expr,
-                                  MCSymbolRefExpr::VariantKind VK);
+                                  OR1KMCExpr::VariantKind VK);
 
-  MCSymbolRefExpr::VariantKind getVariantKind(StringRef Symbol);
   bool ParseSymbolReference(OperandVector &Operands);
 
   bool ParseOperand(OperandVector &Operands);
@@ -346,31 +346,16 @@ bool OR1KAsmParser::ParseImmediate(OperandVector &Operands) {
   }
 }
 
-MCSymbolRefExpr::VariantKind OR1KAsmParser::getVariantKind(StringRef Symbol) {
-  MCSymbolRefExpr::VariantKind VK =
-      StringSwitch<MCSymbolRefExpr::VariantKind>(Symbol)
-          .Case("hi", MCSymbolRefExpr::VK_OR1K_ABS_HI)
-          .Case("lo", MCSymbolRefExpr::VK_OR1K_ABS_LO)
-          .Case("plt", MCSymbolRefExpr::VK_OR1K_PLT)
-          .Case("got", MCSymbolRefExpr::VK_OR1K_GOT)
-          .Case("gotpchi", MCSymbolRefExpr::VK_OR1K_GOTPCHI)
-          .Case("gotpclo", MCSymbolRefExpr::VK_OR1K_GOTPCLO)
-          .Case("gotoffhi", MCSymbolRefExpr::VK_OR1K_GOTOFFHI)
-          .Case("gotofflo", MCSymbolRefExpr::VK_OR1K_GOTOFFLO)
-          .Default(MCSymbolRefExpr::VK_None);
-
-  return VK;
-}
-
 const MCExpr *OR1KAsmParser::evaluateRelocExpr(const MCExpr *Expr,
-                                               MCSymbolRefExpr::VariantKind VK) {
+                                               OR1KMCExpr::VariantKind VK) {
+
   // Check the type of the expression.
   if (const MCConstantExpr *MCE = dyn_cast<MCConstantExpr>(Expr)) {
     // It's a constant, evaluate lo or hi value.
-    if (VK == MCSymbolRefExpr::VK_OR1K_ABS_LO) {
+    if (VK == OR1KMCExpr::VK_OR1K_ABS_LO) {
       short Val = MCE->getValue();
       return MCConstantExpr::create(Val, getContext());
-    } else if (VK == MCSymbolRefExpr::VK_OR1K_ABS_HI) {
+    } else if (VK == OR1KMCExpr::VK_OR1K_ABS_HI) {
       int Val = MCE->getValue();
       int LoSign = Val & 0x8000;
       Val = (Val & 0xffff0000) >> 16;
@@ -387,7 +372,9 @@ const MCExpr *OR1KAsmParser::evaluateRelocExpr(const MCExpr *Expr,
   if (const MCSymbolRefExpr *MSRE = dyn_cast<MCSymbolRefExpr>(Expr)) {
     // It's a symbol, create a symbolic expression from the symbol.
     StringRef Symbol = MSRE->getSymbol().getName();
-    return MCSymbolRefExpr::create(Symbol, VK, getContext());
+    auto* SRE = MCSymbolRefExpr::create(Symbol, MCSymbolRefExpr::VK_None,
+                                        getContext());
+    return OR1KMCExpr::create(SRE, VK, getContext());
   }
 
   if (const MCBinaryExpr *BE = dyn_cast<MCBinaryExpr>(Expr)) {
@@ -413,8 +400,8 @@ bool OR1KAsmParser::ParseSymbolReference(OperandVector &Operands) {
     return true;
 
   SMLoc E = SMLoc::getFromPointer(Parser.getTok().getLoc().getPointer() - 1);
-  MCSymbolRefExpr::VariantKind VK = getVariantKind(Identifier);
-  if(VK != MCSymbolRefExpr::VK_None) {
+  auto VK = OR1KMCExpr::getVariantKindForName(Identifier);
+  if (VK != OR1KMCExpr::VK_OR1K_None) {
     // Parse a relocation expression.
     SMLoc ExprS = Parser.getTok().getLoc();
     if(getLexer().isNot(AsmToken::LParen))
@@ -440,8 +427,10 @@ bool OR1KAsmParser::ParseSymbolReference(OperandVector &Operands) {
   } else {
     // Parse a symbol
     MCSymbol *Sym = getContext().getOrCreateSymbol(Identifier);
-    const MCExpr *Res =
+    const MCExpr *SRE =
         MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None, getContext());
+    const auto* Res =
+        OR1KMCExpr::create(SRE, OR1KMCExpr::VK_OR1K_None, getContext());
     Operands.push_back(OR1KOperand::createImm(Res, S, E));
     return false;
   }

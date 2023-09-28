@@ -34,29 +34,6 @@ void OR1KInstPrinter::printInst(const MCInst *MI, uint64_t Address,
   printAnnotation(O, Annot);
 }
 
-static void printExpr(const MCExpr *Expr, raw_ostream &O, const MCAsmInfo &MAI) {
-  const MCSymbolRefExpr *SRE;
-
-  const MCBinaryExpr *BE = dyn_cast<MCBinaryExpr>(Expr);
-  if (BE)
-    SRE = dyn_cast<MCSymbolRefExpr>(BE->getLHS());
-  else
-    SRE = dyn_cast<MCSymbolRefExpr>(Expr);
-  assert(SRE && "Unexpected MCExpr type.");
-
-  MCSymbolRefExpr::VariantKind Kind = SRE->getKind();
-
-  if(Kind != MCSymbolRefExpr::VK_None) {
-    O << MCSymbolRefExpr::getVariantKindName(Kind) << '('
-      << SRE->getSymbol() << ')';
-  } else if (BE) {
-    O << "(";
-    Expr->print(O, &MAI);
-    O << ")";
-  } else
-    Expr->print(O, &MAI);
-}
-
 void OR1KInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
                                    raw_ostream &O, const char *Modifier) {
   assert((Modifier == 0 || Modifier[0] == 0) && "No modifiers supported");
@@ -67,7 +44,7 @@ void OR1KInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
     O << (int32_t)Op.getImm();
   } else {
     assert(Op.isExpr() && "Expected an expression");
-    printExpr(Op.getExpr(), O, MAI);
+    Op.getExpr()->print(O, &MAI);
   }
 }
 
@@ -80,7 +57,7 @@ void OR1KInstPrinter::printMemOperand(const MCInst *MI, int OpNo,
     O << OffsetOp.getImm();
   } else {
     assert(OffsetOp.isExpr() && "Expected an expression");
-    printExpr(OffsetOp.getExpr(), O, MAI);
+    OffsetOp.getExpr()->print(O, &MAI);
   }
   // register
   assert(RegOp.isReg() && "Register operand not a register");
@@ -94,7 +71,7 @@ void OR1KInstPrinter::printS16ImmOperand(const MCInst *MI, unsigned OpNo,
     O << (int16_t)Op.getImm();
   } else {
     assert(Op.isExpr() && "Expected an expression");
-    printExpr(Op.getExpr(), O, MAI);
+    Op.getExpr()->print(O, &MAI);
   }
 }
 

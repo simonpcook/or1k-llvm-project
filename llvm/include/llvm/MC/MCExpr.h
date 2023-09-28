@@ -358,15 +358,6 @@ public:
 
     VK_TPREL,
     VK_DTPREL,
-
-    VK_OR1K_ABS_HI,
-    VK_OR1K_ABS_LO,
-    VK_OR1K_PLT,
-    VK_OR1K_GOT,
-    VK_OR1K_GOTPCHI,
-    VK_OR1K_GOTPCLO,
-    VK_OR1K_GOTOFFHI,
-    VK_OR1K_GOTOFFLO,
   };
 
 private:

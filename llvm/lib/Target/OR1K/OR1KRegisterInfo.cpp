@@ -30,6 +30,9 @@
 #include "OR1KGenRegisterInfo.inc"
 using namespace llvm;
 
+static_assert(OR1K::R0 + 1 == OR1K::R1, "Register list not consecutive.");
+static_assert(OR1K::R0 + 31 == OR1K::R31, "Register list not consecutive.");
+
 OR1KRegisterInfo::OR1KRegisterInfo(const TargetInstrInfo &tii)
   : OR1KGenRegisterInfo(OR1K::R9), TII(tii) {
 }

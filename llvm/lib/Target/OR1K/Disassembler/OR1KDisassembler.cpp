@@ -126,7 +126,7 @@ static DecodeStatus
 DecodeMemoryValue(MCInst &Inst, unsigned Insn, uint64_t Address,
                   const void *Decoder) {
   unsigned Register = (Insn >> 16) & 0x1f;
-  Inst.addOperand(MCOperand::createReg(Register+2));
+  Inst.addOperand(MCOperand::createReg(OR1K::R0 + Register));
   unsigned Offset = (Insn & 0xffff);
   Inst.addOperand(MCOperand::createImm(SignExtend32<16>(Offset)));
   return MCDisassembler::Success;

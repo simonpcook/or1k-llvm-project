@@ -1,4 +1,4 @@
-; RUN: llc -march=or1k -float-abi=hard < %s | FileCheck %s
+; RUN: llc -march=or1k -float-abi=soft < %s | FileCheck %s
 
 define float @f0(float %a, float %b) {
 entry:
@@ -6,7 +6,7 @@ entry:
   ret float %c
 }
 ; CHECK: f0:
-; CHECK: lf.add.s
+; CHECK: l.jal __addsf3
 
 define float @f1(float %a, float %b) {
 entry:
@@ -14,7 +14,7 @@ entry:
   ret float %c
 }
 ; CHECK: f1:
-; CHECK: lf.sub.s
+; CHECK: l.jal __subsf3
 
 define float @f2(float %a, float %b) {
 entry:
@@ -22,7 +22,7 @@ entry:
   ret float %c
 }
 ; CHECK: f2:
-; CHECK: lf.mul.s
+; CHECK: l.jal __mulsf3
 
 define float @f3(float %a, float %b) {
 entry:
@@ -30,7 +30,7 @@ entry:
   ret float %c
 }
 ; CHECK: f3:
-; CHECK: lf.div.s
+; CHECK: l.jal __divsf3
 
 define float @f4(float %a, float %b) {
 entry:
@@ -38,4 +38,4 @@ entry:
   ret float %c
 }
 ; CHECK: f4:
-; CHECK: lf.rem.s
+; CHECK: l.jal fmodf
